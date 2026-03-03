@@ -1,0 +1,59 @@
+body {
+  font-family: var(--vscode-font-family);
+  padding: 10px;
+  color: var(--vscode-editor-foreground);
+  background-color: var(--vscode-editor-background);
+}
+
+.container {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+}
+
+h3 {
+  margin-top: 0;
+}
+
+.log-box {
+  border: 1px solid var(--vscode-panel-border);
+  padding: 10px;
+  height: 300px;
+  overflow-y: auto;
+  margin-bottom: 10px;
+  background-color: var(--vscode-editor-background);
+  text-align: left;
+}
+
+.message {
+  margin-bottom: 8px;
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+.agent-name {
+  font-weight: bold;
+  color: var(--vscode-terminal-ansiBlue);
+}
+
+.db-event {
+  color: var(--vscode-terminal-ansiGreen);
+}
+
+.error-event {
+  color: var(--vscode-terminal-ansiRed);
+}
+
+button {
+  background: var(--vscode-button-background);
+  color: var(--vscode-button-foreground);
+  border: none;
+  padding: 8px 12px;
+  cursor: pointer;
+  width: 100%;
+  border-radius: 2px;
+}
+
+button:hover {
+  background: var(--vscode-button-hoverBackground);
+}

@@ -1,0 +1,115 @@
+{
+  "name": "arc-extension",
+  "displayName": "arc-extension",
+  "description": "The vscode extension of arc",
+  "version": "0.0.1",
+  "engines": {
+    "vscode": "^1.107.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "arc-extension.helloWorld",
+        "title": "Hello World"
+      },
+      {
+        "command": "arc.openMainEditor",
+        "title": "ARC: Open Main Editor"
+      },
+      {
+        "command": "arc.startCompilation",
+        "title": "Start Compilation",
+        "category": "ARC"
+      },
+      {
+        "command": "arc.restartCompilation",
+        "title": "Clear and Restart Compilation",
+        "category": "ARC"
+      }
+    ],
+    "menus": {
+      "editor/title": [
+        {
+          "submenu": "arc/main",
+          "group": "navigation"
+        }
+      ],
+      "arc/main": [
+        {
+          "command": "arc.startCompilation",
+          "group": "navigation"
+        },
+        {
+          "command": "arc.restartCompilation",
+          "group": "navigation"
+        }
+      ]
+    },
+    "submenus": [
+      {
+        "id": "arc/main",
+        "label": "ARC",
+        "icon": "$(hubot)"
+      }
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "arc-sidebar",
+          "title": "ARC",
+          "icon": "$(hubot)"
+        }
+      ],
+      "panel": [
+        {
+          "id": "arc-panel",
+          "title": "ARC Logs",
+          "icon": "$(output)"
+        }
+      ]
+    },
+    "views": {
+      "arc-sidebar": [
+        {
+          "type": "webview",
+          "id": "arc.sidebarView",
+          "name": "Project Structure"
+        }
+      ],
+      "arc-panel": [
+        {
+          "type": "webview",
+          "id": "arc.logPanelView",
+          "name": "Agent Logs"
+        }
+      ]
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "pretest": "npm run compile && npm run lint",
+    "lint": "eslint src",
+    "test": "vscode-test"
+  },
+  "devDependencies": {
+    "@types/js-yaml": "^4.0.9",
+    "@types/mocha": "^10.0.10",
+    "@types/node": "22.x",
+    "@types/vscode": "^1.107.0",
+    "@vscode/test-cli": "^0.0.12",
+    "@vscode/test-electron": "^2.5.2",
+    "eslint": "^9.39.3",
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.56.1"
+  },
+  "dependencies": {
+    "js-yaml": "^4.1.1"
+  }
+}
