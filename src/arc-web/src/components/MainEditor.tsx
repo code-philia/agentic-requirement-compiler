@@ -103,6 +103,16 @@ export default function MainEditor() {
       }
   };
 
+  const handleAddNode = (targetId: string, type: 'child' | 'sibling') => {
+      if (window.vscode) {
+          window.vscode.postMessage({
+              command: 'addNode',
+              targetId: targetId,
+              type: type
+          });
+      }
+  };
+
   const handleUpdateNode = (id: string, updates: any) => {
       if (window.vscode) {
           window.vscode.postMessage({
@@ -133,6 +143,9 @@ export default function MainEditor() {
                 onNodeSelect={handleNodeSelect} 
                 selectedNodeId={selectedNode?.id}
                 nodeStatuses={nodeStatuses}
+                onAddNode={handleAddNode}
+                onDeleteNode={handleDeleteNode}
+                onUpdateNode={handleUpdateNode}
              />
         ) : (
             <div className="flex items-center justify-center h-full opacity-50">

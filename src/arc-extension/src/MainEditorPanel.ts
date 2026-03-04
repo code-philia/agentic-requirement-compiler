@@ -66,6 +66,12 @@ export class MainEditorPanel {
                 panel.webview.postMessage({ command: 'updateProject', data: newData });
                 break;
             }
+            case "addNode": {
+                await manager.addNode(data.targetId, data.type);
+                const newData = manager.getData();
+                panel.webview.postMessage({ command: 'updateProject', data: newData });
+                break;
+            }
         }
     });
     

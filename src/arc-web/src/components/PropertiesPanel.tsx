@@ -25,7 +25,14 @@ export default function PropertiesPanel({ node, onUpdate, onDelete, onClose }: P
     const [formData, setFormData] = useState(node || {});
     const [panelWidth, setPanelWidth] = useState(400); 
     const [isResizing, setIsResizing] = useState(false);
-    
+
+    // Common UI component style classes
+    const inputClasses = "w-full px-2 py-1.5 text-sm bg-[var(--vscode-input-background)] text-[var(--vscode-input-foreground)] border border-[var(--vscode-input-border)] rounded-sm focus:outline-none focus:border-[var(--vscode-focusBorder)] placeholder-[var(--vscode-input-placeholderForeground)] transition-colors";
+    const labelClasses = "block mb-1 text-xs text-[var(--vscode-descriptionForeground)] font-medium";
+    const primaryButtonClasses = "w-full py-1.5 flex items-center justify-center gap-1.5 bg-[var(--vscode-button-background)] text-[var(--vscode-button-foreground)] border border-transparent hover:bg-[var(--vscode-button-hoverBackground)] rounded-sm text-sm transition-colors";
+    const secondaryButtonClasses = "w-full flex items-center justify-between px-2 py-1.5 text-sm bg-[var(--vscode-button-secondaryBackground)] text-[var(--vscode-button-secondaryForeground)] border border-transparent hover:bg-[var(--vscode-button-secondaryHoverBackground)] rounded-sm transition-colors";
+    const iconButtonClasses = "p-1 rounded-sm text-[var(--vscode-icon-foreground)] hover:bg-[var(--vscode-toolbar-hoverBackground)] transition-colors cursor-pointer";
+
     useEffect(() => {
         setFormData(node || {});
     }, [node]);
@@ -249,50 +256,49 @@ export default function PropertiesPanel({ node, onUpdate, onDelete, onClose }: P
                 </div>
 
                 {/* Scenario List */}
-                <div className="space-y-6">
+                <div className="space-y-4">
                     {(formData.scenarios || []).map((scenario: Scenario, sIdx: number) => (
-                        <div key={sIdx} className="border border-[var(--vscode-panel-border)] rounded-xl bg-[var(--vscode-editor-background)] shadow-sm overflow-hidden transition-shadow hover:shadow-md">
+                        <div key={sIdx} className="border border-[var(--vscode-input-border)] rounded-sm bg-[var(--vscode-editor-background)] overflow-hidden">
                             {/* Scenario Header */}
-                            <div className="p-4 border-b border-[var(--vscode-panel-border)] flex justify-between items-start bg-[var(--vscode-list-hoverBackground)]/20">
-                                <div className="flex-1 space-y-1.5 mr-4">
+                            <div className="px-3 py-2 border-b border-[var(--vscode-input-border)] flex justify-between items-center bg-[var(--vscode-list-hoverBackground)]/50">
+                                <div className="flex-1 mr-2">
                                     <input 
                                         type="text" 
                                         value={scenario.name}
                                         onChange={(e) => handleUpdateScenario(sIdx, 'name', e.target.value)}
-                                        className="w-full bg-transparent border-b border-transparent hover:border-[var(--vscode-input-border)] focus:border-[var(--vscode-focusBorder)] text-sm font-bold focus:outline-none px-1 py-0.5 placeholder-[var(--vscode-input-placeholderForeground)] transition-colors"
+                                        className="w-full bg-transparent border border-transparent hover:border-[var(--vscode-input-border)] focus:border-[var(--vscode-focusBorder)] focus:bg-[var(--vscode-input-background)] text-sm font-semibold focus:outline-none px-1 py-0.5 rounded-sm transition-colors mb-0.5 text-[var(--vscode-foreground)]"
                                         placeholder="Scenario Name"
                                     />
-                                    <div className="font-mono text-[10px] text-[var(--vscode-descriptionForeground)] opacity-60 pl-1">{scenario.id}</div>
+                                    <div className="font-mono text-xs text-[var(--vscode-descriptionForeground)] opacity-70 px-1">{scenario.id}</div>
                                 </div>
-                                <button onClick={() => handleRemoveScenario(sIdx)} className="bg-transparent hover:bg-red-50 text-[var(--vscode-descriptionForeground)] hover:text-red-500 p-2 rounded-lg transition-all duration-200" title="Delete Scenario">
+                                <button onClick={() => handleRemoveScenario(sIdx)} className={`${iconButtonClasses} hover:text-[var(--vscode-charts-red)] mt-0.5`} title="Delete Scenario">
                                     <Trash2 size={14} />
                                 </button>
                             </div>
 
-                            <div className="p-5 space-y-6">
+                            <div className="p-3 space-y-4">
                                 {/* Prerequisites */}
-                                <div className="space-y-3">
-                                    <label className="text-xs font-semibold text-[var(--vscode-descriptionForeground)] block ml-1 opacity-80">Prerequisites</label>
-                                    <button 
-                                        onClick={() => handleAddPrerequisite(sIdx)}
-                                        className="w-full flex items-center justify-between px-3 py-2 text-xs bg-[var(--vscode-dropdown-background)] border border-[var(--vscode-dropdown-border)] rounded-lg hover:bg-[var(--vscode-list-hoverBackground)] text-left opacity-80 transition-colors"
-                                    >
-                                        <span>+ Add Prerequisite</span>
-                                        <ChevronDown size={12} className="opacity-60" />
-                                    </button>
+                                <div>
+                                    <div className="flex justify-between items-center mb-1.5">
+                                        <label className="text-xs text-[var(--vscode-descriptionForeground)]">Prerequisites</label>
+                                        <button onClick={() => handleAddPrerequisite(sIdx)} className="text-[var(--vscode-textLink-foreground)] hover:text-[var(--vscode-textLink-activeForeground)] cursor-pointer">
+                                            <Plus size={14} />
+                                        </button>
+                                    </div>
+                                    
                                     {(scenario.prerequisites || []).length > 0 && (
-                                        <div className="space-y-2 mt-2">
+                                        <div className="space-y-1.5 mt-2 pl-1.5 border-l-2 border-[var(--vscode-panel-border)]">
                                             {scenario.prerequisites.map((req, rIdx) => (
-                                                <div key={rIdx} className="flex gap-2 group">
+                                                <div key={rIdx} className="flex gap-1.5 group items-center">
                                                     <input 
                                                         type="text"
                                                         value={req}
                                                         onChange={(e) => handleUpdatePrerequisite(sIdx, rIdx, e.target.value)}
-                                                        className="flex-1 px-3 py-1.5 text-xs bg-[var(--vscode-input-background)] border border-[var(--vscode-input-border)] rounded-md focus:outline-none focus:ring-1 focus:ring-[var(--vscode-focusBorder)] focus:border-transparent transition-all"
+                                                        className={inputClasses}
                                                         placeholder="Condition / Requirement"
                                                     />
-                                                    <button onClick={() => handleRemovePrerequisite(sIdx, rIdx)} className="text-[var(--vscode-descriptionForeground)] hover:text-red-400 p-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                                                        <X size={12} />
+                                                    <button onClick={() => handleRemovePrerequisite(sIdx, rIdx)} className={`${iconButtonClasses} opacity-0 group-hover:opacity-100`}>
+                                                        <X size={14} />
                                                     </button>
                                                 </div>
                                             ))}
@@ -301,41 +307,38 @@ export default function PropertiesPanel({ node, onUpdate, onDelete, onClose }: P
                                 </div>
 
                                 {/* Steps */}
-                                <div className="space-y-3">
-                                    <div className="flex justify-between items-center border-l-2 border-[var(--vscode-focusBorder)] pl-3 py-1">
-                                        <label className="text-xs font-semibold text-[var(--vscode-descriptionForeground)] opacity-80">Steps</label>
-                                        <button 
-                                            onClick={() => handleAddStep(sIdx)}
-                                            className="text-xs text-[var(--vscode-textLink-foreground)] hover:text-[var(--vscode-textLink-activeForeground)] flex items-center gap-1.5 font-medium px-2 py-1 rounded hover:bg-[var(--vscode-list-hoverBackground)] transition-colors"
-                                        >
-                                            <Plus size={12} /> Add Step
+                                <div>
+                                    <div className="flex justify-between items-center mb-1.5">
+                                        <label className="text-xs text-[var(--vscode-descriptionForeground)]">Steps</label>
+                                        <button onClick={() => handleAddStep(sIdx)} className="text-[var(--vscode-textLink-foreground)] hover:text-[var(--vscode-textLink-activeForeground)] cursor-pointer">
+                                            <Plus size={14} />
                                         </button>
                                     </div>
                                     
-                                    <div className="space-y-3 mt-3">
+                                    <div className="space-y-2.5 mt-2">
                                         {scenario.steps.map((step, stepIdx) => (
-                                            <div key={stepIdx} className="grid grid-cols-[1fr_1fr_1fr_auto] gap-2 items-center group">
-                                                <div className="col-span-3 grid grid-cols-3 gap-0 bg-[var(--vscode-input-background)] border border-[var(--vscode-input-border)] rounded-lg overflow-hidden shadow-sm">
+                                            <div key={stepIdx} className="flex gap-1.5 group items-start">
+                                                <div className="flex-1 border border-[var(--vscode-input-border)] rounded-sm bg-[var(--vscode-input-background)] flex flex-col focus-within:border-[var(--vscode-focusBorder)] overflow-hidden transition-colors">
                                                     <input 
                                                         placeholder="Given" 
                                                         value={step.given} 
                                                         onChange={(e) => handleUpdateStep(sIdx, stepIdx, 'given', e.target.value)}
-                                                        className="bg-transparent text-xs border-r border-[var(--vscode-input-border)] focus:outline-none focus:bg-[var(--vscode-editor-background)] px-3 py-2 transition-colors"
+                                                        className="bg-transparent text-sm text-[var(--vscode-input-foreground)] border-b border-[var(--vscode-input-border)] focus:outline-none px-2 py-1.5 transition-colors focus:bg-[var(--vscode-input-background)]"
                                                     />
                                                     <input 
                                                         placeholder="When" 
                                                         value={step.when} 
                                                         onChange={(e) => handleUpdateStep(sIdx, stepIdx, 'when', e.target.value)}
-                                                        className="bg-transparent text-xs border-r border-[var(--vscode-input-border)] focus:outline-none focus:bg-[var(--vscode-editor-background)] px-3 py-2 transition-colors"
+                                                        className="bg-transparent text-sm text-[var(--vscode-input-foreground)] border-b border-[var(--vscode-input-border)] focus:outline-none px-2 py-1.5 transition-colors focus:bg-[var(--vscode-input-background)]"
                                                     />
                                                     <input 
                                                         placeholder="Then" 
                                                         value={step.then} 
                                                         onChange={(e) => handleUpdateStep(sIdx, stepIdx, 'then', e.target.value)}
-                                                        className="bg-transparent text-xs focus:outline-none focus:bg-[var(--vscode-editor-background)] px-3 py-2 transition-colors"
+                                                        className="bg-transparent text-sm text-[var(--vscode-input-foreground)] focus:outline-none px-2 py-1.5 transition-colors focus:bg-[var(--vscode-input-background)]"
                                                     />
                                                 </div>
-                                                <button onClick={() => handleRemoveStep(sIdx, stepIdx)} className="text-[var(--vscode-descriptionForeground)] hover:text-red-400 p-1.5 rounded-md hover:bg-[var(--vscode-list-hoverBackground)] opacity-0 group-hover:opacity-100 transition-all">
+                                                <button onClick={() => handleRemoveStep(sIdx, stepIdx)} className={`${iconButtonClasses} mt-1 opacity-0 group-hover:opacity-100`}>
                                                     <X size={14} />
                                                 </button>
                                             </div>

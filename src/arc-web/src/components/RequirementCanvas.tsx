@@ -1,40 +1,60 @@
-import { useEffect, useMemo } from 'react';
-import { ReactFlow, Controls, Background, useNodesState, useEdgesState, MiniMap, Handle, Position, MarkerType } from '@xyflow/react';
+import { useEffect, useMemo, useState, useCallback } from 'react';
+import { ReactFlow, Controls, Background, useNodesState, useEdgesState, MiniMap, Handle, Position, MarkerType, Panel, type Connection } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 
-const NODE_WIDTH = 220;
-const X_OFFSET = 350;
-const Y_GAP = 100;
+const NODE_WIDTH = 160;
+const X_OFFSET = 220;
+const Y_GAP = 70;
 
 function RequirementNode({ data, selected }: { data: any, selected?: boolean }) {
   // Determine style based on status
-  let statusClasses = 'bg-white border-gray-400';
+  let statusClasses = 'bg-[var(--vscode-editor-background)] border-[var(--vscode-editorWidget-border)]';
   if (data.status === 'designed') {
-      statusClasses = 'bg-orange-100 border-orange-400 shadow-orange-100';
+      statusClasses = 'bg-[var(--vscode-charts-orange)] border-[var(--vscode-charts-orange)] text-[var(--vscode-editor-background)]';
   } else if (data.status === 'completed') {
-      statusClasses = 'bg-green-100 border-green-400 shadow-green-100';
+      statusClasses = 'bg-[var(--vscode-charts-green)] border-[var(--vscode-charts-green)] text-[var(--vscode-editor-background)]';
   } else if (data.status === 'analyzing') {
-      statusClasses = 'bg-blue-50 border-blue-300';
+      statusClasses = 'bg-[var(--vscode-charts-blue)] border-[var(--vscode-charts-blue)] text-[var(--vscode-editor-background)]';
   }
+  
+  // Extract name and ID
+  const labelParts = data.label.split(':');
+  const reqName = labelParts.length > 1 ? labelParts.slice(1).join(':').trim() : data.label;
+  const reqId = labelParts[0];
 
   return (
     <div 
-        className={`w-full h-full flex items-center justify-center border rounded shadow-sm px-2 text-xs text-center text-gray-800 transition-all duration-500
+        className={`w-full h-full flex items-center justify-center border-2 rounded-full shadow-sm px-3 py-0.5 text-xs text-center transition-all duration-300 relative group cursor-pointer
         ${statusClasses}
-        ${selected ? 'ring-2 ring-blue-500 shadow-md' : ''}`}
+        ${selected ? 'ring-2 ring-[var(--vscode-focusBorder)] shadow-md scale-105' : ''}`}
+        style={{ color: data.status ? 'var(--vscode-editor-background)' : 'var(--vscode-editor-foreground)' }}
+        title={`${reqId}: ${reqName}`} // Native tooltip for full name
     >
-      <Handle type="target" position={Position.Left} id="t-left" className="opacity-0" />
-      <Handle type="target" position={Position.Right} id="t-right" className="opacity-0" />
-      <Handle type="source" position={Position.Left} id="s-left" className="opacity-0" />
-      <Handle type="source" position={Position.Right} id="s-right" className="opacity-0" />
-      <div className="w-full truncate font-medium">{data.label}</div>
+      <Handle type="target" position={Position.Left} id="t-left" className="opacity-0 group-hover:opacity-100 transition-opacity w-2.5 h-2.5 bg-[var(--vscode-editor-foreground)]" />
+      <Handle type="target" position={Position.Right} id="t-right" className="opacity-0 group-hover:opacity-100 transition-opacity w-2.5 h-2.5 bg-[var(--vscode-editor-foreground)]" />
+      <Handle type="source" position={Position.Left} id="s-left" className="opacity-0 group-hover:opacity-100 transition-opacity w-2.5 h-2.5 bg-[var(--vscode-editor-foreground)]" />
+      <Handle type="source" position={Position.Right} id="s-right" className="opacity-0 group-hover:opacity-100 transition-opacity w-2.5 h-2.5 bg-[var(--vscode-editor-foreground)]" />
+      
+      <div className="w-full truncate font-bold text-[10px] leading-tight select-none pointer-events-none">{reqName}</div>
     </div>
   );
 }
 
-export default function RequirementCanvas({ rootNode, onNodeSelect, selectedNodeId, nodeStatuses }: { rootNode: any, onNodeSelect: (nodeId: string) => void, selectedNodeId?: string, nodeStatuses?: Record<string, string> }) {
+interface RequirementCanvasProps {
+    rootNode: any;
+    onNodeSelect: (nodeId: string) => void;
+    selectedNodeId?: string;
+    nodeStatuses?: Record<string, string>;
+    onAddNode: (targetId: string, type: 'child' | 'sibling') => void;
+    onDeleteNode: (id: string) => void;
+    onUpdateNode: (id: string, updates: any) => void;
+}
+
+export default function RequirementCanvas({ rootNode, onNodeSelect, selectedNodeId, nodeStatuses, onAddNode, onDeleteNode, onUpdateNode }: RequirementCanvasProps) {
     const [nodes, setNodes, onNodesChange] = useNodesState<any>([]);
     const [edges, setEdges, onEdgesChange] = useEdgesState<any>([]);
+    const [showDependencies, setShowDependencies] = useState(false);
+    const [contextMenu, setContextMenu] = useState<{ x: number, y: number, nodeId: string } | null>(null);
 
     const nodeTypes = useMemo(() => ({
         reqNode: RequirementNode
@@ -46,8 +66,38 @@ export default function RequirementCanvas({ rootNode, onNodeSelect, selectedNode
         // 1. Calculate Layout
         const { nodes: layoutNodes, edges: layoutEdges } = getTreeLayout(rootNode);
         
-        // 2. Apply Selection and Status State
-        // IMPORTANT: We need to recreate the nodes array to force React Flow to re-render the custom nodes with new data
+        // 2. Add Dependency Edges if enabled
+        if (showDependencies) {
+            layoutNodes.forEach(node => {
+                const original = node.data.originalNode;
+                if (original.dependencies) {
+                    original.dependencies.forEach((depId: string) => {
+                        // Check if target exists in current map (might be filtered or not loaded, but usually full tree)
+                        // Note: dependency targets might be anywhere in the tree.
+                        // We rely on node IDs being unique.
+                        layoutEdges.push({
+                            id: `dep-${node.id}-${depId}`,
+                            source: node.id,
+                            target: depId,
+                            sourceHandle: 's-right', // Reuse existing handles or define new ones if needed. 
+                            // Ideally dependencies might flow differently, but for now reuse.
+                            targetHandle: 't-left',
+                            type: 'default',
+                            animated: true,
+                            style: { stroke: 'red', strokeDasharray: '5,5' },
+                            markerEnd: {
+                                type: MarkerType.ArrowClosed,
+                                width: 20,
+                                height: 20,
+                                color: 'red',
+                            },
+                        });
+                    });
+                }
+            });
+        }
+
+        // 3. Apply Selection and Status State
         const nodesWithState = layoutNodes.map(node => {
             const status = nodeStatuses?.[node.id];
             
@@ -56,55 +106,150 @@ export default function RequirementCanvas({ rootNode, onNodeSelect, selectedNode
                 selected: node.id === selectedNodeId,
                 data: {
                     ...node.data,
-                    status: status // Inject status from prop
+                    status: status
                 },
-                // Use style override as a backup or for stronger visual cue if needed
                 style: {
                     ...node.style,
-                    backgroundColor: status === 'completed' ? '#dcfce7' : 
-                                   status === 'designed' ? '#ffedd5' : 
-                                   status === 'analyzing' ? '#eff6ff' : '#ffffff',
-                    borderColor: status === 'completed' ? '#4ade80' :
-                               status === 'designed' ? '#fb923c' :
-                               status === 'analyzing' ? '#93c5fd' : '#9ca3af',
+                    // Use CSS variables for status colors if available in style prop, otherwise class handles it.
+                    // But to force update if class doesn't catch it:
+                    backgroundColor: status === 'completed' ? 'var(--vscode-charts-green)' : 
+                                   status === 'designed' ? 'var(--vscode-charts-orange)' : 
+                                   status === 'analyzing' ? 'var(--vscode-charts-blue)' : 'var(--vscode-editor-background)',
+                    borderColor: status === 'completed' ? 'var(--vscode-charts-green)' :
+                               status === 'designed' ? 'var(--vscode-charts-orange)' :
+                               status === 'analyzing' ? 'var(--vscode-charts-blue)' : 'var(--vscode-editorWidget-border)',
                 }
             };
         });
 
         setNodes(nodesWithState);
         setEdges(layoutEdges);
-    }, [rootNode, selectedNodeId, nodeStatuses, setNodes, setEdges]); 
+    }, [rootNode, selectedNodeId, nodeStatuses, showDependencies, setNodes, setEdges]); 
 
     const onNodeClick = (_: any, node: any) => {
+        setContextMenu(null);
         onNodeSelect(node.id);
     };
 
+    const onNodeContextMenu = (event: React.MouseEvent, node: any) => {
+        event.preventDefault();
+        setContextMenu({
+            x: event.clientX,
+            y: event.clientY,
+            nodeId: node.id
+        });
+    };
+
+    const onPaneClick = () => {
+        setContextMenu(null);
+    };
+
+    const onConnect = useCallback((params: Connection) => {
+        // Handle creating dependency
+        if (params.source && params.target) {
+            // We need to update the source node's dependencies
+            // Find the node in the tree to get current dependencies
+            const findNode = (node: any): any => {
+                if (node.id === params.source) return node;
+                if (node.children) {
+                    for (const child of node.children) {
+                        const found = findNode(child);
+                        if (found) return found;
+                    }
+                }
+                return null;
+            };
+            
+            const sourceNode = findNode(rootNode);
+            if (sourceNode) {
+                const currentDeps = sourceNode.dependencies || [];
+                if (!currentDeps.includes(params.target)) {
+                    onUpdateNode(params.source, {
+                        dependencies: [...currentDeps, params.target]
+                    });
+                }
+            }
+        }
+    }, [rootNode, onUpdateNode]);
+
     return (
-        <div className="w-full h-full bg-gray-50">
+        <div className="w-full h-full bg-gray-50 relative">
             <ReactFlow
                 nodes={nodes}
                 edges={edges}
                 onNodesChange={onNodesChange}
                 onEdgesChange={onEdgesChange}
                 onNodeClick={onNodeClick}
+                onNodeContextMenu={onNodeContextMenu}
+                onPaneClick={onPaneClick}
+                onConnect={onConnect}
                 nodeTypes={nodeTypes}
                 fitView
                 attributionPosition="bottom-right"
+                proOptions={{ hideAttribution: true }}
             >
                 <Background color="#ccc" gap={20} />
-                <Controls />
-                <MiniMap />
+                <Controls showInteractive={false} />
+                <MiniMap nodeStrokeWidth={3} />
+                <Panel position="top-left" className="bg-[var(--vscode-editor-background)] p-2 rounded shadow-md border border-[var(--vscode-widget-border)]">
+                    <label className="flex items-center space-x-2 text-xs cursor-pointer select-none text-[var(--vscode-foreground)]">
+                        <input 
+                            type="checkbox" 
+                            checked={showDependencies} 
+                            onChange={(e) => setShowDependencies(e.target.checked)}
+                            className="rounded bg-[var(--vscode-checkbox-background)] border-[var(--vscode-checkbox-border)] text-[var(--vscode-checkbox-foreground)] focus:ring-[var(--vscode-focusBorder)]"
+                        />
+                        <span>Show Dependencies</span>
+                    </label>
+                </Panel>
             </ReactFlow>
+
+            {contextMenu && (
+                <div 
+                    className="fixed z-50 bg-[var(--vscode-menu-background)] text-[var(--vscode-menu-foreground)] border border-[var(--vscode-menu-border)] shadow-lg rounded-md py-1 min-w-[160px]"
+                    style={{ top: contextMenu.y, left: contextMenu.x }}
+                >
+                    <button 
+                        className="w-full text-left px-4 py-2 text-xs hover:bg-[var(--vscode-menu-selectionBackground)] hover:text-[var(--vscode-menu-selectionForeground)] focus:outline-none transition-colors"
+                        onClick={() => {
+                            onAddNode(contextMenu.nodeId, 'child');
+                            setContextMenu(null);
+                        }}
+                    >
+                        Add Child Node
+                    </button>
+                    <button 
+                        className="w-full text-left px-4 py-2 text-xs hover:bg-[var(--vscode-menu-selectionBackground)] hover:text-[var(--vscode-menu-selectionForeground)] focus:outline-none transition-colors"
+                        onClick={() => {
+                            onAddNode(contextMenu.nodeId, 'sibling');
+                            setContextMenu(null);
+                        }}
+                    >
+                        Add Sibling Node
+                    </button>
+                    <div className="h-px bg-[var(--vscode-menu-separatorBackground)] my-1"></div>
+                    <button 
+                        className="w-full text-left px-4 py-2 text-xs hover:bg-[var(--vscode-menu-selectionBackground)] hover:text-[var(--vscode-menu-selectionForeground)] focus:outline-none transition-colors text-red-400"
+                        onClick={() => {
+                            onDeleteNode(contextMenu.nodeId);
+                            setContextMenu(null);
+                        }}
+                    >
+                        Delete Node
+                    </button>
+                </div>
+            )}
         </div>
     );
 }
 
-// Layout Logic (Simplified from old_tool)
+// Layout Logic
 const getTreeLayout = (root: any) => {
     const nodes: any[] = [];
     const edges: any[] = [];
+    const nodeMap = new Map(); // To help with lookups if needed
     
-    if (!root) return { nodes, edges };
+    if (!root) return { nodes, edges, nodeMap };
 
     let currentY = 0;
 
@@ -127,13 +272,16 @@ const getTreeLayout = (root: any) => {
             nodeY = (firstChildY! + lastChildY!) / 2;
         }
 
-        nodes.push({
+        const flowNode = {
             id: node.id,
             data: { label: `${node.id}: ${node.name || ''}`, originalNode: node },
             type: 'reqNode',
             position: { x: level * X_OFFSET, y: nodeY },
-            style: { width: NODE_WIDTH, height: 40 }, // ReactFlow style override
-        });
+            style: { width: NODE_WIDTH, height: 32 }, 
+        };
+        
+        nodes.push(flowNode);
+        nodeMap.set(node.id, flowNode);
 
         if (node.children) {
             node.children.forEach((child: any) => {
@@ -160,5 +308,5 @@ const getTreeLayout = (root: any) => {
     };
 
     traverse(root, 0);
-    return { nodes, edges };
+    return { nodes, edges, nodeMap };
 };
