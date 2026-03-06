@@ -12,6 +12,7 @@ sys.path.append(current_dir)
 
 from agent_workflow import run_agent_workflow
 from utils import get_all_leaves, topological_sort
+from traceability import store_all_requirement
 
 # Initialize colorama
 init()
@@ -82,6 +83,7 @@ async def run_project(workspace_path: str):
     # Simple topological sort simulation (reuse logic from main.py if possible, or simplified here)
     # Assuming get_all_leaves and topological_sort are available in utils.py as per context
     try:
+        store_all_requirement(req_data)
         leaves = get_all_leaves(req_data)
         process_queue = topological_sort(leaves)
         

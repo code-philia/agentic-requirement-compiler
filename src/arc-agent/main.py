@@ -8,6 +8,7 @@ import uvicorn
 
 from utils import *
 from agent_workflow import run_agent_workflow
+from traceability import store_all_requirement
 
 app = FastAPI(title="ARC Multi-Agent Backend")
 
@@ -81,6 +82,7 @@ async def run_compilation():
     await manager.broadcast({"type": "log", "agent": "DependencyManager", "message": "Building requirement dependency DAG..."})
     await asyncio.sleep(1)
     
+    store_all_requirement(data)
     leaves = get_all_leaves(data)
     process_queue = topological_sort(leaves)
     
