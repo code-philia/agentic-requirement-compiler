@@ -10,7 +10,7 @@ from typing import Dict, Any
 current_dir = os.path.dirname(os.path.abspath(__file__))
 sys.path.append(current_dir)
 
-from agent_workflow import run_agent_workflow
+from agent_workflow import ARCWorkflowManager, run_agent_workflow
 from utils import get_all_leaves, topological_sort
 from traceability import store_all_requirement
 
@@ -89,6 +89,12 @@ async def run_project(workspace_path: str):
         
         print(f"{Fore.GREEN}Processing Order: {', '.join(process_queue)}{Style.RESET_ALL}\n")
         
+        # Initialize a shared ARCWorkflowManager for this terminal session
+        workflow_manager = ARCWorkflowManager(
+            workspace_path=workspace_path,
+            broadcast_cb=terminal_log_callback
+        )
+
         # In terminal mode, we might want to process sequentially or parallel
         # For clarity in logs, sequential is better
         for node_id in process_queue:
@@ -118,12 +124,7 @@ async def run_project(workspace_path: str):
                     break
                 queue.extend(curr.get('children', []))
             
-            await run_agent_workflow(
-                node_id=node_id, 
-                requirement_data=node_data,
-                broadcast_cb=terminal_log_callback
-            )
-            
+            final_state = await workflow_manager.process_node(node_id, node_data)
             print(f"\n{Fore.GREEN}✓ Node {node_id} Completed{Style.RESET_ALL}\n")
 
     except Exception as e:

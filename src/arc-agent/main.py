@@ -7,7 +7,7 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 import uvicorn
 
 from utils import *
-from agent_workflow import run_agent_workflow
+from agent_workflow import ARCWorkflowManager, run_agent_workflow
 from traceability import store_all_requirement
 
 app = FastAPI(title="ARC Multi-Agent Backend")
@@ -39,18 +39,14 @@ For a single requirement node, conduct the 4-step process:
 3. Generate Tests
 4. Implement
 """
-async def process_requirement_node(node_id: str, requirement_data: dict = None):
+async def process_requirement_node(workflow_manager: ARCWorkflowManager, node_id: str, requirement_data: dict = None):
     current_file = ACTIVE_REQ_FILE
     
     update_node_status(current_file, node_id, "analyzing")
     await manager.broadcast({"type": "node_update", "nodeId": node_id, "status": "analyzing"})
 
-    await run_agent_workflow(
-        node_id=node_id, 
-        requirement_data=requirement_data or {},
-        broadcast_cb=manager.broadcast
-    )
-
+    final_state = await workflow_manager.process_node(node_id, requirement_data or {})
+    
     update_node_status(current_file, node_id, "completed")
     await manager.broadcast({"type": "node_update", "nodeId": node_id, "status": "completed"})
 
@@ -90,8 +86,14 @@ async def run_compilation():
     await asyncio.sleep(1)
 
     # 3. Process
+    # Initialize a shared ARCWorkflowManager for this compilation session
+    workflow_manager = ARCWorkflowManager(
+        workspace_path=os.path.dirname(current_file), # Assuming workspace is parent of requirements file
+        broadcast_cb=manager.broadcast
+    )
+
     for node_id in process_queue:
-        await process_requirement_node(node_id)
+        await process_requirement_node(workflow_manager, node_id)
         await asyncio.sleep(0.5)
 
     await manager.broadcast({"type": "log", "agent": "System", "message": "All requirements processed successfully. Project compiled!"})
