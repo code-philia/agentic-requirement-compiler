@@ -1,10 +1,12 @@
 import asyncio
 from typing import Callable, Awaitable
 
-from agents.requirement_analyzer import RequirementAnalyzer
+from agents.requirement_analyzer import RequirementAnalyzer, parse_and_store_interfaces
 from agents.interface_designer import InterfaceDesigner
 from agents.test_generator import TestGenerator
 from agents.test_driven_developer import TestDrivenDeveloper
+
+from traceability.database import update_interface_file_info
 
 class ARCWorkflowManager:
     """Manage the lifecycle of a single requirement node and multi-agent TDD state transitions"""
@@ -50,13 +52,66 @@ class ARCWorkflowManager:
         }
         
         try:
-            # Step 1: Analyze
-            await self._log("RequirementAnalyzer", f"Starting analysis for node {node_id}...", "analyzing", node_id)
-            node_state["analysis"] = await self.requirement_analyzer.analyze(node_id, requirement_data)
+            # ==========================================
+            # Step 1: Requirement Analysis
+            # ==========================================
+            await self._log("RequirementAnalyzer", f"Starting analysis for node {self.node_id}...", "analyzing")
+            
+            # TODO Proper context here 
+            global_map_str = "" 
+            project_context = ""
+            
+            raw_analysis_output = await self.analyzer.analyze(
+                node_id=self.node_id, 
+                requirement_data=self.requirement_data,
+                project_context=project_context,
+                global_map=global_map_str
+            )
+            self.state["analysis_raw"] = raw_analysis_output
 
-            # Step 2: Design
+            parsed_interfaces = parse_and_store_interfaces(raw_analysis_output, self.node_id)
+            self.state["interfaces_ir"] = parsed_interfaces
+            
+            if parsed_interfaces:
+                interface_names = [i.get('interface_id') for i in parsed_interfaces]
+                await self._log("System", f"Extracted and stored {len(parsed_interfaces)} interfaces: {', '.join(interface_names)}")
+            else:
+                await self._log("System", "Warning: No valid interface IR extracted from analysis.")
+
+            # ==========================================
+            # Step 2: Design (Physical Implementation of IR)
+            # ==========================================
             await self._log("InterfaceDesigner", f"Starting interface design for node {node_id}...", "designed", node_id)
-            node_state["interfaces"] = await self.interface_designer.design(node_id, node_state["analysis"])
+            
+            # TODO: Tech Stack Context
+            tech_stack = "Python 3.10, FastAPI for API, SQLAlchemy for DB, React for UI."
+            interfaces_ir = self.state.get("interfaces_ir", [])
+            
+            if not interfaces_ir:
+                await self._log("System", "No IR found. Skipping physical design.", node_id=node_id)
+            else:
+                raw_design_output = await self.interface_designer.design(
+                    node_id=node_id, 
+                    interfaces_ir=interfaces_ir,
+                    tech_stack=tech_stack
+                )
+                self.state["interfaces"] = raw_design_output
+
+                match = re.search(r'```json\s*(.*?)\s*```', raw_design_output, re.DOTALL | re.IGNORECASE)
+                if match:
+                    try:
+                        file_mappings = json.loads(match.group(1))
+                        for mapping in file_mappings:
+                            i_id = mapping.get("interface_id")
+                            f_path = mapping.get("file_path", "")
+                            f_line = mapping.get("first_line", "")
+                            
+                            if i_id:
+                                update_interface_file_info(i_id, f_path, f_line)
+                                
+                        await self._log("System", f"Successfully updated physical file paths for {len(file_mappings)} interfaces in DB.", node_id=node_id)
+                    except json.JSONDecodeError:
+                        await self._log("System", "Failed to parse file mappings JSON from InterfaceDesigner.", node_id=node_id)
 
             # Step 3: Generate Tests
             await self._log("TestGenerator", f"Generating test suite for node {node_id}...", node_id=node_id)
