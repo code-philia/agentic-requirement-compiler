@@ -1,4 +1,7 @@
 from .file_tools import *
+from .todo_tools import *
+from .grep_tools import *
+
 from .tool_schema import *
 
 TOOL_REGISTRY = {
@@ -13,5 +16,25 @@ TOOL_REGISTRY = {
     "list_directory": {
         "schema": list_directory_schema,
         "func": list_directory_impl
+    },
+    "add_todo": {
+        "schema": add_todo_schema,
+        "func": add_todo_impl
+    },
+    "list_todos": {
+        "schema": list_todos_schema,
+        "func": list_todos_impl
+    },
+    "check_todo": {
+        "schema": check_todo_schema,
+        "func": check_todo_impl
+    },
+    "clear_todos": {
+        "schema": clear_todos_schema,
+        "func": clear_todos_impl
+    },
+    "grep_search": {
+        "schema": grep_search_schema,
+        "func": grep_search_impl
     }
 }
