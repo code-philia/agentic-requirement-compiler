@@ -113,24 +113,74 @@ class ARCWorkflowManager:
                     except json.JSONDecodeError:
                         await self._log("System", "Failed to parse file mappings JSON from InterfaceDesigner.", node_id=node_id)
 
-            # Step 3: Generate Tests
+            # ==========================================
+            # Step 3: Generate Tests (TDD Preparations)
+            # ==========================================
             await self._log("TestGenerator", f"Generating test suite for node {node_id}...", node_id=node_id)
-            node_state["tests"] = await self.test_generator.generate_tests(node_id, node_state["interfaces"])
+            
+            if not interfaces_ir:
+                await self._log("System", "No IR found. Skipping test generation.", node_id=node_id)
+            else:
+                raw_test_output = await self.test_generator.generate_tests(
+                    node_id=node_id, 
+                    interfaces_ir=interfaces_ir,
+                    tech_stack=tech_stack
+                )
+                self.state["tests"] = raw_test_output
 
+                # parse test mappings
+                match = re.search(r'```json\s*(.*?)\s*```', raw_test_output, re.DOTALL | re.IGNORECASE)
+                if match:
+                    try:
+                        test_mappings = json.loads(match.group(1))
+                        for mapping in test_mappings:
+                            t_id = mapping.get("test_id", f"TEST_{node_id}_UNKNOWN")
+                            r_id = mapping.get("req_id", node_id)
+                            i_ids = mapping.get("interface_ids", [])
+                            t_type = mapping.get("type", "Unit")
+                            f_path = mapping.get("file_path", "")
+                            f_line = mapping.get("first_line", "")
+                            
+                            insert_test(
+                                test_id=t_id,
+                                req_id=r_id,
+                                interface_ids=i_ids,
+                                type=t_type,
+                                file_path=f_path,
+                                first_line=f_line
+                            )
+                                
+                        await self._log("System", f"Successfully registered {len(test_mappings)} tests in traceability database.", node_id=node_id)
+                    except json.JSONDecodeError:
+                        await self._log("System", "Failed to parse test mappings JSON from TestGenerator.", node_id=node_id)
+
+            # ==========================================
             # Step 4: Implement (TDD Loop)
-            max_tdd_loops = 3
+            # ==========================================
+            max_tdd_loops = 3 # external retry loops
+            node_state = self.state
+
             while node_state["iteration"] < max_tdd_loops and not node_state["test_passed"]:
                 node_state["iteration"] += 1
                 await self._log("TestDrivenDeveloper", f"Starting implementation (TDD Iteration {node_state['iteration']}/{max_tdd_loops})...", node_id=node_id)
 
                 final_output = await self.test_driven_developer.implement(
                     node_id=node_id, 
-                    tests_summary=node_state["tests"],
+                    tests_summary=node_state.get("tests", "No test summary available."),
                     iteration=node_state["iteration"]
                 )
                 
+                # 检查是否成功
                 if "IMPLEMENTED" in final_output:
                     node_state["test_passed"] = True
+                    
+                    # 关键闭环：回写数据库，标记接口已完成
+                    try:
+                        update_interface_implemented_status(node_id)
+                        await self._log("System", f"Database updated: Interfaces for Node {node_id} marked as implemented.", node_id=node_id)
+                    except Exception as db_err:
+                        await self._log("System", f"Warning: Failed to update DB status: {str(db_err)}", node_id=node_id)
+                        
                     await self._log("System", "All tests passed! TDD loop completed successfully.", node_id=node_id)
                 else:
                     await self._log("System", "Agent finished reasoning but tests might not be fully passing. Retrying...", node_id=node_id)
@@ -142,7 +192,7 @@ class ARCWorkflowManager:
 
         except Exception as e:
             await self._log("System", f"Workflow failed due to an error: {str(e)}", node_id=node_id)
-            return node_state
+            return self.state
 
 
 

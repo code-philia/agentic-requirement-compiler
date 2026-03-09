@@ -3,42 +3,53 @@ from typing import List, Dict, Any
 from .arc_agent import ARCAgent
 
 class TestDrivenDeveloper(ARCAgent):
-    """
-    Responsible for Step 4: implement concrete business logic based on the interface design
-    and test cases. In the TDD loop, if tests fail, it keeps self-correcting based on
-    the error logs.
-    """
     def __init__(self, broadcast_cb=None):
         super().__init__(
             agent_name="TestDrivenDeveloper", 
-            model="gpt-4o-mini",  # In a real coding phase, consider upgrading to gpt-4o or claude-3.5-sonnet
+            model="gpt-4o",
             broadcast_cb=broadcast_cb
         )
 
     def get_system_prompt(self) -> str:
-        return """You are a Senior Software Engineer executing Test-Driven Development (TDD).
-Your task is to implement the business logic to fulfill a requirement node and make sure all existing tests pass.
+        return """You are an Elite Full-Stack Developer strictly following Test-Driven Development (TDD).
+Your job is to implement the business logic for the provided interfaces until all corresponding tests pass.
 
-Workflow:
-1. Use `read_file` or `list_directory` to understand the existing tests and interface designs.
-2. Use `write_file` to implement the required source code.
-3. Use `run_tests` to execute the test suite against your code.
-4. If tests fail, analyze the error output and repeat the fix process.
+### Strict Tech Stack Constraints:
+**Frontend:**
+- Framework: React 18+ (Vite)
+- Language: JavaScript (ES6+)
+- Styling: Tailwind CSS v4
+- HTTP: Axios (MUST use Interceptors for global error handling in `src/api/axios.js`).
+- Testing: NONE in frontend. Rely entirely on backend E2E.
 
-When the `run_tests` tool indicates that all tests have passed successfully, output the exact word 'IMPLEMENTED' to signify completion.
+**Backend:**
+- Runtime: Node.js (LTS)
+- Framework: Express.js
+- Database: SQLite3 (`sqlite3` driver, file-based)
+- Testing: Vitest (Unit/Integration) and Playwright (E2E in `backend/test-e2e/`).
+
+### Workflow:
+1. Review the existing stub files and tests using `read_file`.
+2. Run the tests using the `run_tests` tool to see the current failures (Red phase).
+3. Use `write_file` to implement the actual logic in the Express controllers, SQLite models, or React components (Green phase).
+4. Re-run `run_tests`. If it fails, read the stderr, fix the code, and repeat.
+5. If you need a new npm package, use `execute_command` (e.g., `npm install cors`).
+
+Once `run_tests` returns a 100% passing state (Exit Code: 0) for the target requirement, you MUST output exactly the word "IMPLEMENTED" in your final response to complete the task.
 """
 
     def get_tool_names(self) -> List[str]:
-        # The code generator has the highest privileges, including executing test commands
-        return ["read_file", "write_file", "list_directory", "run_tests"]
+        return ["read_file", "write_file", "list_directory", "grep_search", "add_todo", "list_todos", "check_todo", "clear_todos", "execute_command", "run_tests"]
         
     async def implement(self, node_id: str, tests_summary: str, iteration: int) -> str:
-        """Execute code generation; `iteration` indicates which TDD attempt this is"""
-        user_prompt = f"""Please implement the logic for requirement node {node_id}.
-This is TDD Iteration {iteration}. 
-Here is the summary of the generated tests from Step 3:
+        user_prompt = f"""
+### Implementation Task for Node [{node_id}]
+This is TDD Iteration {iteration}.
+
+Here is the summary of tests generated in Step 3:
 {tests_summary}
 
-Remember to use the `run_tests` tool to verify your work!"""
-        
-        return await self.run(user_prompt=user_prompt, node_id=node_id)
+Please start your TDD loop. Run the tests, implement the code, and repeat. 
+Do not stop until all tests pass. Reply with "IMPLEMENTED" when done.
+"""
+        return await self.run(user_prompt=user_prompt, node_id=node_id, max_steps=15)

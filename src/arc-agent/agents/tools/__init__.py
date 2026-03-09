@@ -1,6 +1,7 @@
 from .file_tools import *
 from .todo_tools import *
 from .grep_tools import *
+from .cli_tools import *
 
 from .tool_schema import *
 
@@ -36,5 +37,13 @@ TOOL_REGISTRY = {
     "grep_search": {
         "schema": grep_search_schema,
         "func": grep_search_impl
+    },
+    "run_tests": {
+        "schema": run_tests_schema,
+        "func": run_tests_impl
+    },
+    "execute_command": {
+        "schema": execute_command_schema,
+        "func": execute_command_impl
     }
 }

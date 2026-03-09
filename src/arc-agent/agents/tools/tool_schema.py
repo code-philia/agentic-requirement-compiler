@@ -138,3 +138,35 @@ clear_todos_schema = {
         }
     }
 }
+
+execute_command_schema = {
+    "type": "function",
+    "function": {
+        "name": "execute_command",
+        "description": "Execute a shell command in the project directory. Use this to install npm packages, run linters, or check env vars.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "command": {"type": "string", "description": "The bash command to run."},
+                "cwd": {"type": "string", "description": "Working directory. Default is '.'"}
+            },
+            "required": ["command"]
+        }
+    }
+}
+
+run_tests_schema = {
+    "type": "function",
+    "function": {
+        "name": "run_tests",
+        "description": "Run the test suite using the project's testing frameworks (Vitest for Unit/Integration, Playwright for E2E).",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "test_type": {"type": "string", "enum": ["unit", "integration", "e2e"], "description": "Type of test to run."},
+                "test_file_path": {"type": "string", "description": "Optional specific test file to run (e.g., 'tests/api.test.js'). Leave empty to run all tests of that type."}
+            },
+            "required": ["test_type"]
+        }
+    }
+}

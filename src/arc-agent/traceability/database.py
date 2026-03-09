@@ -128,6 +128,18 @@ def update_interface_file_info(interface_id: str, file_path: str, first_line: st
     conn.commit()
     conn.close()
 
+def update_interface_implemented_status(req_id: str):
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    
+    cursor.execute('''
+    UPDATE interfaces 
+    SET implemented = 1
+    WHERE req_id = ?
+    ''', (req_id,))
+    
+    conn.commit()
+    conn.close()
 
 """
 Test Record
