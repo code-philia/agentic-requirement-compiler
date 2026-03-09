@@ -94,6 +94,8 @@ async def run_project(workspace_path: str):
             workspace_path=workspace_path,
             broadcast_cb=terminal_log_callback
         )
+        
+        await workflow_manager.initialize_workspace()
 
         # In terminal mode, we might want to process sequentially or parallel
         # For clarity in logs, sequential is better

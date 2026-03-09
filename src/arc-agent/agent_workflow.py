@@ -8,6 +8,8 @@ from agents.test_driven_developer import TestDrivenDeveloper
 
 from traceability.database import update_interface_file_info
 
+from utils import init_project_workspace
+
 class ARCWorkflowManager:
     """Manage the lifecycle of a single requirement node and multi-agent TDD state transitions"""
     
@@ -38,6 +40,12 @@ class ARCWorkflowManager:
             print(f"{prefix}[{agent}] {message}")
             if status:
                 print(f"{prefix}[Status Update] {status}")
+
+    async def initialize_workspace(self):
+        """Initialize the project workspace by setting up directories and files."""
+        await self._log("System", f"Initializing project environment in {self.workspace_path}...")
+
+        await init_project_workspace(self.workspace_path, self.broadcast_cb)
 
     async def process_node(self, node_id: str, requirement_data: dict) -> dict:
         """Process a single requirement node through the 4-step workflow"""

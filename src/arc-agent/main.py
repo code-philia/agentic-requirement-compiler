@@ -87,10 +87,14 @@ async def run_compilation():
 
     # 3. Process
     # Initialize a shared ARCWorkflowManager for this compilation session
+    workspace_path = os.path.dirname(os.path.dirname(current_file))
+    
     workflow_manager = ARCWorkflowManager(
-        workspace_path=os.path.dirname(current_file), # Assuming workspace is parent of requirements file
+        workspace_path=workspace_path, # Assuming workspace is parent of requirements file
         broadcast_cb=manager.broadcast
     )
+    
+    await workflow_manager.initialize_workspace()
 
     for node_id in process_queue:
         await process_requirement_node(workflow_manager, node_id)
