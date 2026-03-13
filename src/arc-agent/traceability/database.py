@@ -84,6 +84,23 @@ def insert_requirement(req_id: str, description: str, visual_reference: list,
     conn.commit()
     conn.close()
 
+def update_requirement_visuals(req_id: str, visual_reference: list):
+    """Update only the visual_reference field of a requirement."""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    
+    cursor.execute('''
+    UPDATE requirements 
+    SET visual_reference = ?
+    WHERE req_id = ?
+    ''', (
+        json.dumps(visual_reference) if visual_reference else '[]',
+        req_id
+    ))
+    
+    conn.commit()
+    conn.close()
+
 
 """
 Interface Record
@@ -103,9 +120,9 @@ def insert_interface(interface_id: str, req_id: str, type: str, content: str,
         interface_id,
         req_id,
         type,
-        content or "",
-        file_path or "",
-        first_line or "",
+        content,
+        file_path,
+        first_line,
         1 if implemented else 0,
         json.dumps(callers) if callers else '[]',
         json.dumps(callees) if callees else '[]'
@@ -113,37 +130,7 @@ def insert_interface(interface_id: str, req_id: str, type: str, content: str,
     
     conn.commit()
     conn.close()
-    
-def update_interface_file_info(interface_id: str, file_path: str, first_line: str):
-    """Update the file_path and first_line of an existing interface."""
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-    
-    cursor.execute('''
-    UPDATE interfaces 
-    SET file_path = ?, first_line = ?
-    WHERE interface_id = ?
-    ''', (file_path, first_line, interface_id))
-    
-    conn.commit()
-    conn.close()
 
-def update_interface_implemented_status(req_id: str):
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-    
-    cursor.execute('''
-    UPDATE interfaces 
-    SET implemented = 1
-    WHERE req_id = ?
-    ''', (req_id,))
-    
-    conn.commit()
-    conn.close()
-
-"""
-Test Record
-"""
 def insert_test(test_id: str, req_id: str, interface_ids: list, type: str, 
                 file_path: str, first_line: str):
     """Insert or update a test record in the database."""
@@ -159,8 +146,8 @@ def insert_test(test_id: str, req_id: str, interface_ids: list, type: str,
         req_id,
         json.dumps(interface_ids) if interface_ids else '[]',
         type,
-        file_path or "",
-        first_line or ""
+        file_path,
+        first_line
     ))
     
     conn.commit()

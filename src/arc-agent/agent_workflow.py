@@ -63,28 +63,30 @@ class ARCWorkflowManager:
             # ==========================================
             # Step 1: Requirement Analysis
             # ==========================================
-            await self._log("RequirementAnalyzer", f"Starting analysis for node {self.node_id}...", "analyzing")
+            await self._log("RequirementAnalyzer", f"Starting analysis for node {node_id}...", "analyzing", node_id)
             
             # TODO Proper context here 
             global_map_str = "" 
             project_context = ""
             
-            raw_analysis_output = await self.analyzer.analyze(
-                node_id=self.node_id, 
-                requirement_data=self.requirement_data,
+            raw_analysis_output = await self.requirement_analyzer.analyze(
+                node_id=node_id, 
+                requirement_data=requirement_data,
                 project_context=project_context,
                 global_map=global_map_str
             )
-            self.state["analysis_raw"] = raw_analysis_output
+            node_state["analysis_raw"] = raw_analysis_output
 
-            parsed_interfaces = parse_and_store_interfaces(raw_analysis_output, self.node_id)
-            self.state["interfaces_ir"] = parsed_interfaces
+            parsed_interfaces = parse_and_store_interfaces(raw_analysis_output, node_id)
+            node_state["interfaces_ir"] = parsed_interfaces
+            
+            await self.requirement_analyzer.parse_and_store_visual_elements(self.workspace_path, requirement_data)
             
             if parsed_interfaces:
                 interface_names = [i.get('interface_id') for i in parsed_interfaces]
-                await self._log("System", f"Extracted and stored {len(parsed_interfaces)} interfaces: {', '.join(interface_names)}")
+                await self._log("System", f"Extracted and stored {len(parsed_interfaces)} interfaces: {', '.join(interface_names)}", node_id=node_id)
             else:
-                await self._log("System", "Warning: No valid interface IR extracted from analysis.")
+                await self._log("System", "Warning: No valid interface IR extracted from analysis.", node_id=node_id)
 
             # ==========================================
             # Step 2: Design (Physical Implementation of IR)
@@ -93,7 +95,7 @@ class ARCWorkflowManager:
             
             # TODO: Tech Stack Context
             tech_stack = "Python 3.10, FastAPI for API, SQLAlchemy for DB, React for UI."
-            interfaces_ir = self.state.get("interfaces_ir", [])
+            interfaces_ir = node_state.get("interfaces_ir", [])
             
             if not interfaces_ir:
                 await self._log("System", "No IR found. Skipping physical design.", node_id=node_id)
