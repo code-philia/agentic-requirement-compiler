@@ -33,40 +33,21 @@ class ConnectionManager:
 manager = ConnectionManager()
 
 """
-For a single requirement node, conduct the 4-step process:
-1. Analyze
-2. Interface Design
-3. Generate Tests
-4. Implement
-"""
-async def process_requirement_node(workflow_manager: ARCWorkflowManager, node_id: str, requirement_data: dict = None):
-    current_file = ACTIVE_REQ_FILE
-    
-    update_node_status(current_file, node_id, "analyzing")
-    await manager.broadcast({"type": "node_update", "nodeId": node_id, "status": "analyzing"})
-
-    final_state = await workflow_manager.process_node(node_id, requirement_data or {})
-    
-    update_node_status(current_file, node_id, "completed")
-    await manager.broadcast({"type": "node_update", "nodeId": node_id, "status": "completed"})
-
-"""
 Compilation Workflow:
 1. Load and Parse Requirements
 2. Build DAG
 3. Process Nodes in Topological Order
 """
-async def run_compilation():
+async def run_compilation(project_path: str, requirement_path: str):
     """full compilation workflow based on the requirement DAG"""
     
     await manager.broadcast({"type": "log", "agent": "System", "message": "ARC compilation system started..."})
     await asyncio.sleep(1)
 
     # 1. Load and Parse Requirements
-    current_file = ACTIVE_REQ_FILE
-    await manager.broadcast({"type": "log", "agent": "RequirementLoader", "message": f"Reading requirements file: {current_file}"})
+    await manager.broadcast({"type": "log", "agent": "RequirementLoader", "message": f"Reading requirements file: {requirement_path}"})
     try:
-        data = load_requirements(current_file)
+        data = load_requirements(requirement_path)
         if not data:
             await manager.broadcast({"type": "error-event", "agent": "System", "message": "Failed to read requirements file or file is empty."})
             return
@@ -87,18 +68,23 @@ async def run_compilation():
 
     # 3. Process
     # Initialize a shared ARCWorkflowManager for this compilation session
-    workspace_path = os.path.dirname(os.path.dirname(current_file))
-    
     workflow_manager = ARCWorkflowManager(
-        workspace_path=workspace_path, # Assuming workspace is parent of requirements file
+        workspace_path=project_path,
+        requirement_path=requirement_path,
         broadcast_cb=manager.broadcast
     )
     
-    await workflow_manager.initialize_workspace()
+    await workflow_manager.initialize_project()
 
     for node_id in process_queue:
-        await process_requirement_node(workflow_manager, node_id)
-        await asyncio.sleep(0.5)
+        update_node_status(workflow_manager.requirement_path, node_id, "analyzing")
+        await manager.broadcast({"type": "node_update", "nodeId": node_id, "status": "analyzing"})
+
+        await workflow_manager.process_node(node_id)
+        
+        update_node_status(workflow_manager.requirement_path, node_id, "completed")
+        await manager.broadcast({"type": "node_update", "nodeId": node_id, "status": "completed"})
+        
 
     await manager.broadcast({"type": "log", "agent": "System", "message": "All requirements processed successfully. Project compiled!"})
 
@@ -112,15 +98,9 @@ async def websocket_endpoint(websocket: WebSocket):
             
             if message.get("command") == "start":
                 project_path = message.get("project_path")
-                target_file = os.path.join(project_path, 'requirements', 'requirements.yaml')
+                requirement_path = os.path.join(project_path, 'requirements', 'requirements.yaml')
                 
-                # TODO:Update global or pass to function
-                # For this simple script, we can just pass it or set a global (less ideal but works for prototype)
-                global ACTIVE_REQ_FILE, WORKSPACE_ROOT
-                ACTIVE_REQ_FILE = target_file
-                WORKSPACE_ROOT = project_path
-                
-                asyncio.create_task(run_compilation())
+                asyncio.create_task(run_compilation(project_path, requirement_path))
             elif message.get("command") == "restartCompilation":
                  # Restart logic if needed (handled by frontend re-sending start)
                  pass

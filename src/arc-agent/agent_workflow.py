@@ -8,13 +8,17 @@ from agents.test_driven_developer import TestDrivenDeveloper
 
 from traceability.database import update_interface_file_info
 
-from utils import init_project_workspace
+from utils import run_npm_install
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+TEMPLATE_DIR = os.path.join(BASE_DIR, 'template-fullstack')
 
 class ARCWorkflowManager:
     """Manage the lifecycle of a single requirement node and multi-agent TDD state transitions"""
     
-    def __init__(self, workspace_path: str, broadcast_cb: Callable[[dict], Awaitable[None]] = None):
+    def __init__(self, workspace_path: str, requirement_path: str, broadcast_cb: Callable[[dict], Awaitable[None]] = None):
         self.workspace_path = workspace_path
+        self.requirement_path = requirement_path
         self.broadcast_cb = broadcast_cb
         
         # Instantiate all participating agents and pass the WebSocket broadcast callback to them
@@ -41,13 +45,35 @@ class ARCWorkflowManager:
             if status:
                 print(f"{prefix}[Status Update] {status}")
 
-    async def initialize_workspace(self):
+    async def initialize_project(self):
         """Initialize the project workspace by setting up directories and files."""
         await self._log("System", f"Initializing project environment in {self.workspace_path}...")
 
-        await init_project_workspace(self.workspace_path, self.broadcast_cb)
+        if not os.path.exists(TEMPLATE_DIR):
+            await self._log(f"Error: Template directory not found at {TEMPLATE_DIR}")
+            return False
 
-    async def process_node(self, node_id: str, requirement_data: dict) -> dict:
+        await self._log(f"Copying template from {TEMPLATE_DIR} to {workspace_path}...")
+        try:
+            await asyncio.to_thread(shutil.copytree, TEMPLATE_DIR, workspace_path, dirs_exist_ok=True)
+            await self._log("Template files copied successfully.")
+        except Exception as e:
+            await self._log(f"Error copying template: {str(e)}")
+            return False
+
+        backend_path = os.path.join(workspace_path, 'backend')
+        if os.path.exists(backend_path):
+            await self._log("Installing backend dependencies. This might take a moment...")
+            await run_npm_install(backend_path, self._log)
+
+        frontend_path = os.path.join(workspace_path, 'frontend')
+        if os.path.exists(frontend_path):
+            await self._log("Installing frontend dependencies. This might take a moment...")
+            await run_npm_install(frontend_path, self._log)
+
+        await self._log("Full-stack workspace initialized completely.")
+
+    async def process_node(self, node_id: str) -> dict:
         """Process a single requirement node through the 4-step workflow"""
         
         # Maintain shared workflow context state for this specific node

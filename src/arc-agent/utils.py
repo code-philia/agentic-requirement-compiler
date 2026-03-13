@@ -89,10 +89,6 @@ def update_node_status(file_path: str, node_id: str, status: str):
     with open(status_file, 'w', encoding='utf-8') as f:
         json.dump(current_status, f, indent=2)
 
-
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-TEMPLATE_DIR = os.path.join(BASE_DIR, 'template-fullstack')
-
 async def run_npm_install(target_dir: str, log_cb: Callable[[str], Awaitable[None]]):
     """Run npm install in specified directory asynchronously"""
     try:
@@ -113,34 +109,12 @@ async def run_npm_install(target_dir: str, log_cb: Callable[[str], Awaitable[Non
     except Exception as e:
         await log_cb(f"Error running npm install in {target_dir}: {str(e)}")
 
-async def init_project_workspace(workspace_path: str, broadcast_cb: Callable[[dict], Awaitable[None]] = None) -> bool:
-    """Copy template-fullstack to workspace_path and install dependencies"""
+async def init_project_workspace(project_path: str, broadcast_cb: Callable[[dict], Awaitable[None]] = None) -> bool:
+    """Copy template-fullstack to project_path and install dependencies"""
     
     async def _log(msg: str):
         if broadcast_cb:
             await broadcast_cb({"type": "log", "agent": "System", "message": msg})
 
-    if not os.path.exists(TEMPLATE_DIR):
-        await _log(f"Error: Template directory not found at {TEMPLATE_DIR}")
-        return False
 
-    await _log(f"Copying template from {TEMPLATE_DIR} to {workspace_path}...")
-    try:
-        await asyncio.to_thread(shutil.copytree, TEMPLATE_DIR, workspace_path, dirs_exist_ok=True)
-        await _log("Template files copied successfully.")
-    except Exception as e:
-        await _log(f"Error copying template: {str(e)}")
-        return False
-
-    backend_path = os.path.join(workspace_path, 'backend')
-    if os.path.exists(backend_path):
-        await _log("Installing backend dependencies. This might take a moment...")
-        await run_npm_install(backend_path, _log)
-
-    frontend_path = os.path.join(workspace_path, 'frontend')
-    if os.path.exists(frontend_path):
-        await _log("Installing frontend dependencies. This might take a moment...")
-        await run_npm_install(frontend_path, _log)
-
-    await _log("Full-stack workspace initialized completely.")
     return True
