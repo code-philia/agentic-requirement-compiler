@@ -1,6 +1,6 @@
 from .file_tools import *
 from .todo_tools import *
-from .grep_tools import *
+from .search_tools import *
 from .cli_tools import *
 
 from .tool_schema import *
