@@ -1,4 +1,10 @@
-from .database import insert_requirement
+from .database import insert_requirement, get_requirement_by_id
+
+def get_requirement(req_id: str):
+    """
+    Retrieve requirement data by ID from the database.
+    """
+    return get_requirement_by_id(req_id)
 
 def store_all_requirement(node: dict, parent_id: str = ""):
     """

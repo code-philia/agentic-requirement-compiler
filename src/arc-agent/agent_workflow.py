@@ -6,7 +6,7 @@ from agents.interface_designer import InterfaceDesigner
 from agents.test_generator import TestGenerator
 from agents.test_driven_developer import TestDrivenDeveloper
 
-from traceability.database import update_interface_file_info
+from traceability.database import update_interface_file_info, get_requirement_by_id
 
 from utils import run_npm_install
 
@@ -84,6 +84,12 @@ class ARCWorkflowManager:
             "iteration": 0,
             "test_passed": False
         }
+        
+        # Get requirement data from database
+        requirement_data = get_requirement_by_id(node_id)
+        if not requirement_data:
+            await self._log("System", f"Error: Requirement node {node_id} not found in database.", node_id=node_id)
+            return node_state
         
         try:
             # ==========================================

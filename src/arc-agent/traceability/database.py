@@ -58,6 +58,29 @@ def init_db():
     conn.commit()
     conn.close()
 
+def get_requirement_by_id(req_id: str):
+    """Retrieve a single requirement record by its ID."""
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+    
+    cursor.execute('SELECT * FROM requirements WHERE req_id = ?', (req_id,))
+    row = cursor.fetchone()
+    
+    conn.close()
+    
+    if row:
+        data = dict(row)
+        # Parse JSON fields back to lists
+        try:
+            data['visual_reference'] = json.loads(data['visual_reference']) if data['visual_reference'] else []
+            data['children_ids'] = json.loads(data['children_ids']) if data['children_ids'] else []
+            data['dependencies'] = json.loads(data['dependencies']) if data['dependencies'] else []
+        except json.JSONDecodeError:
+            pass
+        return data
+    return None
+
 
 """
 Requirement Record
