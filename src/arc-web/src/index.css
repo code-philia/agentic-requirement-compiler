@@ -1,6 +1,4 @@
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+@import "tailwindcss";
 
 :root {
   font-family: var(--vscode-font-family, system-ui, sans-serif);
@@ -27,12 +25,4 @@ body {
 #root {
   width: 100%;
   height: 100%;
-}
-
-/* Reset buttons to be minimal by default */
-button {
-  border: none;
-  background: transparent;
-  padding: 0;
-  cursor: pointer;
 }
