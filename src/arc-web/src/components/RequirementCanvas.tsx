@@ -115,11 +115,6 @@ export default function RequirementCanvas({ rootNode, onNodeSelect, selectedNode
                 },
                 style: {
                     ...node.style,
-                    // Use CSS variables for status colors if available in style prop, otherwise class handles it.
-                    // But to force update if class doesn't catch it:
-                    backgroundColor: status === 'completed' ? 'var(--vscode-charts-green)' : 
-                                   status === 'designed' ? 'var(--vscode-charts-orange)' : 
-                                   status === 'analyzing' ? 'var(--vscode-charts-blue)' : 'var(--vscode-editor-background)',
                     borderColor: status === 'completed' ? 'var(--vscode-charts-green)' :
                                status === 'designed' ? 'var(--vscode-charts-orange)' :
                                status === 'analyzing' ? 'var(--vscode-charts-blue)' : 'var(--vscode-editorWidget-border)',
