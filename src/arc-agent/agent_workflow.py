@@ -1,5 +1,7 @@
+import os
 import asyncio
 from typing import Callable, Awaitable
+import shutil
 
 from agents.requirement_analyzer import RequirementAnalyzer, parse_and_store_interfaces
 from agents.interface_designer import InterfaceDesigner
@@ -50,28 +52,28 @@ class ARCWorkflowManager:
         await self._log("System", f"Initializing project environment in {self.workspace_path}...")
 
         if not os.path.exists(TEMPLATE_DIR):
-            await self._log(f"Error: Template directory not found at {TEMPLATE_DIR}")
+            await self._log("System", f"Error: Template directory not found at {TEMPLATE_DIR}")
             return False
 
-        await self._log(f"Copying template from {TEMPLATE_DIR} to {workspace_path}...")
+        await self._log("System", f"Copying template from {TEMPLATE_DIR} to {self.workspace_path}...")
         try:
-            await asyncio.to_thread(shutil.copytree, TEMPLATE_DIR, workspace_path, dirs_exist_ok=True)
-            await self._log("Template files copied successfully.")
+            await asyncio.to_thread(shutil.copytree, TEMPLATE_DIR, self.workspace_path, dirs_exist_ok=True)
+            await self._log("System", "Template files copied successfully.")
         except Exception as e:
-            await self._log(f"Error copying template: {str(e)}")
+            await self._log("System", f"Error copying template: {str(e)}")
             return False
 
-        backend_path = os.path.join(workspace_path, 'backend')
+        backend_path = os.path.join(self.workspace_path, 'backend')
         if os.path.exists(backend_path):
-            await self._log("Installing backend dependencies. This might take a moment...")
+            await self._log("System", "Installing backend dependencies. This might take a moment...")
             await run_npm_install(backend_path, self._log)
 
-        frontend_path = os.path.join(workspace_path, 'frontend')
+        frontend_path = os.path.join(self.workspace_path, 'frontend')
         if os.path.exists(frontend_path):
-            await self._log("Installing frontend dependencies. This might take a moment...")
+            await self._log("System", "Installing frontend dependencies. This might take a moment...")
             await run_npm_install(frontend_path, self._log)
 
-        await self._log("Full-stack workspace initialized completely.")
+        await self._log("System", "Full-stack workspace initialized completely.")
 
     async def process_node(self, node_id: str) -> dict:
         """Process a single requirement node through the 4-step workflow"""

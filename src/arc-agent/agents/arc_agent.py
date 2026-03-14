@@ -64,7 +64,7 @@ class ARCAgent:
         ]
 
         for step in range(max_steps):
-            await self._log(f"Thinking... (Step {step + 1}/{max_steps})", node_id=node_id)
+            await self._log("ARCAgent", f"Thinking... (Step {step + 1}/{max_steps})", node_id=node_id)
             
             api_kwargs = {
                 "model": self.model,
@@ -88,7 +88,7 @@ class ARCAgent:
                     except json.JSONDecodeError:
                         tool_args = {}
                         
-                    await self._log(f"Calling tool: `{tool_name}`", node_id=node_id)
+                    await self._log("ARCAgent", f"Calling tool: `{tool_name}`", node_id=node_id)
                     
                     # Look up and execute the actual tool function from the registry
                     if tool_name in TOOL_REGISTRY and tool_name in allowed_tool_names:
@@ -112,7 +112,7 @@ class ARCAgent:
                 # After tools are executed, continue to the next dialogue step
                 continue
             else:
-                await self._log("Task completed.", node_id=node_id)
+                await self._log("ARCAgent", "Task completed.", node_id=node_id)
                 return message.content
 
         return "Error: Agent reached maximum reasoning steps without a final conclusion."

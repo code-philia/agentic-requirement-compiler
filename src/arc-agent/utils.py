@@ -102,12 +102,12 @@ async def run_npm_install(target_dir: str, log_cb: Callable[[str], Awaitable[Non
         stdout, stderr = await process.communicate()
         
         if process.returncode == 0:
-            await log_cb(f"Successfully installed dependencies in {os.path.basename(target_dir)}")
+            await log_cb("System", f"Successfully installed dependencies in {os.path.basename(target_dir)}")
         else:
-            await log_cb(f"Warning: npm install failed in {os.path.basename(target_dir)}. Error:\n{stderr.decode('utf-8')}")
+            await log_cb("System", f"Warning: npm install failed in {os.path.basename(target_dir)}. Error:\n{stderr.decode('utf-8')}")
             
     except Exception as e:
-        await log_cb(f"Error running npm install in {target_dir}: {str(e)}")
+        await log_cb("System", f"Error running npm install in {target_dir}: {str(e)}")
 
 async def init_project_workspace(project_path: str, broadcast_cb: Callable[[dict], Awaitable[None]] = None) -> bool:
     """Copy template-fullstack to project_path and install dependencies"""

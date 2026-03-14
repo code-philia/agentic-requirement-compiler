@@ -5,7 +5,7 @@ import mimetypes
 import os
 from typing import List, Dict, Any
 from .arc_agent import ARCAgent
-from ..traceability.database import insert_interface, update_requirement_visuals
+from traceability.database import insert_interface, update_requirement_visuals
 
 class RequirementAnalyzer(ARCAgent):
     def __init__(self, broadcast_cb=None):
@@ -127,7 +127,7 @@ Please perform the top-down decomposition for Node [{node_id}] and output the Na
                     }
                 ]
                 
-                await self._log(f"Analyzing visual element: {image_path}", node_id=req_id)
+                await self._log("RequirementAnalyzer", f"Analyzing visual element: {image_path}", node_id=req_id)
                 
                 response = await self.client.chat.completions.create(
                     model="gpt-4o-mini",
@@ -143,12 +143,12 @@ Please perform the top-down decomposition for Node [{node_id}] and output the Na
                 
             except Exception as e:
                 print(f"[Error] Failed to analyze image {full_path}: {e}")
-                await self._log(f"Failed to analyze image {image_path}: {e}", node_id=req_id, status="error")
+                await self._log("RequirementAnalyzer", f"Failed to analyze image {image_path}: {e}", node_id=req_id, status="error")
                 
         # 2. Update database
         if visual_references:
             update_requirement_visuals(req_id, visual_references)
-            await self._log(f"Stored {len(visual_references)} visual references for {req_id}", node_id=req_id)
+            await self._log("RequirementAnalyzer", f"Stored {len(visual_references)} visual references for {req_id}", node_id=req_id)
     
 
 def visual_analysis_prompt() -> str:
