@@ -136,7 +136,7 @@ export default function MainEditor() {
   return (
     <div className="h-screen w-full flex bg-[var(--vscode-editor-background)] text-[var(--vscode-editor-foreground)] overflow-hidden">
       {/* Canvas Area */}
-      <div className="flex-1 relative h-full p-4">
+      <div className="flex-1 relative h-full w-full">
         {rootNode ? (
              <RequirementCanvas 
                 rootNode={rootNode} 

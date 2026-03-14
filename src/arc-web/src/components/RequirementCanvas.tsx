@@ -3,8 +3,9 @@ import { ReactFlow, Controls, Background, useNodesState, useEdgesState, MiniMap,
 import '@xyflow/react/dist/style.css';
 
 const NODE_WIDTH = 160;
+const NODE_HEIGHT = 48; // Increased height to make it more oval-like
 const X_OFFSET = 220;
-const Y_GAP = 70;
+const Y_GAP = 80;
 
 function RequirementNode({ data, selected }: { data: any, selected?: boolean }) {
   // Determine style based on status
@@ -24,10 +25,13 @@ function RequirementNode({ data, selected }: { data: any, selected?: boolean }) 
 
   return (
     <div 
-        className={`w-full h-full flex items-center justify-center border-2 rounded-full shadow-sm px-3 py-0.5 text-xs text-center transition-all duration-300 relative group cursor-pointer
+        className={`w-full h-full flex flex-col items-center justify-center border-2 shadow-sm px-4 py-1 text-xs text-center transition-all duration-300 relative group cursor-pointer
         ${statusClasses}
         ${selected ? 'ring-2 ring-[var(--vscode-focusBorder)] shadow-md scale-105' : ''}`}
-        style={{ color: data.status ? 'var(--vscode-editor-background)' : 'var(--vscode-editor-foreground)' }}
+        style={{ 
+            color: data.status ? 'var(--vscode-editor-background)' : 'var(--vscode-editor-foreground)',
+            borderRadius: '50%', // Make it an ellipse
+        }}
         title={`${reqId}: ${reqName}`} // Native tooltip for full name
     >
       <Handle type="target" position={Position.Left} id="t-left" className="opacity-0 group-hover:opacity-100 transition-opacity w-2.5 h-2.5 bg-[var(--vscode-editor-foreground)]" />
@@ -35,7 +39,8 @@ function RequirementNode({ data, selected }: { data: any, selected?: boolean }) 
       <Handle type="source" position={Position.Left} id="s-left" className="opacity-0 group-hover:opacity-100 transition-opacity w-2.5 h-2.5 bg-[var(--vscode-editor-foreground)]" />
       <Handle type="source" position={Position.Right} id="s-right" className="opacity-0 group-hover:opacity-100 transition-opacity w-2.5 h-2.5 bg-[var(--vscode-editor-foreground)]" />
       
-      <div className="w-full truncate font-bold text-[10px] leading-tight select-none pointer-events-none">{reqName}</div>
+      <div className="w-full truncate font-bold text-[10px] leading-tight select-none pointer-events-none mb-0.5 opacity-70">{reqId}</div>
+      <div className="w-full truncate font-bold text-[11px] leading-tight select-none pointer-events-none">{reqName}</div>
     </div>
   );
 }
@@ -173,7 +178,7 @@ export default function RequirementCanvas({ rootNode, onNodeSelect, selectedNode
     }, [rootNode, onUpdateNode]);
 
     return (
-        <div className="w-full h-full bg-gray-50 relative">
+        <div className="w-full h-full relative">
             <ReactFlow
                 nodes={nodes}
                 edges={edges}
@@ -190,7 +195,16 @@ export default function RequirementCanvas({ rootNode, onNodeSelect, selectedNode
             >
                 <Background color="#ccc" gap={20} />
                 <Controls showInteractive={false} />
-                <MiniMap nodeStrokeWidth={3} />
+                <MiniMap 
+                    nodeStrokeWidth={3} 
+                    nodeColor={(node: any) => {
+                        const status = node.data?.status;
+                        if (status === 'completed') return 'var(--vscode-charts-green)';
+                        if (status === 'designed') return 'var(--vscode-charts-orange)';
+                        if (status === 'analyzing') return 'var(--vscode-charts-blue)';
+                        return '#e0e0e0'; // Light gray for default nodes
+                    }}
+                />
                 <Panel position="top-left" className="bg-[var(--vscode-editor-background)] p-2 rounded shadow-md border border-[var(--vscode-widget-border)]">
                     <label className="flex items-center space-x-2 text-xs cursor-pointer select-none text-[var(--vscode-foreground)]">
                         <input 
@@ -277,7 +291,7 @@ const getTreeLayout = (root: any) => {
             data: { label: `${node.id}: ${node.name || ''}`, originalNode: node },
             type: 'reqNode',
             position: { x: level * X_OFFSET, y: nodeY },
-            style: { width: NODE_WIDTH, height: 32 }, 
+            style: { width: NODE_WIDTH, height: NODE_HEIGHT }, 
         };
         
         nodes.push(flowNode);
