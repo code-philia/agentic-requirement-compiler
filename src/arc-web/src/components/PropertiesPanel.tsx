@@ -368,7 +368,6 @@ export default function PropertiesPanel({
                       key={stepIdx}
                       className="bg-[var(--vscode-editor-background)]
                       border border-[var(--vscode-panel-border)]
-                      hover:border-[var(--vscode-focusBorder)]
                       transition-colors rounded p-2 group relative"
                     >
                       <button
