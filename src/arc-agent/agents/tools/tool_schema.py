@@ -3,13 +3,21 @@ read_file_schema = {
     "type": "function",
     "function": {
         "name": "read_file",
-        "description": "Read the contents of a file in the project to gather more context. Returns the raw text of the file.",
+        "description": "Read the contents of a file. Supports reading the whole file or a specific range of lines.",
         "parameters": {
             "type": "object",
             "properties": {
                 "path": {
                     "type": "string",
-                    "description": "The relative or absolute path to the file to read. E.g., 'src/main.py'"
+                    "description": "The relative or absolute path to the file."
+                },
+                "start_line": {
+                    "type": "integer",
+                    "description": "The line number to start reading from (1-based). Optional."
+                },
+                "end_line": {
+                    "type": "integer",
+                    "description": "The line number to stop reading at (1-based, inclusive). Optional."
                 }
             },
             "required": ["path"]
@@ -21,20 +29,94 @@ write_file_schema = {
     "type": "function",
     "function": {
         "name": "write_file",
-        "description": "Write content to a file. Automatically creates directories if they don't exist. Use this to save your designs, tests, or code.",
+        "description": "Write content to a file (overwrites entire file). Automatically creates directories.",
         "parameters": {
             "type": "object",
             "properties": {
                 "path": {
                     "type": "string",
-                    "description": "The relative or absolute path to the file. E.g., 'src/api/routes.py' or 'docs/design.md'"
+                    "description": "The path to the file."
                 },
                 "content": {
                     "type": "string",
-                    "description": "The complete text/code content to write into the file."
+                    "description": "The complete content to write."
                 }
             },
             "required": ["path", "content"]
+        }
+    }
+}
+
+delete_file_schema = {
+    "type": "function",
+    "function": {
+        "name": "delete_file",
+        "description": "Delete a file from the filesystem.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "The path to the file to delete."
+                }
+            },
+            "required": ["path"]
+        }
+    }
+}
+
+insert_lines_schema = {
+    "type": "function",
+    "function": {
+        "name": "insert_lines",
+        "description": "Insert content into a file at a specific line number.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "The path to the file."
+                },
+                "line_number": {
+                    "type": "integer",
+                    "description": "The line number to insert at (1-based). Content will be inserted BEFORE this line."
+                },
+                "content": {
+                    "type": "string",
+                    "description": "The content to insert."
+                }
+            },
+            "required": ["path", "line_number", "content"]
+        }
+    }
+}
+
+replace_lines_schema = {
+    "type": "function",
+    "function": {
+        "name": "replace_lines",
+        "description": "Replace a range of lines in a file with new content.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "The path to the file."
+                },
+                "start_line": {
+                    "type": "integer",
+                    "description": "The starting line number to replace (1-based)."
+                },
+                "end_line": {
+                    "type": "integer",
+                    "description": "The ending line number to replace (1-based, inclusive)."
+                },
+                "content": {
+                    "type": "string",
+                    "description": "The new content to replace the specified lines with."
+                }
+            },
+            "required": ["path", "start_line", "end_line", "content"]
         }
     }
 }
@@ -43,13 +125,13 @@ list_directory_schema = {
     "type": "function",
     "function": {
         "name": "list_directory",
-        "description": "List all files and subdirectories in a given directory path. Helps to understand the project structure.",
+        "description": "List all files and subdirectories in a given directory path.",
         "parameters": {
             "type": "object",
             "properties": {
                 "path": {
                     "type": "string",
-                    "description": "The path to the directory. E.g., '.' for root, or 'src/'"
+                    "description": "The path to the directory."
                 }
             },
             "required": ["path"]
@@ -95,7 +177,7 @@ list_todos_schema = {
     "type": "function",
     "function": {
         "name": "list_todos",
-        "description": "List all current TODOs along with their index numbers. Use this before trying to check off a task.",
+        "description": "List all current TODOs along with their index numbers.",
         "parameters": {
             "type": "object",
             "properties": {}
@@ -107,13 +189,13 @@ check_todo_schema = {
     "type": "function",
     "function": {
         "name": "check_todo",
-        "description": "Mark a specific task as completed. You MUST use list_todos first to get the correct task_index.",
+        "description": "Mark a specific task as completed.",
         "parameters": {
             "type": "object",
             "properties": {
                 "task_index": {
                     "type": "integer", 
-                    "description": "The integer index of the task to mark as completed (e.g., 0, 1, 2)."
+                    "description": "The integer index of the task to mark as completed."
                 }
             },
             "required": ["task_index"]
@@ -125,13 +207,13 @@ clear_todos_schema = {
     "type": "function",
     "function": {
         "name": "clear_todos",
-        "description": "Clean up the TODO list by removing completed tasks, or wiping it entirely.",
+        "description": "Clean up the TODO list.",
         "parameters": {
             "type": "object",
             "properties": {
                 "clear_all": {
                     "type": "boolean", 
-                    "description": "If true, deletes all tasks. If false, only deletes tasks marked as completed [- [x]]."
+                    "description": "If true, deletes all tasks. If false, only deletes tasks marked as completed."
                 }
             },
             "required": ["clear_all"]
@@ -143,7 +225,7 @@ execute_command_schema = {
     "type": "function",
     "function": {
         "name": "execute_command",
-        "description": "Execute a shell command in the project directory. Use this to install npm packages, run linters, or check env vars.",
+        "description": "Execute a shell command in the project directory.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -159,12 +241,12 @@ run_tests_schema = {
     "type": "function",
     "function": {
         "name": "run_tests",
-        "description": "Run the test suite using the project's testing frameworks (Vitest for Unit/Integration, Playwright for E2E).",
+        "description": "Run the test suite using the project's testing frameworks.",
         "parameters": {
             "type": "object",
             "properties": {
                 "test_type": {"type": "string", "enum": ["unit", "integration", "e2e"], "description": "Type of test to run."},
-                "test_file_path": {"type": "string", "description": "Optional specific test file to run (e.g., 'tests/api.test.js'). Leave empty to run all tests of that type."}
+                "test_file_path": {"type": "string", "description": "Optional specific test file to run."}
             },
             "required": ["test_type"]
         }

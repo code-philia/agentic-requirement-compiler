@@ -14,6 +14,18 @@ TOOL_REGISTRY = {
         "schema": write_file_schema,
         "func": write_file_impl
     },
+    "delete_file": {
+        "schema": delete_file_schema,
+        "func": delete_file_impl
+    },
+    "insert_lines": {
+        "schema": insert_lines_schema,
+        "func": insert_lines_impl
+    },
+    "replace_lines": {
+        "schema": replace_lines_schema,
+        "func": replace_lines_impl
+    },
     "list_directory": {
         "schema": list_directory_schema,
         "func": list_directory_impl
