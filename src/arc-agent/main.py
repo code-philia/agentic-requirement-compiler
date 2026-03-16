@@ -55,27 +55,28 @@ async def run_compilation(project_path: str, requirement_path: str):
         await manager.broadcast({"type": "error-event", "agent": "System", "message": f"Error while reading requirements file: {str(e)}"})
         return
 
-    # 2. Build DAG
+    # 2. Initialize Project Environment & Database
+    workflow_manager = ARCWorkflowManager(
+        workspace_path=project_path,
+        requirement_path=requirement_path,
+        broadcast_cb=manager.broadcast
+    )
+    await workflow_manager.initialize_project()
+
+    # 3. Build DAG & Store Requirements
     await manager.broadcast({"type": "log", "agent": "DependencyManager", "message": "Building requirement dependency DAG..."})
     await asyncio.sleep(1)
     
+    # Store requirements into the initialized database
     store_all_requirement(data)
+    
     leaves = get_all_leaves(data)
     process_queue = topological_sort(leaves)
     
     await manager.broadcast({"type": "log", "agent": "DependencyManager", "message": f"Calculated processing order: {', '.join(process_queue)}"})
     await asyncio.sleep(1)
 
-    # 3. Process
-    # Initialize a shared ARCWorkflowManager for this compilation session
-    workflow_manager = ARCWorkflowManager(
-        workspace_path=project_path,
-        requirement_path=requirement_path,
-        broadcast_cb=manager.broadcast
-    )
-    
-    await workflow_manager.initialize_project()
-
+    # 4. Process Nodes
     for node_id in process_queue:
         update_node_status(workflow_manager.requirement_path, node_id, "analyzing")
         await manager.broadcast({"type": "node_update", "nodeId": node_id, "status": "analyzing"})

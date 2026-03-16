@@ -6,6 +6,12 @@ import os
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.path.join(BASE_DIR, 'database.db')
 
+def set_db_path(path: str):
+    """Set the database path dynamically."""
+    global DB_PATH
+    DB_PATH = path
+    os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
+
 def init_db():
     """Initialize the database and create tables for Requirements, Interfaces, and Tests."""
     conn = sqlite3.connect(DB_PATH)

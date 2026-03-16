@@ -51,6 +51,14 @@ class ARCWorkflowManager:
         """Initialize the project workspace by setting up directories and files."""
         await self._log("System", f"Initializing project environment in {self.workspace_path}...")
 
+        # Initialize .arc database
+        arc_dir = os.path.join(self.workspace_path, '.arc')
+        db_path = os.path.join(arc_dir, 'database.db')
+        
+        await self._log("System", f"Initializing traceability database at {db_path}...")
+        set_db_path(db_path)
+        init_db()
+
         if not os.path.exists(TEMPLATE_DIR):
             await self._log("System", f"Error: Template directory not found at {TEMPLATE_DIR}")
             return False
