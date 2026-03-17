@@ -29,7 +29,7 @@ export class RequirementManager {
             this._workspaceRoot = vscode.workspace.workspaceFolders[0].uri.fsPath;
             // Standard path structure: root/requirements/requirements.yaml
             this._requirementsFile = path.join(this._workspaceRoot, 'requirements', 'requirements.yaml');
-            this._statusFile = path.join(this._workspaceRoot, 'requirements', 'status.json');
+            this._statusFile = path.join(this._workspaceRoot, '.arc', 'status.json');
         }
     }
 

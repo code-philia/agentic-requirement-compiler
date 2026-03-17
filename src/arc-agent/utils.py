@@ -72,9 +72,9 @@ def topological_sort(leaves: Dict[str, dict]) -> List[str]:
         
     return sorted_nodes
 
-def update_node_status(file_path: str, node_id: str, status: str):
+def update_node_status(worspace_path: str, node_id: str, status: str):
     """Write node status to status.json"""
-    status_file = os.path.join(os.path.dirname(file_path), 'status.json')
+    status_file = os.path.join(worspace_path, '.arc', 'status.json')
     current_status = {}
     
     if os.path.exists(status_file):
