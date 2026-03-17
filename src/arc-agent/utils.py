@@ -98,23 +98,85 @@ async def run_npm_install(target_dir: str, log_cb: Callable[[str], Awaitable[Non
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE
         )
+        stdout, stderr = await process.communicate()
+        if process.returncode == 0:
+            await log_cb("System", f"NPM install success in {target_dir}")
+        else:
+            await log_cb("System", f"NPM install failed in {target_dir}: {stderr.decode()}")
+    except Exception as e:
+        await log_cb("System", f"NPM install error: {str(e)}")
+
+async def run_git_init(target_dir: str, log_cb: Callable[[str], Awaitable[None]]):
+    """Initialize a git repository and make the first commit"""
+    try:
+        # git init
+        process = await asyncio.create_subprocess_shell(
+            "git init",
+            cwd=target_dir,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
+        )
+        await process.communicate()
+
+        # git add .
+        process = await asyncio.create_subprocess_shell(
+            "git add .",
+            cwd=target_dir,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
+        )
+        await process.communicate()
         
+        # git commit -m "init"
+        process = await asyncio.create_subprocess_shell(
+            'git commit -m "init"',
+            cwd=target_dir,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
+        )
         stdout, stderr = await process.communicate()
         
         if process.returncode == 0:
-            await log_cb("System", f"Successfully installed dependencies in {os.path.basename(target_dir)}")
+            await log_cb("System", f"Git initialized and committed 'init' in {target_dir}")
         else:
-            await log_cb("System", f"Warning: npm install failed in {os.path.basename(target_dir)}. Error:\n{stderr.decode('utf-8')}")
+            await log_cb("System", f"Git init/commit failed: {stderr.decode()}")
             
     except Exception as e:
-        await log_cb("System", f"Error running npm install in {target_dir}: {str(e)}")
+        await log_cb("System", f"Git init error: {str(e)}")
 
-async def init_project_workspace(project_path: str, broadcast_cb: Callable[[dict], Awaitable[None]] = None) -> bool:
-    """Copy template-fullstack to project_path and install dependencies"""
-    
-    async def _log(msg: str):
-        if broadcast_cb:
-            await broadcast_cb({"type": "log", "agent": "System", "message": msg})
-
-
-    return True
+async def run_git_commit(target_dir: str, message: str, log_cb: Callable[[str], Awaitable[None]]):
+    """Perform a git commit with the given message"""
+    try:
+        # git add .
+        process = await asyncio.create_subprocess_shell(
+            "git add .",
+            cwd=target_dir,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
+        )
+        await process.communicate()
+        
+        # git commit -m "..."
+        # Escape quotes in message just in case
+        safe_message = message.replace('"', '\\"')
+        
+        process = await asyncio.create_subprocess_shell(
+            f'git commit -m "{safe_message}"',
+            cwd=target_dir,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
+        )
+        stdout, stderr = await process.communicate()
+        
+        if process.returncode == 0:
+            await log_cb("System", f"Git commit success: '{message}'")
+        else:
+            # If nothing to commit, git returns non-zero usually (1), but stderr might say "nothing to commit"
+            err_msg = stderr.decode()
+            if "nothing to commit" in stdout.decode() or "nothing to commit" in err_msg:
+                 await log_cb("System", f"Git commit skipped (nothing to commit).")
+            else:
+                 await log_cb("System", f"Git commit failed: {err_msg}")
+            
+    except Exception as e:
+        await log_cb("System", f"Git commit error: {str(e)}")

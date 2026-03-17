@@ -1,7 +1,9 @@
 import os
+import json
 import asyncio
 from typing import Callable, Awaitable
 import shutil
+import re
 
 from agents.requirement_analyzer import RequirementAnalyzer, parse_and_store_interfaces
 from agents.interface_designer import InterfaceDesigner
@@ -10,7 +12,11 @@ from agents.test_driven_developer import TestDrivenDeveloper
 
 from traceability.database import update_interface_file_info, get_requirement_by_id
 
-from utils import run_npm_install
+from utils import run_npm_install, run_git_init, run_git_commit
+from agents.tools import set_workspace_root
+
+# Global Debug Flag
+DEBUG_MODE = int(os.environ.get("ARC_DEBUG", "1"))
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 TEMPLATE_DIR = os.path.join(BASE_DIR, 'template-fullstack')
@@ -82,6 +88,10 @@ class ARCWorkflowManager:
             await run_npm_install(frontend_path, self._log)
 
         await self._log("System", "Full-stack workspace initialized completely.")
+        
+        # Initialize Git
+        await self._log("System", "Initializing Git repository...")
+        await run_git_init(self.workspace_path, self._log)
 
     async def process_node(self, node_id: str) -> dict:
         """Process a single requirement node through the 4-step workflow"""
@@ -127,6 +137,11 @@ class ARCWorkflowManager:
             if parsed_interfaces:
                 interface_names = [i.get('interface_id') for i in parsed_interfaces]
                 await self._log("System", f"Extracted and stored {len(parsed_interfaces)} interfaces: {', '.join(interface_names)}", node_id=node_id)
+                
+                # Git Commit for Analysis
+                commit_msg = f"feat(analysis): [{node_id}] extracted interfaces: {', '.join(interface_names)}"
+                await run_git_commit(self.workspace_path, commit_msg, self._log)
+                
             else:
                 await self._log("System", "Warning: No valid interface IR extracted from analysis.", node_id=node_id)
 
