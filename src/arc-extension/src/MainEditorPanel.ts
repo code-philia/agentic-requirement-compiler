@@ -1,4 +1,6 @@
 import * as vscode from "vscode";
+import * as cp from "child_process";
+import * as path from "path";
 
 export class MainEditorPanel {
   public static currentPanel: MainEditorPanel | undefined;
@@ -70,6 +72,54 @@ export class MainEditorPanel {
                 await manager.addNode(data.targetId, data.type);
                 const newData = manager.getData();
                 panel.webview.postMessage({ command: 'updateProject', data: newData });
+                break;
+            }
+            case "openFile": {
+                const workspaceRoot = vscode.workspace.workspaceFolders?.[0].uri.fsPath;
+                if (!workspaceRoot || !data.filePath) return;
+                
+                const fullPath = path.join(workspaceRoot, data.filePath);
+                try {
+                    const doc = await vscode.workspace.openTextDocument(fullPath);
+                    // Open in a new column (beside) to keep the webview visible
+                    const editor = await vscode.window.showTextDocument(doc, {
+                        viewColumn: vscode.ViewColumn.Beside,
+                        preserveFocus: false
+                    });
+                    
+                    let targetLine = -1;
+
+                    // If a line string (first_line content) is provided, try to find it in the document
+                    if (data.line && typeof data.line === 'string') {
+                        const searchStr = data.line.trim();
+                        for (let i = 0; i < doc.lineCount; i++) {
+                            if (doc.lineAt(i).text.includes(searchStr)) {
+                                targetLine = i;
+                                break;
+                            }
+                        }
+                    }
+
+                    if (targetLine >= 0) {
+                        const range = new vscode.Range(targetLine, 0, targetLine, 0);
+                        editor.selection = new vscode.Selection(targetLine, 0, targetLine, 0);
+                        editor.revealRange(range, vscode.TextEditorRevealType.InCenter);
+
+                        // Briefly highlight the line with a pale yellow color
+                        const highlightDecoration = vscode.window.createTextEditorDecorationType({
+                            backgroundColor: 'rgba(255, 255, 0, 0.3)',
+                            isWholeLine: true
+                        });
+                        editor.setDecorations(highlightDecoration, [range]);
+
+                        // Remove the highlight after 2 seconds
+                        setTimeout(() => {
+                            highlightDecoration.dispose();
+                        }, 2000);
+                    }
+                } catch (e) {
+                    vscode.window.showErrorMessage(`Could not open file: ${fullPath}`);
+                }
                 break;
             }
         }
@@ -149,8 +199,13 @@ export class MainEditorPanel {
     
     htmlContent = htmlContent.replace('<head>', `<head>\n${csp}`);
     
-    // Inject initial view script for 'main'
+    // Inject workspace path and view script
+    const workspaceRoot = vscode.workspace.workspaceFolders?.[0].uri.fsPath || '';
+    // Replace backslashes with forward slashes to avoid JSON parse issues in inline script
+    const safeWorkspaceRoot = workspaceRoot.replace(/\\/g, '\\\\');
+    
     const viewScript = `<script>
+        window.arcWorkspaceRoot = "${safeWorkspaceRoot}";
         if (window.history.replaceState) {
             window.history.replaceState(null, '', '?view=main');
         }

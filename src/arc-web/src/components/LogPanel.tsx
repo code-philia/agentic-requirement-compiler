@@ -20,13 +20,15 @@ export default function LogPanel() {
     setLogs(prev => [...prev, { agent, text, type, timestamp }]);
   };
 
-  const connectAndStart = () => {
+  const connectAndStart = (isRestart = false) => {
     // Use ref to ensure latest path is used even inside event listener closure
     const projectPath = workspacePathRef.current || 'CURRENT_WORKSPACE'; 
+    const requirementPath = projectPath + '/requirements/requirements.yaml';
+    const cmd = isRestart ? 'restart' : 'start';
 
     // If already connected and open, just send the start command
     if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-      wsRef.current.send(JSON.stringify({ command: 'start', project_path: projectPath }));
+      wsRef.current.send(JSON.stringify({ command: cmd, projectPath: projectPath, requirementPath: requirementPath }));
       return;
     }
 
@@ -38,18 +40,20 @@ export default function LogPanel() {
 
         ws.onopen = () => {
           appendLog('System', 'Connected to backend. Starting compilation process...', 'success-event');
-          ws.send(JSON.stringify({ command: 'start', project_path: projectPath }));
+          ws.send(JSON.stringify({ command: cmd, projectPath: projectPath, requirementPath: requirementPath }));
         };
 
         ws.onmessage = (event) => {
           const data = JSON.parse(event.data);
-          if (data.type === 'db_update') {
+          if (data.type === 'clear-logs') {
+              setLogs([]);
+          } else if (data.type === 'db_update') {
             appendLog(data.agent, `[DB Write] Table ${data.data.table}: +${data.data.items} items`, 'db-event');
           } else if (data.type === 'node_update' && data.status === 'completed') {
-             appendLog(data.agent, data.message, 'success-event');
+             appendLog(data.agent, data.message || `Node ${data.nodeId} completed.`, 'success-event');
           } else if (data.type === 'error-event') {
              appendLog(data.agent, data.message, 'error-event');
-          } else {
+          } else if (data.type === 'log') {
             appendLog(data.agent, data.message, 'normal');
           }
         };
@@ -73,7 +77,7 @@ export default function LogPanel() {
               workspacePathRef.current = message.workspacePath; // Update ref immediately
           } else if (message.command === 'startCompilation') {
               // Just ensure connected and start
-              connectAndStart();
+              connectAndStart(false);
           } else if (message.command === 'restartCompilation') {
               // Explicitly clear and restart
               setLogs([]); 
@@ -83,7 +87,7 @@ export default function LogPanel() {
                   wsRef.current = null;
               }
               // Allow small delay for cleanup then start
-              setTimeout(() => connectAndStart(), 100);
+              setTimeout(() => connectAndStart(true), 100);
           }
       };
       
