@@ -5,6 +5,12 @@ from .cli_tools import *
 
 from .tool_schema import *
 
+# Export set_workspace_root for initializing the tools context
+__all__ = [
+    "TOOL_REGISTRY",
+    "set_workspace_root"
+]
+
 TOOL_REGISTRY = {
     "read_file": {
         "schema": read_file_schema,
