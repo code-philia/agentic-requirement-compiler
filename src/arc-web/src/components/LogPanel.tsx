@@ -110,10 +110,10 @@ export default function LogPanel() {
 
   const getLogStyle = (type: string | undefined) => {
       switch(type) {
-          case 'error-event': return 'bg-red-500/10 border-l-2 border-red-500 text-red-200';
-          case 'db-event': return 'bg-blue-500/5 border-l-2 border-blue-500 text-blue-100';
-          case 'success-event': return 'bg-green-500/10 border-l-2 border-green-500 text-green-100';
-          case 'system-event': return 'text-gray-400 italic border-l-2 border-transparent pl-2';
+          case 'error-event': return 'bg-red-500/10 border-l-2 border-red-500 text-[var(--vscode-editor-foreground)]';
+          case 'db-event': return 'bg-blue-500/5 border-l-2 border-blue-500 text-[var(--vscode-editor-foreground)]';
+          case 'success-event': return 'bg-green-500/10 border-l-2 border-green-500 text-[var(--vscode-editor-foreground)]';
+          case 'system-event': return 'text-[var(--vscode-descriptionForeground)] italic border-l-2 border-transparent pl-2';
           default: return 'text-[var(--vscode-editor-foreground)] border-l-2 border-gray-700/30 hover:bg-[var(--vscode-list-hoverBackground)]';
       }
   };
