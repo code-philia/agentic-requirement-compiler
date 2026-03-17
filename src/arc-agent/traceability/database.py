@@ -13,16 +13,22 @@ def set_db_path(path: str):
     os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
 
 def init_db():
-    """Initialize the database and create tables for Requirements, Interfaces, and Tests."""
+    """Initialize the database and create tables for Requirements, Interfaces, and Tests. 
+    Drops existing tables to ensure a clean state."""
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     
     # open foreign key support
     cursor.execute('PRAGMA foreign_keys = ON;')
     
+    # Drop existing tables if they exist to clear old data
+    cursor.execute('DROP TABLE IF EXISTS tests')
+    cursor.execute('DROP TABLE IF EXISTS interfaces')
+    cursor.execute('DROP TABLE IF EXISTS requirements')
+    
     # 1. Create the Requirements table
     cursor.execute('''
-    CREATE TABLE IF NOT EXISTS requirements (
+    CREATE TABLE requirements (
         req_id TEXT PRIMARY KEY,
         description TEXT,
         visual_reference TEXT,
@@ -34,7 +40,7 @@ def init_db():
     
     # 2. Create the Interfaces table
     cursor.execute('''
-    CREATE TABLE IF NOT EXISTS interfaces (
+    CREATE TABLE interfaces (
         interface_id TEXT PRIMARY KEY,
         req_id TEXT,
         type TEXT,           -- UI, API, FUNC, DB
@@ -50,7 +56,7 @@ def init_db():
 
     # 3. Create the Tests table
     cursor.execute('''
-    CREATE TABLE IF NOT EXISTS tests (
+    CREATE TABLE tests (
         test_id TEXT PRIMARY KEY,
         req_id TEXT,
         interface_ids TEXT,  -- JSON list of associated interface_ids
@@ -181,3 +187,74 @@ def insert_test(test_id: str, req_id: str, interface_ids: list, type: str,
     
     conn.commit()
     conn.close()
+
+def update_interface_implemented_status(req_id: str, implemented: bool = True):
+    """Update implemented status for all interfaces associated with a requirement."""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    
+    cursor.execute('''
+    UPDATE interfaces 
+    SET implemented = ?
+    WHERE req_id = ?
+    ''', (1 if implemented else 0, req_id))
+    
+    conn.commit()
+    conn.close()
+
+def update_interface_file_info(interface_id: str, file_path: str, first_line: str):
+    """Update file path and first line information for an existing interface."""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    
+    cursor.execute('''
+    UPDATE interfaces 
+    SET file_path = ?, first_line = ?
+    WHERE interface_id = ?
+    ''', (file_path, first_line, interface_id))
+    
+    conn.commit()
+    conn.close()
+
+def get_interfaces_by_req_id(req_id: str):
+    """Retrieve all interfaces associated with a specific requirement ID."""
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+    
+    cursor.execute('SELECT * FROM interfaces WHERE req_id = ?', (req_id,))
+    rows = cursor.fetchall()
+    
+    conn.close()
+    
+    interfaces = []
+    for row in rows:
+        data = dict(row)
+        try:
+            data['callers'] = json.loads(data['callers']) if data['callers'] else []
+            data['callees'] = json.loads(data['callees']) if data['callees'] else []
+        except json.JSONDecodeError:
+            pass
+        interfaces.append(data)
+    return interfaces
+
+def get_tests_by_req_id(req_id: str):
+    """Retrieve all tests associated with a specific requirement ID."""
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+    
+    cursor.execute('SELECT * FROM tests WHERE req_id = ?', (req_id,))
+    rows = cursor.fetchall()
+    
+    conn.close()
+    
+    tests = []
+    for row in rows:
+        data = dict(row)
+        try:
+            data['interface_ids'] = json.loads(data['interface_ids']) if data['interface_ids'] else []
+        except json.JSONDecodeError:
+            pass
+        tests.append(data)
+    return tests

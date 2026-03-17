@@ -1,10 +1,22 @@
-from .database import insert_requirement, get_requirement_by_id
+from .database import insert_requirement, get_requirement_by_id, get_interfaces_by_req_id, get_tests_by_req_id
 
 def get_requirement(req_id: str):
     """
     Retrieve requirement data by ID from the database.
     """
     return get_requirement_by_id(req_id)
+
+def get_traceability_data(req_id: str):
+    """
+    Retrieve interfaces and tests for a given requirement ID.
+    """
+    interfaces = get_interfaces_by_req_id(req_id)
+    tests = get_tests_by_req_id(req_id)
+    
+    return {
+        "interfaces": interfaces,
+        "tests": tests
+    }
 
 def store_all_requirement(node: dict, parent_id: str = ""):
     """

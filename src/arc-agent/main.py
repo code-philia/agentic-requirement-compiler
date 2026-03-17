@@ -8,7 +8,7 @@ import uvicorn
 
 from utils import *
 from agent_workflow import ARCWorkflowManager, run_agent_workflow
-from traceability import store_all_requirement
+from traceability import store_all_requirement, get_traceability_data
 
 app = FastAPI(title="ARC Multi-Agent Backend")
 
@@ -89,6 +89,8 @@ async def run_compilation(project_path: str, requirement_path: str):
 
     await manager.broadcast({"type": "log", "agent": "System", "message": "All requirements processed successfully. Project compiled!"})
 
+from traceability.database import set_db_path
+
 @app.websocket("/ws/compiler")
 async def websocket_endpoint(websocket: WebSocket):
     await manager.connect(websocket)
@@ -98,14 +100,36 @@ async def websocket_endpoint(websocket: WebSocket):
             message = json.loads(data)
             
             if message.get("command") == "start":
-                project_path = message.get("project_path")
-                requirement_path = os.path.join(project_path, 'requirements', 'requirements.yaml')
+                project_path = message.get("projectPath")
+                requirement_path = message.get("requirementPath")
+                if project_path and requirement_path:
+                    # Run compilation in background task to not block websocket loop
+                    asyncio.create_task(run_compilation(project_path, requirement_path, clear_all=False))
+
+            elif message.get("command") == "restart":
+                project_path = message.get("projectPath")
+                requirement_path = message.get("requirementPath")
+                if project_path and requirement_path:
+                    asyncio.create_task(run_compilation(project_path, requirement_path, clear_all=True))
+            
+            elif message.get("command") == "traceabilityData":
+                node_id = message.get("nodeId")
+                project_path = message.get("projectPath")
                 
-                asyncio.create_task(run_compilation(project_path, requirement_path))
-            elif message.get("command") == "restartCompilation":
-                 # Restart logic if needed (handled by frontend re-sending start)
-                 pass
+                print(project_path)
                 
+                if project_path:
+                     db_path = os.path.join(project_path, '.arc', 'database.db')
+                     set_db_path(db_path)
+                
+                if node_id:
+                    result = get_traceability_data(node_id)
+                    await manager.broadcast({
+                        "type": "traceabilityData", 
+                        "nodeId": node_id, 
+                        "data": result
+                    })
+
     except WebSocketDisconnect:
         manager.disconnect(websocket)
 
