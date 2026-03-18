@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from 'react';
-import { Terminal, Database, AlertCircle, CheckCircle2, Cpu } from 'lucide-react';
+import { Terminal, Database, AlertCircle, CheckCircle2, Cpu, ChevronRight, ChevronDown } from 'lucide-react';
 
 interface LogMessage {
   agent: string;
@@ -7,6 +7,46 @@ interface LogMessage {
   type?: 'normal' | 'db-event' | 'error-event' | 'success-event' | 'system-event';
   timestamp?: string;
 }
+
+const LogEntry = ({ log, getIcon, getLogStyle }: { log: LogMessage, getIcon: any, getLogStyle: any }) => {
+    const [expanded, setExpanded] = useState(false);
+    const MAX_LENGTH = 150;
+    const isLong = log.text.length > MAX_LENGTH || log.text.includes('\n');
+    
+    // Truncate text logic: show first line or first MAX_LENGTH chars
+    let displayText = log.text;
+    if (!expanded && isLong) {
+        const firstLine = log.text.split('\n')[0];
+        displayText = firstLine.length > MAX_LENGTH ? firstLine.substring(0, MAX_LENGTH) + '...' : firstLine + (log.text.includes('\n') ? '...' : '');
+    }
+
+    return (
+        <div 
+            className={`flex gap-3 px-3 py-2 rounded-sm transition-colors cursor-pointer group ${getLogStyle(log.type)}`}
+            onClick={() => isLong && setExpanded(!expanded)}
+        >
+            <div className="font-mono text-xs text-gray-500 shrink-0 w-[60px] pt-0.5">{log.timestamp}</div>
+            <div className="flex gap-2 items-start flex-1 min-w-0">
+                <div className="shrink-0 pt-0.5">
+                    {getIcon(log.type, log.agent)}
+                </div>
+                <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2">
+                        {log.agent !== 'System' && <span className="font-bold opacity-80 shrink-0">[{log.agent}]</span>}
+                        {isLong && (
+                            <span className="text-[10px] opacity-50 flex items-center">
+                                {expanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+                            </span>
+                        )}
+                    </div>
+                    <div className={`break-words whitespace-pre-wrap ${log.type === 'system-event' ? 'opacity-80' : ''}`}>
+                        {displayText}
+                    </div>
+                </div>
+            </div>
+        </div>
+    );
+};
 
 export default function LogPanel() {
   const [logs, setLogs] = useState<LogMessage[]>([]);
@@ -110,10 +150,10 @@ export default function LogPanel() {
 
   const getLogStyle = (type: string | undefined) => {
       switch(type) {
-          case 'error-event': return 'bg-red-500/10 border-l-2 border-red-500 text-[var(--vscode-editor-foreground)]';
-          case 'db-event': return 'bg-blue-500/5 border-l-2 border-blue-500 text-[var(--vscode-editor-foreground)]';
-          case 'success-event': return 'bg-green-500/10 border-l-2 border-green-500 text-[var(--vscode-editor-foreground)]';
-          case 'system-event': return 'text-[var(--vscode-descriptionForeground)] italic border-l-2 border-transparent pl-2';
+          case 'error-event': return 'bg-red-500/10 border-l-2 border-red-500 text-[var(--vscode-editor-foreground)] hover:bg-red-500/20';
+          case 'db-event': return 'bg-blue-500/5 border-l-2 border-blue-500 text-[var(--vscode-editor-foreground)] hover:bg-blue-500/10';
+          case 'success-event': return 'bg-green-500/10 border-l-2 border-green-500 text-[var(--vscode-editor-foreground)] hover:bg-green-500/20';
+          case 'system-event': return 'text-[var(--vscode-descriptionForeground)] italic border-l-2 border-transparent pl-2 hover:bg-[var(--vscode-list-hoverBackground)]';
           default: return 'text-[var(--vscode-editor-foreground)] border-l-2 border-gray-700/30 hover:bg-[var(--vscode-list-hoverBackground)]';
       }
   };
@@ -133,16 +173,7 @@ export default function LogPanel() {
         
         <div className="space-y-1 pb-16"> {/* Added pb-16 for bottom margin */}
             {logs.map((log, index) => (
-            <div key={index} className={`flex gap-3 px-3 py-2 rounded-sm transition-colors ${getLogStyle(log.type)}`}>
-                <div className="font-mono text-xs text-gray-500 shrink-0 w-[60px] pt-0.5">{log.timestamp}</div>
-                <div className="flex gap-2 items-start flex-1">
-                    {getIcon(log.type, log.agent)}
-                    <div className="flex-1 break-words">
-                        {log.agent !== 'System' && <span className="font-bold mr-2 opacity-80">[{log.agent}]</span>}
-                        <span className={log.type === 'system-event' ? 'opacity-80' : ''}>{log.text}</span>
-                    </div>
-                </div>
-            </div>
+                <LogEntry key={index} log={log} getIcon={getIcon} getLogStyle={getLogStyle} />
             ))}
             <div ref={logsEndRef} />
         </div>

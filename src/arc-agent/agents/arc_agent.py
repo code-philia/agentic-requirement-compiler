@@ -49,7 +49,7 @@ class ARCAgent:
         """
         return []
 
-    async def run(self, user_prompt: str, node_id: str = None, max_steps: int = 10) -> str:
+    async def run(self, user_prompt: str, node_id: str = None, max_steps: int = 30) -> str:
         messages = [
             {"role": "system", "content": self.get_system_prompt()},
             {"role": "user", "content": user_prompt}
@@ -64,7 +64,7 @@ class ARCAgent:
         ]
 
         for step in range(max_steps):
-            await self._log("ARCAgent", f"Thinking... (Step {step + 1}/{max_steps})", node_id=node_id)
+            await self._log(f"Thinking... (Step {step + 1}/{max_steps})", node_id=node_id)
             
             api_kwargs = {
                 "model": self.model,
@@ -75,9 +75,18 @@ class ARCAgent:
                 api_kwargs["tools"] = tools
                 api_kwargs["tool_choice"] = "auto"
                 
+            if DEBUG_MODE:
+                # Log last message sent to model
+                last_msg = messages[-1]["content"]
+                await self._log(f"[DEBUG] Input to model:\n{last_msg}", node_id=node_id)
+                
             response = await self.client.chat.completions.create(**api_kwargs)
             message = response.choices[0].message
             messages.append(message)
+            
+            if DEBUG_MODE:
+                reply_content = message.content or ""
+                await self._log(f"[DEBUG] Model reply:\n{reply_content}", node_id=node_id)
 
             if message.tool_calls:
                 for tool_call in message.tool_calls:
@@ -88,7 +97,7 @@ class ARCAgent:
                     except json.JSONDecodeError:
                         tool_args = {}
                         
-                    await self._log("ARCAgent", f"Calling tool: `{tool_name}`", node_id=node_id)
+                    await self._log(f"Calling tool: `{tool_name}` with args: {json.dumps(tool_args, indent=2)}", node_id=node_id)
                     
                     # Look up and execute the actual tool function from the registry
                     if tool_name in TOOL_REGISTRY and tool_name in allowed_tool_names:
@@ -112,7 +121,7 @@ class ARCAgent:
                 # After tools are executed, continue to the next dialogue step
                 continue
             else:
-                await self._log("ARCAgent", "Task completed.", node_id=node_id)
+                await self._log("Task completed.", node_id=node_id)
                 return message.content
 
         return "Error: Agent reached maximum reasoning steps without a final conclusion."
