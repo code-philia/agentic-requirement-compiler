@@ -38,11 +38,36 @@ Compilation Workflow:
 2. Build DAG
 3. Process Nodes in Topological Order
 """
-async def run_compilation(project_path: str, requirement_path: str):
+async def run_compilation(project_path: str, requirement_path: str, clear_all: bool = False):
     """full compilation workflow based on the requirement DAG"""
     
+    await manager.broadcast({"type": "clear-logs"})
     await manager.broadcast({"type": "log", "agent": "System", "message": "ARC compilation system started..."})
     await asyncio.sleep(1)
+
+    if clear_all:
+        await manager.broadcast({"type": "log", "agent": "System", "message": "Clear and re-compile requested. Cleaning workspace..."})
+        try:
+            import shutil
+            # Delete everything in project_path EXCEPT the 'requirements' folder
+            for item in os.listdir(project_path):
+                if item == "requirements":
+                    continue
+                item_path = os.path.join(project_path, item)
+                if os.path.isdir(item_path):
+                    shutil.rmtree(item_path, ignore_errors=True)
+                else:
+                    os.remove(item_path)
+            
+            # Delete status.json inside requirements folder
+            status_file = os.path.join(project_path, ".arc", "status.json")
+            if os.path.exists(status_file):
+                os.remove(status_file)
+                
+            await manager.broadcast({"type": "log", "agent": "System", "message": "Workspace cleaned successfully."})
+        except Exception as e:
+            await manager.broadcast({"type": "error-event", "agent": "System", "message": f"Failed to clean workspace: {str(e)}"})
+            return
 
     # 1. Load and Parse Requirements
     await manager.broadcast({"type": "log", "agent": "RequirementLoader", "message": f"Reading requirements file: {requirement_path}"})
@@ -78,12 +103,12 @@ async def run_compilation(project_path: str, requirement_path: str):
 
     # 4. Process Nodes
     for node_id in process_queue:
-        update_node_status(workflow_manager.requirement_path, node_id, "analyzing")
+        update_node_status(workflow_manager.workspace_path, node_id, "analyzing")
         await manager.broadcast({"type": "node_update", "nodeId": node_id, "status": "analyzing"})
 
         await workflow_manager.process_node(node_id)
         
-        update_node_status(workflow_manager.requirement_path, node_id, "completed")
+        update_node_status(workflow_manager.workspace_path, node_id, "completed")
         await manager.broadcast({"type": "node_update", "nodeId": node_id, "status": "completed"})
         
 

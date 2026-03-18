@@ -56,6 +56,9 @@ class ARCWorkflowManager:
     async def initialize_project(self):
         """Initialize the project workspace by setting up directories and files."""
         await self._log("System", f"Initializing project environment in {self.workspace_path}...")
+        
+        # Configure tool context
+        set_workspace_root(self.workspace_path)
 
         # Initialize .arc database
         arc_dir = os.path.join(self.workspace_path, '.arc')
