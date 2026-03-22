@@ -125,13 +125,17 @@ list_directory_schema = {
     "type": "function",
     "function": {
         "name": "list_directory",
-        "description": "List all files and subdirectories in a given directory path.",
+        "description": "List all files and subdirectories in a given directory path up to a specified depth.",
         "parameters": {
             "type": "object",
             "properties": {
                 "path": {
                     "type": "string",
                     "description": "The path to the directory."
+                },
+                "depth": {
+                    "type": "integer",
+                    "description": "The maximum depth to expand subdirectories. Default is 3. Optional."
                 }
             },
             "required": ["path"]
@@ -249,6 +253,18 @@ run_tests_schema = {
                 "test_file_path": {"type": "string", "description": "Optional specific test file to run."}
             },
             "required": ["test_type"]
+        }
+    }
+}
+
+run_build_schema = {
+    "type": "function",
+    "function": {
+        "name": "run_build",
+        "description": "Run the build process for both frontend and backend to check for compilation errors.",
+        "parameters": {
+            "type": "object",
+            "properties": {}
         }
     }
 }

@@ -39,7 +39,7 @@ Once `run_tests` returns a 100% passing state (Exit Code: 0) for the target requ
 """
 
     def get_tool_names(self) -> List[str]:
-        return ["read_file", "write_file", "delete_file", "insert_lines", "replace_lines", "list_directory", "grep_search", "add_todo", "list_todos", "check_todo", "clear_todos", "execute_command", "run_tests"]
+        return ["read_file", "write_file", "delete_file", "insert_lines", "replace_lines", "list_directory", "grep_search", "add_todo", "list_todos", "check_todo", "clear_todos", "execute_command", "run_tests", "run_build"]
         
     async def implement(self, node_id: str, tests_summary: str, iteration: int) -> str:
         user_prompt = f"""

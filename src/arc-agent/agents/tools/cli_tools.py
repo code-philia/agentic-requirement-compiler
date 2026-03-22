@@ -55,3 +55,13 @@ async def run_tests_impl(test_type: str, test_file_path: str = "") -> str:
         return "Unknown test type. Must be 'unit', 'integration', or 'e2e'."
 
     return await execute_command_impl(cmd, cwd=cwd)
+
+async def run_build_impl() -> str:
+    """Run build for frontend and check backend compilation."""
+    # Build Frontend
+    frontend_result = await execute_command_impl("npm run build", cwd="./frontend")
+    
+    # Check Backend (Node.js doesn't have a build step by default, but we can do a syntax check or npm run build if exists)
+    backend_result = await execute_command_impl("npm run build --if-present", cwd="./backend")
+    
+    return f"=== Frontend Build Result ===\n{frontend_result}\n\n=== Backend Build Result ===\n{backend_result}"

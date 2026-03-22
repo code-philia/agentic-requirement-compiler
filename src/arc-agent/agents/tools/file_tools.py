@@ -128,8 +128,8 @@ async def replace_lines_impl(path: str, start_line: int, end_line: int, content:
     except Exception as e:
         return f"Error replacing lines in {path}: {str(e)}"
 
-async def list_directory_impl(path: str) -> str:
-    """List all files and folders under the given directory"""
+async def list_directory_impl(path: str, depth: int = 3) -> str:
+    """List all files and folders under the given directory up to a specific depth"""
     abs_path = get_abs_path(path)
     try:
         if not os.path.exists(abs_path):
@@ -137,7 +137,33 @@ async def list_directory_impl(path: str) -> str:
         if not os.path.isdir(abs_path):
             return f"Error: {path} is not a directory"
         
-        items = os.listdir(abs_path)
-        return f"Contents of {path}:\n" + "\n".join(f"- {item}" for item in items)
+        output_lines = [f"Contents of {path} (max depth: {depth}):"]
+        
+        def traverse(current_path: str, current_depth: int, rel_prefix: str = ""):
+            if current_depth > depth:
+                return
+            
+            try:
+                items = sorted(os.listdir(current_path))
+            except PermissionError:
+                output_lines.append(f"- {rel_prefix}[Permission Denied]")
+                return
+            except Exception as e:
+                output_lines.append(f"- {rel_prefix}[Error: {str(e)}]")
+                return
+                
+            for item in items:
+                item_path = os.path.join(current_path, item)
+                item_rel_path = f"{rel_prefix}{item}"
+                
+                if os.path.isdir(item_path):
+                    output_lines.append(f"- {item_rel_path}/")
+                    traverse(item_path, current_depth + 1, f"{item_rel_path}/")
+                else:
+                    output_lines.append(f"- {item_rel_path}")
+                    
+        traverse(abs_path, 1)
+        
+        return "\n".join(output_lines)
     except Exception as e:
         return f"Error listing directory {path}: {str(e)}"

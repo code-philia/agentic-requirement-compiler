@@ -60,6 +60,10 @@ TOOL_REGISTRY = {
         "schema": run_tests_schema,
         "func": run_tests_impl
     },
+    "run_build": {
+        "schema": run_build_schema,
+        "func": run_build_impl
+    },
     "execute_command": {
         "schema": execute_command_schema,
         "func": execute_command_impl

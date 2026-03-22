@@ -21,7 +21,7 @@ Your task is to take a technology-agnostic Intermediate Representation (IR) of i
 - Define exact inputs (arguments/types) and outputs (return types).
 - Define the calling relationships: If Interface A calls Interface B, Interface A's stub must import and call B.
 - Leave the actual business logic unimplemented (e.g., use `pass`, `raise NotImplementedError`, or return mock data).
-3. **Manage Tasks**: If you notice dependencies that belong to other teams or future nodes, use `add_todo` to track them.
+3. **Check Compilation**: After implementing the interfaces, you MUST call the `run_build` tool to check for compilation errors. Use the build results log to fix any compilation or syntax errors before proceeding.
 
 # Final Output Requirement:
 After you have written all the files, you MUST output a single JSON array in a markdown block (` ```json ... ``` `) mapping each interface to its physical location. 
@@ -35,9 +35,7 @@ Schema for each object:
 
     def get_tool_names(self) -> List[str]:
         return [
-            "read_file", "write_file","delete_file", "insert_lines", "replace_lines", "list_directory", 
-            "grep_search", 
-            "add_todo", "list_todos", "check_todo", "clear_todos"
+            "read_file", "write_file","delete_file", "insert_lines", "replace_lines", "list_directory", "grep_search", "run_build"
         ]
 
 

@@ -40,7 +40,7 @@ Schema for each object:
     def get_tool_names(self) -> List[str]:
         return [
             "read_file", "write_file", "delete_file", "insert_lines", "replace_lines", "list_directory", "grep_search", 
-            "add_todo", "list_todos", "check_todo", "clear_todos"
+            "add_todo", "list_todos", "check_todo", "clear_todos", "run_build"
         ]
 
     async def generate_tests(self, node_id: str, interfaces_ir: list, tech_stack: str) -> str:
