@@ -1,12 +1,17 @@
 import os
 import re
 import aiofiles
+from utils import get_abs_path
 
 async def grep_search_impl(pattern: str, dir_path: str = ".") -> str:
-    """ search files in the specified directory by regex pattern """
+    """Search for a regex pattern in the contents of files within a directory"""
+    abs_dir = get_abs_path(dir_path)
     results = []
     try:
-        for root, _, files in os.walk(dir_path):
+        # compile regex pattern
+        regex = re.compile(pattern)
+        
+        for root, _, files in os.walk(abs_dir):
             for file in files:
                 if file.endswith(('.py', '.js', '.ts', '.yaml', '.md')): # TODO: filter by file type
                     file_path = os.path.join(root, file)

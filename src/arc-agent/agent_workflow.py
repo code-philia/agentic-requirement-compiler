@@ -12,8 +12,7 @@ from agents.test_driven_developer import TestDrivenDeveloper
 
 from traceability.database import update_interface_file_info, get_requirement_by_id
 
-from utils import run_npm_install, run_git_init, run_git_commit
-from agents.tools import set_workspace_root
+from utils import run_npm_install, run_git_init, run_git_commit, set_workspace_root
 
 # Global Debug Flag
 DEBUG_MODE = int(os.environ.get("ARC_DEBUG", "1"))

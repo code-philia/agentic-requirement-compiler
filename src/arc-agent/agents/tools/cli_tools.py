@@ -2,8 +2,14 @@ import asyncio
 import os
 import re
 
+# Import get_abs_path from utils to ensure we use the same WORKSPACE_ROOT
+from utils import get_abs_path
+
 async def execute_command_impl(command: str, cwd: str = ".") -> str:
     """run a shell command in the project directory"""
+    
+    # Resolve the cwd relative to the WORKSPACE_ROOT
+    abs_cwd = get_abs_path(cwd)
     
     # dangerous command patterns
     # dangerous_patterns = [r'\brm\b\s+-rf', r'\bmv\b.*\/dev\/null', r'\bmkfs\b']
@@ -18,7 +24,7 @@ async def execute_command_impl(command: str, cwd: str = ".") -> str:
             command,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
-            cwd=cwd
+            cwd=abs_cwd
         )
         
         # Timeout mechanism to prevent hanging commands

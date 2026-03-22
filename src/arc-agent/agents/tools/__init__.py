@@ -4,6 +4,7 @@ from .search_tools import *
 from .cli_tools import *
 
 from .tool_schema import *
+from utils import set_workspace_root
 
 # Export set_workspace_root for initializing the tools context
 __all__ = [

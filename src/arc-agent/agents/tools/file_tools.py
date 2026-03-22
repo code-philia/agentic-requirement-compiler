@@ -1,18 +1,6 @@
 import os
 import aiofiles
-
-# Global variable to store the workspace root
-WORKSPACE_ROOT = os.getcwd() 
-
-def set_workspace_root(path: str):
-    global WORKSPACE_ROOT
-    WORKSPACE_ROOT = os.path.abspath(path)
-
-def get_abs_path(rel_path: str) -> str:
-    """Convert a relative path to an absolute path within the workspace"""
-    if os.path.isabs(rel_path):
-        return rel_path
-    return os.path.join(WORKSPACE_ROOT, rel_path)
+from utils import get_abs_path
 
 async def read_file_impl(path: str, start_line: int = None, end_line: int = None) -> str:
     """Real file-reading tool implementation with line range support"""

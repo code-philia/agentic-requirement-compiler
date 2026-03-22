@@ -5,6 +5,20 @@ import shutil
 import asyncio
 from typing import List, Dict, Set, Callable, Awaitable
 
+# Workspace Root Management
+WORKSPACE_ROOT = os.getcwd() 
+
+def set_workspace_root(path: str):
+    global WORKSPACE_ROOT
+    WORKSPACE_ROOT = os.path.abspath(path)
+
+def get_abs_path(rel_path: str) -> str:
+    """Convert a relative path to an absolute path within the workspace"""
+    global WORKSPACE_ROOT
+    if os.path.isabs(rel_path):
+        return rel_path
+    return os.path.join(WORKSPACE_ROOT, rel_path)
+
 def load_requirements(file_path: str):
     if not os.path.exists(file_path):
         print(f"Requirements file not found: {file_path}")
