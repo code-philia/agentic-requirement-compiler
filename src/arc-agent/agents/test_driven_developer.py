@@ -36,12 +36,23 @@ Once `run_tests` returns a 100% passing state (Exit Code: 0) for the target test
 """
 
     def get_tool_names(self) -> List[str]:
-        return ["read_file", "write_file", "delete_file", "insert_lines", "replace_lines", "list_directory", "grep_search", "add_todo", "list_todos", "check_todo", "clear_todos", "execute_command", "run_tests", "run_build"]
+        return ["read_file", "write_file", "delete_file", "insert_lines", "replace_lines", "list_directory", "grep_search", "add_todo", "list_todos", "check_todo", "clear_todos", "execute_command", "run_tests", "run_build", "retrieve_context", "get_node_relations"]
         
-    async def implement(self, node_id: str, test_files: List[str], test_type: str, req_desc: str, scenario: dict = None) -> str:
+    async def implement(self, node_id: str, test_files: List[str], test_type: str, req_desc: str, scenario: dict = None, dependency_context: str = "", current_interfaces: list = None) -> str:
         scenario_context = ""
         if test_type == "E2E" and scenario:
             scenario_context = f"\n### Target UI Scenario\n{json.dumps(scenario, indent=2, ensure_ascii=False)}"
+            
+        current_interfaces_str = "### Current Interfaces to Implement\n"
+        if current_interfaces:
+            for iface in current_interfaces:
+                current_interfaces_str += f"- ID: {iface.get('interface_id')} (Type: {iface.get('type')})\n"
+                if iface.get('file_path'):
+                    current_interfaces_str += f"  File: `{iface.get('file_path')}`\n"
+                if iface.get('first_line'):
+                    current_interfaces_str += f"  Signature: `{iface.get('first_line')}`\n"
+        else:
+            current_interfaces_str += "No specific interface data provided."
 
         user_prompt = f"""
 ### Implementation Task for Node [{node_id}]
@@ -50,6 +61,10 @@ Target Test Type: {test_type}
 ### Requirement Description
 {req_desc}
 {scenario_context}
+
+{dependency_context}
+
+{current_interfaces_str}
 
 ### Target Test Files
 {json.dumps(test_files, indent=2)}

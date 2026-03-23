@@ -159,6 +159,37 @@ grep_search_schema = {
     }
 }
 
+retrieve_context_schema = {
+    "type": "function",
+    "function": {
+        "name": "retrieve_context",
+        "description": "Search the traceability database to find related requirement nodes and already designed/implemented interfaces by keyword. Use this to find existing logic you can reuse.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "The keyword or concept to search for (e.g., 'user auth', 'database connection')."},
+                "limit": {"type": "integer", "description": "Maximum number of results to return. Default is 5."}
+            },
+            "required": ["query"]
+        }
+    }
+}
+
+get_node_relations_schema = {
+    "type": "function",
+    "function": {
+        "name": "get_node_relations",
+        "description": "Get the parent and children nodes for a given requirement node, along with their designed interfaces. Useful to understand the direct upstream/downstream context.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "node_id": {"type": "string", "description": "The ID of the requirement node."}
+            },
+            "required": ["node_id"]
+        }
+    }
+}
+
 add_todo_schema = {
     "type": "function",
     "function": {

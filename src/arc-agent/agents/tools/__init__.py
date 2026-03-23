@@ -57,6 +57,14 @@ TOOL_REGISTRY = {
         "schema": grep_search_schema,
         "func": grep_search_impl
     },
+    "retrieve_context": {
+        "schema": retrieve_context_schema,
+        "func": retrieve_context_impl
+    },
+    "get_node_relations": {
+        "schema": get_node_relations_schema,
+        "func": get_node_relations_impl
+    },
     "run_tests": {
         "schema": run_tests_schema,
         "func": run_tests_impl

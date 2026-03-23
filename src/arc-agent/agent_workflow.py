@@ -124,9 +124,7 @@ class ARCWorkflowManager:
             # ==========================================
             await self._log("RequirementAnalyzer", f"Starting analysis for node {node_id}\n {json.dumps(requirement_data, indent=2)}", "analyzing", node_id)
             
-            # TODO Proper context here 
-            global_map_str = "" 
-            project_context = ""
+            dependency_context = build_dependency_context(node_id)
             
             await self.requirement_analyzer.parse_and_store_visual_elements(self.workspace_path, requirement_data)
             # Refresh requirement data after parsing visual elements
@@ -273,7 +271,8 @@ class ARCWorkflowManager:
                         interfaces_ir=unit_interfaces,
                         tech_stack=tech_stack,
                         test_type="Unit",
-                        req_desc=req_desc
+                        req_desc=req_desc,
+                        dependency_context=dependency_context
                     )
                     all_test_outputs.append(unit_test_output)
 
@@ -286,7 +285,8 @@ class ARCWorkflowManager:
                         interfaces_ir=api_interfaces,
                         tech_stack=tech_stack,
                         test_type="Integration",
-                        req_desc=req_desc
+                        req_desc=req_desc,
+                        dependency_context=dependency_context
                     )
                     all_test_outputs.append(api_test_output)
 
@@ -302,7 +302,8 @@ class ARCWorkflowManager:
                             tech_stack=tech_stack,
                             test_type="E2E",
                             req_desc=req_desc,
-                            scenario=scenario
+                            scenario=scenario,
+                            dependency_context=dependency_context
                         )
                         all_test_outputs.append(e2e_test_output)
                 elif ui_interfaces and not req_scenarios:
@@ -312,7 +313,8 @@ class ARCWorkflowManager:
                         interfaces_ir=ui_interfaces,
                         tech_stack=tech_stack,
                         test_type="E2E",
-                        req_desc=req_desc
+                        req_desc=req_desc,
+                        dependency_context=dependency_context
                     )
                     all_test_outputs.append(e2e_test_output)
                     
@@ -368,6 +370,8 @@ class ARCWorkflowManager:
                     tests_by_type[t_type].append(t)
             
             # Helper to run TDD loop
+            current_interfaces = get_interfaces_by_req_id(node_id)
+            
             async def run_tdd_loop(target_type: str, tests_batch: list, budget: int, scenario: dict = None):
                 test_files = [t.get("file_path") for t in tests_batch if t.get("file_path")]
                 test_ids = [t.get("test_id") for t in tests_batch if t.get("test_id")]
@@ -384,7 +388,9 @@ class ARCWorkflowManager:
                         test_files=test_files,
                         test_type=target_type,
                         req_desc=req_desc,
-                        scenario=scenario
+                        scenario=scenario,
+                        dependency_context=dependency_context,
+                        current_interfaces=current_interfaces
                     )
                     
                     if "IMPLEMENTED" in final_output:
@@ -434,7 +440,7 @@ class ARCWorkflowManager:
 
         except Exception as e:
             await self._log("System", f"Workflow failed due to an error: {str(e)}", node_id=node_id)
-            return node_state
+            return False
 
 
 
