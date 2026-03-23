@@ -159,18 +159,53 @@ grep_search_schema = {
     }
 }
 
-retrieve_context_schema = {
+search_interfaces_by_keyword_schema = {
     "type": "function",
     "function": {
-        "name": "retrieve_context",
-        "description": "Search the traceability database to find related requirement nodes and already designed/implemented interfaces by keyword. Use this to find existing logic you can reuse.",
+        "name": "search_interfaces_by_keyword",
+        "description": "Search for already designed/implemented interfaces by keyword in their name or description. Use this to find existing reusable logic (e.g., 'auth', 'database').",
         "parameters": {
             "type": "object",
             "properties": {
-                "query": {"type": "string", "description": "The keyword or concept to search for (e.g., 'user auth', 'database connection')."},
-                "limit": {"type": "integer", "description": "Maximum number of results to return. Default is 5."}
+                "keyword": {"type": "string", "description": "The keyword to search for."},
+                "limit": {"type": "integer", "description": "Maximum number of results to return. Default is 10."}
             },
-            "required": ["query"]
+            "required": ["keyword"]
+        }
+    }
+}
+
+search_interfaces_by_relation_schema = {
+    "type": "function",
+    "function": {
+        "name": "search_interfaces_by_relation",
+        "description": "Find interfaces belonging to related requirement nodes (parent, children, siblings, dependencies). Use this to understand the immediate architectural context.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "node_id": {"type": "string", "description": "The ID of the current requirement node."},
+                "relation_type": {
+                    "type": "string", 
+                    "enum": ["parent", "children", "siblings", "dependencies", "all"],
+                    "description": "The type of relation to search for. Default is 'all'."
+                }
+            },
+            "required": ["node_id"]
+        }
+    }
+}
+
+find_interface_impacts_schema = {
+    "type": "function",
+    "function": {
+        "name": "find_interface_impacts",
+        "description": "Find all other interfaces that call the given interface. Use this before modifying an existing reused interface to understand the blast radius and ensure you update callers if necessary.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "interface_id": {"type": "string", "description": "The ID of the interface to check."}
+            },
+            "required": ["interface_id"]
         }
     }
 }

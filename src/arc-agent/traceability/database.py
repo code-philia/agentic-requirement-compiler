@@ -43,7 +43,7 @@ def init_db():
     cursor.execute('''
     CREATE TABLE interfaces (
         interface_id TEXT PRIMARY KEY,
-        req_id TEXT,
+        req_ids TEXT,        -- JSON list of req_ids this interface belongs to
         type TEXT,           -- UI, API, FUNC, DB
         content TEXT,
         file_path TEXT,
@@ -51,7 +51,7 @@ def init_db():
         implemented INTEGER, -- 0 for False, 1 for True
         callers TEXT,        -- JSON list of interface_ids
         callees TEXT,        -- JSON list of interface_ids
-        FOREIGN KEY(req_id) REFERENCES requirements(req_id)
+        FOREIGN KEY(req_ids) REFERENCES requirements(req_id)
     )
     ''')
 
@@ -143,7 +143,7 @@ def update_requirement_visuals(req_id: str, visual_reference: list):
 """
 Interface Record
 """
-def insert_interface(interface_id: str, req_id: str, type: str, content: str, 
+def insert_interface(interface_id: str, req_ids: list, type: str, content: str, 
                      file_path: str, first_line: str, implemented: bool, 
                      callers: list, callees: list):
     """Insert or update an interface record in the database."""
@@ -152,11 +152,11 @@ def insert_interface(interface_id: str, req_id: str, type: str, content: str,
     
     cursor.execute('''
     INSERT OR REPLACE INTO interfaces 
-    (interface_id, req_id, type, content, file_path, first_line, implemented, callers, callees)
+    (interface_id, req_ids, type, content, file_path, first_line, implemented, callers, callees)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     ''', (
         interface_id,
-        req_id,
+        json.dumps(req_ids) if req_ids else '[]',
         type,
         content,
         file_path,
@@ -226,6 +226,21 @@ def update_test_implemented_status(test_ids: list, implemented: bool = True):
     conn.commit()
     conn.close()
 
+def update_interface_implemented_status(req_id: str, implemented: bool = True):
+    """Update implemented status for all interfaces associated with a requirement."""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    
+    search_term = f'%"{req_id}"%'
+    cursor.execute('''
+    UPDATE interfaces 
+    SET implemented = ?
+    WHERE req_ids LIKE ?
+    ''', (1 if implemented else 0, search_term))
+    
+    conn.commit()
+    conn.close()
+
 def update_interface_file_info(interface_id: str, file_path: str, first_line: str):
     """Update file path and first line information for an existing interface."""
     conn = sqlite3.connect(DB_PATH)
@@ -246,7 +261,9 @@ def get_interfaces_by_req_id(req_id: str):
     conn.row_factory = sqlite3.Row
     cursor = conn.cursor()
     
-    cursor.execute('SELECT * FROM interfaces WHERE req_id = ?', (req_id,))
+    # Since req_ids is a JSON list, we use LIKE for simple searching
+    search_term = f'%"{req_id}"%'
+    cursor.execute('SELECT * FROM interfaces WHERE req_ids LIKE ?', (search_term,))
     rows = cursor.fetchall()
     
     conn.close()
@@ -255,12 +272,57 @@ def get_interfaces_by_req_id(req_id: str):
     for row in rows:
         data = dict(row)
         try:
+            data['req_ids'] = json.loads(data['req_ids']) if data['req_ids'] else []
             data['callers'] = json.loads(data['callers']) if data['callers'] else []
             data['callees'] = json.loads(data['callees']) if data['callees'] else []
         except json.JSONDecodeError:
             pass
         interfaces.append(data)
     return interfaces
+
+def get_interface_by_id(interface_id: str):
+    """Retrieve a single interface by its ID."""
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+    
+    cursor.execute('SELECT * FROM interfaces WHERE interface_id = ?', (interface_id,))
+    row = cursor.fetchone()
+    
+    conn.close()
+    
+    if row:
+        data = dict(row)
+        try:
+            data['req_ids'] = json.loads(data['req_ids']) if data['req_ids'] else []
+            data['callers'] = json.loads(data['callers']) if data['callers'] else []
+            data['callees'] = json.loads(data['callees']) if data['callees'] else []
+        except json.JSONDecodeError:
+            pass
+        return data
+    return None
+
+def update_interface_req_ids(interface_id: str, new_req_id: str):
+    """Add a new req_id to an existing interface's req_ids list (for reuse)."""
+    iface = get_interface_by_id(interface_id)
+    if not iface:
+        return False
+        
+    req_ids = iface.get('req_ids', [])
+    if new_req_id not in req_ids:
+        req_ids.append(new_req_id)
+        
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        cursor.execute('''
+        UPDATE interfaces 
+        SET req_ids = ?
+        WHERE interface_id = ?
+        ''', (json.dumps(req_ids), interface_id))
+        conn.commit()
+        conn.close()
+        return True
+    return False
 
 def get_tests_by_req_id(req_id: str):
     """Retrieve all tests associated with a specific requirement ID."""

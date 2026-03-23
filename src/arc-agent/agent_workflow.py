@@ -22,7 +22,8 @@ from traceability.database import (
     get_interfaces_by_req_id,
     get_tests_by_req_id,
     update_requirement_visuals,
-    insert_interface
+    insert_interface,
+    update_interface_req_ids
 )
 
 from utils import run_npm_install, run_git_init, run_git_commit, set_workspace_root
@@ -91,6 +92,7 @@ def build_dependency_context(node_id: str) -> str:
         return "No dependencies for this node. This is a root/independent feature."
         
     ctx = "### Dependency Context (Previously Implemented Modules)\n"
+    ctx += "IMPORTANT: You MUST reuse and import the following existing interfaces if your current feature relies on them, instead of reinventing them. If you reuse them, set `reuse: true` in your JSON output.\n\n"
     
     for dep_id in deps:
         dep_req = get_requirement_by_id(dep_id)
@@ -347,33 +349,44 @@ class ARCWorkflowManager:
                     if isinstance(interfaces, list):
                         for iface in interfaces:
                             interface_id = iface.get("interface_id", f"{node_id}_UNKNOWN")
-                            itype = iface.get("type", "FUNC")
-                            callers = iface.get("callers", [])
-                            callees = iface.get("callees", [])
-                            f_path = iface.get("file_path", "")
-                            f_line = iface.get("first_line", "")
+                            is_reuse = iface.get("reuse", False)
                             
-                            content_dict = {
-                                "name": iface.get("name", ""),
-                                "description": iface.get("description", ""),
-                                "inputs": iface.get("inputs", []),
-                                "outputs": iface.get("outputs", [])
-                            }
-                            content_str = json.dumps(content_dict, ensure_ascii=False)
+                            if is_reuse:
+                                # Reusing an existing interface
+                                success = update_interface_req_ids(interface_id, node_id)
+                                if success:
+                                    await self._log("System", f"Reused existing interface: {interface_id}", node_id=node_id)
+                                else:
+                                    await self._log("System", f"Warning: Attempted to reuse interface {interface_id} but it was not found in DB.", node_id=node_id)
+                            else:
+                                # Creating a new interface
+                                itype = iface.get("type", "FUNC")
+                                callers = iface.get("callers", [])
+                                callees = iface.get("callees", [])
+                                f_path = iface.get("file_path", "")
+                                f_line = iface.get("first_line", "")
+                                
+                                content_dict = {
+                                    "name": iface.get("name", ""),
+                                    "description": iface.get("description", ""),
+                                    "inputs": iface.get("inputs", []),
+                                    "outputs": iface.get("outputs", [])
+                                }
+                                content_str = json.dumps(content_dict, ensure_ascii=False)
+                                
+                                insert_interface(
+                                    interface_id=interface_id,
+                                    req_ids=[node_id],
+                                    type=itype,
+                                    content=content_str,
+                                    file_path=f_path,       
+                                    first_line=f_line,      
+                                    implemented=False,
+                                    callers=callers,
+                                    callees=callees
+                                )
                             
-                            insert_interface(
-                                interface_id=interface_id,
-                                req_id=node_id,
-                                type=itype,
-                                content=content_str,
-                                file_path=f_path,       
-                                first_line=f_line,      
-                                implemented=False,
-                                callers=callers,
-                                callees=callees
-                            )
-                            
-                        await self._log("System", f"Designed and generated stub code for {len(interfaces)} interfaces.", node_id=node_id)
+                        await self._log("System", f"Designed, reused, and generated stub code for {len(interfaces)} interfaces.", node_id=node_id)
                         
                         # Git Commit for Design
                         designed_interfaces = [m.get("interface_id", "UNKNOWN") for m in interfaces]

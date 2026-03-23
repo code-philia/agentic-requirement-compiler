@@ -57,9 +57,17 @@ TOOL_REGISTRY = {
         "schema": grep_search_schema,
         "func": grep_search_impl
     },
-    "retrieve_context": {
-        "schema": retrieve_context_schema,
-        "func": retrieve_context_impl
+    "search_interfaces_by_keyword": {
+        "schema": search_interfaces_by_keyword_schema,
+        "func": search_interfaces_by_keyword_impl
+    },
+    "search_interfaces_by_relation": {
+        "schema": search_interfaces_by_relation_schema,
+        "func": search_interfaces_by_relation_impl
+    },
+    "find_interface_impacts": {
+        "schema": find_interface_impacts_schema,
+        "func": find_interface_impacts_impl
     },
     "get_node_relations": {
         "schema": get_node_relations_schema,
