@@ -10,43 +10,57 @@ class InterfaceDesigner(ARCAgent):
         )
 
     def get_system_prompt(self) -> str:
-        return """You are a Principal Software Engineer. 
-Your task is to take a technology-agnostic Intermediate Representation (IR) of interfaces and implement them as concrete, executable STUB CODE in the real project directory.
+        return """You are a Principal Software Architect and Engineer.
+Your task is to analyze a raw software requirement, design its interfaces (UI -> API -> FUNC -> DB), and implement them as concrete, executable STUB CODE in the real project directory.
 
 # Workflow:
-1. **Understand Tech Stack**: Review the provided technology stack and project structure (use `list_directory`, `grep_search`).
-2. **Generate Stub Code**: For each interface in the IR, use `write_file` to create or update the corresponding file. 
-- The code MUST be syntactically valid.
-- Define exact inputs (arguments/types) and outputs (return types).
-- Define the calling relationships: If Interface A calls Interface B, Interface A's stub must import and call B.
-- Leave the actual business logic unimplemented (e.g., use `pass`, `raise NotImplementedError`, or return mock data).
+1. **Analyze and Design (Top-Down)**: 
+   - Understand the current requirement and how it fits into the provided dependencies/context.
+   - Decompose the requirement into: UI (if applicable), API, FUNC (Core Logic), and DB (Storage).
+2. **Generate Stub Code**: 
+   - Use `write_file` to create or update the corresponding files for your designed interfaces.
+   - The code MUST be syntactically valid.
+   - Define exact inputs (arguments/types) and outputs (return types).
+   - Define the calling relationships: If Interface A calls Interface B, Interface A's stub must import and call B.
+   - Leave the actual business logic unimplemented (e.g., use `pass`, `raise NotImplementedError`, or return mock data).
 3. **Check Compilation**: After implementing the interfaces, you MUST call the `run_build` tool to check for compilation errors. Use the build results log to fix any compilation or syntax errors before proceeding.
 
 # Final Output Requirement:
-After you have written all the files, you MUST output a single JSON array in a markdown block (` ```json ... ``` `) mapping each interface to its physical location. 
-Schema for each object:
+After you have designed the architecture and written all the files, you MUST output a single JSON array in a markdown block (` ```json ... ``` `).
+This JSON represents the Intermediate Representation (IR) mapping of the interfaces you just designed and implemented.
+Each object in the array must follow this exact schema:
 {
-"interface_id": "The ID from the provided IR",
-"file_path": "The relative path to the file you wrote (e.g., src/api/user.py)",
-"first_line": "The exact first line of the function/class definition (e.g., 'async def login_user(request: Request) -> Response:')"
+  "interface_id": "Unique string ID (e.g., REQID_TYPE_NUM)",
+  "type": "Must be exactly one of: UI, API, FUNC, DB",
+  "name": "Logical name of the module/function",
+  "description": "Brief description of its purpose",
+  "inputs": ["List of input parameter descriptions or types"],
+  "outputs": ["List of output data descriptions or types"],
+  "callers": ["List of interface_ids that call this module"],
+  "callees": ["List of interface_ids that this module calls"],
+  "file_path": "The relative path to the file you wrote (e.g., src/api/user.py)",
+  "first_line": "The exact first line of the function/class definition (e.g., 'async def login_user(request: Request) -> Response:')"
 }
 """
 
     def get_tool_names(self) -> List[str]:
         return [
-            "read_file", "write_file","delete_file", "insert_lines", "replace_lines", "list_directory", "grep_search", "run_build"
+            "read_file", "write_file", "delete_file", "insert_lines", "replace_lines", "list_directory", "grep_search", "run_build", "retrieve_context", "get_node_relations"
         ]
 
-
-    async def design(self, node_id: str, interfaces_ir: list, tech_stack: str) -> str:
+    async def design(self, node_id: str, requirement_data: dict, tech_stack: str, dependency_context: str = "") -> str:
         user_prompt = f"""
 ### Tech Stack Context
 {tech_stack}
 
-### Interface IR to Implement for Node [{node_id}]
-{json.dumps(interfaces_ir, indent=2)}
+### Current Target Requirement Node (ID: {node_id})
+{json.dumps(requirement_data, indent=2, ensure_ascii=False)}
 
-Please generate the stub code files using the `write_file` tool. 
+{dependency_context}
+
+Please perform the top-down decomposition for Node [{node_id}].
+Then, generate the stub code files using the `write_file` tool. 
+Ensure your stubs import and use any required dependency interfaces from the context above.
 When finished, output the mapping JSON block so the system can update the traceability database.
 """
-        return await self.run(user_prompt=user_prompt, node_id=node_id)
+        return await self.run(user_prompt=user_prompt, node_id=node_id, max_steps=15)

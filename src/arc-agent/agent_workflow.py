@@ -4,8 +4,10 @@ import asyncio
 from typing import Callable, Awaitable
 import shutil
 import re
+import base64
+import mimetypes
+import requests
 
-from agents.requirement_analyzer import RequirementAnalyzer, parse_and_store_interfaces
 from agents.interface_designer import InterfaceDesigner
 from agents.test_generator import TestGenerator
 from agents.test_driven_developer import TestDrivenDeveloper
@@ -18,7 +20,9 @@ from traceability.database import (
     insert_test, 
     update_test_implemented_status,
     get_interfaces_by_req_id,
-    get_tests_by_req_id
+    get_tests_by_req_id,
+    update_requirement_visuals,
+    insert_interface
 )
 
 from utils import run_npm_install, run_git_init, run_git_commit, set_workspace_root
@@ -34,6 +38,87 @@ DEBUG_MODE = int(os.environ.get("ARC_DEBUG", "1"))
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 TEMPLATE_DIR = os.path.join(BASE_DIR, 'template-fullstack')
 
+def visual_analysis_prompt() -> str:
+    return """
+**CRITICAL ROLE:** You are a "Headless" Frontend Reverse-Engineer.
+**SCENARIO:** You must describe this UI screenshot to a blind developer who CANNOT see the image. They must reconstruct this page **pixel-perfectly** and **content-perfectly** using only your text description.
+
+**CORE DIRECTIVES:**
+1.  **FULL OCR TRANSCRIPTION:** You MUST transcribe **ALL** visible text content exactly as it appears. Do not summarize text.
+2.  **STRICT DOM HIERARCHY:** Describe the layout as a tree structure (Parent -> Child -> Sibling).
+3.  **PRECISE VISUAL SPECS:** Specify Geometry (px), Layout (Flex/Grid), Style (Hex colors), and Typography.
+
+**OUTPUT FORMAT (Strict Markdown Tree):**
+
+### 1. Global Design Tokens
+* **Colors:** Define Primary, Secondary, Backgrounds (Estimate Hex).
+* **Font:** Suggest font stack.
+
+### 2. Page Structure & Content (Iterate from Top to Bottom)
+
+#### [A] [Section Name] (e.g., Header, Sidebar, Card)
+* **Container:** Dimensions, background color, layout properties.
+* **Child Element 1:** [Type: Navigation/List]
+    * **Layout:** Flex-row, gap 20px.
+    * **Items (Transcription Examples):**
+        * *If English:* "Home", "Products", "Contact Us" (Bold, Black).
+        * *If Chinese:* "首页", "产品中心", "联系我们" (Regular, Gray).
+* **Child Element 2:** [Type: Form Component]
+    * **Container Style:** Border, shadow, padding.
+    * **Internal Layout:** Vertical stack.
+    * **Content (Transcription Examples):**
+        * **Label:** "Username" OR "用户名" (Exact text).
+        * **Input Placeholder:** "Enter your email..." OR "请输入邮箱地址..." (Exact text).
+        * **Button:** "Submit" OR "立即提交" (White text on Blue bg).
+* **Child Element 3:** [Type: Banner/Hero]
+    * **Headline:** "Build Faster" OR "极速构建" (Font size ~32px, Bold).
+    * **Sub-text:** "Start your journey today." OR "开启您的数字化之旅。" (Gray, ~16px).
+
+**Action:** Start the "Blind Transcription". Ensure EVERY character (CN/EN) visible in the image is recorded in your description.
+"""
+
+def build_dependency_context(node_id: str) -> str:
+    """
+    Builds a contextual string containing information about already implemented 
+    dependencies for the current requirement node.
+    """
+    req = get_requirement_by_id(node_id)
+    if not req: 
+        return "No dependency information available."
+        
+    deps = req.get("dependencies", [])
+    if not deps: 
+        return "No dependencies for this node. This is a root/independent feature."
+        
+    ctx = "### Dependency Context (Previously Implemented Modules)\n"
+    
+    for dep_id in deps:
+        dep_req = get_requirement_by_id(dep_id)
+        if not dep_req: continue
+        
+        ctx += f"#### Dependency Requirement Node: [{dep_id}]\n"
+        ctx += f"Description: {dep_req.get('description', 'N/A')}\n"
+        
+        dep_ifaces = get_interfaces_by_req_id(dep_id)
+        if dep_ifaces:
+            ctx += "Available Interfaces from this Dependency:\n"
+            for iface in dep_ifaces:
+                ctx += f"  - ID: `{iface.get('interface_id')}` (Type: {iface.get('type')})\n"
+                if iface.get('file_path'):
+                    ctx += f"    File Path: `{iface.get('file_path')}`\n"
+                if iface.get('first_line'):
+                    ctx += f"    Signature: `{iface.get('first_line')}`\n"
+                
+                try:
+                    content = json.loads(iface.get('content', '{}'))
+                    desc = content.get('description', '')
+                    if desc:
+                        ctx += f"    Description: {desc}\n"
+                except:
+                    pass
+        ctx += "\n"
+    return ctx
+
 class ARCWorkflowManager:
     """Manage the lifecycle of a single requirement node and multi-agent TDD state transitions"""
     
@@ -43,7 +128,6 @@ class ARCWorkflowManager:
         self.broadcast_cb = broadcast_cb
         
         # Instantiate all participating agents and pass the WebSocket broadcast callback to them
-        self.requirement_analyzer = RequirementAnalyzer(broadcast_cb)
         self.interface_designer = InterfaceDesigner(broadcast_cb)
         self.test_generator = TestGenerator(broadcast_cb)
         self.test_driven_developer = TestDrivenDeveloper(broadcast_cb)
@@ -65,6 +149,107 @@ class ARCWorkflowManager:
             print(f"{prefix}[{agent}] {message}")
             if status:
                 print(f"{prefix}[Status Update] {status}")
+
+    async def parse_and_store_visual_elements(self, workspace_path: str, requirement_data: dict) -> None:
+        """
+        Extract the image url from the description of the requirement.
+        Parse the content using llm and store the result in the requirement table in the database.
+        """
+        description = requirement_data.get("description", "")
+        req_id = requirement_data.get("req_id", "")
+        if not description or not req_id:
+            await self._log("System", f"Invalid requirement data", node_id=req_id, status="error")
+            return
+
+        # 1. Extract image paths
+        # Format: ![image](path/to/image)
+        matches = re.findall(r'!\[image\]\(([^)]+)\)', description)
+        if not matches:
+            await self._log("System", "No image found in the description.", node_id=req_id, status="info")
+            return
+
+        visual_references = []
+
+        for image_path in matches:
+            normalized_path = os.path.normpath(image_path)
+            
+            # Strip leading separators to ensure it is treated as a relative path to workspace_path
+            # This handles cases where markdown path starts with / or \
+            if normalized_path.startswith(os.sep):
+                normalized_path = normalized_path.lstrip(os.sep)
+                
+            full_path = os.path.join(workspace_path, normalized_path)
+            full_path = os.path.abspath(full_path)
+            
+            if not os.path.exists(full_path):
+                await self._log("System", f"Image not found: {full_path}", node_id=req_id, status="warning")
+                continue
+                
+            # Encode image
+            try:
+                mime_type, _ = mimetypes.guess_type(full_path)
+                if not mime_type:
+                    mime_type = "image/png" # Default
+                    
+                with open(full_path, "rb") as image_file:
+                    base64_image = base64.b64encode(image_file.read()).decode('utf-8')
+                    
+                # Call LLM
+                prompt = visual_analysis_prompt()
+                
+                messages = [
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": prompt},
+                            {
+                                "type": "image_url",
+                                "image_url": {
+                                    "url": f"data:{mime_type};base64,{base64_image}"
+                                }
+                            }
+                        ]
+                    }
+                ]
+                
+                await self._log("System", f"Analyzing visual element: {image_path}", node_id=req_id)
+                
+                url = os.environ.get("VISUAL_OPENAI_API_BASE_URL", os.environ.get("OPENAI_API_BASE_URL", ""))
+                api_key = os.environ.get("VISUAL_OPENAI_API_KEY")
+                visual_model = os.environ.get("VISUAL_MODEL", os.environ.get("MODEL", ""))
+                
+                headers = {
+                    'Content-Type': 'application/json',
+                    'Authorization': f'Bearer {api_key}'
+                }
+                data = {
+                    "model": visual_model,
+                    "messages": messages
+                }
+                
+                response = await asyncio.to_thread(
+                    requests.post, url, headers=headers, data=json.dumps(data), verify=False
+                )
+                
+                if response.status_code == 200:
+                    response_data = response.json()
+                    analysis = response_data['choices'][0]['message']['content']
+                else:
+                    raise Exception(f"ModelArts API Error {response.status_code}: {response.text}")
+                
+                visual_references.append({
+                    "image_path": image_path,
+                    "analysis": analysis
+                })
+                
+            except Exception as e:
+                print(f"[Error] Failed to analyze image {full_path}: {e}")
+                await self._log("System", f"Failed to analyze image {image_path}: {e}", node_id=req_id, status="error")
+                
+        # 2. Update database
+        if visual_references:
+            update_requirement_visuals(req_id, visual_references)
+            await self._log("System", f"Stored {len(visual_references)} visual references for {req_id}", node_id=req_id)
 
     async def initialize_project(self):
         """Initialize the project workspace by setting up directories and files."""
@@ -120,43 +305,16 @@ class ARCWorkflowManager:
         
         try:
             # ==========================================
-            # Step 1: Requirement Analysis
+            # Step 1 & 2: Requirement Analysis & Interface Design (Combined)
             # ==========================================
-            await self._log("RequirementAnalyzer", f"Starting analysis for node {node_id}\n {json.dumps(requirement_data, indent=2)}", "analyzing", node_id)
+            await self._log("InterfaceDesigner", f"Starting analysis and interface design for node {node_id}\n {json.dumps(requirement_data, indent=2)}", "analyzing", node_id)
             
             dependency_context = build_dependency_context(node_id)
             
-            await self.requirement_analyzer.parse_and_store_visual_elements(self.workspace_path, requirement_data)
+            await self.parse_and_store_visual_elements(self.workspace_path, requirement_data)
             # Refresh requirement data after parsing visual elements
             requirement_data = get_requirement_by_id(node_id)
-
-            raw_analysis_output = await self.requirement_analyzer.analyze(
-                node_id=node_id, 
-                requirement_data=requirement_data,
-                project_context=project_context,
-                global_map=global_map_str
-            )
-            node_state["analysis"] = raw_analysis_output
-
-            parsed_interfaces = parse_and_store_interfaces(raw_analysis_output, node_id)
             
-            if parsed_interfaces:
-                interface_names = [i.get('interface_id') for i in parsed_interfaces]
-                await self._log("System", f"Extracted and stored {len(parsed_interfaces)} interfaces: {', '.join(interface_names)}", node_id=node_id)
-                
-                # Git Commit for Analysis
-                commit_msg = f"feat(analysis): [{node_id}] extracted interfaces: {', '.join(interface_names)}"
-                await run_git_commit(self.workspace_path, commit_msg, self._log)
-                
-            else:
-                await self._log("System", "Warning: No valid interface IR extracted from analysis.", node_id=node_id)
-
-            # ==========================================
-            # Step 2: Design (Physical Implementation of IR)
-            # ==========================================
-            await self._log("InterfaceDesigner", f"Starting interface design for node {node_id}...", "designed", node_id)
-            
-            # TODO: Tech Stack Context
             tech_stack = """
 ### Frontend
 * **Framework**: React 18+ (Vite)
@@ -174,67 +332,60 @@ class ARCWorkflowManager:
     * **Supertest**: Used with Vitest for API route testing.
     * **Playwright**: Used for End-to-End (E2E) testing, located in `backend/test-e2e`.            
 """
-            # 1. Retrieve interfaces from DB
-            interfaces_ir = get_interfaces_by_req_id(node_id)
-            
-            if not interfaces_ir:
-                await self._log("System", "No IR found in database. Skipping physical design.", node_id=node_id)
-            else:
-                # 2. Batch process interfaces by type: UI -> API -> FUNC -> DB
-                type_order = ["UI", "API", "FUNC", "DB"]
-                
-                # Group interfaces by type
-                interfaces_by_type = {t: [] for t in type_order}
-                for iface in interfaces_ir:
-                    itype = iface.get("type", "FUNC")
-                    if itype in interfaces_by_type:
-                        interfaces_by_type[itype].append(iface)
-                    else:
-                        # Fallback for unknown types
-                        if "OTHER" not in interfaces_by_type:
-                            interfaces_by_type["OTHER"] = []
-                        interfaces_by_type["OTHER"].append(iface)
-                
-                all_design_outputs = []
-                
-                # Iterate through types
-                for itype in type_order + ["OTHER"]:
-                    batch = interfaces_by_type.get(itype, [])
-                    if not batch:
-                        continue
-                        
-                    await self._log("InterfaceDesigner", f"Designing {len(batch)} interfaces of type {itype}...", node_id=node_id)
-                    
-                    raw_design_output = await self.interface_designer.design(
-                        node_id=node_id, 
-                        interfaces_ir=batch,
-                        tech_stack=tech_stack
-                    )
-                    all_design_outputs.append(raw_design_output)
 
-                    # 3. Update DB with file paths for this batch
-                    match = re.search(r'```json\s*(.*?)\s*```', raw_design_output, re.DOTALL | re.IGNORECASE)
-                    if match:
-                        try:
-                            file_mappings = json.loads(match.group(1))
-                            for mapping in file_mappings:
-                                i_id = mapping.get("interface_id")
-                                f_path = mapping.get("file_path", "")
-                                f_line = mapping.get("first_line", "")
-                                
-                                if i_id:
-                                    update_interface_file_info(i_id, f_path, f_line)
-                                    
-                            await self._log("System", f"Updated physical file paths for {len(file_mappings)} {itype} interfaces.", node_id=node_id)
+            raw_design_output = await self.interface_designer.design(
+                node_id=node_id, 
+                requirement_data=requirement_data,
+                tech_stack=tech_stack,
+                dependency_context=dependency_context
+            )
+            # Parse and store the designed interfaces with file mappings
+            match = re.search(r'```json\s*(.*?)\s*```', raw_design_output, re.DOTALL | re.IGNORECASE)
+            if match:
+                try:
+                    interfaces = json.loads(match.group(1))
+                    if isinstance(interfaces, list):
+                        for iface in interfaces:
+                            interface_id = iface.get("interface_id", f"{node_id}_UNKNOWN")
+                            itype = iface.get("type", "FUNC")
+                            callers = iface.get("callers", [])
+                            callees = iface.get("callees", [])
+                            f_path = iface.get("file_path", "")
+                            f_line = iface.get("first_line", "")
                             
-                            # Git Commit for this batch
-                            if file_mappings:
-                                designed_interfaces = [m.get("interface_id", "UNKNOWN") for m in file_mappings]
-                                commit_msg = f"feat(design): [{node_id}] designed {itype} interfaces: {', '.join(designed_interfaces)}"
-                                await run_git_commit(self.workspace_path, commit_msg, self._log)
-                                
-                        except json.JSONDecodeError:
-                            await self._log("System", f"Failed to parse file mappings JSON for {itype} batch.", node_id=node_id)
+                            content_dict = {
+                                "name": iface.get("name", ""),
+                                "description": iface.get("description", ""),
+                                "inputs": iface.get("inputs", []),
+                                "outputs": iface.get("outputs", [])
+                            }
+                            content_str = json.dumps(content_dict, ensure_ascii=False)
+                            
+                            insert_interface(
+                                interface_id=interface_id,
+                                req_id=node_id,
+                                type=itype,
+                                content=content_str,
+                                file_path=f_path,       
+                                first_line=f_line,      
+                                implemented=False,
+                                callers=callers,
+                                callees=callees
+                            )
+                            
+                        await self._log("System", f"Designed and generated stub code for {len(interfaces)} interfaces.", node_id=node_id)
+                        
+                        # Git Commit for Design
+                        designed_interfaces = [m.get("interface_id", "UNKNOWN") for m in interfaces]
+                        commit_msg = f"feat(design): [{node_id}] designed interfaces: {', '.join(designed_interfaces)}"
+                        await run_git_commit(self.workspace_path, commit_msg, self._log)
+                except json.JSONDecodeError as e:
+                    await self._log("System", f"Failed to parse interface JSON block: {str(e)}", node_id=node_id)
+            else:
+                await self._log("System", "Warning: No valid interface JSON block found in output.", node_id=node_id)
+                
+            await self._log("System", "Analysis and Design phase completed.", "designed", node_id)
+
 
 
             # ==========================================
