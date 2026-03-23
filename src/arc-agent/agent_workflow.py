@@ -111,17 +111,12 @@ class ARCWorkflowManager:
 
     async def process_node(self, node_id: str) -> dict:
         """Process a single requirement node through the 4-step workflow"""
-        
-        # Maintain shared workflow context state for this specific node
-        node_state = {
-            "analysis": "",
-        }
-        
+                
         # Get requirement data from database
         requirement_data = get_requirement_by_id(node_id)
         if not requirement_data:
             await self._log("System", f"Error: Requirement node {node_id} not found in database.", node_id=node_id)
-            return node_state
+            return False
         
         try:
             # ==========================================
@@ -359,7 +354,6 @@ class ARCWorkflowManager:
             # ==========================================
             # Step 4: Implement (TDD Loop)
             # ==========================================
-            node_state = self.state
             req_desc = requirement_data.get("description", "")
             req_scenarios = requirement_data.get("scenarios", [])
 
@@ -436,7 +430,7 @@ class ARCWorkflowManager:
                     await self._log("System", f"Running E2E for {scenario_name}...", node_id=node_id)
                     await run_tdd_loop("E2E", [e2e_test], budget=3, scenario=scenario)
 
-            return node_state
+            return True
 
         except Exception as e:
             await self._log("System", f"Workflow failed due to an error: {str(e)}", node_id=node_id)
