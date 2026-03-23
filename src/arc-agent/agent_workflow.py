@@ -23,6 +23,11 @@ from traceability.database import (
 
 from utils import run_npm_install, run_git_init, run_git_commit, set_workspace_root
 
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
+
 # Global Debug Flag
 DEBUG_MODE = int(os.environ.get("ARC_DEBUG", "1"))
 

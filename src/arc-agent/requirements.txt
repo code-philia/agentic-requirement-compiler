@@ -3,3 +3,5 @@ uvicorn
 websockets
 aiofiles
 openai
+requests
+python-dotenv

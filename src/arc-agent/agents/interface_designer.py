@@ -6,7 +6,6 @@ class InterfaceDesigner(ARCAgent):
     def __init__(self, broadcast_cb=None):
         super().__init__(
             agent_name="InterfaceDesigner", 
-            model="gpt-4o-mini", 
             broadcast_cb=broadcast_cb
         )
 

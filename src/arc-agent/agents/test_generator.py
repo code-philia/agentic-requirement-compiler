@@ -6,7 +6,6 @@ class TestGenerator(ARCAgent):
     def __init__(self, broadcast_cb=None):
         super().__init__(
             agent_name="TestGenerator", 
-            model="gpt-4o",
             broadcast_cb=broadcast_cb
         )
 

@@ -3,6 +3,8 @@ import re
 import base64
 import mimetypes
 import os
+import asyncio
+import requests
 from typing import List, Dict, Any
 from .arc_agent import ARCAgent
 from traceability.database import insert_interface, update_requirement_visuals
@@ -11,7 +13,6 @@ class RequirementAnalyzer(ARCAgent):
     def __init__(self, broadcast_cb=None):
         super().__init__(
             agent_name="RequirementAnalyzer", 
-            model="gpt-4o-mini", 
             broadcast_cb=broadcast_cb
         )
 
@@ -73,14 +74,16 @@ Please perform the top-down decomposition for Node [{node_id}] and output the Na
         Parse the content using llm and store the result in the requirement table in the database.
         """
         description = requirement_data.get("description", "")
-        req_id = requirement_data.get("id", "")
+        req_id = requirement_data.get("req_id", "")
         if not description or not req_id:
+            await self._log(f"Invalid requirement data", node_id=req_id, status="error")
             return
 
         # 1. Extract image paths
-        # Format: [image]("./path/to/image")
-        matches = re.findall(r'\[image\]\("([^"]+)"\)', description)
+        # Format: ![image](path/to/image)
+        matches = re.findall(r'!\[image\]\(([^)]+)\)', description)
         if not matches:
+            await self._log("No image found in the description.", node_id=req_id, status="info")
             return
 
         visual_references = []
@@ -97,7 +100,7 @@ Please perform the top-down decomposition for Node [{node_id}] and output the Na
             full_path = os.path.abspath(full_path)
             
             if not os.path.exists(full_path):
-                print(f"[Warning] Image not found: {full_path}")
+                await self._log(f"Image not found: {full_path}", node_id=req_id, status="warning")
                 continue
                 
             # Encode image
@@ -127,15 +130,37 @@ Please perform the top-down decomposition for Node [{node_id}] and output the Na
                     }
                 ]
                 
-                await self._log("RequirementAnalyzer", f"Analyzing visual element: {image_path}", node_id=req_id)
+                await self._log(f"Analyzing visual element: {image_path}", node_id=req_id)
                 
-                response = await self.client.chat.completions.create(
-                    model="gpt-4o-mini",
-                    messages=messages,
-                    max_tokens=2000
+                # response = await self.client.chat.completions.create(
+                #     model="Qwen2.5-VL-72B",
+                #     messages=messages
+                # )
+                # analysis = response.choices[0].message.content
+                
+                url = os.environ.get("VISUAL_OPENAI_API_BASE_URL", os.environ.get("OPENAI_API_BASE_URL", ""))
+                api_key = os.environ.get("VISUAL_OPENAI_API_KEY")
+                visual_model = os.environ.get("VISUAL_MODEL", os.environ.get("MODEL", ""))
+                
+                headers = {
+                    'Content-Type': 'application/json',
+                    'Authorization': f'Bearer {api_key}'
+                }
+                data = {
+                    "model": visual_model,
+                    "messages": messages
+                }
+                
+                response = await asyncio.to_thread(
+                    requests.post, url, headers=headers, data=json.dumps(data), verify=False
                 )
                 
-                analysis = response.choices[0].message.content
+                if response.status_code == 200:
+                    response_data = response.json()
+                    analysis = response_data['choices'][0]['message']['content']
+                else:
+                    raise Exception(f"ModelArts API Error {response.status_code}: {response.text}")
+                
                 visual_references.append({
                     "image_path": image_path,
                     "analysis": analysis
@@ -143,12 +168,12 @@ Please perform the top-down decomposition for Node [{node_id}] and output the Na
                 
             except Exception as e:
                 print(f"[Error] Failed to analyze image {full_path}: {e}")
-                await self._log("RequirementAnalyzer", f"Failed to analyze image {image_path}: {e}", node_id=req_id, status="error")
+                await self._log(f"Failed to analyze image {image_path}: {e}", node_id=req_id, status="error")
                 
         # 2. Update database
         if visual_references:
             update_requirement_visuals(req_id, visual_references)
-            await self._log("RequirementAnalyzer", f"Stored {len(visual_references)} visual references for {req_id}", node_id=req_id)
+            await self._log(f"Stored {len(visual_references)} visual references for {req_id}", node_id=req_id)
     
 
 def visual_analysis_prompt() -> str:

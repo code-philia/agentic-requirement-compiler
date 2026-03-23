@@ -3,9 +3,14 @@ import json
 import os
 from typing import List, Dict, Any, Callable, Awaitable
 from openai import AsyncOpenAI
+from dotenv import load_dotenv
 from .tools import TOOL_REGISTRY
 
-# os.environ["OPENAI_API_KEY"] = "your_api_key_here"
+# Load environment variables from .env
+load_dotenv()
+
+# Global Debug Flag
+DEBUG_MODE = int(os.environ.get("ARC_DEBUG", "1"))
 
 class ARCAgent:
     """
@@ -14,13 +19,15 @@ class ARCAgent:
     def __init__(
         self, 
         agent_name: str, 
-        model: str = "gpt-4o-mini", 
         broadcast_cb: Callable[[dict], Awaitable[None]] = None
     ):
         self.agent_name = agent_name
-        self.model = model
+        self.model = model or os.environ.get("MODEL", "GLM-5")
         self.broadcast_cb = broadcast_cb
-        self.client = AsyncOpenAI() 
+        self.client = AsyncOpenAI(
+            api_key=os.environ.get("OPENAI_API_KEY"),
+            base_url=os.environ.get("OPENAI_API_BASE_URL"),
+        )
         
     async def _log(self, message: str, status: str = None, node_id: str = None):
         if self.broadcast_cb:
@@ -109,6 +116,9 @@ class ARCAgent:
                             tool_result = f"Tool execution error: {str(e)}"
                     else:
                         tool_result = f"Error: Tool '{tool_name}' not permitted or not found."
+                    
+                    if DEBUG_MODE:
+                        await self._log(f"Tool `{tool_name}` result: {tool_result}", node_id=node_id)
                     
                     # Return the result back to the LLM
                     messages.append({
