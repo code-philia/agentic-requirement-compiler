@@ -51,7 +51,34 @@ async def execute_command_impl(command: str, cwd: str = ".") -> str:
 async def run_tests_impl(test_type: str, test_file_path: str = "") -> str:
     """Run tests using Vitest for unit/integration tests, and Playwright for E2E tests."""
     
+    # Pre-start frontend and backend servers if E2E testing
+    servers_process = None
+    if test_type.lower() == "e2e":
+        # E2E tests need both frontend and backend running.
+        # We assume there's a script or we can start them in the background.
+        # Start backend
+        backend_cmd = "npm run dev"
+        backend_cwd = get_abs_path("./backend")
+        frontend_cmd = "npm run dev"
+        frontend_cwd = get_abs_path("./frontend")
+        
+        # We start them using asyncio subprocess and keep track of them
+        try:
+            backend_process = await asyncio.create_subprocess_shell(
+                backend_cmd, cwd=backend_cwd, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL
+            )
+            frontend_process = await asyncio.create_subprocess_shell(
+                frontend_cmd, cwd=frontend_cwd, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL
+            )
+            
+            # Give servers a few seconds to start up
+            await asyncio.sleep(5)
+            servers_process = (backend_process, frontend_process)
+        except Exception as e:
+            return f"Failed to start servers for E2E testing: {str(e)}"
+
     if test_type.lower() in ["unit", "integration"]:
+        # If test_file_path contains multiple files (space separated), it will just pass them to vitest
         cmd = f"npx vitest run {test_file_path}" if test_file_path else "npx vitest run"
         cwd = "./backend" 
     elif test_type.lower() == "e2e":
@@ -60,7 +87,18 @@ async def run_tests_impl(test_type: str, test_file_path: str = "") -> str:
     else:
         return "Unknown test type. Must be 'unit', 'integration', or 'e2e'."
 
-    return await execute_command_impl(cmd, cwd=cwd)
+    result = await execute_command_impl(cmd, cwd=cwd)
+
+    # Cleanup servers if we started them
+    if servers_process:
+        backend_process, frontend_process = servers_process
+        try:
+            backend_process.terminate()
+            frontend_process.terminate()
+        except:
+            pass
+
+    return result
 
 async def run_build_impl() -> str:
     """Run build for frontend and check backend compilation."""

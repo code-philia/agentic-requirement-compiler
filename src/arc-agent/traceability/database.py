@@ -32,6 +32,7 @@ def init_db():
         req_id TEXT PRIMARY KEY,
         description TEXT,
         visual_reference TEXT,
+        scenarios TEXT,
         parent_id TEXT,
         children_ids TEXT,
         dependencies TEXT
@@ -86,6 +87,7 @@ def get_requirement_by_id(req_id: str):
         # Parse JSON fields back to lists
         try:
             data['visual_reference'] = json.loads(data['visual_reference']) if data['visual_reference'] else []
+            data['scenarios'] = json.loads(data['scenarios']) if data.get('scenarios') else []
             data['children_ids'] = json.loads(data['children_ids']) if data['children_ids'] else []
             data['dependencies'] = json.loads(data['dependencies']) if data['dependencies'] else []
         except json.JSONDecodeError:
@@ -98,19 +100,20 @@ def get_requirement_by_id(req_id: str):
 Requirement Record
 """
 def insert_requirement(req_id: str, description: str, visual_reference: list, 
-                       parent_id: str, children_ids: list, dependencies: list):
+                       scenarios: list, parent_id: str, children_ids: list, dependencies: list):
     """Insert or update a single requirement record in the database."""
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     
     cursor.execute('''
     INSERT OR REPLACE INTO requirements 
-    (req_id, description, visual_reference, parent_id, children_ids, dependencies)
-    VALUES (?, ?, ?, ?, ?, ?)
+    (req_id, description, visual_reference, scenarios, parent_id, children_ids, dependencies)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
     ''', (
         req_id, 
         description or "", 
         json.dumps(visual_reference) if visual_reference else '[]',
+        json.dumps(scenarios) if scenarios else '[]',
         parent_id or "",
         json.dumps(children_ids) if children_ids else '[]',
         json.dumps(dependencies) if dependencies else '[]'
@@ -188,17 +191,38 @@ def insert_test(test_id: str, req_id: str, interface_ids: list, type: str,
     conn.commit()
     conn.close()
 
-def update_interface_implemented_status(req_id: str, implemented: bool = True):
-    """Update implemented status for all interfaces associated with a requirement."""
+def update_test_implemented_status(test_ids: list, implemented: bool = True):
+    """Update implemented status for the specific interfaces associated with the given tests.
+    It looks up the interface_ids for each test_id, and sets those interfaces as implemented.
+    """
+    if not test_ids:
+        return
+        
     conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
     cursor = conn.cursor()
     
-    cursor.execute('''
-    UPDATE interfaces 
-    SET implemented = ?
-    WHERE req_id = ?
-    ''', (1 if implemented else 0, req_id))
+    placeholders = ','.join(['?'] * len(test_ids))
+    cursor.execute(f'SELECT interface_ids FROM tests WHERE test_id IN ({placeholders})', test_ids)
+    rows = cursor.fetchall()
     
+    target_interface_ids = set()
+    for row in rows:
+        try:
+            i_ids = json.loads(row['interface_ids'])
+            if isinstance(i_ids, list):
+                target_interface_ids.update(i_ids)
+        except:
+            pass
+            
+    if target_interface_ids:
+        i_placeholders = ','.join(['?'] * len(target_interface_ids))
+        cursor.execute(f'''
+        UPDATE interfaces 
+        SET implemented = ?
+        WHERE interface_id IN ({i_placeholders})
+        ''', [1 if implemented else 0] + list(target_interface_ids))
+        
     conn.commit()
     conn.close()
 

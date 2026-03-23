@@ -10,7 +10,16 @@ from agents.interface_designer import InterfaceDesigner
 from agents.test_generator import TestGenerator
 from agents.test_driven_developer import TestDrivenDeveloper
 
-from traceability.database import update_interface_file_info, get_requirement_by_id
+from traceability.database import (
+    get_requirement_by_id, 
+    set_db_path, 
+    init_db, 
+    update_interface_file_info, 
+    insert_test, 
+    update_test_implemented_status,
+    get_interfaces_by_req_id,
+    get_tests_by_req_id
+)
 
 from utils import run_npm_install, run_git_init, run_git_commit, set_workspace_root
 
@@ -101,10 +110,6 @@ class ARCWorkflowManager:
         # Maintain shared workflow context state for this specific node
         node_state = {
             "analysis": "",
-            "interfaces": "",
-            "tests": "",
-            "iteration": 0,
-            "test_passed": False
         }
         
         # Get requirement data from database
@@ -117,24 +122,25 @@ class ARCWorkflowManager:
             # ==========================================
             # Step 1: Requirement Analysis
             # ==========================================
-            await self._log("RequirementAnalyzer", f"Starting analysis for node {node_id}...", "analyzing", node_id)
+            await self._log("RequirementAnalyzer", f"Starting analysis for node {node_id}\n {json.dumps(requirement_data, indent=2)}", "analyzing", node_id)
             
             # TODO Proper context here 
             global_map_str = "" 
             project_context = ""
             
+            await self.requirement_analyzer.parse_and_store_visual_elements(self.workspace_path, requirement_data)
+            # Refresh requirement data after parsing visual elements
+            requirement_data = get_requirement_by_id(node_id)
+
             raw_analysis_output = await self.requirement_analyzer.analyze(
                 node_id=node_id, 
                 requirement_data=requirement_data,
                 project_context=project_context,
                 global_map=global_map_str
             )
-            node_state["analysis_raw"] = raw_analysis_output
+            node_state["analysis"] = raw_analysis_output
 
             parsed_interfaces = parse_and_store_interfaces(raw_analysis_output, node_id)
-            node_state["interfaces_ir"] = parsed_interfaces
-            
-            await self.requirement_analyzer.parse_and_store_visual_elements(self.workspace_path, requirement_data)
             
             if parsed_interfaces:
                 interface_names = [i.get('interface_id') for i in parsed_interfaces]
@@ -153,115 +159,283 @@ class ARCWorkflowManager:
             await self._log("InterfaceDesigner", f"Starting interface design for node {node_id}...", "designed", node_id)
             
             # TODO: Tech Stack Context
-            tech_stack = "Python 3.10, FastAPI for API, SQLAlchemy for DB, React for UI."
-            interfaces_ir = node_state.get("interfaces_ir", [])
+            tech_stack = """
+### Frontend
+* **Framework**: React 18+ (Vite)
+* **Language**: JavaScript (ES6+)
+* **Styling**: Tailwind CSS v4
+* **HTTP**: Axios (Must use Interceptors for global error handling)
+* **Testing**: None in frontend directory. (Verified via E2E in backend).
+
+### Backend
+* **Runtime**: Node.js (LTS)
+* **Framework**: Express.js
+* **Database**: SQLite3 (`sqlite3` driver, file-based)
+* **Testing**: 
+    * **Vitest**: Used for Unit and Integration testing.
+    * **Supertest**: Used with Vitest for API route testing.
+    * **Playwright**: Used for End-to-End (E2E) testing, located in `backend/test-e2e`.            
+"""
+            # 1. Retrieve interfaces from DB
+            interfaces_ir = get_interfaces_by_req_id(node_id)
             
             if not interfaces_ir:
-                await self._log("System", "No IR found. Skipping physical design.", node_id=node_id)
+                await self._log("System", "No IR found in database. Skipping physical design.", node_id=node_id)
             else:
-                raw_design_output = await self.interface_designer.design(
-                    node_id=node_id, 
-                    interfaces_ir=interfaces_ir,
-                    tech_stack=tech_stack
-                )
-                self.state["interfaces"] = raw_design_output
+                # 2. Batch process interfaces by type: UI -> API -> FUNC -> DB
+                type_order = ["UI", "API", "FUNC", "DB"]
+                
+                # Group interfaces by type
+                interfaces_by_type = {t: [] for t in type_order}
+                for iface in interfaces_ir:
+                    itype = iface.get("type", "FUNC")
+                    if itype in interfaces_by_type:
+                        interfaces_by_type[itype].append(iface)
+                    else:
+                        # Fallback for unknown types
+                        if "OTHER" not in interfaces_by_type:
+                            interfaces_by_type["OTHER"] = []
+                        interfaces_by_type["OTHER"].append(iface)
+                
+                all_design_outputs = []
+                
+                # Iterate through types
+                for itype in type_order + ["OTHER"]:
+                    batch = interfaces_by_type.get(itype, [])
+                    if not batch:
+                        continue
+                        
+                    await self._log("InterfaceDesigner", f"Designing {len(batch)} interfaces of type {itype}...", node_id=node_id)
+                    
+                    raw_design_output = await self.interface_designer.design(
+                        node_id=node_id, 
+                        interfaces_ir=batch,
+                        tech_stack=tech_stack
+                    )
+                    all_design_outputs.append(raw_design_output)
 
-                match = re.search(r'```json\s*(.*?)\s*```', raw_design_output, re.DOTALL | re.IGNORECASE)
-                if match:
-                    try:
-                        file_mappings = json.loads(match.group(1))
-                        for mapping in file_mappings:
-                            i_id = mapping.get("interface_id")
-                            f_path = mapping.get("file_path", "")
-                            f_line = mapping.get("first_line", "")
-                            
-                            if i_id:
-                                update_interface_file_info(i_id, f_path, f_line)
+                    # 3. Update DB with file paths for this batch
+                    match = re.search(r'```json\s*(.*?)\s*```', raw_design_output, re.DOTALL | re.IGNORECASE)
+                    if match:
+                        try:
+                            file_mappings = json.loads(match.group(1))
+                            for mapping in file_mappings:
+                                i_id = mapping.get("interface_id")
+                                f_path = mapping.get("file_path", "")
+                                f_line = mapping.get("first_line", "")
                                 
-                        await self._log("System", f"Successfully updated physical file paths for {len(file_mappings)} interfaces in DB.", node_id=node_id)
-                    except json.JSONDecodeError:
-                        await self._log("System", "Failed to parse file mappings JSON from InterfaceDesigner.", node_id=node_id)
+                                if i_id:
+                                    update_interface_file_info(i_id, f_path, f_line)
+                                    
+                            await self._log("System", f"Updated physical file paths for {len(file_mappings)} {itype} interfaces.", node_id=node_id)
+                            
+                            # Git Commit for this batch
+                            if file_mappings:
+                                designed_interfaces = [m.get("interface_id", "UNKNOWN") for m in file_mappings]
+                                commit_msg = f"feat(design): [{node_id}] designed {itype} interfaces: {', '.join(designed_interfaces)}"
+                                await run_git_commit(self.workspace_path, commit_msg, self._log)
+                                
+                        except json.JSONDecodeError:
+                            await self._log("System", f"Failed to parse file mappings JSON for {itype} batch.", node_id=node_id)
+
 
             # ==========================================
             # Step 3: Generate Tests (TDD Preparations)
             # ==========================================
             await self._log("TestGenerator", f"Generating test suite for node {node_id}...", node_id=node_id)
             
+            interfaces_ir = get_interfaces_by_req_id(node_id)
+            req_desc = requirement_data.get("description", "")
+            req_scenarios = requirement_data.get("scenarios", [])
+            
             if not interfaces_ir:
                 await self._log("System", "No IR found. Skipping test generation.", node_id=node_id)
             else:
-                raw_test_output = await self.test_generator.generate_tests(
-                    node_id=node_id, 
-                    interfaces_ir=interfaces_ir,
-                    tech_stack=tech_stack
-                )
-                self.state["tests"] = raw_test_output
+                # Group interfaces by type
+                interfaces_by_type = {"DB": [], "FUNC": [], "API": [], "UI": []}
+                for iface in interfaces_ir:
+                    itype = iface.get("type", "").upper()
+                    if itype in interfaces_by_type:
+                        interfaces_by_type[itype].append(iface)
+                    else:
+                        if "OTHER" not in interfaces_by_type:
+                            interfaces_by_type["OTHER"] = []
+                        interfaces_by_type["OTHER"].append(iface)
+
+                all_test_outputs = []
+                
+                # 1. DB & FUNC -> Unit tests
+                unit_interfaces = interfaces_by_type["DB"] + interfaces_by_type["FUNC"]
+                if unit_interfaces:
+                    await self._log("TestGenerator", f"Generating Unit Tests for {len(unit_interfaces)} DB/FUNC interfaces...", node_id=node_id)
+                    unit_test_output = await self.test_generator.generate_tests(
+                        node_id=node_id,
+                        interfaces_ir=unit_interfaces,
+                        tech_stack=tech_stack,
+                        test_type="Unit",
+                        req_desc=req_desc
+                    )
+                    all_test_outputs.append(unit_test_output)
+
+                # 2. API -> Integration tests
+                api_interfaces = interfaces_by_type["API"]
+                if api_interfaces:
+                    await self._log("TestGenerator", f"Generating Integration Tests for {len(api_interfaces)} API interfaces...", node_id=node_id)
+                    api_test_output = await self.test_generator.generate_tests(
+                        node_id=node_id,
+                        interfaces_ir=api_interfaces,
+                        tech_stack=tech_stack,
+                        test_type="Integration",
+                        req_desc=req_desc
+                    )
+                    all_test_outputs.append(api_test_output)
+
+                # 3. UI -> E2E tests based on scenarios
+                ui_interfaces = interfaces_by_type["UI"]
+                if ui_interfaces and req_scenarios:
+                    await self._log("TestGenerator", f"Generating E2E Tests for {len(req_scenarios)} scenarios...", node_id=node_id)
+                    for idx, scenario in enumerate(req_scenarios):
+                        await self._log("TestGenerator", f"Generating E2E Test for Scenario {idx+1}/{len(req_scenarios)}: {scenario.get('name', 'Unknown')}", node_id=node_id)
+                        e2e_test_output = await self.test_generator.generate_tests(
+                            node_id=node_id,
+                            interfaces_ir=ui_interfaces,
+                            tech_stack=tech_stack,
+                            test_type="E2E",
+                            req_desc=req_desc,
+                            scenario=scenario
+                        )
+                        all_test_outputs.append(e2e_test_output)
+                elif ui_interfaces and not req_scenarios:
+                    await self._log("TestGenerator", f"Generating fallback E2E Test (no scenarios found)...", node_id=node_id)
+                    e2e_test_output = await self.test_generator.generate_tests(
+                        node_id=node_id,
+                        interfaces_ir=ui_interfaces,
+                        tech_stack=tech_stack,
+                        test_type="E2E",
+                        req_desc=req_desc
+                    )
+                    all_test_outputs.append(e2e_test_output)
+                    
+                # Combine outputs to store in state
+                combined_output = "\n\n".join(all_test_outputs)
+                self.state["tests"] = combined_output
 
                 # parse test mappings
-                match = re.search(r'```json\s*(.*?)\s*```', raw_test_output, re.DOTALL | re.IGNORECASE)
-                if match:
-                    try:
-                        test_mappings = json.loads(match.group(1))
-                        for mapping in test_mappings:
-                            t_id = mapping.get("test_id", f"TEST_{node_id}_UNKNOWN")
-                            r_id = mapping.get("req_id", node_id)
-                            i_ids = mapping.get("interface_ids", [])
-                            t_type = mapping.get("type", "Unit")
-                            f_path = mapping.get("file_path", "")
-                            f_line = mapping.get("first_line", "")
-                            
-                            insert_test(
-                                test_id=t_id,
-                                req_id=r_id,
-                                interface_ids=i_ids,
-                                type=t_type,
-                                file_path=f_path,
-                                first_line=f_line
-                            )
+                for raw_test_output in all_test_outputs:
+                    match = re.search(r'```json\s*(.*?)\s*```', raw_test_output, re.DOTALL | re.IGNORECASE)
+                    if match:
+                        try:
+                            test_mappings = json.loads(match.group(1))
+                            if not isinstance(test_mappings, list):
+                                test_mappings = [test_mappings] # fallback if they return dict
                                 
-                        await self._log("System", f"Successfully registered {len(test_mappings)} tests in traceability database.", node_id=node_id)
-                    except json.JSONDecodeError:
-                        await self._log("System", "Failed to parse test mappings JSON from TestGenerator.", node_id=node_id)
+                            for mapping in test_mappings:
+                                t_id = mapping.get("test_id", f"TEST_{node_id}_UNKNOWN")
+                                r_id = mapping.get("req_id", node_id)
+                                i_ids = mapping.get("interface_ids", [])
+                                t_type = mapping.get("type", "Unit")
+                                f_path = mapping.get("file_path", "")
+                                f_line = mapping.get("first_line", "")
+                                
+                                insert_test(
+                                    test_id=t_id,
+                                    req_id=r_id,
+                                    interface_ids=i_ids,
+                                    type=t_type,
+                                    file_path=f_path,
+                                    first_line=f_line
+                                )
+                                    
+                            await self._log("System", f"Successfully registered {len(test_mappings)} tests in traceability database.", node_id=node_id)
+                        except json.JSONDecodeError:
+                            await self._log("System", "Failed to parse test mappings JSON from TestGenerator.", node_id=node_id)
 
+        
             # ==========================================
             # Step 4: Implement (TDD Loop)
             # ==========================================
-            max_tdd_loops = 3 # external retry loops
             node_state = self.state
+            req_desc = requirement_data.get("description", "")
+            req_scenarios = requirement_data.get("scenarios", [])
 
-            while node_state["iteration"] < max_tdd_loops and not node_state["test_passed"]:
-                node_state["iteration"] += 1
-                await self._log("TestDrivenDeveloper", f"Starting implementation (TDD Iteration {node_state['iteration']}/{max_tdd_loops})...", node_id=node_id)
-
-                final_output = await self.test_driven_developer.implement(
-                    node_id=node_id, 
-                    tests_summary=node_state.get("tests", "No test summary available."),
-                    iteration=node_state["iteration"]
-                )
+            # Get tests from DB to know what files to run
+            tests = get_tests_by_req_id(node_id)
+            
+            # Group tests by type
+            tests_by_type = {"Unit": [], "Integration": [], "E2E": []}
+            for t in tests:
+                t_type = t.get("type", "Unit")
+                if t_type in tests_by_type:
+                    tests_by_type[t_type].append(t)
+            
+            # Helper to run TDD loop
+            async def run_tdd_loop(target_type: str, tests_batch: list, budget: int, scenario: dict = None):
+                test_files = [t.get("file_path") for t in tests_batch if t.get("file_path")]
+                test_ids = [t.get("test_id") for t in tests_batch if t.get("test_id")]
                 
-                # 检查是否成功
-                if "IMPLEMENTED" in final_output:
-                    node_state["test_passed"] = True
+                if not test_files:
+                    return True # Nothing to test
+
+                await self._log("TestDrivenDeveloper", f"Starting {target_type} TDD loop with {len(test_files)} tests (Budget: {budget})...", node_id=node_id)
+                
+                for iteration in range(1, budget + 1):
+                    await self._log("TestDrivenDeveloper", f"[{target_type}] Iteration {iteration}/{budget}...", node_id=node_id)
+                    final_output = await self.test_driven_developer.implement(
+                        node_id=node_id,
+                        test_files=test_files,
+                        test_type=target_type,
+                        req_desc=req_desc,
+                        scenario=scenario
+                    )
                     
-                    # 关键闭环：回写数据库，标记接口已完成
-                    try:
-                        update_interface_implemented_status(node_id)
-                        await self._log("System", f"Database updated: Interfaces for Node {node_id} marked as implemented.", node_id=node_id)
-                    except Exception as db_err:
-                        await self._log("System", f"Warning: Failed to update DB status: {str(db_err)}", node_id=node_id)
+                    if "IMPLEMENTED" in final_output:
+                        await self._log("System", f"[{target_type}] All tests passed! TDD loop completed successfully.", node_id=node_id)
                         
-                    await self._log("System", "All tests passed! TDD loop completed successfully.", node_id=node_id)
-                else:
-                    await self._log("System", "Agent finished reasoning but tests might not be fully passing. Retrying...", node_id=node_id)
+                        # Mark specifically related interfaces as implemented based on this batch
+                        try:
+                            update_test_implemented_status(test_ids)
+                            await self._log("System", f"Database updated: Interfaces covered by {target_type} tests marked as implemented.", node_id=node_id)
+                        except Exception as db_err:
+                            await self._log("System", f"Warning: Failed to update DB status for {target_type} batch: {str(db_err)}", node_id=node_id)
+                            
+                        return True
+                    else:
+                        await self._log("System", f"[{target_type}] Agent finished reasoning but tests might not be fully passing. Retrying...", node_id=node_id)
+                
+                await self._log("System", f"Warning: [{target_type}] Max TDD iterations reached without a definitive 'IMPLEMENTED' signal.", node_id=node_id)
+                return False
+
+            # 1. DB & FUNC -> Unit tests
+            unit_tests = tests_by_type["Unit"]
+            if unit_tests:
+                await run_tdd_loop("Unit", unit_tests, budget=5)
+
+            # 2. API -> Integration tests
+            int_tests = tests_by_type["Integration"]
+            if int_tests:
+                await run_tdd_loop("Integration", int_tests, budget=5)
+
+            # 3. UI -> E2E tests (One by one per scenario)
+            e2e_tests = tests_by_type["E2E"]
+            if e2e_tests:
+                # E2E tests are matched to scenarios. If scenarios exist, match by index.
+                for idx, e2e_test in enumerate(e2e_tests):
+                    file_path = e2e_test.get("file_path")
+                    if not file_path:
+                        continue
                     
-            if not node_state["test_passed"]:
-                await self._log("System", "Warning: Max TDD iterations reached without a definitive 'IMPLEMENTED' signal.", node_id=node_id)
+                    # Try to pair with scenario if available
+                    scenario = req_scenarios[idx] if idx < len(req_scenarios) else None
+                    scenario_name = scenario.get("name", f"Scenario {idx+1}") if scenario else f"Scenario {idx+1}"
+                    
+                    await self._log("System", f"Running E2E for {scenario_name}...", node_id=node_id)
+                    await run_tdd_loop("E2E", [e2e_test], budget=3, scenario=scenario)
 
             return node_state
 
         except Exception as e:
             await self._log("System", f"Workflow failed due to an error: {str(e)}", node_id=node_id)
-            return self.state
+            return node_state
 
 
 
