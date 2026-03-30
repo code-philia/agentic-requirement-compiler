@@ -408,7 +408,7 @@ class ARCWorkflowManager:
             
             interfaces_ir = get_interfaces_by_req_id(node_id)
             req_desc = requirement_data.get("description", "")
-            req_scenarios = requirement_data.get("scenarios", [])
+            req_scenario = requirement_data.get("scenario", [])
             
             if not interfaces_ir:
                 await self._log("System", "No IR found. Skipping test generation.", node_id=node_id)
@@ -454,24 +454,22 @@ class ARCWorkflowManager:
                     )
                     all_test_outputs.append(api_test_output)
 
-                # 3. UI -> E2E tests based on scenarios
+                # 3. UI -> E2E test based on scenario
                 ui_interfaces = interfaces_by_type["UI"]
-                if ui_interfaces and req_scenarios:
-                    await self._log("TestGenerator", f"Generating E2E Tests for {len(req_scenarios)} scenarios...", node_id=node_id)
-                    for idx, scenario in enumerate(req_scenarios):
-                        await self._log("TestGenerator", f"Generating E2E Test for Scenario {idx+1}/{len(req_scenarios)}: {scenario.get('name', 'Unknown')}", node_id=node_id)
-                        e2e_test_output = await self.test_generator.generate_tests(
-                            node_id=node_id,
-                            interfaces_ir=ui_interfaces,
-                            tech_stack=tech_stack,
-                            test_type="E2E",
-                            req_desc=req_desc,
-                            scenario=scenario,
-                            dependency_context=dependency_context
-                        )
-                        all_test_outputs.append(e2e_test_output)
-                elif ui_interfaces and not req_scenarios:
-                    await self._log("TestGenerator", f"Generating fallback E2E Test (no scenarios found)...", node_id=node_id)
+                if ui_interfaces and req_scenario:
+                    await self._log("TestGenerator", f"Generating E2E Test for scenario...", node_id=node_id)
+                    e2e_test_output = await self.test_generator.generate_tests(
+                        node_id=node_id,
+                        interfaces_ir=ui_interfaces,
+                        tech_stack=tech_stack,
+                        test_type="E2E",
+                        req_desc=req_desc,
+                        scenario=req_scenario,
+                        dependency_context=dependency_context
+                    )
+                    all_test_outputs.append(e2e_test_output)
+                elif ui_interfaces and not req_scenario:
+                    await self._log("TestGenerator", f"Generating fallback E2E Test (no scenario found)...", node_id=node_id)
                     e2e_test_output = await self.test_generator.generate_tests(
                         node_id=node_id,
                         interfaces_ir=ui_interfaces,
@@ -520,8 +518,9 @@ class ARCWorkflowManager:
             # ==========================================
             # Step 4: Implement (TDD Loop)
             # ==========================================
+            node_state = self.state
             req_desc = requirement_data.get("description", "")
-            req_scenarios = requirement_data.get("scenarios", [])
+            req_scenario = requirement_data.get("scenario", [])
 
             # Get tests from DB to know what files to run
             tests = get_tests_by_req_id(node_id)
@@ -536,7 +535,7 @@ class ARCWorkflowManager:
             # Helper to run TDD loop
             current_interfaces = get_interfaces_by_req_id(node_id)
             
-            async def run_tdd_loop(target_type: str, tests_batch: list, budget: int, scenario: dict = None):
+            async def run_tdd_loop(target_type: str, tests_batch: list, budget: int, scenario: list = None):
                 test_files = [t.get("file_path") for t in tests_batch if t.get("file_path")]
                 test_ids = [t.get("test_id") for t in tests_batch if t.get("test_id")]
                 
@@ -587,18 +586,15 @@ class ARCWorkflowManager:
             # 3. UI -> E2E tests (One by one per scenario)
             e2e_tests = tests_by_type["E2E"]
             if e2e_tests:
-                # E2E tests are matched to scenarios. If scenarios exist, match by index.
+                # E2E tests are matched to the single scenario
                 for idx, e2e_test in enumerate(e2e_tests):
                     file_path = e2e_test.get("file_path")
                     if not file_path:
                         continue
                     
-                    # Try to pair with scenario if available
-                    scenario = req_scenarios[idx] if idx < len(req_scenarios) else None
-                    scenario_name = scenario.get("name", f"Scenario {idx+1}") if scenario else f"Scenario {idx+1}"
-                    
+                    scenario_name = f"Scenario {idx+1}"
                     await self._log("System", f"Running E2E for {scenario_name}...", node_id=node_id)
-                    await run_tdd_loop("E2E", [e2e_test], budget=3, scenario=scenario)
+                    await run_tdd_loop("E2E", [e2e_test], budget=3, scenario=req_scenario)
 
             return True
 

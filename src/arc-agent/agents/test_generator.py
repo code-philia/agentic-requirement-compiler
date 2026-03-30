@@ -43,7 +43,7 @@ Schema for each object:
             "add_todo", "list_todos", "check_todo", "clear_todos", "run_build", "search_interfaces_by_keyword", "search_interfaces_by_relation", "get_node_relations"
         ]
 
-    async def generate_tests(self, node_id: str, interfaces_ir: list, tech_stack: str, test_type: str = "Unit", req_desc: str = "", scenario: dict = None, dependency_context: str = "") -> str:
+    async def generate_tests(self, node_id: str, interfaces_ir: list, tech_stack: str, test_type: str = "Unit", req_desc: str = "", scenario: list = None, dependency_context: str = "") -> str:
         scenario_context = ""
         if test_type == "E2E" and scenario:
             scenario_context = f"\n### Target UI Scenario\n{json.dumps(scenario, indent=2, ensure_ascii=False)}\nPlease write a Playwright E2E test specifically for this scenario."

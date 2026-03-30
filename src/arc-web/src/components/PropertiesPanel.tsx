@@ -7,18 +7,12 @@ interface Step {
     content: string;
 }
 
-interface Scenario {
-    id: string;
-    name: string;
-    steps: Step[];
-}
-
 interface RequirementNode {
     id: string;
     name: string;
     description?: string;
     dependencies?: string[];
-    scenarios?: Scenario[];
+    scenario?: Step[]; // Changed from scenarios: Scenario[] to a single scenario array of Steps
     [key: string]: any;
 }
 
@@ -441,112 +435,75 @@ export default function PropertiesPanel({ node, onUpdate, onDelete, onClose }: P
                             </div>
                         </CollapsibleSection>
 
-                        {/* Scenarios Section */}
-                        <CollapsibleSection title="Scenarios" onAdd={() => {
-                            const newScenario: Scenario = {
-                                id: `${node.id}:SCE-${(formData.scenarios || []).length + 1}`,
-                                name: 'New Scenario',
-                                steps: []
-                            };
-                            handleChange('scenarios', [...(formData.scenarios || []), newScenario]);
-                        }}>
+                        {/* Scenario Section */}
+                        <CollapsibleSection title="Scenario" defaultOpen={true}>
                             <div className="space-y-4">
-                                {(formData.scenarios || []).length === 0 && (
-                                    <div className="text-xs text-[var(--vscode-descriptionForeground)] italic py-1">No scenarios defined.</div>
-                                )}
-                                {(formData.scenarios || []).map((scenario: Scenario, sIdx: number) => (
-                                    <div key={sIdx} className="border border-[var(--vscode-panel-border)] rounded-sm bg-[var(--vscode-editor-background)] overflow-hidden">
-                                        {/* Scenario Header */}
-                                        <div className="px-2 py-1.5 border-b border-[var(--vscode-panel-border)] flex justify-between items-center bg-[var(--vscode-list-hoverBackground)]/30">
-                                            <div className="flex-1 mr-2">
-                                                <input 
-                                                    type="text" 
-                                                    value={scenario.name}
-                                                    onChange={(e) => {
-                                                        const newScenarios = [...(formData.scenarios || [])];
-                                                        newScenarios[sIdx] = { ...newScenarios[sIdx], name: e.target.value };
-                                                        handleChange('scenarios', newScenarios);
-                                                    }}
-                                                    className="w-full bg-transparent border-none text-xs font-semibold focus:outline-none p-0 text-[var(--vscode-foreground)] placeholder-[var(--vscode-input-placeholderForeground)]"
-                                                    placeholder="Scenario Name"
-                                                />
+                                <div className="border border-[var(--vscode-panel-border)] rounded-sm bg-[var(--vscode-editor-background)] overflow-hidden">
+                                    <div className="p-2">
+                                        {/* Steps */}
+                                        <div>
+                                            <div className="flex justify-between items-center mb-1">
+                                                <label className="text-[10px] font-medium text-[var(--vscode-descriptionForeground)] uppercase tracking-wider">Gherkin Steps</label>
+                                                <button onClick={() => {
+                                                    const currentScenario = formData.scenario || [];
+                                                    handleChange('scenario', [...currentScenario, { keyword: 'GIVEN', content: '' }]);
+                                                }} className="text-[var(--vscode-textLink-foreground)] hover:text-[var(--vscode-textLink-activeForeground)] cursor-pointer" title="Add Step">
+                                                    <Plus size={12} />
+                                                </button>
                                             </div>
-                                            <button onClick={() => {
-                                                const newScenarios = [...(formData.scenarios || [])];
-                                                newScenarios.splice(sIdx, 1);
-                                                handleChange('scenarios', newScenarios);
-                                            }} className="text-[var(--vscode-descriptionForeground)] hover:text-[var(--vscode-errorForeground)] p-1 rounded hover:bg-[var(--vscode-list-hoverBackground)] transition-colors" title="Delete Scenario">
-                                                <Trash2 size={12} />
-                                            </button>
-                                        </div>
-
-                                        <div className="p-2">
-                                            {/* Steps */}
-                                            <div>
-                                                <div className="flex justify-between items-center mb-1">
-                                                    <label className="text-[10px] font-medium text-[var(--vscode-descriptionForeground)] uppercase tracking-wider">Gherkin Steps</label>
-                                                    <button onClick={() => {
-                                                        const newScenarios = [...(formData.scenarios || [])];
-                                                        newScenarios[sIdx].steps.push({ keyword: 'GIVEN', content: '' });
-                                                        handleChange('scenarios', newScenarios);
-                                                    }} className="text-[var(--vscode-textLink-foreground)] hover:text-[var(--vscode-textLink-activeForeground)] cursor-pointer" title="Add Step">
-                                                        <Plus size={12} />
-                                                    </button>
-                                                </div>
-                                                
-                                                <div className="space-y-2">
-                                                    {(scenario.steps || []).map((step, stepIdx) => (
-                                                        <div key={stepIdx} className="bg-[var(--vscode-input-background)]/30 p-1.5 rounded-sm border border-[var(--vscode-panel-border)] group relative">
-                                                            <button 
-                                                                onClick={() => {
-                                                                    const newScenarios = [...(formData.scenarios || [])];
-                                                                    newScenarios[sIdx].steps.splice(stepIdx, 1);
-                                                                    handleChange('scenarios', newScenarios);
-                                                                }} 
-                                                                className="absolute right-1 top-1 opacity-0 group-hover:opacity-100 text-[var(--vscode-descriptionForeground)] hover:text-[var(--vscode-errorForeground)] p-0.5 transition-opacity"
-                                                            >
-                                                                <X size={12} />
-                                                            </button>
-                                                            <div className="flex gap-2 items-start">
-                                                                <div className="w-16 shrink-0">
-                                                                    <select 
-                                                                        value={step.keyword}
-                                                                        onChange={(e) => {
-                                                                            const newScenarios = [...(formData.scenarios || [])];
-                                                                            newScenarios[sIdx].steps[stepIdx].keyword = e.target.value;
-                                                                            handleChange('scenarios', newScenarios);
-                                                                        }}
-                                                                        className={selectClasses}
-                                                                    >
-                                                                        <option value="GIVEN">GIVEN</option>
-                                                                        <option value="WHEN">WHEN</option>
-                                                                        <option value="THEN">THEN</option>
-                                                                        <option value="AND">AND</option>
-                                                                        <option value="BUT">BUT</option>
-                                                                    </select>
-                                                                </div>
-                                                                <textarea 
-                                                                    value={step.content} 
+                                            
+                                            <div className="space-y-2">
+                                                {(formData.scenario || []).map((step, stepIdx) => (
+                                                    <div key={stepIdx} className="bg-[var(--vscode-input-background)]/30 p-1.5 rounded-sm border border-[var(--vscode-panel-border)] group relative">
+                                                        <button 
+                                                            onClick={() => {
+                                                                const newScenario = [...(formData.scenario || [])];
+                                                                newScenario.splice(stepIdx, 1);
+                                                                handleChange('scenario', newScenario);
+                                                            }} 
+                                                            className="absolute right-1 top-1 opacity-0 group-hover:opacity-100 text-[var(--vscode-descriptionForeground)] hover:text-[var(--vscode-errorForeground)] p-0.5 transition-opacity"
+                                                        >
+                                                            <X size={12} />
+                                                        </button>
+                                                        <div className="flex gap-2 items-start">
+                                                            <div className="w-16 shrink-0">
+                                                                <select 
+                                                                    value={step.keyword}
                                                                     onChange={(e) => {
-                                                                        const newScenarios = [...(formData.scenarios || [])];
-                                                                        newScenarios[sIdx].steps[stepIdx].content = e.target.value;
-                                                                        handleChange('scenarios', newScenarios);
+                                                                        const newScenario = [...(formData.scenario || [])];
+                                                                        newScenario[stepIdx] = { ...newScenario[stepIdx], keyword: e.target.value };
+                                                                        handleChange('scenario', newScenario);
                                                                     }}
-                                                                    className={cn(inputClasses, "py-1 min-h-[2.5rem] resize-y")}
-                                                                    placeholder="Step description..."
-                                                                    rows={2}
-                                                                />
+                                                                    className={selectClasses}
+                                                                >
+                                                                    <option value="GIVEN">GIVEN</option>
+                                                                    <option value="WHEN">WHEN</option>
+                                                                    <option value="THEN">THEN</option>
+                                                                    <option value="AND">AND</option>
+                                                                    <option value="BUT">BUT</option>
+                                                                </select>
                                                             </div>
+                                                            <textarea 
+                                                                value={step.content} 
+                                                                onChange={(e) => {
+                                                                    const newScenario = [...(formData.scenario || [])];
+                                                                    newScenario[stepIdx] = { ...newScenario[stepIdx], content: e.target.value };
+                                                                    handleChange('scenario', newScenario);
+                                                                }}
+                                                                className={cn(inputClasses, "py-1 min-h-[2.5rem] resize-y")}
+                                                                placeholder="Step description..."
+                                                                rows={2}
+                                                            />
                                                         </div>
-                                                    ))}
-                                                    {(scenario.steps || []).length === 0 && (
-                                                        <div className="text-[10px] text-[var(--vscode-descriptionForeground)] italic opacity-60">No steps defined</div>
-                                                    )}
-                                                </div>
+                                                    </div>
+                                                ))}
+                                                {(formData.scenario || []).length === 0 && (
+                                                    <div className="text-[10px] text-[var(--vscode-descriptionForeground)] italic opacity-60">No scenario steps defined</div>
+                                                )}
                                             </div>
                                         </div>
                                     </div>
-                                ))}
+                                </div>
                             </div>
                         </CollapsibleSection>
 

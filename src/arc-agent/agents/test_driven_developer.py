@@ -38,7 +38,7 @@ Once `run_tests` returns a 100% passing state (Exit Code: 0) for the target test
     def get_tool_names(self) -> List[str]:
         return ["read_file", "write_file", "delete_file", "insert_lines", "replace_lines", "list_directory", "grep_search", "add_todo", "list_todos", "check_todo", "clear_todos", "execute_command", "run_tests", "run_build", "search_interfaces_by_keyword", "search_interfaces_by_relation", "get_node_relations"]
         
-    async def implement(self, node_id: str, test_files: List[str], test_type: str, req_desc: str, scenario: dict = None, dependency_context: str = "", current_interfaces: list = None) -> str:
+    async def implement(self, node_id: str, test_files: List[str], test_type: str, req_desc: str, scenario: list = None, dependency_context: str = "", current_interfaces: list = None) -> str:
         scenario_context = ""
         if test_type == "E2E" and scenario:
             scenario_context = f"\n### Target UI Scenario\n{json.dumps(scenario, indent=2, ensure_ascii=False)}"
