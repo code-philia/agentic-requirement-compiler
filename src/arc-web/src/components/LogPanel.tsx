@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from 'react';
-import { Terminal, Database, AlertCircle, CheckCircle2, Cpu, ChevronRight, ChevronDown } from 'lucide-react';
+import { Terminal, ChevronRight, ChevronDown } from 'lucide-react';
 
 interface LogMessage {
   agent: string;
@@ -8,7 +8,7 @@ interface LogMessage {
   timestamp?: string;
 }
 
-const LogEntry = ({ log, getIcon, getLogStyle }: { log: LogMessage, getIcon: any, getLogStyle: any }) => {
+const LogEntry = ({ log, getLogStyle }: { log: LogMessage, getLogStyle: any }) => {
     const [expanded, setExpanded] = useState(false);
     const MAX_LENGTH = 150;
     const isLong = log.text.length > MAX_LENGTH || log.text.includes('\n');
@@ -22,27 +22,20 @@ const LogEntry = ({ log, getIcon, getLogStyle }: { log: LogMessage, getIcon: any
 
     return (
         <div 
-            className={`flex gap-3 px-3 py-2 rounded-sm transition-colors cursor-pointer group ${getLogStyle(log.type)}`}
+            className={`flex items-start font-mono text-sm leading-snug cursor-pointer hover:bg-[var(--vscode-list-hoverBackground)] ${getLogStyle(log.type)}`}
             onClick={() => isLong && setExpanded(!expanded)}
         >
-            <div className="font-mono text-xs text-gray-500 shrink-0 w-[60px] pt-0.5">{log.timestamp}</div>
-            <div className="flex gap-2 items-start flex-1 min-w-0">
-                <div className="shrink-0 pt-0.5">
-                    {getIcon(log.type, log.agent)}
-                </div>
-                <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-2">
-                        {log.agent !== 'System' && <span className="font-bold opacity-80 shrink-0">[{log.agent}]</span>}
-                        {isLong && (
-                            <span className="text-[10px] opacity-50 flex items-center">
-                                {expanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
-                            </span>
-                        )}
-                    </div>
-                    <div className={`break-words whitespace-pre-wrap ${log.type === 'system-event' ? 'opacity-80' : ''}`}>
-                        {displayText}
-                    </div>
-                </div>
+            <div className="shrink-0 flex items-center w-[16px] pt-[2px]">
+                {isLong && (
+                    <span className="opacity-70">
+                        {expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+                    </span>
+                )}
+            </div>
+            <div className="flex-1 min-w-0 break-words whitespace-pre-wrap py-[2px]">
+                <span className="text-[var(--vscode-terminal-ansiBrightBlack)] mr-2">[{log.timestamp}]</span>
+                {log.agent !== 'System' && <span className="font-bold mr-2">[{log.agent}]</span>}
+                <span className={log.type === 'system-event' ? 'opacity-80' : ''}>{displayText}</span>
             </div>
         </div>
     );
@@ -140,27 +133,19 @@ export default function LogPanel() {
     logsEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [logs]);
   
-  const getIcon = (type: string | undefined, agent: string) => {
-      if (type === 'error-event') return <AlertCircle size={14} className="text-red-400 mt-0.5 shrink-0" />;
-      if (type === 'db-event') return <Database size={14} className="text-blue-400 mt-0.5 shrink-0" />;
-      if (type === 'success-event') return <CheckCircle2 size={14} className="text-green-400 mt-0.5 shrink-0" />;
-      if (agent === 'System') return <Terminal size={14} className="text-gray-400 mt-0.5 shrink-0" />;
-      return <Cpu size={14} className="text-purple-400 mt-0.5 shrink-0" />;
-  };
-
   const getLogStyle = (type: string | undefined) => {
       switch(type) {
-          case 'error-event': return 'bg-red-500/10 border-l-2 border-red-500 text-[var(--vscode-editor-foreground)] hover:bg-red-500/20';
-          case 'db-event': return 'bg-blue-500/5 border-l-2 border-blue-500 text-[var(--vscode-editor-foreground)] hover:bg-blue-500/10';
-          case 'success-event': return 'bg-green-500/10 border-l-2 border-green-500 text-[var(--vscode-editor-foreground)] hover:bg-green-500/20';
-          case 'system-event': return 'text-[var(--vscode-descriptionForeground)] italic border-l-2 border-transparent pl-2 hover:bg-[var(--vscode-list-hoverBackground)]';
-          default: return 'text-[var(--vscode-editor-foreground)] border-l-2 border-gray-700/30 hover:bg-[var(--vscode-list-hoverBackground)]';
+          case 'error-event': return 'text-[var(--vscode-terminal-ansiRed)]';
+          case 'db-event': return 'text-[var(--vscode-terminal-ansiBlue)]';
+          case 'success-event': return 'text-[var(--vscode-terminal-ansiGreen)]';
+          case 'system-event': return 'text-[var(--vscode-terminal-ansiBrightBlack)] italic';
+          default: return 'text-[var(--vscode-terminal-foreground)]';
       }
   };
 
   return (
-    <div className="flex flex-col h-full bg-[var(--vscode-panel-background)] text-[var(--vscode-panel-foreground)] p-0 relative">
-      <div className="flex-1 overflow-y-auto bg-[var(--vscode-editor-background)] p-4 font-mono text-sm">
+    <div className="flex flex-col h-full bg-[var(--vscode-panel-background)] text-[var(--vscode-terminal-foreground)] p-0 relative">
+      <div className="flex-1 overflow-y-auto bg-[var(--vscode-terminal-background)] p-4 font-mono text-sm">
         {/* Top Spacer */}
         <div className="h-4"></div>
 
@@ -171,9 +156,9 @@ export default function LogPanel() {
             </div>
         )}
         
-        <div className="space-y-1 pb-16"> {/* Added pb-16 for bottom margin */}
+        <div className="pb-16"> {/* Removed space-y-1 for tighter native terminal look */}
             {logs.map((log, index) => (
-                <LogEntry key={index} log={log} getIcon={getIcon} getLogStyle={getLogStyle} />
+                <LogEntry key={index} log={log} getLogStyle={getLogStyle} />
             ))}
             <div ref={logsEndRef} />
         </div>
