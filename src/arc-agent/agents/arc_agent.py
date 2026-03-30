@@ -22,7 +22,7 @@ class ARCAgent:
         broadcast_cb: Callable[[dict], Awaitable[None]] = None
     ):
         self.agent_name = agent_name
-        self.model = model or os.environ.get("MODEL", "GLM-5")
+        self.model = os.environ.get("MODEL", "GLM-5")
         self.broadcast_cb = broadcast_cb
         self.client = AsyncOpenAI(
             api_key=os.environ.get("OPENAI_API_KEY"),
