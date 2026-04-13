@@ -30,6 +30,11 @@
         "command": "arc.restartCompilation",
         "title": "Clear and Restart Compilation",
         "category": "ARC"
+      },
+      {
+        "command": "arc.openSettings",
+        "title": "Settings",
+        "category": "ARC"
       }
     ],
     "menus": {
@@ -46,6 +51,10 @@
         },
         {
           "command": "arc.restartCompilation",
+          "group": "navigation"
+        },
+        {
+          "command": "arc.openSettings",
           "group": "navigation"
         }
       ]

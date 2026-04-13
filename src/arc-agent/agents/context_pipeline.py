@@ -22,11 +22,11 @@ class ContextPipeline:
         Layer 1: Global Context (Tech stack, project rules, directory structure).
         Reads from a standard file like `.arc_context.md` if it exists.
         """
-        context_file = os.path.join(self.workspace_dir, ".arc_context.md")
+        context_file = os.path.join(self.workspace_dir, ".arc", "metadata.md")
         if os.path.exists(context_file):
             with open(context_file, "r", encoding="utf-8") as f:
                 return f"<global_context>\n{f.read()}\n</global_context>"
-        return "<global_context>\nNo global context file (.arc_context.md) found.\n</global_context>"
+        return "<global_context>\nNo global context file (.arc/metadata.md) found.\n</global_context>"
 
     def _get_relational_interfaces(self, node_id: str) -> List[Dict]:
         """
