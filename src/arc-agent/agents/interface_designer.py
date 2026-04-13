@@ -52,18 +52,22 @@ Each object in the array must follow this exact schema:
 
     def get_tool_names(self) -> List[str]:
         return [
-            "read_file", "write_file", "delete_file", "insert_lines", "replace_lines", "list_directory", "grep_search", "run_build", "search_interfaces_by_keyword", "search_interfaces_by_relation", "find_interface_impacts", "get_node_relations"
+            "read_file", "write_file", "delete_file", "insert_lines", "replace_lines", "list_directory", "grep_search", 
+            "run_build", "search_interfaces_by_keyword", "search_interfaces_by_relation", "find_interface_impacts", "get_node_relations"
         ]
 
-    async def design(self, node_id: str, requirement_data: dict, tech_stack: str, dependency_context: str = "") -> str:
+    async def design(self, node_id: str, requirement_data: dict) -> str:
+        from .context_pipeline import context_pipeline
+        
+        # 1. Use the new Context Pipeline to build layered context for the InterfaceDesigner
+        context_str = context_pipeline.build_agent_context(node_id=node_id, agent_type=self.agent_name)
+
         user_prompt = f"""
-### Tech Stack Context
-{tech_stack}
+### Auto-Prefetched Context for Node [{node_id}]
+{context_str}
 
 ### Current Target Requirement Node (ID: {node_id})
 {json.dumps(requirement_data, indent=2, ensure_ascii=False)}
-
-{dependency_context}
 
 Please perform the top-down decomposition for Node [{node_id}].
 Then, generate the stub code files using the `write_file` tool. 

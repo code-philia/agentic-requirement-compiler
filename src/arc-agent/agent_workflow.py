@@ -316,30 +316,10 @@ class ARCWorkflowManager:
             await self.parse_and_store_visual_elements(self.workspace_path, requirement_data)
             # Refresh requirement data after parsing visual elements
             requirement_data = get_requirement_by_id(node_id)
-            
-            tech_stack = """
-### Frontend
-* **Framework**: React 18+ (Vite)
-* **Language**: JavaScript (ES6+)
-* **Styling**: Tailwind CSS v4
-* **HTTP**: Axios (Must use Interceptors for global error handling)
-* **Testing**: None in frontend directory. (Verified via E2E in backend).
-
-### Backend
-* **Runtime**: Node.js (LTS)
-* **Framework**: Express.js
-* **Database**: SQLite3 (`sqlite3` driver, file-based)
-* **Testing**: 
-    * **Vitest**: Used for Unit and Integration testing.
-    * **Supertest**: Used with Vitest for API route testing.
-    * **Playwright**: Used for End-to-End (E2E) testing, located in `backend/test-e2e`.            
-"""
 
             raw_design_output = await self.interface_designer.design(
                 node_id=node_id, 
-                requirement_data=requirement_data,
-                tech_stack=tech_stack,
-                dependency_context=dependency_context
+                requirement_data=requirement_data
             )
             # Parse and store the designed interfaces with file mappings
             match = re.search(r'```json\s*(.*?)\s*```', raw_design_output, re.DOTALL | re.IGNORECASE)
@@ -407,8 +387,6 @@ class ARCWorkflowManager:
             await self._log("TestGenerator", f"Generating test suite for node {node_id}...", node_id=node_id)
             
             interfaces_ir = get_interfaces_by_req_id(node_id)
-            req_desc = requirement_data.get("description", "")
-            req_scenario = requirement_data.get("scenario", [])
             
             if not interfaces_ir:
                 await self._log("System", "No IR found. Skipping test generation.", node_id=node_id)
@@ -432,11 +410,9 @@ class ARCWorkflowManager:
                     await self._log("TestGenerator", f"Generating Unit Tests for {len(unit_interfaces)} DB/FUNC interfaces...", node_id=node_id)
                     unit_test_output = await self.test_generator.generate_tests(
                         node_id=node_id,
+                        requirement_data=requirement_data,
                         interfaces_ir=unit_interfaces,
-                        tech_stack=tech_stack,
-                        test_type="Unit",
-                        req_desc=req_desc,
-                        dependency_context=dependency_context
+                        test_type="Unit"
                     )
                     all_test_outputs.append(unit_test_output)
 
@@ -446,37 +422,21 @@ class ARCWorkflowManager:
                     await self._log("TestGenerator", f"Generating Integration Tests for {len(api_interfaces)} API interfaces...", node_id=node_id)
                     api_test_output = await self.test_generator.generate_tests(
                         node_id=node_id,
+                        requirement_data=requirement_data,
                         interfaces_ir=api_interfaces,
-                        tech_stack=tech_stack,
-                        test_type="Integration",
-                        req_desc=req_desc,
-                        dependency_context=dependency_context
+                        test_type="Integration"
                     )
                     all_test_outputs.append(api_test_output)
 
                 # 3. UI -> E2E test based on scenario
                 ui_interfaces = interfaces_by_type["UI"]
-                if ui_interfaces and req_scenario:
+                if ui_interfaces:
                     await self._log("TestGenerator", f"Generating E2E Test for scenario...", node_id=node_id)
                     e2e_test_output = await self.test_generator.generate_tests(
                         node_id=node_id,
+                        requirement_data=requirement_data,
                         interfaces_ir=ui_interfaces,
-                        tech_stack=tech_stack,
-                        test_type="E2E",
-                        req_desc=req_desc,
-                        scenario=req_scenario,
-                        dependency_context=dependency_context
-                    )
-                    all_test_outputs.append(e2e_test_output)
-                elif ui_interfaces and not req_scenario:
-                    await self._log("TestGenerator", f"Generating fallback E2E Test (no scenario found)...", node_id=node_id)
-                    e2e_test_output = await self.test_generator.generate_tests(
-                        node_id=node_id,
-                        interfaces_ir=ui_interfaces,
-                        tech_stack=tech_stack,
-                        test_type="E2E",
-                        req_desc=req_desc,
-                        dependency_context=dependency_context
+                        test_type="E2E"
                     )
                     all_test_outputs.append(e2e_test_output)
                     
@@ -518,7 +478,6 @@ class ARCWorkflowManager:
             # ==========================================
             # Step 4: Implement (TDD Loop)
             # ==========================================
-            node_state = self.state
             req_desc = requirement_data.get("description", "")
             req_scenario = requirement_data.get("scenario", [])
 

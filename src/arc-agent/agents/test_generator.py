@@ -40,22 +40,25 @@ Schema for each object:
     def get_tool_names(self) -> List[str]:
         return [
             "read_file", "write_file", "delete_file", "insert_lines", "replace_lines", "list_directory", "grep_search", 
-            "add_todo", "list_todos", "check_todo", "clear_todos", "run_build", "search_interfaces_by_keyword", "search_interfaces_by_relation", "get_node_relations"
+            "run_build", "search_interfaces_by_keyword", "search_interfaces_by_relation", "get_node_relations"
         ]
 
-    async def generate_tests(self, node_id: str, interfaces_ir: list, tech_stack: str, test_type: str = "Unit", req_desc: str = "", scenario: list = None, dependency_context: str = "") -> str:
+    async def generate_tests(self, node_id: str, requirement_data: Dict[str, Any], interfaces_ir: list, test_type: str = "Unit") -> str:
+        from .context_pipeline import context_pipeline
+        
+        # 1. Use the new Context Pipeline to build layered context for the TestGenerator
+        context_str = context_pipeline.build_agent_context(node_id=node_id, agent_type=self.agent_name)
+
         scenario_context = ""
-        if test_type == "E2E" and scenario:
-            scenario_context = f"\n### Target UI Scenario\n{json.dumps(scenario, indent=2, ensure_ascii=False)}\nPlease write a Playwright E2E test specifically for this scenario."
+        if test_type == "E2E" and requirement_data.get("scenario"):
+            scenario_context = f"\n### Target UI Scenario\n{json.dumps(requirement_data.get("scenario"), indent=2, ensure_ascii=False)}\nPlease write a Playwright E2E test specifically for this scenario."
 
         user_prompt = f"""
-### Tech Stack Context
-{tech_stack}
-
-{dependency_context}
+### Auto-Prefetched Context for Node [{node_id}]
+{context_str}
 
 ### Requirement Description for Node [{node_id}]
-{req_desc}
+{requirement_data.get("description", "")}
 
 ### Interfaces to Test (Target: {test_type} Tests)
 {json.dumps(interfaces_ir, indent=2, ensure_ascii=False)}
