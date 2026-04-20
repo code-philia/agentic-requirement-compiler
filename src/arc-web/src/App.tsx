@@ -2,7 +2,6 @@ import { useState, useEffect } from 'react';
 import Sidebar from './components/Sidebar';
 import LogPanel from './components/LogPanel';
 import MainEditor from './components/MainEditor';
-import SettingsPanel from './components/SettingsPanel';
 import './App.css';
 
 // Type declaration for VS Code API
@@ -48,7 +47,6 @@ function App() {
   if (view === 'sidebar') return <Sidebar />;
   if (view === 'logs') return <LogPanel />;
   if (view === 'main') return <MainEditor />;
-  if (view === 'settings') return <SettingsPanel />;
   
   return (
     <div className="p-4 text-center">

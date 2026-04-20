@@ -112,61 +112,39 @@ export async function activate(context: vscode.ExtensionContext) {
         })
     );
 
-    // Register ARC Settings Command
+    // Register command for launcher panel to fetch settings data
     context.subscriptions.push(
-        vscode.commands.registerCommand("arc.openSettings", async () => {
+        vscode.commands.registerCommand("arc.getSettingsData", async () => {
             const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
             if (!workspaceRoot) {
-                vscode.window.showErrorMessage('ARC Settings requires an opened workspace.');
-                return;
+                return { envKeys: [], envValues: {}, stack: { backend: 'nodejs', frontend: 'react', database: 'sqlite' } };
             }
+            return await loadSettingsInitData(context, workspaceRoot);
+        })
+    );
 
-            const panel = vscode.window.createWebviewPanel(
-                'arc.settings',
-                'ARC Settings',
-                vscode.ViewColumn.Active,
-                {
-                    enableScripts: true,
-                    retainContextWhenHidden: true,
-                    localResourceRoots: [vscode.Uri.joinPath(context.extensionUri, 'webview-dist')],
-                },
-            );
-
-            const initData = await loadSettingsInitData(context, workspaceRoot);
-            panel.webview.html = await getArcWebviewHtml(panel.webview, context.extensionUri, 'settings');
-
-            setTimeout(() => {
-                panel.webview.postMessage({ command: 'arcSettingsInit', data: initData });
-            }, 500);
-
-            panel.webview.onDidReceiveMessage(async (message) => {
-                if (message?.command === 'requestArcSettingsInit') {
-                    panel.webview.postMessage({ command: 'arcSettingsInit', data: initData });
-                }
-                if (message?.command === 'saveArcSettings') {
-                    const payload = message.payload as {
-                        envValues: Record<string, string>;
-                        stack: ArcTechStack;
-                        profile?: ArcStackProfile;
-                    };
-                    if (!payload || !payload.envValues || !payload.stack) {
-                        vscode.window.showErrorMessage('Invalid ARC settings payload.');
-                        return;
-                    }
-
-                    try {
-                        await saveArcSettings(context, workspaceRoot, initData.envKeys, payload);
-                        vscode.window.showInformationMessage('ARC settings saved.');
-                        panel.dispose();
-                    } catch (error) {
-                        const msg = error instanceof Error ? error.message : String(error);
-                        vscode.window.showErrorMessage(`Failed to save ARC settings: ${msg}`);
-                    }
-                }
-                if (message?.command === 'cancelArcSettings') {
-                    panel.dispose();
-                }
-            });
+    // Register command for launcher panel to save settings
+    context.subscriptions.push(
+        vscode.commands.registerCommand("arc.saveSettings", async (payload: {
+            envValues: Record<string, string>;
+            stack: ArcTechStack;
+            profile?: ArcStackProfile;
+        }) => {
+            const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+            if (!workspaceRoot) {
+                return { ok: false, message: "ARC Settings requires an opened workspace." };
+            }
+            if (!payload || !payload.envValues || !payload.stack) {
+                return { ok: false, message: "Invalid ARC settings payload." };
+            }
+            try {
+                const initData = await loadSettingsInitData(context, workspaceRoot);
+                await saveArcSettings(context, workspaceRoot, initData.envKeys, payload);
+                return { ok: true };
+            } catch (error) {
+                const msg = error instanceof Error ? error.message : String(error);
+                return { ok: false, message: msg };
+            }
         })
     );
 
@@ -361,40 +339,6 @@ function upsertStackMetadata(content: string, stack: ArcTechStack, profile: ArcS
     }
 
     return `${content.trimEnd()}\n\n${block}\n`;
-}
-
-async function getArcWebviewHtml(
-    webview: vscode.Webview,
-    extensionUri: vscode.Uri,
-    view: 'settings',
-): Promise<string> {
-    const webviewDistPath = vscode.Uri.joinPath(extensionUri, 'webview-dist');
-    const indexHtmlPath = vscode.Uri.joinPath(webviewDistPath, 'index.html');
-
-    let htmlContent = '';
-    try {
-        const uint8Array = await vscode.workspace.fs.readFile(indexHtmlPath);
-        htmlContent = new TextDecoder().decode(uint8Array);
-    } catch (err) {
-        return `<h3>Error loading webview</h3><p>${err}</p><p>Path: ${indexHtmlPath.toString()}</p>`;
-    }
-
-    const webviewUri = webview.asWebviewUri(webviewDistPath);
-    htmlContent = htmlContent
-        .replace(/src="\.\//g, `src="${webviewUri}/`)
-        .replace(/href="\.\//g, `href="${webviewUri}/`);
-
-    const csp = `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline' ${webview.cspSource}; script-src 'unsafe-inline' ${webview.cspSource}; connect-src ws://127.0.0.1:8000 http://127.0.0.1:8000; img-src ${webview.cspSource} https: data:;">`;
-    htmlContent = htmlContent.replace('<head>', `<head>\n${csp}`);
-
-    const viewScript = `<script>
-        if (window.history.replaceState) {
-            window.history.replaceState(null, '', '?view=${view}');
-        }
-    </script>`;
-    htmlContent = htmlContent.replace('<body>', `<body>\n${viewScript}`);
-
-    return htmlContent;
 }
 
 async function readTextFile(uri: vscode.Uri): Promise<string> {

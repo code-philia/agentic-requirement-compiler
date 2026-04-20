@@ -23,49 +23,14 @@
       },
       {
         "command": "arc.startCompilation",
-        "title": "Start Compilation",
-        "category": "ARC"
+        "title": "Start Compilation"
       },
       {
         "command": "arc.restartCompilation",
-        "title": "Clear and Restart Compilation",
-        "category": "ARC"
-      },
-      {
-        "command": "arc.openSettings",
-        "title": "Settings",
-        "category": "ARC"
+        "title": "Clear and Restart Compilation"
       }
     ],
-    "menus": {
-      "editor/title": [
-        {
-          "submenu": "arc/main",
-          "group": "navigation"
-        }
-      ],
-      "arc/main": [
-        {
-          "command": "arc.startCompilation",
-          "group": "navigation"
-        },
-        {
-          "command": "arc.restartCompilation",
-          "group": "navigation"
-        },
-        {
-          "command": "arc.openSettings",
-          "group": "navigation"
-        }
-      ]
-    },
-    "submenus": [
-      {
-        "id": "arc/main",
-        "label": "ARC",
-        "icon": "$(hubot)"
-      }
-    ],
+    "menus": {},
     "viewsContainers": {
       "activitybar": [
         {
