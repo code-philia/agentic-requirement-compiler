@@ -57,6 +57,7 @@ function RequirementNode({ data, selected }: { data: any, selected?: boolean }) 
 interface RequirementCanvasProps {
     rootNode: any;
     onNodeSelect: (nodeId: string) => void;
+    onCanvasDeselect?: () => void;
     selectedNodeId?: string;
     nodeStatuses?: Record<string, string>;
     onAddNode: (targetId: string, type: 'child' | 'sibling') => void;
@@ -64,7 +65,7 @@ interface RequirementCanvasProps {
     onUpdateNode: (id: string, updates: any) => void;
 }
 
-export default function RequirementCanvas({ rootNode, onNodeSelect, selectedNodeId, nodeStatuses, onAddNode, onDeleteNode, onUpdateNode }: RequirementCanvasProps) {
+export default function RequirementCanvas({ rootNode, onNodeSelect, onCanvasDeselect, selectedNodeId, nodeStatuses, onAddNode, onDeleteNode, onUpdateNode }: RequirementCanvasProps) {
     const [nodes, setNodes, onNodesChange] = useNodesState<any>([]);
     const [edges, setEdges, onEdgesChange] = useEdgesState<any>([]);
     const [showDependencies, setShowDependencies] = useState(false);
@@ -172,6 +173,7 @@ export default function RequirementCanvas({ rootNode, onNodeSelect, selectedNode
 
     const onPaneClick = () => {
         setContextMenu(null);
+        onCanvasDeselect?.();
     };
 
     const onConnect = useCallback((params: Connection) => {

@@ -149,6 +149,10 @@ export default function MainEditor() {
       }
   };
 
+  const handleCanvasDeselect = () => {
+      setSelectedNode(null);
+  };
+
   return (
     <div className="h-screen w-full flex bg-[var(--vscode-editor-background)] text-[var(--vscode-editor-foreground)] overflow-hidden">
       {/* Canvas Area */}
@@ -157,6 +161,7 @@ export default function MainEditor() {
              <RequirementCanvas 
                 rootNode={rootNode} 
                 onNodeSelect={handleNodeSelect} 
+                onCanvasDeselect={handleCanvasDeselect}
                 selectedNodeId={selectedNode?.id}
                 nodeStatuses={nodeStatuses}
                 onAddNode={handleAddNode}
@@ -176,6 +181,7 @@ export default function MainEditor() {
         onUpdate={handleUpdateNode} 
         onDelete={handleDeleteNode}
         onClose={() => setSelectedNode(null)}
+        onClearSelection={() => setSelectedNode(null)}
       />
     </div>
   );

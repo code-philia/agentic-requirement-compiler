@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { X, Plus, Trash2, ChevronDown, ChevronRight, FileText, Code, CheckCircle, Loader2 } from 'lucide-react';
+import { X, Plus, Trash2, ChevronDown, ChevronRight, FileText, Code, CheckCircle, Loader2, Search, RotateCcw } from 'lucide-react';
 import { cn } from '../lib/utils';
 
 interface Step {
@@ -17,10 +17,11 @@ interface RequirementNode {
 }
 
 interface PropertiesPanelProps {
-    node: RequirementNode;
+    node: RequirementNode | null;
     onUpdate: (id: string, updates: any) => void;
     onDelete: (id: string) => void;
     onClose?: () => void;
+    onClearSelection?: () => void;
 }
 
 interface InterfaceData {
@@ -39,6 +40,13 @@ interface TestData {
     file_path: string;
     first_line: string;
     interface_ids: string[];
+}
+
+interface RequirementRow {
+    req_id: string;
+    description: string;
+    scenario?: any[];
+    dependencies?: string[];
 }
 
 const CollapsibleSection = ({ title, children, defaultOpen = true, onAdd }: { title: string, children: React.ReactNode, defaultOpen?: boolean, onAdd?: () => void }) => {
@@ -70,43 +78,53 @@ const CollapsibleSection = ({ title, children, defaultOpen = true, onAdd }: { ti
     );
 };
 
-const TraceabilityTab = ({ nodeId }: { nodeId: string }) => {
-    const [data, setData] = useState<{ interfaces: InterfaceData[], tests: TestData[] } | null>(null);
+const TraceabilityTab = ({ selectedNodeId, onClearReqFilter }: { selectedNodeId?: string, onClearReqFilter?: () => void }) => {
+    const [data, setData] = useState<{ requirements: RequirementRow[], interfaces: InterfaceData[], tests: TestData[] } | null>(null);
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState<string | null>(null);
     const [expandedItems, setExpandedItems] = useState<Record<string, boolean>>({});
+    const [entityTab, setEntityTab] = useState<'REQ' | 'IF' | 'TEST'>('REQ');
+    const [searchText, setSearchText] = useState('');
+    const [keyword, setKeyword] = useState('');
+    const [reqFilterId, setReqFilterId] = useState('');
 
     useEffect(() => {
+        setReqFilterId(selectedNodeId || '');
+    }, [selectedNodeId]);
+
+    useEffect(() => {
+        const timer = window.setTimeout(() => setKeyword(searchText.trim()), 250);
+        return () => window.clearTimeout(timer);
+    }, [searchText]);
+
+    useEffect(() => {
+        const ws = new WebSocket('ws://127.0.0.1:8000/ws/compiler');
         setLoading(true);
         setError(null);
-        
-        // Use 127.0.0.1 to match VS Code Webview CSP
-        const ws = new WebSocket('ws://127.0.0.1:8000/ws/compiler');
-        
+
         ws.onopen = () => {
-            // We injected window.arcWorkspaceRoot in the extension's HTML loader
             const storedProjectPath = (window as any).arcWorkspaceRoot || localStorage.getItem('arc_project_path');
-            
             ws.send(JSON.stringify({
                 command: 'traceabilityData',
-                nodeId: nodeId,
-                projectPath: storedProjectPath // Send if available
+                nodeId: reqFilterId || '',
+                keyword: keyword || '',
+                projectPath: storedProjectPath
             }));
         };
-        
+
         ws.onmessage = (event) => {
             try {
                 const message = JSON.parse(event.data);
-                if (message.type === 'traceabilityData' && message.nodeId === nodeId) {
+                if (message.type === 'traceabilityData') {
                     setData(message.data);
                     setLoading(false);
-                    ws.close(); // Close after getting data to save resources
+                    ws.close();
                 }
             } catch (e) {
                 console.error("Failed to parse websocket message", e);
             }
         };
-        
+
         ws.onerror = (err) => {
             console.error("WebSocket error", err);
             setError("Failed to connect to backend");
@@ -118,7 +136,7 @@ const TraceabilityTab = ({ nodeId }: { nodeId: string }) => {
                 ws.close();
             }
         };
-    }, [nodeId]);
+    }, [reqFilterId, keyword]);
 
     const toggleExpand = (id: string) => {
         setExpandedItems(prev => ({ ...prev, [id]: !prev[id] }));
@@ -131,13 +149,86 @@ const TraceabilityTab = ({ nodeId }: { nodeId: string }) => {
         }
     };
 
+    const clearFilters = () => {
+        setSearchText('');
+        setKeyword('');
+        setReqFilterId('');
+        onClearReqFilter?.();
+    };
+
     if (loading) return <div className="p-4 flex justify-center text-[var(--vscode-descriptionForeground)]"><Loader2 className="animate-spin mr-2" size={16}/> Loading...</div>;
     if (error) return <div className="p-4 text-[var(--vscode-errorForeground)]">Error: {error}</div>;
     if (!data) return <div className="p-4 text-[var(--vscode-descriptionForeground)]">No traceability data available.</div>;
 
     return (
         <div className="flex flex-col h-full overflow-y-auto custom-scrollbar pb-4">
-            {/* Interfaces Section */}
+            <div className="sticky top-0 z-10 px-3 py-2 bg-[var(--vscode-sideBar-background)] border-b border-[var(--vscode-panel-border)] space-y-2">
+                <div className="flex gap-1">
+                    {[
+                        { key: 'REQ', label: `REQ (${data.requirements.length})` },
+                        { key: 'IF', label: `IF (${data.interfaces.length})` },
+                        { key: 'TEST', label: `TEST (${data.tests.length})` }
+                    ].map(tab => (
+                        <button
+                            key={tab.key}
+                            onClick={() => setEntityTab(tab.key as 'REQ' | 'IF' | 'TEST')}
+                            className={cn(
+                                "px-2 py-1 text-[10px] rounded border",
+                                entityTab === tab.key
+                                    ? "border-[var(--vscode-focusBorder)] text-[var(--vscode-foreground)] bg-[var(--vscode-list-activeSelectionBackground)]"
+                                    : "border-[var(--vscode-panel-border)] text-[var(--vscode-descriptionForeground)] hover:text-[var(--vscode-foreground)]"
+                            )}
+                        >
+                            {tab.label}
+                        </button>
+                    ))}
+                </div>
+                <div className="flex gap-1">
+                    <div className="relative flex-1">
+                        <Search size={12} className="absolute left-2 top-1.5 text-[var(--vscode-descriptionForeground)]" />
+                        <input
+                            value={searchText}
+                            onChange={(e) => setSearchText(e.target.value)}
+                            placeholder="Search name/description/id/file..."
+                            className="w-full pl-7 pr-2 py-1 text-xs bg-[var(--vscode-input-background)] border border-[var(--vscode-input-border)] rounded-sm focus:outline-none focus:border-[var(--vscode-focusBorder)]"
+                        />
+                    </div>
+                    <button
+                        onClick={clearFilters}
+                        className="px-2 py-1 text-[10px] rounded border border-[var(--vscode-panel-border)] hover:bg-[var(--vscode-list-hoverBackground)] inline-flex items-center gap-1"
+                        title="取消筛选（需求点 + 搜索）"
+                    >
+                        <RotateCcw size={11} />
+                        清除
+                    </button>
+                </div>
+                {(reqFilterId || keyword) && (
+                    <div className="text-[10px] text-[var(--vscode-descriptionForeground)]">
+                        {reqFilterId ? `Filter REQ: ${reqFilterId}` : 'Filter REQ: ALL'}{keyword ? ` | Search: "${keyword}"` : ''}
+                    </div>
+                )}
+            </div>
+
+            {entityTab === 'REQ' && (
+                <CollapsibleSection title={`Requirements (${data.requirements.length})`} defaultOpen={true}>
+                    <div className="space-y-2">
+                        {data.requirements.map(req => (
+                            <div key={req.req_id} className="border border-[var(--vscode-panel-border)] rounded-sm bg-[var(--vscode-editor-background)] p-2">
+                                <div className="text-xs font-semibold">{req.req_id}</div>
+                                <div className="text-[11px] opacity-85 mt-1 whitespace-pre-wrap break-words">
+                                    {req.description || 'No description'}
+                                </div>
+                                <div className="text-[10px] text-[var(--vscode-descriptionForeground)] mt-1">
+                                    deps: {(req.dependencies || []).length} | scenario: {(req.scenario || []).length}
+                                </div>
+                            </div>
+                        ))}
+                        {data.requirements.length === 0 && <div className="text-xs text-[var(--vscode-descriptionForeground)] italic px-1">No requirement rows.</div>}
+                    </div>
+                </CollapsibleSection>
+            )}
+
+            {entityTab === 'IF' && (
             <CollapsibleSection title={`Interfaces (${data.interfaces.length})`} defaultOpen={true}>
                 <div className="space-y-2">
                     {data.interfaces.map(iface => (
@@ -198,8 +289,9 @@ const TraceabilityTab = ({ nodeId }: { nodeId: string }) => {
                     {data.interfaces.length === 0 && <div className="text-xs text-[var(--vscode-descriptionForeground)] italic px-1">No interfaces linked.</div>}
                 </div>
             </CollapsibleSection>
+            )}
 
-            {/* Tests Section */}
+            {entityTab === 'TEST' && (
             <CollapsibleSection title={`Tests (${data.tests.length})`} defaultOpen={true}>
                  <div className="space-y-2">
                     {data.tests.map(test => (
@@ -243,12 +335,13 @@ const TraceabilityTab = ({ nodeId }: { nodeId: string }) => {
                     {data.tests.length === 0 && <div className="text-xs text-[var(--vscode-descriptionForeground)] italic px-1">No tests linked.</div>}
                 </div>
             </CollapsibleSection>
+            )}
         </div>
     );
 };
 
-export default function PropertiesPanel({ node, onUpdate, onDelete, onClose }: PropertiesPanelProps) {
-    const [formData, setFormData] = useState<RequirementNode>(node || {});
+export default function PropertiesPanel({ node, onUpdate, onDelete, onClose, onClearSelection }: PropertiesPanelProps) {
+    const [formData, setFormData] = useState<RequirementNode>(node || { id: '', name: '' });
     const [panelWidth, setPanelWidth] = useState(350); 
     const [isResizing, setIsResizing] = useState(false);
     const [activeTab, setActiveTab] = useState<'properties' | 'traceability'>('properties');
@@ -260,7 +353,7 @@ export default function PropertiesPanel({ node, onUpdate, onDelete, onClose }: P
     const selectClasses = "w-full px-1 py-0.5 text-[10px] font-bold bg-[var(--vscode-dropdown-background)] text-[var(--vscode-dropdown-foreground)] border border-[var(--vscode-dropdown-border)] rounded-sm focus:outline-none focus:border-[var(--vscode-focusBorder)] cursor-pointer";
 
     useEffect(() => {
-        setFormData(node || {});
+        setFormData(node || { id: '', name: '' });
     }, [node]);
 
     // Debounced sync to backend: local typing is instant, persistence is batched.
@@ -307,9 +400,7 @@ export default function PropertiesPanel({ node, onUpdate, onDelete, onClose }: P
         setFormData(newData);
     };
 
-    if (!node) return (
-        <div className="hidden"></div>
-    );
+    const hasSelection = !!node;
 
     return (
         <div 
@@ -333,7 +424,7 @@ export default function PropertiesPanel({ node, onUpdate, onDelete, onClose }: P
                 <div className="flex items-center justify-between px-4 py-2">
                     <div className="flex items-center gap-2 overflow-hidden">
                         <span className="font-semibold text-xs uppercase text-[var(--vscode-sideBarSectionHeader-foreground)] truncate" title={formData.id}>
-                            {formData.id}
+                            {hasSelection ? formData.id : 'No Selection'}
                         </span>
                     </div>
                     <div className="flex items-center gap-1">
@@ -372,6 +463,7 @@ export default function PropertiesPanel({ node, onUpdate, onDelete, onClose }: P
             {/* Content Scroll Area */}
             <div className="flex-1 overflow-y-auto custom-scrollbar relative">
                 {activeTab === 'properties' ? (
+                    hasSelection ? (
                     <>
                         {/* Basic Info Section */}
                         <CollapsibleSection title="General" defaultOpen={true}>
@@ -528,8 +620,13 @@ export default function PropertiesPanel({ node, onUpdate, onDelete, onClose }: P
                             </button>
                         </div>
                     </>
+                    ) : (
+                        <div className="p-4 text-xs text-[var(--vscode-descriptionForeground)]">
+                            Select a requirement node on canvas to edit properties.
+                        </div>
+                    )
                 ) : (
-                    <TraceabilityTab nodeId={formData.id} />
+                    <TraceabilityTab selectedNodeId={hasSelection ? formData.id : undefined} onClearReqFilter={onClearSelection} />
                 )}
             </div>
         </div>

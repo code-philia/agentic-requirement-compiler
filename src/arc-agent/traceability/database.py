@@ -95,6 +95,28 @@ def get_requirement_by_id(req_id: str):
         return data
     return None
 
+def get_all_requirements():
+    """Retrieve all requirements."""
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+    cursor.execute('SELECT * FROM requirements')
+    rows = cursor.fetchall()
+    conn.close()
+
+    requirements = []
+    for row in rows:
+        data = dict(row)
+        try:
+            data['visual_reference'] = json.loads(data['visual_reference']) if data.get('visual_reference') else []
+            data['scenario'] = json.loads(data['scenario']) if data.get('scenario') else []
+            data['children_ids'] = json.loads(data['children_ids']) if data.get('children_ids') else []
+            data['dependencies'] = json.loads(data['dependencies']) if data.get('dependencies') else []
+        except json.JSONDecodeError:
+            pass
+        requirements.append(data)
+    return requirements
+
 
 """
 Requirement Record
@@ -280,6 +302,27 @@ def get_interfaces_by_req_id(req_id: str):
         interfaces.append(data)
     return interfaces
 
+def get_all_interfaces():
+    """Retrieve all interfaces."""
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+    cursor.execute('SELECT * FROM interfaces')
+    rows = cursor.fetchall()
+    conn.close()
+
+    interfaces = []
+    for row in rows:
+        data = dict(row)
+        try:
+            data['req_ids'] = json.loads(data['req_ids']) if data.get('req_ids') else []
+            data['callers'] = json.loads(data['callers']) if data.get('callers') else []
+            data['callees'] = json.loads(data['callees']) if data.get('callees') else []
+        except json.JSONDecodeError:
+            pass
+        interfaces.append(data)
+    return interfaces
+
 def get_interface_by_id(interface_id: str):
     """Retrieve a single interface by its ID."""
     conn = sqlite3.connect(DB_PATH)
@@ -340,6 +383,25 @@ def get_tests_by_req_id(req_id: str):
         data = dict(row)
         try:
             data['interface_ids'] = json.loads(data['interface_ids']) if data['interface_ids'] else []
+        except json.JSONDecodeError:
+            pass
+        tests.append(data)
+    return tests
+
+def get_all_tests():
+    """Retrieve all tests."""
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+    cursor.execute('SELECT * FROM tests')
+    rows = cursor.fetchall()
+    conn.close()
+
+    tests = []
+    for row in rows:
+        data = dict(row)
+        try:
+            data['interface_ids'] = json.loads(data['interface_ids']) if data.get('interface_ids') else []
         except json.JSONDecodeError:
             pass
         tests.append(data)

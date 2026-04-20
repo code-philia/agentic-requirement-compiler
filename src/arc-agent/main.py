@@ -143,6 +143,7 @@ async def websocket_endpoint(websocket: WebSocket):
             
             elif message.get("command") == "traceabilityData":
                 node_id = message.get("nodeId")
+                keyword = message.get("keyword", "")
                 project_path = message.get("projectPath")
                 
                 print(project_path)
@@ -152,12 +153,14 @@ async def websocket_endpoint(websocket: WebSocket):
                      set_db_path(db_path)
                 
                 if node_id:
-                    result = get_traceability_data(node_id)
-                    await websocket.send_text(json.dumps({
-                        "type": "traceabilityData", 
-                        "nodeId": node_id, 
-                        "data": result
-                    }))
+                    result = get_traceability_data(node_id, keyword=keyword)
+                else:
+                    result = get_traceability_data("", keyword=keyword)
+                await websocket.send_text(json.dumps({
+                    "type": "traceabilityData", 
+                    "nodeId": node_id, 
+                    "data": result
+                }))
 
     except WebSocketDisconnect:
         manager.disconnect(websocket)

@@ -1,4 +1,13 @@
-from .database import insert_requirement, get_requirement_by_id, get_interfaces_by_req_id, get_tests_by_req_id
+import json
+from .database import (
+    insert_requirement,
+    get_requirement_by_id,
+    get_interfaces_by_req_id,
+    get_tests_by_req_id,
+    get_all_requirements,
+    get_all_interfaces,
+    get_all_tests,
+)
 
 def get_requirement(req_id: str):
     """
@@ -6,16 +15,42 @@ def get_requirement(req_id: str):
     """
     return get_requirement_by_id(req_id)
 
-def get_traceability_data(req_id: str):
+def _contains_keyword(item: dict, keyword: str) -> bool:
+    if not keyword:
+        return True
+    kw = keyword.lower()
+    try:
+        blob = json.dumps(item, ensure_ascii=False).lower()
+    except Exception:
+        blob = str(item).lower()
+    return kw in blob
+
+def get_traceability_data(req_id: str = "", keyword: str = ""):
     """
-    Retrieve interfaces and tests for a given requirement ID.
+    Retrieve requirements/interfaces/tests with optional req filter and keyword fuzzy search.
     """
-    interfaces = get_interfaces_by_req_id(req_id)
-    tests = get_tests_by_req_id(req_id)
+    if req_id:
+        requirements = [get_requirement_by_id(req_id)] if get_requirement_by_id(req_id) else []
+        interfaces = get_interfaces_by_req_id(req_id)
+        tests = get_tests_by_req_id(req_id)
+    else:
+        requirements = get_all_requirements()
+        interfaces = get_all_interfaces()
+        tests = get_all_tests()
+
+    if keyword:
+        requirements = [r for r in requirements if r and _contains_keyword(r, keyword)]
+        interfaces = [i for i in interfaces if _contains_keyword(i, keyword)]
+        tests = [t for t in tests if _contains_keyword(t, keyword)]
     
     return {
+        "requirements": requirements,
         "interfaces": interfaces,
-        "tests": tests
+        "tests": tests,
+        "filters": {
+            "req_id": req_id or "",
+            "keyword": keyword or ""
+        }
     }
 
 def store_all_requirement(node: dict, parent_id: str = ""):
