@@ -196,10 +196,10 @@ const TraceabilityTab = ({ selectedNodeId, onClearReqFilter }: { selectedNodeId?
                     <button
                         onClick={clearFilters}
                         className="px-2 py-1 text-[10px] rounded border border-[var(--vscode-panel-border)] hover:bg-[var(--vscode-list-hoverBackground)] inline-flex items-center gap-1"
-                        title="取消筛选（需求点 + 搜索）"
+                        title="Clear filters (REQ + Search)"
                     >
                         <RotateCcw size={11} />
-                        清除
+                        Clear
                     </button>
                 </div>
                 {(reqFilterId || keyword) && (
