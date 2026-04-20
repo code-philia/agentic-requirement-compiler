@@ -205,6 +205,10 @@ export class MainEditorPanel {
       if (data) {
           await this._panel.webview.postMessage({ command: 'updateProject', data });
       }
+      if (manager.getCurrentStatus) {
+          const status = manager.getCurrentStatus();
+          await this._panel.webview.postMessage({ command: 'updateStatus', status });
+      }
       
       if (selectedNodeId && data) {
           // Find the specific node data to send for the property panel

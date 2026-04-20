@@ -6,7 +6,7 @@ export class WebviewProvider implements vscode.WebviewViewProvider {
 
   constructor(
     private readonly _extensionUri: vscode.Uri,
-    private readonly _viewType: 'sidebar' | 'logs',
+    private readonly _viewType: 'launcher' | 'logs',
     private readonly _requirementManager?: RequirementManager
   ) {}
 
@@ -27,20 +27,19 @@ export class WebviewProvider implements vscode.WebviewViewProvider {
         }, 600);
     }
 
-    // Initial data load for sidebar
-    if (this._viewType === 'sidebar' && this._requirementManager) {
-        // Wait a bit for the webview to be ready to receive messages
-        setTimeout(async () => {
-            const data = this._requirementManager?.getData();
-            if (data) {
-                webviewView.webview.postMessage({ command: 'updateData', data });
+    // Launcher view: clicking ARC icon should open the canvas.
+    if (this._viewType === 'launcher') {
+        const openMain = () => vscode.commands.executeCommand("arc.openMainEditor");
+        // Open once when the launcher becomes visible.
+        webviewView.onDidChangeVisibility(() => {
+            if (webviewView.visible) {
+                openMain();
             }
-        }, 500);
-
-        // Keep sidebar synchronized when requirements.yaml changes externally
-        this._requirementManager.onDidUpdateData((data) => {
-            webviewView.webview.postMessage({ command: 'updateData', data });
         });
+        // Also trigger immediately if already visible.
+        if (webviewView.visible) {
+            openMain();
+        }
     }
 
     // Listen for messages from the webview
@@ -49,24 +48,6 @@ export class WebviewProvider implements vscode.WebviewViewProvider {
             case "openMainEditor": {
                 vscode.commands.executeCommand("arc.openMainEditor", data.nodeId);
                 break;
-            }
-            case "addNode": {
-                if (this._requirementManager) {
-                    const newData = await this._requirementManager.addNode(data.targetId, data.type);
-                    if (newData) {
-                        webviewView.webview.postMessage({ command: 'updateData', data: newData });
-                    }
-                }
-                break;
-            }
-            case "refresh": {
-                 if (this._requirementManager) {
-                    const data = this._requirementManager.getData();
-                    if (data) {
-                        webviewView.webview.postMessage({ command: 'updateData', data });
-                    }
-                 }
-                 break;
             }
         }
     });
@@ -80,6 +61,27 @@ export class WebviewProvider implements vscode.WebviewViewProvider {
   }
 
   private async _getHtmlForWebview(webview: vscode.Webview) {
+    if (this._viewType === 'launcher') {
+      return `
+        <!DOCTYPE html>
+        <html lang="en">
+          <head>
+            <meta charset="UTF-8" />
+            <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+            <style>
+              body { font-family: var(--vscode-font-family); padding: 12px; color: var(--vscode-foreground); }
+              .hint { font-size: 12px; opacity: 0.8; }
+              button { margin-top: 10px; border: 1px solid var(--vscode-button-border); background: var(--vscode-button-background); color: var(--vscode-button-foreground); padding: 6px 10px; cursor: pointer; }
+            </style>
+          </head>
+          <body>
+            <div class="hint">ARC canvas launcher</div>
+            <button onclick="acquireVsCodeApi().postMessage({ command: 'openMainEditor' })">Open Canvas</button>
+          </body>
+        </html>
+      `;
+    }
+
     const webviewDistPath = vscode.Uri.joinPath(this._extensionUri, 'webview-dist');
     const indexHtmlPath = vscode.Uri.joinPath(webviewDistPath, 'index.html');
     

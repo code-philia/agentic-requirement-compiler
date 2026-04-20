@@ -87,7 +87,7 @@
         {
           "type": "webview",
           "id": "arc.sidebarView",
-          "name": "Project Structure"
+          "name": "Open Canvas"
         }
       ],
       "arc-panel": [

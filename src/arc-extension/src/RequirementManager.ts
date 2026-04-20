@@ -20,6 +20,7 @@ export class RequirementManager {
     private _data: RequirementNode | undefined;
     private _statusWatcher: vscode.FileSystemWatcher | undefined;
     private _requirementsWatcher: vscode.FileSystemWatcher | undefined;
+    private _currentStatus: Record<string, string> = {};
     
     // Event emitter for status updates
     private _onDidUpdateStatus = new vscode.EventEmitter<Record<string, string>>();
@@ -92,6 +93,7 @@ export class RequirementManager {
             const uint8Array = await vscode.workspace.fs.readFile(uri);
             const content = new TextDecoder().decode(uint8Array);
             const status = JSON.parse(content);
+            this._currentStatus = status;
             this._onDidUpdateStatus.fire(status);
         } catch (e) {
             // Ignore error (file might not exist yet)
@@ -162,6 +164,10 @@ export class RequirementManager {
 
     public getData() {
         return this._data;
+    }
+
+    public getCurrentStatus() {
+        return this._currentStatus;
     }
 
     public async addNode(targetId: string, type: 'child' | 'sibling') {

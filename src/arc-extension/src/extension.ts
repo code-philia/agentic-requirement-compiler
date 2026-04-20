@@ -62,12 +62,12 @@ export async function activate(context: vscode.ExtensionContext) {
         backendProcess.stderr?.on('data', (data) => console.error(`[ARC Error]: ${data}`));
     }
 
-    // Register Sidebar View Provider
-    const sidebarProvider = new WebviewProvider(context.extensionUri, 'sidebar', requirementManager);
+    // Register ARC launcher view provider (no requirement tree panel)
+    const launcherProvider = new WebviewProvider(context.extensionUri, 'launcher', requirementManager);
     context.subscriptions.push(
         vscode.window.registerWebviewViewProvider(
             "arc.sidebarView",
-            sidebarProvider
+            launcherProvider
         )
     );
 
@@ -170,14 +170,6 @@ export async function activate(context: vscode.ExtensionContext) {
         })
     );
 
-    // Open main canvas automatically on startup for better first-use experience.
-    setTimeout(() => {
-        const hasWorkspace = vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders.length > 0;
-        if (!hasWorkspace || !requirementManager) {
-            return;
-        }
-        vscode.commands.executeCommand("arc.openMainEditor");
-    }, 800);
 }
 
 export function deactivate() {
