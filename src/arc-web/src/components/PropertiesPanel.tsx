@@ -87,17 +87,12 @@ const TraceabilityTab = ({ selectedNodeId, onClearReqFilter }: { selectedNodeId?
     const [expandedItems, setExpandedItems] = useState<Record<string, boolean>>({});
     const [entityTab, setEntityTab] = useState<'REQ' | 'IF' | 'TEST'>('REQ');
     const [searchText, setSearchText] = useState('');
-    const [keyword, setKeyword] = useState('');
+    const [appliedKeyword, setAppliedKeyword] = useState('');
     const [reqFilterId, setReqFilterId] = useState('');
 
     useEffect(() => {
         setReqFilterId(selectedNodeId || '');
     }, [selectedNodeId]);
-
-    useEffect(() => {
-        const timer = window.setTimeout(() => setKeyword(searchText.trim()), 250);
-        return () => window.clearTimeout(timer);
-    }, [searchText]);
 
     useEffect(() => {
         const ws = new WebSocket('ws://127.0.0.1:8000/ws/compiler');
@@ -109,7 +104,7 @@ const TraceabilityTab = ({ selectedNodeId, onClearReqFilter }: { selectedNodeId?
             ws.send(JSON.stringify({
                 command: 'traceabilityData',
                 nodeId: reqFilterId || '',
-                keyword: keyword || '',
+                keyword: appliedKeyword || '',
                 projectPath: storedProjectPath
             }));
         };
@@ -138,7 +133,7 @@ const TraceabilityTab = ({ selectedNodeId, onClearReqFilter }: { selectedNodeId?
                 ws.close();
             }
         };
-    }, [reqFilterId, keyword]);
+    }, [reqFilterId, appliedKeyword]);
 
     const toggleExpand = (id: string) => {
         setExpandedItems(prev => ({ ...prev, [id]: !prev[id] }));
@@ -161,9 +156,13 @@ const TraceabilityTab = ({ selectedNodeId, onClearReqFilter }: { selectedNodeId?
 
     const clearFilters = () => {
         setSearchText('');
-        setKeyword('');
+        setAppliedKeyword('');
         setReqFilterId('');
         onClearReqFilter?.();
+    };
+
+    const applySearch = () => {
+        setAppliedKeyword(searchText.trim());
     };
 
     if (loading) return <div className="p-4 flex justify-center text-[var(--vscode-descriptionForeground)]"><Loader2 className="animate-spin mr-2" size={16}/> Loading...</div>;
@@ -199,10 +198,23 @@ const TraceabilityTab = ({ selectedNodeId, onClearReqFilter }: { selectedNodeId?
                         <input
                             value={searchText}
                             onChange={(e) => setSearchText(e.target.value)}
+                            onKeyDown={(e) => {
+                                if (e.key === 'Enter') {
+                                    e.preventDefault();
+                                    applySearch();
+                                }
+                            }}
                             placeholder="Search name/description/id/file..."
                             className="w-full pl-7 pr-2 py-1 text-xs bg-[var(--vscode-input-background)] border border-[var(--vscode-input-border)] rounded-sm focus:outline-none focus:border-[var(--vscode-focusBorder)]"
                         />
                     </div>
+                    <button
+                        onClick={applySearch}
+                        className="px-2 py-1 text-[10px] rounded border border-[var(--vscode-panel-border)] hover:bg-[var(--vscode-list-hoverBackground)] inline-flex items-center gap-1"
+                        title="Apply search"
+                    >
+                        Search
+                    </button>
                     <button
                         onClick={clearFilters}
                         className="px-2 py-1 text-[10px] rounded border border-[var(--vscode-panel-border)] hover:bg-[var(--vscode-list-hoverBackground)] inline-flex items-center gap-1"
@@ -212,9 +224,9 @@ const TraceabilityTab = ({ selectedNodeId, onClearReqFilter }: { selectedNodeId?
                         Clear
                     </button>
                 </div>
-                {(reqFilterId || keyword) && (
+                {(reqFilterId || appliedKeyword) && (
                     <div className="text-[10px] text-[var(--vscode-descriptionForeground)]">
-                        {reqFilterId ? `Filter REQ: ${reqFilterId}` : 'Filter REQ: ALL'}{keyword ? ` | Search: "${keyword}"` : ''}
+                        {reqFilterId ? `Filter REQ: ${reqFilterId}` : 'Filter REQ: ALL'}{appliedKeyword ? ` | Search: "${appliedKeyword}"` : ''}
                     </div>
                 )}
             </div>
