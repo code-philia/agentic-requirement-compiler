@@ -131,6 +131,11 @@ export class MainEditorPanel {
             panel.webview.postMessage({ command: 'updateStatus', status });
         });
     }
+    if (manager.onDidUpdateData) {
+        manager.onDidUpdateData((data: any) => {
+            panel.webview.postMessage({ command: 'updateProject', data });
+        });
+    }
   }
 
   public updateNode(nodeId: string) {

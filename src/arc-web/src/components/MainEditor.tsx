@@ -8,6 +8,20 @@ export default function MainEditor() {
   const [nodeStatuses, setNodeStatuses] = useState<Record<string, string>>({});
   const wsRef = useRef<WebSocket | null>(null);
 
+  const updateNodeInTree = (tree: any, nodeId: string, updates: any): any => {
+      if (!tree) return tree;
+      if (tree.id === nodeId) {
+          return { ...tree, ...updates };
+      }
+      if (!tree.children || tree.children.length === 0) {
+          return tree;
+      }
+      return {
+          ...tree,
+          children: tree.children.map((child: any) => updateNodeInTree(child, nodeId, updates)),
+      };
+  };
+
   // Initialize and Listen for Messages (VS Code & WebSocket)
   useEffect(() => {
     // 1. VS Code Messages
@@ -114,6 +128,8 @@ export default function MainEditor() {
   };
 
   const handleUpdateNode = (id: string, updates: any) => {
+      // Optimistic local update: keep document panel and canvas synced instantly
+      setRootNode((prev: any) => updateNodeInTree(prev, id, updates));
       if (window.vscode) {
           window.vscode.postMessage({
               command: 'updateNode',
@@ -121,7 +137,7 @@ export default function MainEditor() {
               updates: updates
           });
       }
-      setSelectedNode((prev: any) => ({ ...prev, ...updates }));
+      setSelectedNode((prev: any) => (prev?.id === id ? { ...prev, ...updates } : prev));
   };
 
   const handleDeleteNode = (id: string) => {

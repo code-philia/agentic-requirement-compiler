@@ -8,13 +8,21 @@ const X_OFFSET = 220;
 const Y_GAP = 80;
 
 function RequirementNode({ data, selected }: { data: any, selected?: boolean }) {
+  const normalizeStatus = (status: string | undefined) => {
+    if (!status) return 'idle';
+    if (status === 'analyzing' || status === 'designed' || status === 'completed') {
+      return status;
+    }
+    return 'idle';
+  };
+  const normalizedStatus = normalizeStatus(data.status);
   // Determine style based on status
   let statusClasses = 'bg-[var(--vscode-editor-background)] border-[var(--vscode-editorWidget-border)]';
-  if (data.status === 'designed') {
+  if (normalizedStatus === 'designed') {
       statusClasses = 'bg-[var(--vscode-charts-orange)] border-[var(--vscode-charts-orange)] text-[var(--vscode-editor-background)]';
-  } else if (data.status === 'completed') {
+  } else if (normalizedStatus === 'completed') {
       statusClasses = 'bg-[var(--vscode-charts-green)] border-[var(--vscode-charts-green)] text-[var(--vscode-editor-background)]';
-  } else if (data.status === 'analyzing') {
+  } else if (normalizedStatus === 'analyzing') {
       statusClasses = 'bg-[var(--vscode-charts-blue)] border-[var(--vscode-charts-blue)] text-[var(--vscode-editor-background)]';
   }
   
@@ -27,9 +35,10 @@ function RequirementNode({ data, selected }: { data: any, selected?: boolean }) 
     <div 
         className={`w-full h-full flex flex-col items-center justify-center border-2 shadow-sm px-4 py-1 text-xs text-center transition-all duration-300 relative group cursor-pointer
         ${statusClasses}
-        ${selected ? 'ring-2 ring-[var(--vscode-focusBorder)] shadow-md scale-105' : ''}`}
+        ${selected ? 'ring-2 ring-[var(--vscode-focusBorder)] shadow-md scale-105' : ''}
+        ${normalizedStatus === 'analyzing' ? 'animate-pulse' : ''}`}
         style={{ 
-            color: data.status ? 'var(--vscode-editor-background)' : 'var(--vscode-editor-foreground)',
+            color: normalizedStatus !== 'idle' ? 'var(--vscode-editor-background)' : 'var(--vscode-editor-foreground)',
             borderRadius: '50%', // Make it an ellipse
         }}
         title={`${reqId}: ${reqName}`} // Native tooltip for full name
@@ -64,6 +73,27 @@ export default function RequirementCanvas({ rootNode, onNodeSelect, selectedNode
     const nodeTypes = useMemo(() => ({
         reqNode: RequirementNode
     }), []);
+    const statusLegend = useMemo(() => ([
+        { key: 'analyzing', label: 'Analyzing', color: 'var(--vscode-charts-blue)' },
+        { key: 'designed', label: 'Designed', color: 'var(--vscode-charts-orange)' },
+        { key: 'completed', label: 'Completed', color: 'var(--vscode-charts-green)' },
+        { key: 'idle', label: 'Pending', color: 'var(--vscode-editorWidget-border)' },
+    ]), []);
+    const statusCounts = useMemo(() => {
+        const counts: Record<string, number> = { analyzing: 0, designed: 0, completed: 0, idle: 0 };
+        const walk = (node: any) => {
+            if (!node) return;
+            const rawStatus = nodeStatuses?.[node.id];
+            if (rawStatus === 'analyzing' || rawStatus === 'designed' || rawStatus === 'completed') {
+                counts[rawStatus] += 1;
+            } else {
+                counts.idle += 1;
+            }
+            (node.children || []).forEach((child: any) => walk(child));
+        };
+        walk(rootNode);
+        return counts;
+    }, [rootNode, nodeStatuses]);
 
     useEffect(() => {
         if (!rootNode) return;
@@ -210,6 +240,18 @@ export default function RequirementCanvas({ rootNode, onNodeSelect, selectedNode
                         />
                         <span>Show Dependencies</span>
                     </label>
+                    <div className="mt-2 border-t border-[var(--vscode-widget-border)] pt-2 space-y-1">
+                        <div className="text-[10px] uppercase tracking-wide opacity-80">Status Legend</div>
+                        {statusLegend.map(item => (
+                            <div key={item.key} className="flex items-center justify-between gap-3 text-[11px]">
+                                <div className="flex items-center gap-2">
+                                    <span className="inline-block w-2.5 h-2.5 rounded-full" style={{ backgroundColor: item.color }} />
+                                    <span>{item.label}</span>
+                                </div>
+                                <span className="opacity-80">{statusCounts[item.key] ?? 0}</span>
+                            </div>
+                        ))}
+                    </div>
                 </Panel>
             </ReactFlow>
 

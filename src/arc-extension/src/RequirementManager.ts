@@ -19,10 +19,13 @@ export class RequirementManager {
     private _statusFile: string | undefined;
     private _data: RequirementNode | undefined;
     private _statusWatcher: vscode.FileSystemWatcher | undefined;
+    private _requirementsWatcher: vscode.FileSystemWatcher | undefined;
     
     // Event emitter for status updates
     private _onDidUpdateStatus = new vscode.EventEmitter<Record<string, string>>();
     public readonly onDidUpdateStatus = this._onDidUpdateStatus.event;
+    private _onDidUpdateData = new vscode.EventEmitter<RequirementNode>();
+    public readonly onDidUpdateData = this._onDidUpdateData.event;
 
     constructor() {
         if (vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders.length > 0) {
@@ -46,6 +49,9 @@ export class RequirementManager {
         }
 
         await this.loadRequirements();
+        if (this._data) {
+            this._onDidUpdateData.fire(this._data);
+        }
         
         // Setup watcher for status.json
         if (this._statusFile) {
@@ -57,6 +63,25 @@ export class RequirementManager {
             
             // Initial load
             this._loadAndEmitStatus();
+        }
+
+        // Setup watcher for requirements.yaml to keep editor and file always in sync
+        if (this._requirementsFile) {
+            const reqPattern = new vscode.RelativePattern(path.dirname(this._requirementsFile), path.basename(this._requirementsFile));
+            this._requirementsWatcher = vscode.workspace.createFileSystemWatcher(reqPattern);
+
+            const handleRequirementFileChange = async () => {
+                await this.loadRequirements();
+                if (this._data) {
+                    this._onDidUpdateData.fire(this._data);
+                }
+            };
+
+            this._requirementsWatcher.onDidChange(handleRequirementFileChange);
+            this._requirementsWatcher.onDidCreate(handleRequirementFileChange);
+            this._requirementsWatcher.onDidDelete(() => {
+                this._data = undefined;
+            });
         }
     }
     
@@ -129,6 +154,7 @@ export class RequirementManager {
             const yamlStr = yaml.dump(this._data);
             const uint8Array = new TextEncoder().encode(yamlStr);
             await vscode.workspace.fs.writeFile(vscode.Uri.file(this._requirementsFile), uint8Array);
+            this._onDidUpdateData.fire(this._data);
         } catch (error) {
             console.error('Error saving requirements:', error);
         }

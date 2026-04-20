@@ -263,6 +263,17 @@ export default function PropertiesPanel({ node, onUpdate, onDelete, onClose }: P
         setFormData(node || {});
     }, [node]);
 
+    // Debounced sync to backend: local typing is instant, persistence is batched.
+    useEffect(() => {
+        if (!node || !formData) return;
+        if (formData.id !== node.id) return;
+        if (JSON.stringify(formData) === JSON.stringify(node)) return;
+        const timer = window.setTimeout(() => {
+            onUpdate(node.id, formData);
+        }, 180);
+        return () => window.clearTimeout(timer);
+    }, [formData, node, onUpdate]);
+
     // Resizing Logic
     useEffect(() => {
         const handleMouseMove = (e: MouseEvent) => {
@@ -294,7 +305,6 @@ export default function PropertiesPanel({ node, onUpdate, onDelete, onClose }: P
     const handleChange = (field: string, value: any) => {
         const newData = { ...formData, [field]: value };
         setFormData(newData);
-        onUpdate(node.id, newData); 
     };
 
     if (!node) return (

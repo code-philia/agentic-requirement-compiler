@@ -36,6 +36,11 @@ export class WebviewProvider implements vscode.WebviewViewProvider {
                 webviewView.webview.postMessage({ command: 'updateData', data });
             }
         }, 500);
+
+        // Keep sidebar synchronized when requirements.yaml changes externally
+        this._requirementManager.onDidUpdateData((data) => {
+            webviewView.webview.postMessage({ command: 'updateData', data });
+        });
     }
 
     // Listen for messages from the webview
