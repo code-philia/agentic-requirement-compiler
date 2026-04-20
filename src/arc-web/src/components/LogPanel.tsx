@@ -1,44 +1,22 @@
 import { useState, useRef, useEffect } from 'react';
-import { Terminal, ChevronRight, ChevronDown } from 'lucide-react';
+import { Terminal } from 'lucide-react';
 
 interface LogMessage {
   agent: string;
   text: string;
+  level?: 'info' | 'success' | 'warn' | 'error' | 'system';
   type?: 'normal' | 'db-event' | 'error-event' | 'success-event' | 'system-event';
   timestamp?: string;
 }
 
 const LogEntry = ({ log, getLogStyle }: { log: LogMessage, getLogStyle: any }) => {
-    const [expanded, setExpanded] = useState(false);
-    const MAX_LENGTH = 150;
-    const isLong = log.text.length > MAX_LENGTH || log.text.includes('\n');
-    
-    // Truncate text logic: show first line or first MAX_LENGTH chars
-    let displayText = log.text;
-    if (!expanded && isLong) {
-        const firstLine = log.text.split('\n')[0];
-        displayText = firstLine.length > MAX_LENGTH ? firstLine.substring(0, MAX_LENGTH) + '...' : firstLine + (log.text.includes('\n') ? '...' : '');
-    }
-
-    return (
-        <div 
-            className={`flex items-start font-mono text-sm leading-snug cursor-pointer hover:bg-[var(--vscode-list-hoverBackground)] ${getLogStyle(log.type)}`}
-            onClick={() => isLong && setExpanded(!expanded)}
-        >
-            <div className="shrink-0 flex items-center w-[16px] pt-[2px]">
-                {isLong && (
-                    <span className="opacity-70">
-                        {expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-                    </span>
-                )}
-            </div>
-            <div className="flex-1 min-w-0 break-words whitespace-pre-wrap py-[2px]">
-                <span className="text-[var(--vscode-terminal-ansiBrightBlack)] mr-2">[{log.timestamp}]</span>
-                {log.agent !== 'System' && <span className="font-bold mr-2">[{log.agent}]</span>}
-                <span className={log.type === 'system-event' ? 'opacity-80' : ''}>{displayText}</span>
-            </div>
-        </div>
-    );
+  return (
+    <div className={`font-mono text-[12px] leading-5 px-1 ${getLogStyle(log.type, log.level)}`}>
+      <span className="text-[var(--vscode-terminal-ansiBrightBlack)]">[{log.timestamp}]</span>
+      <span className="ml-2 opacity-90">[{log.agent}]</span>
+      <span className="ml-2 whitespace-pre-wrap break-words">{log.text}</span>
+    </div>
+  );
 };
 
 export default function LogPanel() {
@@ -48,9 +26,30 @@ export default function LogPanel() {
   const wsRef = useRef<WebSocket | null>(null);
   const logsEndRef = useRef<HTMLDivElement>(null);
 
-  const appendLog = (agent: string, text: string, type: 'normal' | 'db-event' | 'error-event' | 'success-event' | 'system-event' = 'normal') => {
+  const appendLog = (
+    agent: string,
+    text: string,
+    type: 'normal' | 'db-event' | 'error-event' | 'success-event' | 'system-event' = 'normal',
+    level: 'info' | 'success' | 'warn' | 'error' | 'system' = 'info'
+  ) => {
     const timestamp = new Date().toLocaleTimeString('en-US', { hour12: false });
-    setLogs(prev => [...prev, { agent, text, type, timestamp }]);
+    setLogs(prev => {
+      const last = prev[prev.length - 1];
+      if (last && last.agent === agent && last.text === text && last.type === type) {
+        return prev;
+      }
+      const next = [...prev, { agent, text, type, level, timestamp }];
+      if (next.length > 500) {
+        return next.slice(next.length - 500);
+      }
+      return next;
+    });
+  };
+
+  const isDebugLog = (text: string) => text.startsWith('[DEBUG]');
+  const compactOneLine = (text: string) => {
+    const single = text.replace(/\s+/g, ' ').trim();
+    return single.length > 180 ? `${single.slice(0, 180)}...` : single;
   };
 
   const connectAndStart = (isRestart = false) => {
@@ -67,12 +66,12 @@ export default function LogPanel() {
 
     // If connecting or closed, establish connection
     if (!wsRef.current || wsRef.current.readyState === WebSocket.CLOSED) {
-        appendLog('System', 'Initializing ARC Backend connection...', 'system-event');
+        appendLog('System', 'Initializing ARC backend connection...', 'system-event', 'system');
         const ws = new WebSocket('ws://127.0.0.1:8000/ws/compiler');
         wsRef.current = ws;
 
         ws.onopen = () => {
-          appendLog('System', 'Connected to backend. Starting compilation process...', 'success-event');
+          appendLog('System', 'Connected. Starting compilation...', 'success-event', 'success');
           ws.send(JSON.stringify({ command: cmd, projectPath: projectPath, requirementPath: requirementPath }));
         };
 
@@ -81,22 +80,30 @@ export default function LogPanel() {
           if (data.type === 'clear-logs') {
               setLogs([]);
           } else if (data.type === 'db_update') {
-            appendLog(data.agent, `[DB Write] Table ${data.data.table}: +${data.data.items} items`, 'db-event');
-          } else if (data.type === 'node_update' && data.status === 'completed') {
-             appendLog(data.agent, data.message || `Node ${data.nodeId} completed.`, 'success-event');
+            appendLog(data.agent || 'DB', `DB ${data.data.table} +${data.data.items}`, 'db-event', 'info');
+          } else if (data.type === 'node_update') {
+             const status = data.status || 'updated';
+             const nodeLabel = data.nodeId ? `Node ${data.nodeId}` : 'Node';
+             const msg = data.message || `${nodeLabel} -> ${status}`;
+             const type = status === 'completed' ? 'success-event' : status === 'error' ? 'error-event' : 'system-event';
+             const level = status === 'completed' ? 'success' : status === 'error' ? 'error' : 'system';
+             appendLog('Workflow', compactOneLine(msg), type, level);
           } else if (data.type === 'error-event') {
-             appendLog(data.agent, data.message, 'error-event');
+             appendLog(data.agent || 'System', compactOneLine(data.message || 'Unknown error'), 'error-event', 'error');
           } else if (data.type === 'log') {
-            appendLog(data.agent, data.message, 'normal');
+            const raw = String(data.message || '');
+            if (!isDebugLog(raw)) {
+              appendLog(data.agent || 'System', compactOneLine(raw), 'normal', 'info');
+            }
           }
         };
 
         ws.onerror = () => {
-          appendLog('System', 'WebSocket connection failed. Please ensure the backend server is running.', 'error-event');
+          appendLog('System', 'WebSocket failed. Ensure backend is running.', 'error-event', 'error');
         };
 
         ws.onclose = () => {
-          appendLog('System', 'Connection to backend closed.', 'system-event');
+          appendLog('System', 'Connection closed.', 'system-event', 'system');
           wsRef.current = null;
         };
     }
@@ -133,30 +140,31 @@ export default function LogPanel() {
     logsEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [logs]);
   
-  const getLogStyle = (type: string | undefined) => {
+  const getLogStyle = (type: string | undefined, level?: string) => {
+      if (level === 'error') return 'text-[var(--vscode-terminal-ansiRed)]';
+      if (level === 'success') return 'text-[var(--vscode-terminal-ansiGreen)]';
+      if (level === 'warn') return 'text-[var(--vscode-terminal-ansiYellow)]';
       switch(type) {
           case 'error-event': return 'text-[var(--vscode-terminal-ansiRed)]';
           case 'db-event': return 'text-[var(--vscode-terminal-ansiBlue)]';
           case 'success-event': return 'text-[var(--vscode-terminal-ansiGreen)]';
-          case 'system-event': return 'text-[var(--vscode-terminal-ansiBrightBlack)] italic';
+          case 'system-event': return 'text-[var(--vscode-terminal-ansiBrightBlack)]';
           default: return 'text-[var(--vscode-terminal-foreground)]';
       }
   };
 
   return (
     <div className="flex flex-col h-full bg-[var(--vscode-panel-background)] text-[var(--vscode-terminal-foreground)] p-0 relative">
-      <div className="flex-1 overflow-y-auto bg-[var(--vscode-terminal-background)] p-4 font-mono text-sm">
-        {/* Top Spacer */}
-        <div className="h-4"></div>
+      <div className="flex-1 overflow-y-auto bg-[var(--vscode-terminal-background)] p-2 font-mono text-sm">
 
         {logs.length === 0 && (
             <div className="flex flex-col items-center justify-center h-full text-[var(--vscode-descriptionForeground)] opacity-60 space-y-4">
                 <Terminal size={48} strokeWidth={1} />
-                <div className="italic">Ready to compile. Use "ARC: Start Compilation" to begin.</div>
+                <div className="italic">Ready. Use `ARC: Start Compilation`.</div>
             </div>
         )}
         
-        <div className="pb-16"> {/* Removed space-y-1 for tighter native terminal look */}
+        <div className="pb-8">
             {logs.map((log, index) => (
                 <LogEntry key={index} log={log} getLogStyle={getLogStyle} />
             ))}

@@ -169,6 +169,15 @@ export async function activate(context: vscode.ExtensionContext) {
             });
         })
     );
+
+    // Open main canvas automatically on startup for better first-use experience.
+    setTimeout(() => {
+        const hasWorkspace = vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders.length > 0;
+        if (!hasWorkspace || !requirementManager) {
+            return;
+        }
+        vscode.commands.executeCommand("arc.openMainEditor");
+    }, 800);
 }
 
 export function deactivate() {
