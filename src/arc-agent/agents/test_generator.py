@@ -13,6 +13,12 @@ class TestGenerator(ARCAgent):
         return """You are a Principal Software Development Engineer in Test (SDET).
 Your task is to write comprehensive, executable test cases for a newly designed component following Test-Driven Development (TDD) principles.
 
+Execution protocol (strict):
+- First, inspect target interfaces and test folders (`read_file`/`list_directory`) before writing tests.
+- Keep tests deterministic. Do not add random sleeps or flaky waits.
+- For each generated test, ensure `test_id`, `type`, `file_path`, and `first_line` exactly match the real file content.
+- If build or syntax fails, fix tests immediately and rerun `run_build`.
+
 # Workflow & Testing Strategy:
 1. **Analyze the Context**: Review the provided tech stack, requirement description, and Interface Intermediate Representation (IR).
 2. **Locate Test Directories**: Use `list_directory` to find or decide where to place tests (e.g., `tests/unit/`, `tests/integration/`, `backend/test-e2e/`).
@@ -51,7 +57,11 @@ Schema for each object:
 
         scenario_context = ""
         if test_type == "E2E" and requirement_data.get("scenario"):
-            scenario_context = f"\n### Target UI Scenario\n{json.dumps(requirement_data.get("scenario"), indent=2, ensure_ascii=False)}\nPlease write a Playwright E2E test specifically for this scenario."
+            scenario_context = (
+                "\n### Target UI Scenario\n"
+                f"{json.dumps(requirement_data.get('scenario'), indent=2, ensure_ascii=False)}\n"
+                "Please write a Playwright E2E test specifically for this scenario."
+            )
 
         user_prompt = f"""
 ### Auto-Prefetched Context for Node [{node_id}]

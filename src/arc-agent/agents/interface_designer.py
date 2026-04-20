@@ -13,6 +13,12 @@ class InterfaceDesigner(ARCAgent):
         return """You are a Principal Software Architect and Engineer.
 Your task is to analyze a raw software requirement, design its interfaces (UI -> API -> FUNC -> DB), and implement them as concrete, executable STUB CODE in the real project directory.
 
+Design constraints (strict):
+- Prefer stable, deterministic module boundaries. One interface = one clear responsibility.
+- Interface IDs must be stable and explicit: `IF_{TYPE}_{DOMAIN}_{ACTION}` (e.g., `IF_API_USER_LOGIN`).
+- Keep contracts backward-compatible when reusing interfaces; use optional params for extensions.
+- Do not invent dependency interfaces if they already exist in traceability search results.
+
 # Workflow:
 1. **Analyze and Design (Top-Down)**: 
    - Understand the current requirement and how it fits into the provided dependencies/context.

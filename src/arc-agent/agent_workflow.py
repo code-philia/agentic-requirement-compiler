@@ -39,6 +39,29 @@ DEBUG_MODE = int(os.environ.get("ARC_DEBUG", "1"))
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 TEMPLATE_DIR = os.path.join(BASE_DIR, 'template-fullstack')
 
+def extract_json_array_from_markdown(raw_output: str):
+    """Extract a JSON array from fenced markdown block or fallback to first JSON array span."""
+    if not raw_output:
+        return None
+    fenced = re.search(r'```json\s*(.*?)\s*```', raw_output, re.DOTALL | re.IGNORECASE)
+    candidate = fenced.group(1) if fenced else raw_output
+    try:
+        data = json.loads(candidate)
+        if isinstance(data, list):
+            return data
+    except Exception:
+        pass
+    # Fallback: pick first [...] span to improve robustness against extra prose.
+    span = re.search(r'(\[\s*{[\s\S]*}\s*\])', raw_output)
+    if span:
+        try:
+            data = json.loads(span.group(1))
+            if isinstance(data, list):
+                return data
+        except Exception:
+            return None
+    return None
+
 def visual_analysis_prompt() -> str:
     return """
 **CRITICAL ROLE:** You are a "Headless" Frontend Reverse-Engineer.
@@ -322,58 +345,65 @@ class ARCWorkflowManager:
                 requirement_data=requirement_data
             )
             # Parse and store the designed interfaces with file mappings
-            match = re.search(r'```json\s*(.*?)\s*```', raw_design_output, re.DOTALL | re.IGNORECASE)
-            if match:
+            interfaces = extract_json_array_from_markdown(raw_design_output)
+            if interfaces is None:
+                await self._log("System", "First design output is not a valid JSON array. Triggering one repair attempt.", node_id=node_id)
+                repair_prompt_data = dict(requirement_data)
+                repair_prompt_data["__repair_hint"] = "Return ONLY one ```json array``` with valid interface mapping objects."
+                raw_design_output = await self.interface_designer.design(
+                    node_id=node_id,
+                    requirement_data=repair_prompt_data
+                )
+                interfaces = extract_json_array_from_markdown(raw_design_output)
+            if interfaces is not None:
                 try:
-                    interfaces = json.loads(match.group(1))
-                    if isinstance(interfaces, list):
-                        for iface in interfaces:
-                            interface_id = iface.get("interface_id", f"{node_id}_UNKNOWN")
-                            is_reuse = iface.get("reuse", False)
-                            
-                            if is_reuse:
-                                # Reusing an existing interface
-                                success = update_interface_req_ids(interface_id, node_id)
-                                if success:
-                                    await self._log("System", f"Reused existing interface: {interface_id}", node_id=node_id)
-                                else:
-                                    await self._log("System", f"Warning: Attempted to reuse interface {interface_id} but it was not found in DB.", node_id=node_id)
-                            else:
-                                # Creating a new interface
-                                itype = iface.get("type", "FUNC")
-                                callers = iface.get("callers", [])
-                                callees = iface.get("callees", [])
-                                f_path = iface.get("file_path", "")
-                                f_line = iface.get("first_line", "")
-                                
-                                content_dict = {
-                                    "name": iface.get("name", ""),
-                                    "description": iface.get("description", ""),
-                                    "inputs": iface.get("inputs", []),
-                                    "outputs": iface.get("outputs", [])
-                                }
-                                content_str = json.dumps(content_dict, ensure_ascii=False)
-                                
-                                insert_interface(
-                                    interface_id=interface_id,
-                                    req_ids=[node_id],
-                                    type=itype,
-                                    content=content_str,
-                                    file_path=f_path,       
-                                    first_line=f_line,      
-                                    implemented=False,
-                                    callers=callers,
-                                    callees=callees
-                                )
-                            
-                        await self._log("System", f"Designed, reused, and generated stub code for {len(interfaces)} interfaces.", node_id=node_id)
+                    for iface in interfaces:
+                        interface_id = iface.get("interface_id", f"{node_id}_UNKNOWN")
+                        is_reuse = iface.get("reuse", False)
                         
-                        # Git Commit for Design
-                        designed_interfaces = [m.get("interface_id", "UNKNOWN") for m in interfaces]
-                        commit_msg = f"feat(design): [{node_id}] designed interfaces: {', '.join(designed_interfaces)}"
-                        await run_git_commit(self.workspace_path, commit_msg, self._log)
-                except json.JSONDecodeError as e:
-                    await self._log("System", f"Failed to parse interface JSON block: {str(e)}", node_id=node_id)
+                        if is_reuse:
+                            # Reusing an existing interface
+                            success = update_interface_req_ids(interface_id, node_id)
+                            if success:
+                                await self._log("System", f"Reused existing interface: {interface_id}", node_id=node_id)
+                            else:
+                                await self._log("System", f"Warning: Attempted to reuse interface {interface_id} but it was not found in DB.", node_id=node_id)
+                        else:
+                            # Creating a new interface
+                            itype = iface.get("type", "FUNC")
+                            callers = iface.get("callers", [])
+                            callees = iface.get("callees", [])
+                            f_path = iface.get("file_path", "")
+                            f_line = iface.get("first_line", "")
+                            
+                            content_dict = {
+                                "name": iface.get("name", ""),
+                                "description": iface.get("description", ""),
+                                "inputs": iface.get("inputs", []),
+                                "outputs": iface.get("outputs", [])
+                            }
+                            content_str = json.dumps(content_dict, ensure_ascii=False)
+                            
+                            insert_interface(
+                                interface_id=interface_id,
+                                req_ids=[node_id],
+                                type=itype,
+                                content=content_str,
+                                file_path=f_path,       
+                                first_line=f_line,      
+                                implemented=False,
+                                callers=callers,
+                                callees=callees
+                            )
+                        
+                    await self._log("System", f"Designed, reused, and generated stub code for {len(interfaces)} interfaces.", node_id=node_id)
+                    
+                    # Git Commit for Design
+                    designed_interfaces = [m.get("interface_id", "UNKNOWN") for m in interfaces]
+                    commit_msg = f"feat(design): [{node_id}] designed interfaces: {', '.join(designed_interfaces)}"
+                    await run_git_commit(self.workspace_path, commit_msg, self._log)
+                except Exception as e:
+                    await self._log("System", f"Failed to parse/store interface JSON block: {str(e)}", node_id=node_id)
             else:
                 await self._log("System", "Warning: No valid interface JSON block found in output.", node_id=node_id)
                 
@@ -442,17 +472,13 @@ class ARCWorkflowManager:
                     
                 # Combine outputs to store in state
                 combined_output = "\n\n".join(all_test_outputs)
-                self.state["tests"] = combined_output
+                await self._log("System", f"Generated test output bundle length: {len(combined_output)} chars", node_id=node_id)
 
                 # parse test mappings
                 for raw_test_output in all_test_outputs:
-                    match = re.search(r'```json\s*(.*?)\s*```', raw_test_output, re.DOTALL | re.IGNORECASE)
-                    if match:
+                    test_mappings = extract_json_array_from_markdown(raw_test_output)
+                    if test_mappings is not None:
                         try:
-                            test_mappings = json.loads(match.group(1))
-                            if not isinstance(test_mappings, list):
-                                test_mappings = [test_mappings] # fallback if they return dict
-                                
                             for mapping in test_mappings:
                                 t_id = mapping.get("test_id", f"TEST_{node_id}_UNKNOWN")
                                 r_id = mapping.get("req_id", node_id)
@@ -471,8 +497,8 @@ class ARCWorkflowManager:
                                 )
                                     
                             await self._log("System", f"Successfully registered {len(test_mappings)} tests in traceability database.", node_id=node_id)
-                        except json.JSONDecodeError:
-                            await self._log("System", "Failed to parse test mappings JSON from TestGenerator.", node_id=node_id)
+                        except Exception as e:
+                            await self._log("System", f"Failed to parse/register test mappings from TestGenerator: {str(e)}", node_id=node_id)
 
         
             # ==========================================
@@ -565,5 +591,6 @@ class ARCWorkflowManager:
 
 async def run_agent_workflow(manager: ARCWorkflowManager, node_id: str, requirement_data: dict):
     """Unified entry point for processing a node using an existing manager"""
-    final_state = await manager.process_node(node_id, requirement_data)
+    _ = requirement_data
+    final_state = await manager.process_node(node_id)
     return final_state

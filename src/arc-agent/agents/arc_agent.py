@@ -11,6 +11,22 @@ load_dotenv()
 
 # Global Debug Flag
 DEBUG_MODE = int(os.environ.get("ARC_DEBUG", "1"))
+MAX_TOOL_OUTPUT_LENGTH = int(os.environ.get("ARC_MAX_TOOL_OUTPUT_CHARS", "8000"))
+MAX_CONTEXT_CHARS = int(os.environ.get("ARC_MAX_CONTEXT_CHARS", "60000"))
+AUTO_COMPACT_STEP_INTERVAL = int(os.environ.get("ARC_AUTO_COMPACT_STEP_INTERVAL", "10"))
+MICROCOMPACT_MIN_TOOL_OUTPUT = int(os.environ.get("ARC_MICROCOMPACT_MIN_CHARS", "1000"))
+MICROCOMPACT_KEEP_MESSAGES = int(os.environ.get("ARC_MICROCOMPACT_KEEP_MESSAGES", "10"))
+MODEL_RETRY_COUNT = int(os.environ.get("ARC_MODEL_RETRY_COUNT", "2"))
+
+READONLY_CACHEABLE_TOOLS = {
+    "read_file",
+    "list_directory",
+    "grep_search",
+    "search_interfaces_by_keyword",
+    "search_interfaces_by_relation",
+    "find_interface_impacts",
+    "get_node_relations",
+}
 
 class ARCAgent:
     """
@@ -56,6 +72,47 @@ class ARCAgent:
         """
         return []
 
+    def _estimate_context_chars(self, messages: List[Dict[str, Any]]) -> int:
+        total = 0
+        for m in messages:
+            content = m.get("content")
+            if isinstance(content, str):
+                total += len(content)
+            elif content is not None:
+                total += len(str(content))
+        return total
+
+    def _microcompact_messages(self, messages: List[Dict[str, Any]]) -> None:
+        # Keep initial system+user and latest N interactions intact.
+        if len(messages) <= 2 + MICROCOMPACT_KEEP_MESSAGES:
+            return
+        for msg in messages[2:-MICROCOMPACT_KEEP_MESSAGES]:
+            content = msg.get("content")
+            if (
+                msg.get("role") == "tool"
+                and isinstance(content, str)
+                and len(content) > MICROCOMPACT_MIN_TOOL_OUTPUT
+            ):
+                msg["content"] = (
+                    content[:300]
+                    + "\n\n[Old tool result content cleared to save context]"
+                )
+
+    async def _create_chat_completion_with_retry(self, **api_kwargs):
+        last_err = None
+        for attempt in range(1, MODEL_RETRY_COUNT + 2):
+            try:
+                return await self.client.chat.completions.create(**api_kwargs)
+            except Exception as e:
+                last_err = e
+                if attempt >= MODEL_RETRY_COUNT + 1:
+                    raise
+                await self._log(
+                    f"Model call failed (attempt {attempt}), retrying: {str(e)}"
+                )
+                await asyncio.sleep(min(2 * attempt, 5))
+        raise last_err
+
     async def run(self, user_prompt: str, node_id: str = None, max_steps: int = 30) -> str:
         messages = [
             {"role": "system", "content": self.get_system_prompt()},
@@ -69,13 +126,14 @@ class ARCAgent:
             for name in allowed_tool_names 
             if name in TOOL_REGISTRY
         ]
+        tool_result_cache: Dict[str, str] = {}
 
         for step in range(max_steps):
             # 1. Auto-Compact / Auto-Summarize: Prevent context overflow
             # Calculate approximate character count of all messages
-            total_chars = sum(len(str(m.get("content", ""))) for m in messages if m.get("content"))
+            total_chars = self._estimate_context_chars(messages)
             
-            if step > 0 and (step % 10 == 0 or total_chars > 60000):
+            if step > 0 and (step % AUTO_COMPACT_STEP_INTERVAL == 0 or total_chars > MAX_CONTEXT_CHARS):
                 await self._log(f"Triggering Auto-Compact (Step {step}, Chars: {total_chars})...", node_id=node_id)
                 summary_prompt = (
                     "You have been working on this task for several steps. "
@@ -86,7 +144,7 @@ class ARCAgent:
                 # Ask the model to summarize the current progress
                 summary_messages = messages + [{"role": "user", "content": summary_prompt}]
                 try:
-                    summary_response = await self.client.chat.completions.create(
+                    summary_response = await self._create_chat_completion_with_retry(
                         model=self.model,
                         messages=summary_messages,
                         temperature=0.2
@@ -107,12 +165,7 @@ class ARCAgent:
                     await self._log(f"Auto-Compact failed: {str(e)}", node_id=node_id)
 
             # 2. Microcompact: Fold old tool results
-            # Keep the first 2 messages (system, user) and the last keep_tool_num messages intact
-            keep_tool_num = 10
-            if len(messages) > 2 + keep_tool_num:
-                for msg in messages[2:-keep_tool_num]:
-                    if msg.get("role") == "tool" and isinstance(msg.get("content"), str) and len(msg.get("content", "")) > 1000:
-                        msg["content"] = msg["content"] + "...\n\n[Old tool result content cleared to save context]"
+            self._microcompact_messages(messages)
 
             await self._log(f"Thinking... (Step {step + 1}/{max_steps})", node_id=node_id)
             
@@ -130,7 +183,7 @@ class ARCAgent:
                 last_msg = messages[-1].get("content")
                 await self._log(f"[DEBUG] Input to model:\n{last_msg}", node_id=node_id)
                 
-            response = await self.client.chat.completions.create(**api_kwargs)
+            response = await self._create_chat_completion_with_retry(**api_kwargs)
             message = response.choices[0].message
             messages.append(message.model_dump(exclude_none=True))
             
@@ -150,19 +203,26 @@ class ARCAgent:
                     await self._log(f"Calling tool: `{tool_name}` with args: {json.dumps(tool_args, indent=2)}", node_id=node_id)
                     
                     # Look up and execute the actual tool function from the registry
+                    cache_key = f"{tool_name}::{json.dumps(tool_args, ensure_ascii=False, sort_keys=True)}"
                     if tool_name in TOOL_REGISTRY and tool_name in allowed_tool_names:
-                        tool_func = TOOL_REGISTRY[tool_name]["func"]
-                        try:
-                            # Dynamically call the corresponding async function
-                            tool_result = await tool_func(**tool_args)
-                        except Exception as e:
-                            tool_result = f"Tool execution error: {str(e)}"
+                        if tool_name in READONLY_CACHEABLE_TOOLS and cache_key in tool_result_cache:
+                            tool_result = tool_result_cache[cache_key]
+                            if DEBUG_MODE:
+                                await self._log(f"[DEBUG] Reusing cached tool result for `{tool_name}`", node_id=node_id)
+                        else:
+                            tool_func = TOOL_REGISTRY[tool_name]["func"]
+                            try:
+                                # Dynamically call the corresponding async function
+                                tool_result = await tool_func(**tool_args)
+                                if tool_name in READONLY_CACHEABLE_TOOLS:
+                                    tool_result_cache[cache_key] = str(tool_result)
+                            except Exception as e:
+                                tool_result = f"Tool execution error: {str(e)}"
                     else:
                         tool_result = f"Error: Tool '{tool_name}' not permitted or not found."
                     
                     # 3. Tool Output Budget: Truncate long tool outputs
                     tool_result_str = str(tool_result)
-                    MAX_TOOL_OUTPUT_LENGTH = 8000
                     if len(tool_result_str) > MAX_TOOL_OUTPUT_LENGTH:
                         tool_result_str = tool_result_str[:MAX_TOOL_OUTPUT_LENGTH] + "\n... [Output truncated due to length. Please use grep or narrow your search.]"
 

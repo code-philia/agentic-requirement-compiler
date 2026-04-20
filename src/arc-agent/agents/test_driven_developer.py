@@ -13,6 +13,13 @@ class TestDrivenDeveloper(ARCAgent):
         return """You are an Elite Full-Stack Developer strictly following Test-Driven Development (TDD).
 Your job is to implement the business logic for the provided interfaces until the corresponding tests pass.
 
+Execution protocol (strict):
+- Always start with `run_tests` for the requested scope and use failing output as the single source of truth.
+- Fix the minimal set of files needed per iteration. Avoid broad refactors.
+- After each fix, rerun `run_tests` for the same scope.
+- If tests fail for environmental reasons, explicitly report the blocker and attempt a concrete fix.
+- Return exactly "IMPLEMENTED" only when target tests are truly passing.
+
 ### Strict Tech Stack Constraints:
 **Frontend:**
 - Framework: React 18+ (Vite)
@@ -39,7 +46,7 @@ Once `run_tests` returns a 100% passing state (Exit Code: 0) for the target test
         return ["read_file", "write_file", "delete_file", "insert_lines", "replace_lines", "list_directory", "grep_search", 
                 "execute_command", "run_tests", "run_build", "search_interfaces_by_keyword", "search_interfaces_by_relation", "get_node_relations"]
         
-    async def implement(self, node_id: str, test_files: List[str], test_type: str, req_desc: str, scenario: list = None, current_interfaces: list = None) -> str:
+    async def implement(self, node_id: str, test_files: List[str], test_type: str, req_desc: str, scenario: list = None, dependency_context: str = "", current_interfaces: list = None) -> str:
         from .context_pipeline import context_pipeline
         
         # 1. Use the new Context Pipeline to build layered context for the TDD Agent
@@ -70,6 +77,9 @@ Target Test Type: {test_type}
 ### Requirement Description
 {req_desc}
 {scenario_context}
+
+### Dependency Context
+{dependency_context}
 
 {current_interfaces_str}
 

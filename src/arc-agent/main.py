@@ -106,10 +106,14 @@ async def run_compilation(project_path: str, requirement_path: str, clear_all: b
         update_node_status(workflow_manager.workspace_path, node_id, "analyzing")
         await manager.broadcast({"type": "node_update", "nodeId": node_id, "status": "analyzing"})
 
-        await workflow_manager.process_node(node_id)
-        
-        update_node_status(workflow_manager.workspace_path, node_id, "completed")
-        await manager.broadcast({"type": "node_update", "nodeId": node_id, "status": "completed"})
+        ok = await workflow_manager.process_node(node_id)
+        if ok:
+            update_node_status(workflow_manager.workspace_path, node_id, "completed")
+            await manager.broadcast({"type": "node_update", "nodeId": node_id, "status": "completed"})
+        else:
+            update_node_status(workflow_manager.workspace_path, node_id, "error")
+            await manager.broadcast({"type": "node_update", "nodeId": node_id, "status": "error"})
+            await manager.broadcast({"type": "error-event", "agent": "System", "message": f"Node {node_id} failed. Continue with next node."})
         
 
     await manager.broadcast({"type": "log", "agent": "System", "message": "All requirements processed successfully. Project compiled!"})
@@ -149,11 +153,11 @@ async def websocket_endpoint(websocket: WebSocket):
                 
                 if node_id:
                     result = get_traceability_data(node_id)
-                    await manager.broadcast({
+                    await websocket.send_text(json.dumps({
                         "type": "traceabilityData", 
                         "nodeId": node_id, 
                         "data": result
-                    })
+                    }))
 
     except WebSocketDisconnect:
         manager.disconnect(websocket)

@@ -16,6 +16,11 @@ class ContextPipeline:
     """
     def __init__(self, workspace_dir: str = "."):
         self.workspace_dir = workspace_dir
+        self.max_global_chars = 8000
+        self.max_requirement_chars = 6000
+        self.max_interfaces = 20
+        self.max_related_interfaces = 30
+        self.max_tests = 20
 
     def _get_global_context(self) -> str:
         """
@@ -25,7 +30,10 @@ class ContextPipeline:
         context_file = os.path.join(self.workspace_dir, ".arc", "metadata.md")
         if os.path.exists(context_file):
             with open(context_file, "r", encoding="utf-8") as f:
-                return f"<global_context>\n{f.read()}\n</global_context>"
+                content = f.read()
+                if len(content) > self.max_global_chars:
+                    content = content[:self.max_global_chars] + "\n...[global context truncated]"
+                return f"<global_context>\n{content}\n</global_context>"
         return "<global_context>\nNo global context file (.arc/metadata.md) found.\n</global_context>"
 
     def _get_relational_interfaces(self, node_id: str) -> List[Dict]:
@@ -66,7 +74,10 @@ class ContextPipeline:
                 related_interfaces.append(dict(row))
                 
         conn.close()
-        return related_interfaces
+        unique = {}
+        for iface in related_interfaces:
+            unique[iface.get("interface_id")] = iface
+        return list(unique.values())[:self.max_related_interfaces]
 
     def _format_interface(self, iface: Dict, agent_type: str) -> str:
         """Format interface data differently based on agent focus."""
@@ -105,15 +116,26 @@ class ContextPipeline:
             return f"<error>Requirement node {node_id} not found in database.</error>"
 
         context_parts = []
+        context_parts.append(
+            "<context_policy>\n"
+            "- Prefer reusing existing interfaces before creating new ones.\n"
+            "- If modifying a reused interface, check impacts first.\n"
+            "- Prefer minimal file reads and targeted grep over full scans.\n"
+            "- Keep outputs deterministic and schema-valid.\n"
+            "</context_policy>"
+        )
         
         # 1. Inject Global Context
         context_parts.append(self._get_global_context())
         
         # 2. Current Node Data
-        context_parts.append(f"<current_requirement id=\"{node_id}\">\n{json.dumps(req_data, indent=2, ensure_ascii=False)}\n</current_requirement>")
+        req_json = json.dumps(req_data, indent=2, ensure_ascii=False)
+        if len(req_json) > self.max_requirement_chars:
+            req_json = req_json[:self.max_requirement_chars] + "\n...[requirement truncated]"
+        context_parts.append(f"<current_requirement id=\"{node_id}\">\n{req_json}\n</current_requirement>")
         
         # 3. Existing Interfaces for this node
-        own_interfaces = get_interfaces_by_req_id(node_id)
+        own_interfaces = get_interfaces_by_req_id(node_id)[:self.max_interfaces]
         if own_interfaces:
             ifaces_str = "\n".join([self._format_interface(i, agent_type) for i in own_interfaces])
             context_parts.append(f"<own_interfaces>\n{ifaces_str}\n</own_interfaces>")
@@ -128,7 +150,7 @@ class ContextPipeline:
                 
         elif agent_type == "TestDrivenDeveloper":
             # TDD needs to know about existing tests
-            tests = get_tests_by_req_id(node_id)
+            tests = get_tests_by_req_id(node_id)[:self.max_tests]
             if tests:
                 tests_str = ""
                 for t in tests:

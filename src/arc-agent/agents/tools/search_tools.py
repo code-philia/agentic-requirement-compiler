@@ -10,6 +10,7 @@ async def grep_search_impl(pattern: str, dir_path: str = ".") -> str:
     """Search for a regex pattern in the contents of files within a directory"""
     abs_dir = get_abs_path(dir_path)
     results = []
+    max_results = 300
     try:
         # compile regex pattern
         regex = re.compile(pattern)
@@ -21,8 +22,10 @@ async def grep_search_impl(pattern: str, dir_path: str = ".") -> str:
                     try:
                         with open(file_path, 'r', encoding='utf-8') as f:
                             for i, line in enumerate(f):
-                                if re.search(pattern, line):
+                                if regex.search(line):
                                     results.append(f"{file_path}:{i+1}: {line.strip()}")
+                                    if len(results) >= max_results:
+                                        return "\n".join(results) + "\n... [grep results truncated]"
                     except Exception:
                         pass
         return "\n".join(results) if results else "No matches found."
@@ -63,7 +66,8 @@ async def get_node_relations_impl(node_id: str) -> str:
             res = f"#### {label}: [{n_id}]\n"
             res += f"Description: {r_row['description'][:200]}...\n"
             
-            cursor.execute('SELECT interface_id, type, file_path, first_line FROM interfaces WHERE req_id = ?', (n_id,))
+            search_term = f'%"{n_id}"%'
+            cursor.execute('SELECT interface_id, type, file_path, first_line FROM interfaces WHERE req_ids LIKE ?', (search_term,))
             ifaces = cursor.fetchall()
             
             if ifaces:
