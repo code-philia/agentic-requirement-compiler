@@ -26,6 +26,7 @@ interface PropertiesPanelProps {
 
 interface InterfaceData {
     interface_id: string;
+    req_ids?: string[];
     type: string;
     file_path: string;
     first_line: string;
@@ -36,6 +37,7 @@ interface InterfaceData {
 
 interface TestData {
     test_id: string;
+    req_id?: string;
     type: string;
     file_path: string;
     first_line: string;
@@ -149,6 +151,14 @@ const TraceabilityTab = ({ selectedNodeId, onClearReqFilter }: { selectedNodeId?
         }
     };
 
+    const handleOpenRequirementById = (reqId?: string) => {
+        const vscode = (window as any).vscode;
+        const id = String(reqId || '').trim();
+        if (vscode && id) {
+            vscode.postMessage({ command: 'openRequirementById', reqId: id });
+        }
+    };
+
     const clearFilters = () => {
         setSearchText('');
         setKeyword('');
@@ -213,7 +223,12 @@ const TraceabilityTab = ({ selectedNodeId, onClearReqFilter }: { selectedNodeId?
                 <CollapsibleSection title={`Requirements (${data.requirements.length})`} defaultOpen={true}>
                     <div className="space-y-2">
                         {data.requirements.map(req => (
-                            <div key={req.req_id} className="border border-[var(--vscode-panel-border)] rounded-sm bg-[var(--vscode-editor-background)] p-2">
+                            <div
+                                key={req.req_id}
+                                className="border border-[var(--vscode-panel-border)] rounded-sm bg-[var(--vscode-editor-background)] p-2 cursor-pointer hover:bg-[var(--vscode-list-hoverBackground)]"
+                                onClick={() => handleOpenRequirementById(req.req_id)}
+                                title={`Open and highlight ${req.req_id} in requirements.yaml`}
+                            >
                                 <div className="text-xs font-semibold">{req.req_id}</div>
                                 <div className="text-[11px] opacity-85 mt-1 whitespace-pre-wrap break-words">
                                     {req.description || 'No description'}
@@ -265,6 +280,23 @@ const TraceabilityTab = ({ selectedNodeId, onClearReqFilter }: { selectedNodeId?
                                     ) : <div className="text-[10px] text-[var(--vscode-descriptionForeground)] italic mb-2">Not implemented yet</div>}
                                     
                                     <div className="space-y-1.5">
+                                        {iface.req_ids && iface.req_ids.length > 0 && (
+                                            <div className="text-[10px]">
+                                                <span className="font-semibold text-[var(--vscode-descriptionForeground)] opacity-70">Requirements:</span>
+                                                <div className="ml-1 flex flex-wrap gap-1 mt-0.5">
+                                                    {iface.req_ids.map(r => (
+                                                        <span
+                                                            key={r}
+                                                            onClick={() => handleOpenRequirementById(r)}
+                                                            className="bg-[var(--vscode-badge-background)] text-[var(--vscode-badge-foreground)] px-1.5 py-0.5 rounded-sm cursor-pointer hover:opacity-85"
+                                                            title={`Open and highlight ${r}`}
+                                                        >
+                                                            {r}
+                                                        </span>
+                                                    ))}
+                                                </div>
+                                            </div>
+                                        )}
                                         {iface.callers && iface.callers.length > 0 && (
                                             <div className="text-[10px]">
                                                 <span className="font-semibold text-[var(--vscode-descriptionForeground)] opacity-70">Callers:</span>
@@ -326,6 +358,18 @@ const TraceabilityTab = ({ selectedNodeId, onClearReqFilter }: { selectedNodeId?
                                             <div className="ml-1 flex flex-wrap gap-1 mt-0.5">
                                                 {test.interface_ids.map(i => <span key={i} className="bg-[var(--vscode-badge-background)] text-[var(--vscode-badge-foreground)] px-1.5 py-0.5 rounded-sm">{i}</span>)}
                                             </div>
+                                        </div>
+                                    )}
+                                    {test.req_id && (
+                                        <div className="text-[10px] mt-1">
+                                            <span className="font-semibold text-[var(--vscode-descriptionForeground)] opacity-70">Requirement:</span>
+                                            <span
+                                                onClick={() => handleOpenRequirementById(test.req_id)}
+                                                className="ml-1 bg-[var(--vscode-badge-background)] text-[var(--vscode-badge-foreground)] px-1.5 py-0.5 rounded-sm cursor-pointer hover:opacity-85"
+                                                title={`Open and highlight ${test.req_id}`}
+                                            >
+                                                {test.req_id}
+                                            </span>
                                         </div>
                                     )}
                                 </div>

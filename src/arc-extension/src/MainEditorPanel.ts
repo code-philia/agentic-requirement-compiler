@@ -1,6 +1,7 @@
 import * as vscode from "vscode";
 import * as cp from "child_process";
 import * as path from "path";
+import * as fs from "fs";
 
 export class MainEditorPanel {
   public static currentPanel: MainEditorPanel | undefined;
@@ -119,6 +120,63 @@ export class MainEditorPanel {
                     }
                 } catch (e) {
                     vscode.window.showErrorMessage(`Could not open file: ${fullPath}`);
+                }
+                break;
+            }
+            case "openRequirementById": {
+                const workspaceRoot = vscode.workspace.workspaceFolders?.[0].uri.fsPath;
+                const reqId = String(data.reqId || '').trim();
+                if (!workspaceRoot || !reqId) return;
+
+                const candidates = [
+                    path.join(workspaceRoot, 'requirements', 'requirements.yaml'),
+                    path.join(workspaceRoot, 'requirements', 'requirents.yaml'),
+                ];
+                const requirementFile = candidates.find((p) => {
+                    try {
+                        return fs.existsSync(p);
+                    } catch {
+                        return false;
+                    }
+                });
+                if (!requirementFile) {
+                    vscode.window.showErrorMessage('Could not find requirements YAML file.');
+                    return;
+                }
+
+                try {
+                    const doc = await vscode.workspace.openTextDocument(requirementFile);
+                    const editor = await vscode.window.showTextDocument(doc, {
+                        viewColumn: vscode.ViewColumn.Beside,
+                        preserveFocus: false
+                    });
+
+                    let targetLine = -1;
+                    const needle = `id: ${reqId}`;
+                    for (let i = 0; i < doc.lineCount; i++) {
+                        const text = doc.lineAt(i).text;
+                        if (text.includes(needle) || text.trim() === `- ${needle}`) {
+                            targetLine = i;
+                            break;
+                        }
+                    }
+                    if (targetLine < 0) {
+                        vscode.window.showWarningMessage(`REQ ID ${reqId} not found in requirements YAML.`);
+                        return;
+                    }
+
+                    const range = new vscode.Range(targetLine, 0, targetLine, 0);
+                    editor.selection = new vscode.Selection(targetLine, 0, targetLine, 0);
+                    editor.revealRange(range, vscode.TextEditorRevealType.InCenter);
+
+                    const highlightDecoration = vscode.window.createTextEditorDecorationType({
+                        backgroundColor: 'rgba(255, 255, 0, 0.3)',
+                        isWholeLine: true
+                    });
+                    editor.setDecorations(highlightDecoration, [range]);
+                    setTimeout(() => highlightDecoration.dispose(), 2200);
+                } catch (e) {
+                    vscode.window.showErrorMessage('Failed to open requirements file.');
                 }
                 break;
             }
