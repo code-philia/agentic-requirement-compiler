@@ -1,0 +1,15 @@
+[project]
+name = "arc-agent"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "aiofiles>=25.1.0",
+    "fastapi>=0.136.0",
+    "openai>=2.32.0",
+    "python-dotenv>=1.2.2",
+    "requests>=2.33.1",
+    "uvicorn>=0.44.0",
+    "websockets>=16.0",
+]
