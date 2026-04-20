@@ -5,3 +5,5 @@ aiofiles
 openai
 requests
 python-dotenv
+pyyaml
+pydantic
