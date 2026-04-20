@@ -17,6 +17,22 @@ type ArcTechStack = {
     database: 'sqlite';
 };
 
+type ArcStackProfile = {
+    frontend: {
+        framework: string;
+        language: string;
+        styling: string;
+        http: string;
+        testing: string;
+    };
+    backend: {
+        runtime: string;
+        framework: string;
+        database: string;
+        testing: string[];
+    };
+};
+
 type SettingsInitData = {
     envKeys: string[];
     envValues: Record<string, string>;
@@ -131,6 +147,7 @@ export async function activate(context: vscode.ExtensionContext) {
                     const payload = message.payload as {
                         envValues: Record<string, string>;
                         stack: ArcTechStack;
+                        profile?: ArcStackProfile;
                     };
                     if (!payload || !payload.envValues || !payload.stack) {
                         vscode.window.showErrorMessage('Invalid ARC settings payload.');
@@ -184,7 +201,7 @@ async function saveArcSettings(
     context: vscode.ExtensionContext,
     workspaceRoot: string,
     envKeys: string[],
-    payload: { envValues: Record<string, string>; stack: ArcTechStack },
+    payload: { envValues: Record<string, string>; stack: ArcTechStack; profile?: ArcStackProfile },
 ): Promise<void> {
     const arcAgentDir = path.join(context.extensionPath, '..', 'arc-agent');
     const envPath = path.join(arcAgentDir, '.env');
@@ -208,7 +225,8 @@ async function saveArcSettings(
     await writeTextFile(vscode.Uri.file(envPath), `${lines.join('\n')}\n`);
 
     const existingMetadata = await readTextFile(vscode.Uri.file(metadataPath));
-    const updatedMetadata = upsertStackMetadata(existingMetadata, payload.stack);
+    const profile = payload.profile ?? deriveStackProfile(payload.stack);
+    const updatedMetadata = upsertStackMetadata(existingMetadata, payload.stack, profile);
     await writeTextFile(vscode.Uri.file(metadataPath), updatedMetadata);
 }
 
@@ -268,15 +286,55 @@ function parseStackFromMetadata(content: string): ArcTechStack {
     };
 }
 
-function upsertStackMetadata(content: string, stack: ArcTechStack): string {
+function deriveStackProfile(stack: ArcTechStack): ArcStackProfile {
+    // Current release only supports React + Node.js + SQLite stack profile.
+    if (stack.backend !== 'nodejs' || stack.frontend !== 'react' || stack.database !== 'sqlite') {
+        // Fallback to the same profile to keep metadata stable.
+    }
+    return {
+        frontend: {
+            framework: 'React 18+ (Vite)',
+            language: 'JavaScript (ES6+)',
+            styling: 'Tailwind CSS v4',
+            http: 'Axios (Must use Interceptors for global error handling)',
+            testing: 'None in frontend directory. (Verified via E2E in backend).',
+        },
+        backend: {
+            runtime: 'Node.js (LTS)',
+            framework: 'Express.js',
+            database: 'SQLite3 (`sqlite3` driver, file-based)',
+            testing: [
+                'Vitest: Used for Unit and Integration testing.',
+                'Supertest: Used with Vitest for API route testing.',
+                'Playwright: Used for End-to-End (E2E) testing, located in `backend/test-e2e`.',
+            ],
+        },
+    };
+}
+
+function upsertStackMetadata(content: string, stack: ArcTechStack, profile: ArcStackProfile): string {
     const block = [
         ARC_STACK_START,
         '## ARC Metadata',
         '',
-        '### Tech Stack',
+        '### Main Stack',
         `- backend: ${stack.backend}`,
         `- frontend: ${stack.frontend}`,
         `- database: ${stack.database}`,
+        '',
+        '### Frontend',
+        `* **Framework**: ${profile.frontend.framework}`,
+        `* **Language**: ${profile.frontend.language}`,
+        `* **Styling**: ${profile.frontend.styling}`,
+        `* **HTTP**: ${profile.frontend.http}`,
+        `* **Testing**: ${profile.frontend.testing}`,
+        '',
+        '### Backend',
+        `* **Runtime**: ${profile.backend.runtime}`,
+        `* **Framework**: ${profile.backend.framework}`,
+        `* **Database**: ${profile.backend.database}`,
+        '* **Testing**:',
+        ...profile.backend.testing.map(item => `  * ${item}`),
         ARC_STACK_END,
     ].join('\n');
 

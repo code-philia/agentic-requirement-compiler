@@ -7,6 +7,22 @@ type ArcTechStack = {
   database: 'sqlite';
 };
 
+type ArcStackProfile = {
+  frontend: {
+    framework: string;
+    language: string;
+    styling: string;
+    http: string;
+    testing: string;
+  };
+  backend: {
+    runtime: string;
+    framework: string;
+    database: string;
+    testing: string[];
+  };
+};
+
 type SettingsInitData = {
   envKeys: string[];
   envValues: Record<string, string>;
@@ -48,6 +64,25 @@ export default function SettingsPanel() {
     () => envKeys.filter(key => (envValues[key] || '').trim().length > 0).length,
     [envKeys, envValues],
   );
+  const stackProfile = useMemo<ArcStackProfile>(() => ({
+    frontend: {
+      framework: 'React 18+ (Vite)',
+      language: 'JavaScript (ES6+)',
+      styling: 'Tailwind CSS v4',
+      http: 'Axios (Must use Interceptors for global error handling)',
+      testing: 'None in frontend directory (Verified via backend E2E)',
+    },
+    backend: {
+      runtime: 'Node.js (LTS)',
+      framework: 'Express.js',
+      database: 'SQLite3 (sqlite3 driver, file-based)',
+      testing: [
+        'Vitest: Unit and Integration testing',
+        'Supertest: API route testing with Vitest',
+        'Playwright: E2E testing in backend/test-e2e',
+      ],
+    },
+  }), []);
 
   const onSave = () => {
     setStatus('Saving...');
@@ -56,6 +91,7 @@ export default function SettingsPanel() {
       payload: {
         envValues,
         stack,
+        profile: stackProfile,
       },
     });
   };
@@ -132,8 +168,11 @@ export default function SettingsPanel() {
                   }
                 >
                   <option value="nodejs">Node.js</option>
-                  <option value="python_flask">Python Flask</option>
                 </select>
+                <p className="text-[11px] opacity-75">
+                  Runtime: {stackProfile.backend.runtime} | Framework: {stackProfile.backend.framework}
+                </p>
+                <p className="text-[11px] opacity-75">Testing: {stackProfile.backend.testing.join(' / ')}</p>
               </div>
 
               <div className="grid gap-1">
@@ -142,6 +181,12 @@ export default function SettingsPanel() {
                   <span>React</span>
                   <CheckCircle2 size={14} className="opacity-80" />
                 </div>
+                <p className="text-[11px] opacity-75">
+                  {stackProfile.frontend.language} | {stackProfile.frontend.styling}
+                </p>
+                <p className="text-[11px] opacity-75">
+                  HTTP: {stackProfile.frontend.http}
+                </p>
               </div>
 
               <div className="grid gap-1">
@@ -153,6 +198,7 @@ export default function SettingsPanel() {
                   </span>
                   <CheckCircle2 size={14} className="opacity-80" />
                 </div>
+                <p className="text-[11px] opacity-75">{stackProfile.backend.database}</p>
               </div>
             </div>
           </section>
