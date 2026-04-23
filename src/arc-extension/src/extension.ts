@@ -294,8 +294,6 @@ function deriveStackProfile(stack: ArcTechStack): ArcStackProfile {
 function upsertStackMetadata(content: string, stack: ArcTechStack, profile: ArcStackProfile): string {
     const block = [
         ARC_STACK_START,
-        '## ARC Metadata',
-        '',
         '### Main Stack',
         `- backend: ${stack.backend}`,
         `- frontend: ${stack.frontend}`,
