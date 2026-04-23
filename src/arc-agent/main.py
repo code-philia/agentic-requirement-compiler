@@ -38,7 +38,7 @@ Compilation Workflow:
 2. Build DAG
 3. Process Nodes in Topological Order
 """
-async def run_compilation(project_path: str, requirement_path: str, clear_all: bool = False):
+async def run_compilation(project_path: str, requirement_path: str, clear_all: bool = False, app_type: str = "web"):
     """full compilation workflow based on the requirement DAG"""
     
     await manager.broadcast({"type": "clear-logs"})
@@ -84,6 +84,7 @@ async def run_compilation(project_path: str, requirement_path: str, clear_all: b
     workflow_manager = ARCWorkflowManager(
         workspace_path=project_path,
         requirement_path=requirement_path,
+        app_type=app_type,
         broadcast_cb=manager.broadcast
     )
     await workflow_manager.initialize_project()
@@ -131,15 +132,17 @@ async def websocket_endpoint(websocket: WebSocket):
             if message.get("command") == "start":
                 project_path = message.get("projectPath")
                 requirement_path = message.get("requirementPath")
+                app_type = message.get("appType", "web")
                 if project_path and requirement_path:
                     # Run compilation in background task to not block websocket loop
-                    asyncio.create_task(run_compilation(project_path, requirement_path, clear_all=False))
+                    asyncio.create_task(run_compilation(project_path, requirement_path, clear_all=False, app_type=app_type))
 
             elif message.get("command") == "restart":
                 project_path = message.get("projectPath")
                 requirement_path = message.get("requirementPath")
+                app_type = message.get("appType", "web")
                 if project_path and requirement_path:
-                    asyncio.create_task(run_compilation(project_path, requirement_path, clear_all=True))
+                    asyncio.create_task(run_compilation(project_path, requirement_path, clear_all=True, app_type=app_type))
             
             elif message.get("command") == "traceabilityData":
                 node_id = message.get("nodeId")

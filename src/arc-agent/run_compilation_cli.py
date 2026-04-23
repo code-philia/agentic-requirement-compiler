@@ -183,6 +183,7 @@ async def _run(project_path: str, requirement_path: Optional[str], clear_all: bo
             project_path=project_path,
             requirement_path=req_path,
             clear_all=clear_all,
+            app_type=app_type,
         )
     finally:
         arc_main.manager.broadcast = original_broadcast

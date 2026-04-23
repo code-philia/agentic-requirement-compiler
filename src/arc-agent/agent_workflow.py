@@ -37,7 +37,8 @@ load_dotenv()
 DEBUG_MODE = int(os.environ.get("ARC_DEBUG", "1"))
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-TEMPLATE_DIR = os.path.join(BASE_DIR, 'template-fullstack')
+PROJECT_ROOT = os.path.abspath(os.path.join(BASE_DIR, '..', '..'))
+TEMPLATES_ROOT = os.path.join(PROJECT_ROOT, 'templates')
 
 def extract_json_array_from_markdown(raw_output: str):
     """Extract a JSON array from fenced markdown block or fallback to first JSON array span."""
@@ -147,9 +148,16 @@ def build_dependency_context(node_id: str) -> str:
 class ARCWorkflowManager:
     """Manage the lifecycle of a single requirement node and multi-agent TDD state transitions"""
     
-    def __init__(self, workspace_path: str, requirement_path: str, broadcast_cb: Callable[[dict], Awaitable[None]] = None):
+    def __init__(
+        self,
+        workspace_path: str,
+        requirement_path: str = "",
+        app_type: str = "web",
+        broadcast_cb: Callable[[dict], Awaitable[None]] = None,
+    ):
         self.workspace_path = workspace_path
         self.requirement_path = requirement_path
+        self.app_type = (app_type or "web").strip().lower()
         self.broadcast_cb = broadcast_cb
         
         # Instantiate all participating agents and pass the WebSocket broadcast callback to them
@@ -291,13 +299,19 @@ class ARCWorkflowManager:
         set_db_path(db_path)
         init_db()
 
-        if not os.path.exists(TEMPLATE_DIR):
-            await self._log("System", f"Error: Template directory not found at {TEMPLATE_DIR}")
+        if self.app_type not in {"web", "android"}:
+            await self._log("System", f"Unsupported app_type '{self.app_type}', fallback to 'web'.")
+            self.app_type = "web"
+
+        template_dir = os.path.join(TEMPLATES_ROOT, self.app_type)
+        if not os.path.exists(template_dir):
+            await self._log("System", f"Error: Template directory not found at {template_dir}")
             return False
 
-        await self._log("System", f"Copying template from {TEMPLATE_DIR} to {self.workspace_path}...")
+        await self._log("System", f"Using app_type={self.app_type}, template={template_dir}")
+        await self._log("System", f"Copying template from {template_dir} to {self.workspace_path}...")
         try:
-            await asyncio.to_thread(shutil.copytree, TEMPLATE_DIR, self.workspace_path, dirs_exist_ok=True)
+            await asyncio.to_thread(shutil.copytree, template_dir, self.workspace_path, dirs_exist_ok=True)
             await self._log("System", "Template files copied successfully.")
         except Exception as e:
             await self._log("System", f"Error copying template: {str(e)}")
