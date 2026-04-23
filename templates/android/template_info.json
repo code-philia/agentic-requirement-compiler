@@ -1,0 +1,14 @@
+{
+  "package_name": "com.example.template",
+  "main_activity": "MainActivity",
+  "replaceable_files": [
+    "MainActivity.java",
+    "activity_main.xml",
+    "AndroidManifest.xml"
+  ],
+  "configurable_items": [
+    "package_name",
+    "app_name",
+    "activity_name"
+  ]
+}
