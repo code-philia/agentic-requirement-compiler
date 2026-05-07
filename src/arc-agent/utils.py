@@ -6,7 +6,10 @@ import asyncio
 from typing import List, Dict, Set, Callable, Awaitable
 
 # Workspace Root Management
-WORKSPACE_ROOT = os.getcwd() 
+WORKSPACE_ROOT = os.getcwd()
+
+# App Type Management
+APP_TYPE = "web"
 
 def set_workspace_root(path: str):
     global WORKSPACE_ROOT
@@ -18,6 +21,14 @@ def get_abs_path(rel_path: str) -> str:
     if os.path.isabs(rel_path):
         return rel_path
     return os.path.join(WORKSPACE_ROOT, rel_path)
+
+def set_app_type(app_type: str):
+    global APP_TYPE
+    APP_TYPE = (app_type or "web").strip().lower()
+
+def get_app_type() -> str:
+    global APP_TYPE
+    return APP_TYPE
 
 def load_requirements(file_path: str):
     if not os.path.exists(file_path):

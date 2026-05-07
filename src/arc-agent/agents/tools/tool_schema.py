@@ -311,7 +311,7 @@ run_tests_schema = {
     "type": "function",
     "function": {
         "name": "run_tests",
-        "description": "Run the test suite using the project's testing frameworks.",
+        "description": "Run the test suite using the project's testing frameworks. Uses Vitest/Playwright for web projects and Gradle for Android projects.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -327,7 +327,7 @@ run_build_schema = {
     "type": "function",
     "function": {
         "name": "run_build",
-        "description": "Run the build process for both frontend and backend to check for compilation errors.",
+        "description": "Run the build process for the current project to check for compilation errors. Uses npm for web projects and Gradle for Android projects.",
         "parameters": {
             "type": "object",
             "properties": {}
