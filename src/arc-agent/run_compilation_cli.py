@@ -81,9 +81,10 @@ def _build_stack_block(app_type: str) -> str:
                 "* **UI Stack** : XML Layout + AndroidX AppCompat + Material Components + ConstraintLayout",
                 "* **SDK Target** : `compileSdk 31` / `minSdk 31` / `targetSdk 31`",
                 "* **Runtime Entry** : `MainActivity` + `AndroidManifest.xml`",
-                "* **Testing (Unit)** : JUnit4",
-                "* **Testing (Instrumentation / E2E on device/emulator)** : AndroidX Test Runner + AndroidX JUnit Ext + Espresso（`androidTest`）",
-                "* **Testing (Not configured in this directory)** : JUnit5、Robolectric、MockWebServer、Room in-memory DB",
+                "* **Database** : Room 2.4.3 (runtime + annotation processor)",
+                "* **Testing (Unit)** : JUnit5 + Robolectric (`app/src/test/`)",
+                "* **Testing (Integration)** : Robolectric + MockWebServer + Room in-memory DB (`app/src/test/`)",
+                "* **Testing (E2E on device/emulator)** : Espresso (`app/src/androidTest/`)",
                 ARC_STACK_END,
             ]
         )

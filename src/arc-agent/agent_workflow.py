@@ -26,7 +26,7 @@ from traceability.database import (
     update_interface_req_ids
 )
 
-from utils import run_npm_install, run_git_init, run_git_commit, set_workspace_root
+from utils import run_npm_install, run_git_init, run_git_commit, set_workspace_root, set_app_type
 
 from dotenv import load_dotenv
 
@@ -144,6 +144,52 @@ def build_dependency_context(node_id: str) -> str:
                     pass
         ctx += "\n"
     return ctx
+
+async def check_prerequisites(app_type: str, log_cb: Callable[[str], Awaitable[None]]) -> bool:
+    """Check that required tools are installed for the given app_type.
+    Returns True if all prerequisites are met, False otherwise.
+    """
+    if app_type == "android":
+        try:
+            process = await asyncio.create_subprocess_shell(
+                "java -version",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+            stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=10.0)
+            version_output = stderr.decode() if stderr else stdout.decode()
+            if process.returncode == 0:
+                first_line = version_output.strip().split('\n')[0] if version_output.strip() else "unknown"
+                await log_cb("System", f"Prerequisite check passed: Java found ({first_line})")
+                return True
+            else:
+                await log_cb("System", "Prerequisite check FAILED: Java is not installed or not on PATH. Android builds require JDK 8+.")
+                return False
+        except Exception as e:
+            await log_cb("System", f"Prerequisite check FAILED: Could not verify Java installation: {str(e)}")
+            return False
+
+    elif app_type == "web":
+        try:
+            process = await asyncio.create_subprocess_shell(
+                "node --version",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+            stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=10.0)
+            if process.returncode == 0:
+                version = stdout.decode().strip()
+                await log_cb("System", f"Prerequisite check passed: Node.js found ({version})")
+                return True
+            else:
+                await log_cb("System", "Prerequisite check FAILED: Node.js is not installed or not on PATH. Web builds require Node.js LTS.")
+                return False
+        except Exception as e:
+            await log_cb("System", f"Prerequisite check FAILED: Could not verify Node.js installation: {str(e)}")
+            return False
+
+    return True  # Unknown app_type -- don't block
+
 
 class ARCWorkflowManager:
     """Manage the lifecycle of a single requirement node and multi-agent TDD state transitions"""
@@ -290,6 +336,12 @@ class ARCWorkflowManager:
         
         # Configure tool context
         set_workspace_root(self.workspace_path)
+        set_app_type(self.app_type)
+
+        # Check prerequisites
+        prereqs_ok = await check_prerequisites(self.app_type, self._log)
+        if not prereqs_ok:
+            return False
 
         # Initialize .arc database
         arc_dir = os.path.join(self.workspace_path, '.arc')
