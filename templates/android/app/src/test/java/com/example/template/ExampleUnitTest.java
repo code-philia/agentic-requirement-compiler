@@ -1,13 +1,11 @@
 package com.example.template;
 
-import org.junit.Test;
-
-import static org.junit.Assert.*;
+import org.junit.jupiter.api.Test;
+import static org.junit.jupiter.api.Assertions.*;
 
 /**
- * Example local unit test, which will execute on the development machine (host).
- *
- * @see <a href="http://d.android.com/tools/testing">Testing documentation</a>
+ * Example local unit test using JUnit5.
+ * Runs on the JVM (no device required).
  */
 public class ExampleUnitTest {
     @Test

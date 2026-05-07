@@ -5,31 +5,63 @@ from .arc_agent import ARCAgent
 class InterfaceDesigner(ARCAgent):
     def __init__(self, broadcast_cb=None):
         super().__init__(
-            agent_name="InterfaceDesigner", 
+            agent_name="InterfaceDesigner",
             broadcast_cb=broadcast_cb
         )
 
     def get_system_prompt(self) -> str:
-        return """You are a Principal Software Architect and Engineer.
+        from utils import get_app_type
+        app_type = get_app_type()
+
+        if app_type == "android":
+            tech_stack = """
+### Strict Tech Stack Constraints:
+**Android:**
+- Language: Java 8
+- Build System: Gradle 7.2 + AGP 7.1.2
+- UI: XML Layout + AndroidX AppCompat + Material Components + ConstraintLayout
+- Database: Room (SQLite)
+- Source directories: app/src/main/java/, app/src/test/java/, app/src/androidTest/java/
+- Package: com.example.template
+- Interface decomposition: UI (Activity/Fragment) -> API (Repository/Service) -> FUNC (UseCase/ViewModel) -> DB (Room DAO/Entity)
+"""
+        else:
+            tech_stack = """
+### Strict Tech Stack Constraints:
+**Frontend:**
+- Framework: React 18+ (Vite)
+- Language: JavaScript (ES6+)
+- Styling: Tailwind CSS v4
+- HTTP: Axios (MUST use Interceptors for global error handling in `src/api/axios.js`).
+
+**Backend:**
+- Runtime: Node.js (LTS)
+- Framework: Express.js
+- Database: SQLite3 (`sqlite3` driver, file-based)
+"""
+
+        return f"""You are a Principal Software Architect and Engineer.
 Your task is to analyze a raw software requirement, design its interfaces (UI -> API -> FUNC -> DB), and implement them as concrete, executable STUB CODE in the real project directory.
+
+{tech_stack}
 
 Design constraints (strict):
 - Prefer stable, deterministic module boundaries. One interface = one clear responsibility.
-- Interface IDs must be stable and explicit: `IF_{TYPE}_{DOMAIN}_{ACTION}` (e.g., `IF_API_USER_LOGIN`).
+- Interface IDs must be stable and explicit: `IF_{{TYPE}}_{{DOMAIN}}_{{ACTION}}` (e.g., `IF_API_USER_LOGIN`).
 - Keep contracts backward-compatible when reusing interfaces; use optional params for extensions.
 - Do not invent dependency interfaces if they already exist in traceability search results.
 
 # Workflow:
-1. **Analyze and Design (Top-Down)**: 
+1. **Analyze and Design (Top-Down)**:
    - Understand the current requirement and how it fits into the provided dependencies/context.
    - Decompose the requirement into: UI (if applicable), API, FUNC (Core Logic), and DB (Storage).
-   - **REUSE FIRST**: Before designing a new interface, proactively explore the database to find existing ones. 
+   - **REUSE FIRST**: Before designing a new interface, proactively explore the database to find existing ones.
      - Use `search_interfaces_by_keyword` to find logic by name (e.g., 'auth', 'payment').
      - Use `search_interfaces_by_relation` to find interfaces from parent/child/sibling nodes that you might need to integrate with.
 2. **Interface Reuse Mechanism**:
    - If an existing interface perfectly matches your needs, mark it for reuse in your final JSON output by setting `"reuse": true` and providing its exact existing `"interface_id"`. You don't need to rewrite its stub code unless modifying it.
    - If an existing interface needs slight modification to support your new requirement, you MUST first call `find_interface_impacts` to see what other interfaces call it. Then modify the file using `replace_lines`, ensuring you don't break existing callers (e.g., by adding optional parameters).
-3. **Generate/Modify Stub Code**: 
+3. **Generate/Modify Stub Code**:
    - Use `write_file` to create new files or `replace_lines` to update reused files.
    - The code MUST be syntactically valid.
    - Define exact inputs (arguments/types) and outputs (return types).
@@ -41,7 +73,7 @@ Design constraints (strict):
 After you have designed the architecture and written all the files, you MUST output a single JSON array in a markdown block (` ```json ... ``` `).
 This JSON represents the Intermediate Representation (IR) mapping of the interfaces you just designed, implemented, or reused.
 Each object in the array must follow this exact schema:
-{
+{{
   "interface_id": "Unique string ID (if reusing, MUST use the exact existing ID)",
   "reuse": true or false,
   "type": "Must be exactly one of: UI, API, FUNC, DB",
@@ -53,18 +85,18 @@ Each object in the array must follow this exact schema:
   "callees": ["List of interface_ids that this module calls"],
   "file_path": "The relative path to the file (e.g., src/api/user.py)",
   "first_line": "The exact first line of the function/class definition (e.g., 'async def login_user(request: Request) -> Response:')"
-}
+}}
 """
 
     def get_tool_names(self) -> List[str]:
         return [
-            "read_file", "write_file", "delete_file", "insert_lines", "replace_lines", "list_directory", "grep_search", 
+            "read_file", "write_file", "delete_file", "insert_lines", "replace_lines", "list_directory", "grep_search",
             "run_build", "search_interfaces_by_keyword", "search_interfaces_by_relation", "find_interface_impacts", "get_node_relations"
         ]
 
     async def design(self, node_id: str, requirement_data: dict) -> str:
         from .context_pipeline import context_pipeline
-        
+
         # 1. Use the new Context Pipeline to build layered context for the InterfaceDesigner
         context_str = context_pipeline.build_agent_context(node_id=node_id, agent_type=self.agent_name)
 
@@ -76,7 +108,7 @@ Each object in the array must follow this exact schema:
 {json.dumps(requirement_data, indent=2, ensure_ascii=False)}
 
 Please perform the top-down decomposition for Node [{node_id}].
-Then, generate the stub code files using the `write_file` tool. 
+Then, generate the stub code files using the `write_file` tool.
 Ensure your stubs import and use any required dependency interfaces from the context above.
 When finished, output the mapping JSON block so the system can update the traceability database.
 """
