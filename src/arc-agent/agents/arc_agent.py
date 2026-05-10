@@ -128,11 +128,12 @@ class ARCAgent:
         ]
         tool_result_cache: Dict[str, str] = {}
 
-        for step in range(max_steps):
+        step = 0
+        while step < max_steps:
             # 1. Auto-Compact / Auto-Summarize: Prevent context overflow
             # Calculate approximate character count of all messages
             total_chars = self._estimate_context_chars(messages)
-            
+
             if step > 0 and (step % AUTO_COMPACT_STEP_INTERVAL == 0 or total_chars > MAX_CONTEXT_CHARS):
                 await self._log(f"Triggering Auto-Compact (Step {step}, Chars: {total_chars})...", node_id=node_id)
                 summary_prompt = (
@@ -199,24 +200,28 @@ class ARCAgent:
                     pass
 
             if message.tool_calls:
+                any_cache_miss = False
                 for tool_call in message.tool_calls:
                     tool_name = tool_call.function.name
-                    
+
                     try:
                         tool_args = json.loads(tool_call.function.arguments)
                     except json.JSONDecodeError:
                         tool_args = {}
-                        
+
                     await self._log(f"Calling tool: `{tool_name}` with args: {json.dumps(tool_args, indent=2)}", node_id=node_id)
-                    
+
                     # Look up and execute the actual tool function from the registry
                     cache_key = f"{tool_name}::{json.dumps(tool_args, ensure_ascii=False, sort_keys=True)}"
+                    is_cache_hit = False
                     if tool_name in TOOL_REGISTRY and tool_name in allowed_tool_names:
                         if tool_name in READONLY_CACHEABLE_TOOLS and cache_key in tool_result_cache:
                             tool_result = tool_result_cache[cache_key]
+                            is_cache_hit = True
                             if DEBUG_MODE:
                                 await self._log(f"[DEBUG] Reusing cached tool result for `{tool_name}`", node_id=node_id)
                         else:
+                            any_cache_miss = True
                             tool_func = TOOL_REGISTRY[tool_name]["func"]
                             try:
                                 # Dynamically call the corresponding async function
@@ -226,6 +231,7 @@ class ARCAgent:
                             except Exception as e:
                                 tool_result = f"Tool execution error: {str(e)}"
                     else:
+                        any_cache_miss = True
                         tool_result = f"Error: Tool '{tool_name}' not permitted or not found."
                     
                     # 3. Tool Output Budget: Truncate long tool outputs
@@ -258,7 +264,9 @@ class ARCAgent:
                         "content": tool_result_str
                     })
                     
-                # After tools are executed, continue to the next dialogue step
+                # After tools are executed, advance step only if there was a cache miss
+                if any_cache_miss:
+                    step += 1
                 continue
             else:
                 await self._log("Task completed.", node_id=node_id)
