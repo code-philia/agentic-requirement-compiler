@@ -174,7 +174,9 @@ async def check_prerequisites(app_type: str, log_cb: Callable[[str], Awaitable[N
             await log_cb("System", f"Prerequisite check passed: Android SDK found at {sdk_root}")
         else:
             # Try common default locations
+            # TODO hard code sdk path for different OS, and also consider using `sdkmanager` command if available for more robust detection
             default_paths = [
+                "D:/Android/Sdk",
                 os.path.expanduser("~/AppData/Local/Android/Sdk"),
                 os.path.expanduser("~/Android/Sdk"),
                 "/usr/local/android-sdk",
@@ -393,6 +395,17 @@ class ARCWorkflowManager:
         except Exception as e:
             await self._log("System", f"Error copying template: {str(e)}")
             return False
+
+        # For Android: write local.properties with SDK path
+        if self.app_type == "android":
+            sdk_root = os.environ.get("ANDROID_SDK_ROOT") or os.environ.get("ANDROID_HOME")
+            if sdk_root:
+                local_props_path = os.path.join(self.workspace_path, "local.properties")
+                # Use forward slashes for Gradle compatibility
+                sdk_dir_gradle = sdk_root.replace("\\", "/")
+                with open(local_props_path, "w", encoding="utf-8") as f:
+                    f.write(f"sdk.dir={sdk_dir_gradle}\n")
+                await self._log("System", f"Wrote local.properties with sdk.dir={sdk_dir_gradle}")
 
         backend_path = os.path.join(self.workspace_path, 'backend')
         if os.path.exists(backend_path):
