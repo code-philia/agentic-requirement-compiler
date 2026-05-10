@@ -37,6 +37,22 @@ def load_requirements(file_path: str):
     with open(file_path, 'r', encoding='utf-8') as f:
         return yaml.safe_load(f)
 
+def dfs_preorder(node: dict) -> List[str]:
+    """DFS pre-order traversal of the requirement tree.
+    Returns all node IDs in parent-before-children order.
+    """
+    result = []
+    node_id = node.get('id')
+    if node_id:
+        result.append(node_id)
+    for child in node.get('children', []):
+        result.extend(dfs_preorder(child))
+    return result
+
+def is_leaf_node(node: dict) -> bool:
+    """Check if a node has no children."""
+    return not node.get('children', [])
+
 def get_all_leaves(node: dict) -> Dict[str, dict]:
     """Recursively find all leaf nodes (nodes without children)"""
     leaves = {}

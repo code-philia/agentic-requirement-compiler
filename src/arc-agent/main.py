@@ -95,11 +95,10 @@ async def run_compilation(project_path: str, requirement_path: str, clear_all: b
     
     # Store requirements into the initialized database
     store_all_requirement(data)
-    
-    leaves = get_all_leaves(data)
-    process_queue = topological_sort(leaves)
-    
-    await manager.broadcast({"type": "log", "agent": "DependencyManager", "message": f"Calculated processing order: {', '.join(process_queue)}"})
+
+    process_queue = dfs_preorder(data)
+
+    await manager.broadcast({"type": "log", "agent": "DependencyManager", "message": f"Processing order (DFS pre-order): {', '.join(process_queue)}"})
     await asyncio.sleep(1)
 
     # 4. Process Nodes
