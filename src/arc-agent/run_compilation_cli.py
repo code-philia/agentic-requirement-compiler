@@ -235,10 +235,10 @@ def _build_stack_block(app_type: str) -> str:
             [
                 ARC_STACK_START,
                 "* **Platform** : Android Native App (Single-module `app` template)",
-                "* **Build System** : Gradle Wrapper + Android Gradle Plugin `7.1.2`",
+                "* **Build System** : Gradle Wrapper + Android Gradle Plugin `8.1.4`",
                 "* **Language** : Java 8 (`sourceCompatibility` / `targetCompatibility` = 1.8)",
                 "* **UI Stack** : XML Layout + AndroidX AppCompat + Material Components + ConstraintLayout",
-                "* **SDK Target** : `compileSdk 31` / `minSdk 31` / `targetSdk 31`",
+                "* **SDK Target** : `compileSdk 34` / `minSdk 31` / `targetSdk 34`",
                 "* **Runtime Entry** : `MainActivity` + `AndroidManifest.xml`",
                 "* **Database** : Room 2.4.3 (runtime + annotation processor)",
                 "* **Testing (Unit)** : JUnit5 + Robolectric (`app/src/test/`)",

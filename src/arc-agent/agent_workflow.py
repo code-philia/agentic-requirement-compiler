@@ -150,6 +150,7 @@ async def check_prerequisites(app_type: str, log_cb: Callable[[str], Awaitable[N
     Returns True if all prerequisites are met, False otherwise.
     """
     if app_type == "android":
+        # Check Java
         try:
             process = await asyncio.create_subprocess_shell(
                 "java -version",
@@ -158,16 +159,40 @@ async def check_prerequisites(app_type: str, log_cb: Callable[[str], Awaitable[N
             )
             stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=10.0)
             version_output = stderr.decode() if stderr else stdout.decode()
-            if process.returncode == 0:
-                first_line = version_output.strip().split('\n')[0] if version_output.strip() else "unknown"
-                await log_cb("System", f"Prerequisite check passed: Java found ({first_line})")
-                return True
-            else:
-                await log_cb("System", "Prerequisite check FAILED: Java is not installed or not on PATH. Android builds require JDK 8+.")
+            if process.returncode != 0:
+                await log_cb("System", "Prerequisite check FAILED: Java is not installed or not on PATH. Android builds require JDK 17+.")
                 return False
+            first_line = version_output.strip().split('\n')[0] if version_output.strip() else "unknown"
+            await log_cb("System", f"Prerequisite check passed: Java found ({first_line})")
         except Exception as e:
             await log_cb("System", f"Prerequisite check FAILED: Could not verify Java installation: {str(e)}")
             return False
+
+        # Check Android SDK
+        sdk_root = os.environ.get("ANDROID_SDK_ROOT") or os.environ.get("ANDROID_HOME")
+        if sdk_root and os.path.isdir(sdk_root):
+            await log_cb("System", f"Prerequisite check passed: Android SDK found at {sdk_root}")
+        else:
+            # Try common default locations
+            default_paths = [
+                os.path.expanduser("~/AppData/Local/Android/Sdk"),
+                os.path.expanduser("~/Android/Sdk"),
+                "/usr/local/android-sdk",
+                os.path.expanduser("~/Library/Android/sdk"),
+            ]
+            found = False
+            for p in default_paths:
+                if os.path.isdir(p):
+                    sdk_root = p
+                    os.environ["ANDROID_SDK_ROOT"] = p
+                    await log_cb("System", f"Prerequisite check passed: Android SDK found at {p} (auto-detected)")
+                    found = True
+                    break
+            if not found:
+                await log_cb("System", "Prerequisite check FAILED: Android SDK not found. Set ANDROID_SDK_ROOT environment variable or install Android Studio.")
+                return False
+
+        return True
 
     elif app_type == "web":
         try:

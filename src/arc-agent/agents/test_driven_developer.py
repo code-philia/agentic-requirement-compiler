@@ -18,7 +18,7 @@ class TestDrivenDeveloper(ARCAgent):
 ### Strict Tech Stack Constraints:
 **Android:**
 - Language: Java 8
-- Build System: Gradle 7.2 + AGP 7.1.2
+- Build System: Gradle 8.4 + AGP 8.1.4
 - UI: XML Layout + AndroidX AppCompat + Material Components + ConstraintLayout
 - Database: Room (SQLite)
 - Testing:
