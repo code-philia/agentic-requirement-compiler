@@ -116,13 +116,20 @@ def _android_file_to_test_class(file_path: str) -> str:
     return file_path  # Fallback: return raw path
 
 
+def _gradlew_cmd() -> str:
+    """Return the correct Gradle wrapper invocation for the current OS."""
+    if os.name == "nt":
+        return "cmd /c gradlew.bat"
+    return "./gradlew"
+
+
 async def _run_tests_android(test_type: str, test_file_path: str = "") -> str:
     """Run tests for Android projects using Gradle.
 
     - Unit/Integration/E2E: ./gradlew testDebugUnitTest (app/src/test/)
     - All tests run on JVM via Robolectric (no device/emulator required).
     """
-    gradlew = "gradlew.bat" if os.name == "nt" else "./gradlew"
+    gradlew = _gradlew_cmd()
 
     # All test types run on JVM via testDebugUnitTest
     cmd = f"{gradlew} testDebugUnitTest"
@@ -137,7 +144,7 @@ async def _run_tests_android(test_type: str, test_file_path: str = "") -> str:
 
 async def _run_build_android() -> str:
     """Run build for Android projects using Gradle."""
-    gradlew = "gradlew.bat" if os.name == "nt" else "./gradlew"
+    gradlew = _gradlew_cmd()
     result = await execute_command_impl(f"{gradlew} assembleDebug", cwd=".", timeout=180.0)
     return f"=== Android Build Result ===\n{result}"
 
