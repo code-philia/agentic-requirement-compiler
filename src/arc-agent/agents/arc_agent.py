@@ -190,6 +190,13 @@ class ARCAgent:
             if DEBUG_MODE:
                 reply_content = message.content or ""
                 await self._log(f"[DEBUG] Model reply:\n{reply_content}", node_id=node_id)
+                # Full LLM reply to debug log file (never truncated)
+                try:
+                    from run_compilation_cli import debug_logger
+                    if debug_logger:
+                        debug_logger.log("LLM_REPLY", reply_content)
+                except ImportError:
+                    pass
 
             if message.tool_calls:
                 for tool_call in message.tool_calls:
@@ -228,6 +235,20 @@ class ARCAgent:
 
                     if DEBUG_MODE:
                         await self._log(f"Tool `{tool_name}` result length: {len(tool_result_str)} chars", node_id=node_id)
+                        # Log tool output to debug file
+                        try:
+                            from run_compilation_cli import debug_logger
+                            if debug_logger:
+                                # For list_directory, log only first 2000 chars
+                                if tool_name == "list_directory":
+                                    log_content = tool_result_str[:2000]
+                                    if len(tool_result_str) > 2000:
+                                        log_content += f"\n... [list_directory output truncated in log, total {len(tool_result_str)} chars]"
+                                    debug_logger.log(f"TOOL_RESULT[{tool_name}]", log_content)
+                                else:
+                                    debug_logger.log(f"TOOL_RESULT[{tool_name}]", tool_result_str)
+                        except ImportError:
+                            pass
                     
                     # Return the result back to the LLM
                     messages.append({

@@ -4,6 +4,7 @@ import os
 import re
 import sys
 import threading
+import time
 from typing import Optional, Dict, Any
 
 try:
@@ -69,6 +70,53 @@ class Spinner:
 
 
 _spinner = Spinner()
+
+
+# ============================================================
+# Debug logger — appends all output to a .log file
+# ============================================================
+
+class DebugLogger:
+    """Thread-safe file logger for debug mode. Appends every message to a .log file."""
+
+    def __init__(self, log_path: str):
+        self._path = log_path
+        self._lock = threading.Lock()
+        with open(self._path, "w", encoding="utf-8") as f:
+            f.write(f"=== ARC Debug Log — {time.strftime('%Y-%m-%d %H:%M:%S')} ===\n\n")
+
+    def log(self, tag: str, content: str):
+        ts = time.strftime("%H:%M:%S")
+        with self._lock:
+            with open(self._path, "a", encoding="utf-8") as f:
+                f.write(f"[{ts}] [{tag}] {content}\n")
+
+    def log_raw(self, content: str):
+        with self._lock:
+            with open(self._path, "a", encoding="utf-8") as f:
+                f.write(content + "\n")
+
+    def log_broadcast(self, message: Dict[str, Any]):
+        """Log a broadcast message (the full dict)."""
+        msg_type = message.get("type", "log")
+        agent = message.get("agent", "")
+        node_id = message.get("nodeId", "")
+        msg_text = message.get("message", "")
+        status = message.get("status", "")
+
+        prefix = f"[{msg_type}]"
+        if agent:
+            prefix += f" [{agent}]"
+        if node_id:
+            prefix += f" [{node_id}]"
+        if status:
+            prefix += f" [{status}]"
+
+        self.log(prefix, msg_text)
+
+
+# Global debug logger instance (None until initialized)
+debug_logger: Optional[DebugLogger] = None
 
 
 # ============================================================
@@ -158,6 +206,10 @@ def _format_log(message: Dict[str, Any]) -> str:
 async def _console_broadcast(message: Dict[str, Any]):
     msg_type = message.get("type", "log")
     msg_text = message.get("message", "")
+
+    # Always log to debug file (full content, no truncation)
+    if debug_logger:
+        debug_logger.log_broadcast(message)
 
     # Spinner control: start on "Thinking...", stop on tool call or task done
     is_thinking = msg_text.startswith("Thinking...")
@@ -324,6 +376,7 @@ def _print_banner():
 
 
 async def _run(project_path: str, requirement_path: Optional[str], clear_all: bool, app_type: str):
+    global debug_logger
     import main as arc_main
 
     project_path = os.path.abspath(project_path)
@@ -335,6 +388,13 @@ async def _run(project_path: str, requirement_path: Optional[str], clear_all: bo
         raise FileNotFoundError(f"Requirement file does not exist: {req_path}")
 
     metadata_path = _upsert_metadata(project_path, app_type)
+
+    # Initialize debug logger
+    arc_dir = os.path.join(project_path, ".arc")
+    os.makedirs(arc_dir, exist_ok=True)
+    log_path = os.path.join(arc_dir, "debug.log")
+    debug_logger = DebugLogger(log_path)
+    print(f"  {Fore.WHITE}Debug Log {Style.RESET_ALL}  {log_path}")
 
     print(f"\n  {Fore.WHITE}Project   {Style.RESET_ALL}  {project_path}")
     print(f"  {Fore.WHITE}Require   {Style.RESET_ALL}  {req_path}")
