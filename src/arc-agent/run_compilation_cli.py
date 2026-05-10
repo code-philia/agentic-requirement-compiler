@@ -2,10 +2,187 @@ import argparse
 import asyncio
 import os
 import re
+import sys
+import threading
 from typing import Optional, Dict, Any
+
+try:
+    from colorama import init, Fore, Style
+    init()
+    HAS_COLOR = True
+except ImportError:
+    HAS_COLOR = False
+    # Fallback: no color
+    class _Fore:
+        RED = CYAN = GREEN = YELLOW = MAGENTA = BLUE = WHITE = RESET = ""
+    class _Style:
+        BRIGHT = RESET_ALL = ""
+    Fore = _Fore()
+    Style = _Style()
 
 ARC_STACK_START = "<!-- ARC_TECH_STACK_START -->"
 ARC_STACK_END = "<!-- ARC_TECH_STACK_END -->"
+
+
+# ============================================================
+# Spinner animation for LLM waiting
+# ============================================================
+
+class Spinner:
+    """Lightweight spinner shown while waiting for LLM responses."""
+
+    FRAMES = ["|", "/", "-", "\\"]
+
+    def __init__(self):
+        self._active = False
+        self._thread = None
+        self._text = ""
+
+    def start(self, text: str = "Thinking"):
+        if self._active:
+            self._text = text
+            return
+        self._active = True
+        self._text = text
+        self._thread = threading.Thread(target=self._spin, daemon=True)
+        self._thread.start()
+
+    def update(self, text: str):
+        self._text = text
+
+    def stop(self):
+        self._active = False
+        if self._thread:
+            self._thread.join(timeout=0.5)
+        # Clear the spinner line
+        sys.stdout.write("\r" + " " * 60 + "\r")
+        sys.stdout.flush()
+
+    def _spin(self):
+        idx = 0
+        while self._active:
+            frame = self.FRAMES[idx % len(self.FRAMES)]
+            sys.stdout.write(f"\r  {Fore.CYAN}{frame}{Style.RESET_ALL} {self._text}...")
+            sys.stdout.flush()
+            idx += 1
+            threading.Event().wait(0.08)
+
+
+_spinner = Spinner()
+
+
+# ============================================================
+# Colored log formatting
+# ============================================================
+
+_AGENT_COLORS = {
+    "System":          Fore.WHITE,
+    "RequirementLoader": Fore.YELLOW,
+    "DependencyManager": Fore.YELLOW,
+    "InterfaceDesigner": Fore.MAGENTA,
+    "TestGenerator":    Fore.GREEN,
+    "TestDrivenDeveloper": Fore.CYAN,
+}
+
+_STATUS_COLORS = {
+    "analyzing": Fore.YELLOW,
+    "designed":  Fore.MAGENTA,
+    "completed": Fore.GREEN,
+    "error":     Fore.RED,
+}
+
+
+def _format_log(message: Dict[str, Any]) -> str:
+    msg_type = message.get("type", "log")
+    agent = message.get("agent", "System")
+    node_id = message.get("nodeId", "")
+    status = message.get("status", "")
+    msg_text = message.get("message", "")
+
+    if msg_type == "node_update":
+        status_color = _STATUS_COLORS.get(status, Fore.WHITE)
+        node_prefix = f"{Fore.BLUE}[{node_id}]{Style.RESET_ALL} " if node_id else ""
+        return f"{node_prefix}{status_color}[{status}]{Style.RESET_ALL}"
+
+    if msg_type == "error-event":
+        node_prefix = f"{Fore.BLUE}[{node_id}]{Style.RESET_ALL} " if node_id else ""
+        return f"{node_prefix}{Fore.RED}[FAIL] [{agent}] {msg_text}{Style.RESET_ALL}"
+
+    if msg_type == "db_update":
+        data = message.get("data", {})
+        return f"{Fore.BLUE}[DB]{Style.RESET_ALL} [{agent}] table={data.get('table', '?')} items={data.get('items', '?')}"
+
+    if msg_type == "clear-logs":
+        return f"\n{Fore.WHITE}{'─' * 50}{Style.RESET_ALL}"
+
+    # Regular log
+    agent_color = _AGENT_COLORS.get(agent, Fore.WHITE)
+    node_prefix = f"{Fore.BLUE}[{node_id}]{Style.RESET_ALL} " if node_id else ""
+
+    # Detect special messages for spinner control
+    is_thinking = msg_text.startswith("Thinking...")
+    is_tool_call = msg_text.startswith("Calling tool:")
+    is_task_done = msg_text == "Task completed."
+
+    if is_thinking:
+        step_info = msg_text.replace("Thinking...", "").strip()
+        return f"{node_prefix}{Fore.CYAN}>> Thinking {step_info}{Style.RESET_ALL}"
+
+    if is_tool_call:
+        # Extract tool name
+        tool_match = re.search(r'`(\w+)`', msg_text)
+        tool_name = tool_match.group(1) if tool_match else "tool"
+        return f"{node_prefix}{Fore.YELLOW}> {tool_name}{Style.RESET_ALL}"
+
+    if is_task_done:
+        return f"{node_prefix}{Fore.GREEN}[OK] Task completed{Style.RESET_ALL}"
+
+    # Prerequisite check messages
+    if "Prerequisite check passed" in msg_text:
+        return f"{node_prefix}{Fore.GREEN}[OK] {msg_text}{Style.RESET_ALL}"
+    if "Prerequisite check FAILED" in msg_text:
+        return f"{node_prefix}{Fore.RED}[FAIL] {msg_text}{Style.RESET_ALL}"
+
+    # Non-leaf skip message
+    if "skipping Test/TDD" in msg_text:
+        return f"{node_prefix}{Fore.YELLOW}[SKIP] {msg_text}{Style.RESET_ALL}"
+
+    # Default
+    return f"{node_prefix}{agent_color}[{agent}]{Style.RESET_ALL} {msg_text}"
+
+
+# ============================================================
+# Broadcast callback with spinner integration
+# ============================================================
+
+async def _console_broadcast(message: Dict[str, Any]):
+    msg_type = message.get("type", "log")
+    msg_text = message.get("message", "")
+
+    # Spinner control: start on "Thinking...", stop on tool call or task done
+    is_thinking = msg_text.startswith("Thinking...")
+    is_tool_call = msg_text.startswith("Calling tool:")
+    is_task_done = msg_text == "Task completed."
+
+    if is_thinking:
+        step_info = msg_text.replace("Thinking...", "").strip()
+        node_id = message.get("nodeId", "")
+        label = f"Thinking {step_info}"
+        if node_id:
+            label = f"[{node_id}] {label}"
+        _spinner.start(label)
+        return  # Don't print — spinner handles the display
+
+    if is_tool_call or is_task_done:
+        _spinner.stop()
+
+    # Print the formatted line
+    print(_format_log(message))
+
+
+# ============================================================
+# Requirement path detection
+# ============================================================
 
 def _detect_requirement_path(project_path: str, requirement_path: Optional[str]) -> str:
     if requirement_path:
@@ -48,27 +225,9 @@ def _read_stack_summary(project_path: str) -> str:
         return f"Failed to parse metadata.md: {str(e)}"
 
 
-def _format_log(message: Dict[str, Any]) -> str:
-    msg_type = message.get("type", "log")
-    agent = message.get("agent", "System")
-
-    if msg_type == "node_update":
-        node_id = message.get("nodeId", "UNKNOWN")
-        status = message.get("status", "unknown")
-        return f"[Node:{node_id}] status -> {status}"
-
-    if msg_type == "error-event":
-        return f"[ERROR][{agent}] {message.get('message', '')}"
-
-    if msg_type == "db_update":
-        data = message.get("data", {})
-        return f"[DB][{agent}] table={data.get('table', 'unknown')} items={data.get('items', '?')}"
-
-    if msg_type == "clear-logs":
-        return "================ ARC LOGS CLEARED ================"
-
-    return f"[{agent}] {message.get('message', '')}"
-
+# ============================================================
+# Stack metadata
+# ============================================================
 
 def _build_stack_block(app_type: str) -> str:
     if app_type == "android":
@@ -151,8 +310,17 @@ def _upsert_metadata(project_path: str, app_type: str) -> str:
     return metadata_path
 
 
-async def _console_broadcast(message: Dict[str, Any]):
-    print(_format_log(message))
+# ============================================================
+# Main run logic
+# ============================================================
+
+def _print_banner():
+    logo = f"""{Fore.CYAN}
+    ╔═══════════════════════════════════════╗
+    ║          ARC Requirement Compiler      ║
+    ║        Agentic · Multi-Agent · TDD     ║
+    ╚═══════════════════════════════════════╝{Style.RESET_ALL}"""
+    print(logo)
 
 
 async def _run(project_path: str, requirement_path: Optional[str], clear_all: bool, app_type: str):
@@ -168,14 +336,12 @@ async def _run(project_path: str, requirement_path: Optional[str], clear_all: bo
 
     metadata_path = _upsert_metadata(project_path, app_type)
 
-    print("=============== ARC CLI ===============")
-    print(f"Project Path: {project_path}")
-    print(f"Requirement File: {req_path}")
-    print(f"App Type: {app_type}")
-    print(f"Tech Stack Source: {metadata_path}")
-    print(f"Resolved Stack: {_read_stack_summary(project_path)}")
-    print(f"Mode: {'clear-and-recompile' if clear_all else 'start-compilation'}")
-    print("=======================================")
+    print(f"\n  {Fore.WHITE}Project   {Style.RESET_ALL}  {project_path}")
+    print(f"  {Fore.WHITE}Require   {Style.RESET_ALL}  {req_path}")
+    print(f"  {Fore.WHITE}App Type  {Style.RESET_ALL}  {Fore.CYAN}{app_type}{Style.RESET_ALL}")
+    print(f"  {Fore.WHITE}Stack     {Style.RESET_ALL}  {_read_stack_summary(project_path)}")
+    print(f"  {Fore.WHITE}Mode      {Style.RESET_ALL}  {Fore.YELLOW}{'clear-and-recompile' if clear_all else 'start-compilation'}{Style.RESET_ALL}")
+    print(f"  {Fore.WHITE}{'─' * 45}{Style.RESET_ALL}\n")
 
     original_broadcast = arc_main.manager.broadcast
     arc_main.manager.broadcast = _console_broadcast
@@ -187,8 +353,13 @@ async def _run(project_path: str, requirement_path: Optional[str], clear_all: bo
             app_type=app_type,
         )
     finally:
+        _spinner.stop()
         arc_main.manager.broadcast = original_broadcast
 
+
+# ============================================================
+# CLI entry point
+# ============================================================
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
@@ -225,6 +396,7 @@ def main():
     if not project_path:
         raise ValueError("Target project path is required.")
 
+    _print_banner()
     asyncio.run(_run(project_path, args.requirement_path, args.clear_all, args.app_type))
 
 
