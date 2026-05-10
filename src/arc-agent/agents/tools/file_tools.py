@@ -140,7 +140,11 @@ async def list_directory_impl(path: str, depth: int = 3) -> str:
                 output_lines.append(f"- {rel_prefix}[Error: {str(e)}]")
                 return
                 
+            _SKIP_DIRS = {".git", ".arc"}
+
             for item in items:
+                if item in _SKIP_DIRS:
+                    continue
                 item_path = os.path.join(current_path, item)
                 item_rel_path = f"{rel_prefix}{item}"
                 

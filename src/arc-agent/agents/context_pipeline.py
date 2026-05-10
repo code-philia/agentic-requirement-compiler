@@ -27,7 +27,8 @@ class ContextPipeline:
         Layer 1: Global Context (Tech stack, project rules, directory structure).
         Reads from a standard file like `.arc_context.md` if it exists.
         """
-        context_file = os.path.join(self.workspace_dir, ".arc", "metadata.md")
+        from utils import get_abs_path
+        context_file = get_abs_path(os.path.join(".arc", "metadata.md"))
         if os.path.exists(context_file):
             with open(context_file, "r", encoding="utf-8") as f:
                 content = f.read()
