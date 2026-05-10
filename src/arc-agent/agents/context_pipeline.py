@@ -37,6 +37,78 @@ class ContextPipeline:
                 return f"<global_context>\n{content}\n</global_context>"
         return "<global_context>\nNo global context file (.arc/metadata.md) found.\n</global_context>"
 
+    def _get_project_structure(self) -> str:
+        """Layer 1.5: Project directory tree (pre-fetched so LLM doesn't need list_directory)."""
+        from utils import get_abs_path, WORKSPACE_ROOT
+        import os as _os
+
+        root = get_abs_path(".")
+        max_depth = 4
+        lines = []
+        skip_dirs = {".git", ".arc", ".gradle", "build", ".idea"}
+
+        def _traverse(path, depth, prefix=""):
+            if depth > max_depth:
+                return
+            try:
+                items = sorted(_os.listdir(path))
+            except (PermissionError, OSError):
+                return
+            for item in items:
+                if item in skip_dirs:
+                    continue
+                full = _os.path.join(path, item)
+                rel = f"{prefix}{item}"
+                if _os.path.isdir(full):
+                    lines.append(f"- {rel}/")
+                    _traverse(full, depth + 1, f"{rel}/")
+                else:
+                    lines.append(f"- {rel}")
+
+        _traverse(root, 1)
+        if not lines:
+            return ""
+        # Cap at 200 lines to avoid bloating context
+        if len(lines) > 200:
+            lines = lines[:200]
+            lines.append("... [truncated]")
+        return "<project_structure>\n" + "\n".join(lines) + "\n</project_structure>"
+
+    def _get_all_interfaces_summary(self) -> str:
+        """Layer 1.6: Summary of ALL existing interfaces (so LLM doesn't need search_interfaces_by_keyword)."""
+        conn = sqlite3.connect(db_module.DB_PATH)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        cursor.execute('SELECT interface_id, type, file_path, first_line, content FROM interfaces ORDER BY interface_id')
+        rows = cursor.fetchall()
+        conn.close()
+
+        if not rows:
+            return ""
+
+        lines = []
+        for row in rows:
+            entry = f"- [{row['interface_id']}] Type: {row['type']}"
+            if row['file_path']:
+                entry += f" File: `{row['file_path']}`"
+            if row['first_line']:
+                entry += f" Sig: `{row['first_line']}`"
+            # Add description from content JSON
+            try:
+                content = json.loads(row['content'])
+                desc = content.get('description', '')
+                if desc:
+                    entry += f" Desc: {desc[:100]}"
+            except Exception:
+                pass
+            lines.append(entry)
+
+        if len(lines) > 50:
+            lines = lines[:50]
+            lines.append("... [more interfaces exist, use search_interfaces_by_keyword to find specific ones]")
+
+        return "<existing_interfaces>\n" + "\n".join(lines) + "\n</existing_interfaces>"
+
     def _get_relational_interfaces(self, node_id: str) -> List[Dict]:
         """
         Fetch interfaces from parent, children, and dependencies to provide integration context.
@@ -128,6 +200,16 @@ class ContextPipeline:
         
         # 1. Inject Global Context
         context_parts.append(self._get_global_context())
+
+        # 1.5 Inject Project Structure (saves LLM from calling list_directory)
+        project_structure = self._get_project_structure()
+        if project_structure:
+            context_parts.append(project_structure)
+
+        # 1.6 Inject All Existing Interfaces Summary (saves LLM from calling search_interfaces_by_keyword)
+        all_ifaces = self._get_all_interfaces_summary()
+        if all_ifaces:
+            context_parts.append(all_ifaces)
         
         # 2. Current Node Data
         req_json = json.dumps(req_data, indent=2, ensure_ascii=False)
