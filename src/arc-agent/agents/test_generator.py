@@ -24,10 +24,10 @@ class TestGenerator(ARCAgent):
   - Use MockWebServer for API/HTTP testing
   - Use Room in-memory DB (`Room.inMemoryDatabaseBuilder`) for DB integration testing
   - Target `API` interfaces
-- **E2E Tests**: Espresso — place in `app/src/androidTest/java/<package>/`
-  - Use `@RunWith(AndroidJUnit4.class)` + Espresso matchers/actions
+- **E2E Tests**: Robolectric + MockWebServer — place in `app/src/test/java/<package>/`
+  - Use Robolectric `@RunWith(RobolectricTestRunner.class)` to simulate full Activity lifecycle
+  - Use MockWebServer to mock backend API responses for end-to-end flow testing
   - Target the overarching Requirement Node with the provided UI scenario
-  - Requires a connected device/emulator
 - **Test file naming**: `*Test.java` for unit, `*IntegrationTest.java` for integration, `*E2ETest.java` for E2E
 """
         else:

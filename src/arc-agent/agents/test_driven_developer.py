@@ -24,8 +24,8 @@ class TestDrivenDeveloper(ARCAgent):
 - Testing:
   - Unit: JUnit5 + Robolectric (app/src/test/)
   - Integration: Robolectric + MockWebServer + Room in-memory DB (app/src/test/)
-  - E2E: Espresso (app/src/androidTest/) - requires connected device/emulator
-- Source directories: app/src/main/java/, app/src/test/java/, app/src/androidTest/java/
+  - E2E: Robolectric + MockWebServer (app/src/test/) — full flow on JVM
+- Source directories: app/src/main/java/, app/src/test/java/
 - Package: com.example.template
 """
         else:

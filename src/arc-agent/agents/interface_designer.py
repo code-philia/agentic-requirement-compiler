@@ -21,7 +21,7 @@ class InterfaceDesigner(ARCAgent):
 - Build System: Gradle 7.2 + AGP 7.1.2
 - UI: XML Layout + AndroidX AppCompat + Material Components + ConstraintLayout
 - Database: Room (SQLite)
-- Source directories: app/src/main/java/, app/src/test/java/, app/src/androidTest/java/
+- Source directories: app/src/main/java/, app/src/test/java/
 - Package: com.example.template
 - Interface decomposition: UI (Activity/Fragment) -> API (Repository/Service) -> FUNC (UseCase/ViewModel) -> DB (Room DAO/Entity)
 """

@@ -84,7 +84,7 @@ def _build_stack_block(app_type: str) -> str:
                 "* **Database** : Room 2.4.3 (runtime + annotation processor)",
                 "* **Testing (Unit)** : JUnit5 + Robolectric (`app/src/test/`)",
                 "* **Testing (Integration)** : Robolectric + MockWebServer + Room in-memory DB (`app/src/test/`)",
-                "* **Testing (E2E on device/emulator)** : Espresso (`app/src/androidTest/`)",
+                "* **Testing (E2E)** : Robolectric + MockWebServer (`app/src/test/`)",
                 ARC_STACK_END,
             ]
         )

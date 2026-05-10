@@ -119,29 +119,19 @@ def _android_file_to_test_class(file_path: str) -> str:
 async def _run_tests_android(test_type: str, test_file_path: str = "") -> str:
     """Run tests for Android projects using Gradle.
 
-    - Unit/Integration: ./gradlew testDebugUnitTest (app/src/test/)
-    - E2E: ./gradlew connectedDebugAndroidTest (app/src/androidTest/) - requires device/emulator
+    - Unit/Integration/E2E: ./gradlew testDebugUnitTest (app/src/test/)
+    - All tests run on JVM via Robolectric (no device/emulator required).
     """
     gradlew = "gradlew.bat" if os.name == "nt" else "./gradlew"
 
-    if test_type.lower() in ["unit", "integration"]:
-        cmd = f"{gradlew} testDebugUnitTest"
-        if test_file_path:
-            test_class = _android_file_to_test_class(test_file_path)
-            cmd += f' --tests "{test_class}"'
-        cwd = "."
-        timeout = 180.0
-    elif test_type.lower() == "e2e":
-        cmd = f"{gradlew} connectedDebugAndroidTest"
-        if test_file_path:
-            test_class = _android_file_to_test_class(test_file_path)
-            cmd += f' --tests "{test_class}"'
-        cwd = "."
-        timeout = 300.0
-    else:
-        return "Unknown test type. Must be 'unit', 'integration', or 'e2e'."
+    # All test types run on JVM via testDebugUnitTest
+    cmd = f"{gradlew} testDebugUnitTest"
+    if test_file_path:
+        test_class = _android_file_to_test_class(test_file_path)
+        cmd += f' --tests "{test_class}"'
+    timeout = 180.0
 
-    result = await execute_command_impl(cmd, cwd=cwd, timeout=timeout)
+    result = await execute_command_impl(cmd, cwd=".", timeout=timeout)
     return result
 
 
