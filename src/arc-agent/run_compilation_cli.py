@@ -292,9 +292,9 @@ def _build_stack_block(app_type: str) -> str:
                 "* **UI Stack** : XML Layout + AndroidX AppCompat + Material Components + ConstraintLayout",
                 "* **SDK Target** : `compileSdk 34` / `minSdk 31` / `targetSdk 34`",
                 "* **Runtime Entry** : `MainActivity` + `AndroidManifest.xml`",
-                "* **Database** : Room 2.4.3 (runtime + annotation processor)",
-                "* **Testing (Unit)** : JUnit5 + Robolectric (`app/src/test/`)",
-                "* **Testing (Integration)** : Robolectric + MockWebServer + Room in-memory DB (`app/src/test/`)",
+                "* **Database** : Room 2.6.1 (runtime + annotation processor)",
+                "* **Testing (Unit)** : JUnit5 5.10.2 + Robolectric 4.11.1 (`app/src/test/`)",
+                "* **Testing (Integration)** : Robolectric + MockWebServer 4.12.0 + Room in-memory DB (`app/src/test/`)",
                 "* **Testing (E2E)** : Robolectric + MockWebServer (`app/src/test/`)",
                 ARC_STACK_END,
             ]
