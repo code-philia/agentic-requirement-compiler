@@ -4,7 +4,7 @@ import sqlite3
 import json
 import aiofiles
 from utils import get_abs_path
-from traceability.database import DB_PATH
+import traceability.database as db_module
 
 async def grep_search_impl(pattern: str, dir_path: str = ".") -> str:
     """Search for a regex pattern in the contents of files within a directory"""
@@ -37,7 +37,7 @@ async def get_node_relations_impl(node_id: str) -> str:
     Get the parent and children nodes for a given requirement node, along with their designed interfaces.
     """
     try:
-        conn = sqlite3.connect(DB_PATH)
+        conn = sqlite3.connect(db_module.DB_PATH)
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
         
@@ -107,7 +107,7 @@ async def find_interface_impacts_impl(interface_id: str) -> str:
     Find all interfaces that call the given interface_id (static analysis via traceability DB).
     """
     try:
-        conn = sqlite3.connect(DB_PATH)
+        conn = sqlite3.connect(db_module.DB_PATH)
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
         
@@ -144,7 +144,7 @@ async def search_interfaces_by_keyword_impl(keyword: str, limit: int = 10) -> st
     Useful for finding reusable functionality like 'auth', 'database', 'user'.
     """
     try:
-        conn = sqlite3.connect(DB_PATH)
+        conn = sqlite3.connect(db_module.DB_PATH)
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
         
@@ -190,7 +190,7 @@ async def search_interfaces_by_relation_impl(node_id: str, relation_type: str = 
     relation_type can be: 'parent', 'children', 'siblings', 'dependencies', 'all'
     """
     try:
-        conn = sqlite3.connect(DB_PATH)
+        conn = sqlite3.connect(db_module.DB_PATH)
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
         

@@ -2,10 +2,10 @@ import os
 import json
 import sqlite3
 from typing import Dict, Any, List
+import traceability.database as db_module
 from traceability.database import (
-    DB_PATH, 
-    get_requirement_by_id, 
-    get_interfaces_by_req_id, 
+    get_requirement_by_id,
+    get_interfaces_by_req_id,
     get_tests_by_req_id
 )
 
@@ -41,7 +41,7 @@ class ContextPipeline:
         """
         Fetch interfaces from parent, children, and dependencies to provide integration context.
         """
-        conn = sqlite3.connect(DB_PATH)
+        conn = sqlite3.connect(db_module.DB_PATH)
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
         
