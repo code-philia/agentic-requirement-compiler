@@ -13,7 +13,9 @@ load_dotenv()
 DEBUG_MODE = int(os.environ.get("ARC_DEBUG", "1"))
 MAX_TOOL_OUTPUT_LENGTH = int(os.environ.get("ARC_MAX_TOOL_OUTPUT_CHARS", "8000"))
 MAX_CONTEXT_CHARS = int(os.environ.get("ARC_MAX_CONTEXT_CHARS", "60000"))
-AUTO_COMPACT_STEP_INTERVAL = int(os.environ.get("ARC_AUTO_COMPACT_STEP_INTERVAL", "10"))
+# Two-level compact thresholds (fraction of MAX_CONTEXT_CHARS)
+DEDUP_THRESHOLD = 0.70    # Level 1: remove duplicate/redundant tool results
+SUMMARIZE_THRESHOLD = 0.90  # Level 2: ask LLM to summarize (current behavior)
 MICROCOMPACT_MIN_TOOL_OUTPUT = int(os.environ.get("ARC_MICROCOMPACT_MIN_CHARS", "1000"))
 MICROCOMPACT_KEEP_MESSAGES = int(os.environ.get("ARC_MICROCOMPACT_KEEP_MESSAGES", "10"))
 MODEL_RETRY_COUNT = int(os.environ.get("ARC_MODEL_RETRY_COUNT", "2"))
@@ -98,6 +100,36 @@ class ARCAgent:
                     + "\n\n[Old tool result content cleared to save context]"
                 )
 
+    def _dedup_messages(self, messages: List[Dict[str, Any]]) -> int:
+        """Level 1 compact: Remove duplicate/redundant tool results.
+        Keeps the latest occurrence of each unique tool result, removes older duplicates.
+        Returns the number of chars removed."""
+        seen_tool_results: Dict[str, int] = {}  # content hash -> index
+        chars_removed = 0
+
+        for i, msg in enumerate(messages):
+            if msg.get("role") != "tool":
+                continue
+            content = msg.get("content", "")
+            if not content or len(content) < 100:
+                continue
+
+            # Use a hash of the first 200 chars as dedup key
+            key = content[:200]
+            if key in seen_tool_results:
+                # This is a duplicate — truncate the older one
+                old_idx = seen_tool_results[key]
+                old_content = messages[old_idx].get("content", "")
+                if len(old_content) > 200:
+                    chars_removed += len(old_content) - 200
+                    messages[old_idx]["content"] = (
+                        old_content[:200]
+                        + "\n\n[Duplicate tool result — content removed by dedup]"
+                    )
+            seen_tool_results[key] = i
+
+        return chars_removed
+
     async def _create_chat_completion_with_retry(self, **api_kwargs):
         last_err = None
         for attempt in range(1, MODEL_RETRY_COUNT + 2):
@@ -130,18 +162,25 @@ class ARCAgent:
 
         step = 0
         while step < max_steps:
-            # 1. Auto-Compact / Auto-Summarize: Prevent context overflow
-            # Calculate approximate character count of all messages
+            # 1. Two-level Auto-Compact: Prevent context overflow
             total_chars = self._estimate_context_chars(messages)
 
-            if step > 0 and (step % AUTO_COMPACT_STEP_INTERVAL == 0 or total_chars > MAX_CONTEXT_CHARS):
+            # Level 1: Dedup — remove duplicate tool results (at 70% threshold)
+            if total_chars > MAX_CONTEXT_CHARS * DEDUP_THRESHOLD:
+                chars_removed = self._dedup_messages(messages)
+                if chars_removed > 0:
+                    total_chars = self._estimate_context_chars(messages)
+                    await self._log(f"[Dedup] Removed {chars_removed} chars of duplicate tool results. Context now: {total_chars}", node_id=node_id)
+
+            # Level 2: Summarize — ask LLM for a summary (at 90% threshold)
+            if total_chars > MAX_CONTEXT_CHARS * SUMMARIZE_THRESHOLD:
                 await self._log(f"Triggering Auto-Compact (Step {step}, Chars: {total_chars})...", node_id=node_id)
                 summary_prompt = (
                     "You have been working on this task for several steps. "
                     "Please provide a concise summary (max 300 words) of what you have accomplished so far, "
                     "the current blockers or errors, and your immediate next plan."
                 )
-                
+
                 # Ask the model to summarize the current progress
                 summary_messages = messages + [{"role": "user", "content": summary_prompt}]
                 try:
@@ -151,10 +190,10 @@ class ARCAgent:
                         temperature=0.2
                     )
                     summary_content = summary_response.choices[0].message.content
-                    
+
                     if DEBUG_MODE:
                         await self._log(f"[DEBUG] Auto-Compact Summary:\n{summary_content}", node_id=node_id)
-                    
+
                     # Replace history with the summary to free up context
                     messages = [
                         messages[0],  # System prompt
