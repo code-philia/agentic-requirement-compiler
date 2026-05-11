@@ -43,6 +43,10 @@ class InterfaceDesigner(ARCAgent):
         return f"""You are a Principal Software Architect and Engineer.
 Your task is to analyze a raw software requirement, design its interfaces (UI -> API -> FUNC -> DB), and implement them as concrete, executable STUB CODE in the real project directory.
 
+For **non-leaf nodes**: implement ONLY the shared DB layer (Room Entity/DAO). Do NOT write Repository/ViewModel/Fragment/Layout — those belong to child nodes.
+
+For **leaf nodes**: implement ALL layers with real logic (not just `throw UnsupportedOperationException`). Use actual DAO calls, return real data, wire up LiveData/queries.
+
 {tech_stack}
 
 Design constraints (strict):
@@ -66,7 +70,8 @@ Design constraints (strict):
    - The code MUST be syntactically valid.
    - Define exact inputs (arguments/types) and outputs (return types).
    - Define the calling relationships: If Interface A calls Interface B, Interface A's stub must import and call B.
-   - Leave the actual business logic unimplemented (e.g., use `pass`, `raise NotImplementedError`, or return mock data).
+   - For **leaf nodes**: Implement real logic (actual DAO calls, real data flow), NOT just `throw UnsupportedOperationException`. The code should be functional enough to pass basic tests.
+   - For **non-leaf nodes**: Only DB layer stubs are needed (Entity/DAO).
 4. **Check Compilation**: After implementing the interfaces, you MUST call the `run_build` tool to check for compilation errors. Use the build results log to fix any compilation or syntax errors before proceeding.
 
 # Final Output Requirement:
@@ -94,11 +99,34 @@ Each object in the array must follow this exact schema:
             "run_build", "search_interfaces_by_keyword", "search_interfaces_by_relation", "find_interface_impacts", "get_node_relations"
         ]
 
-    async def design(self, node_id: str, requirement_data: dict) -> str:
+    async def design(self, node_id: str, requirement_data: dict, is_leaf: bool = True) -> str:
         from .context_pipeline import context_pipeline
 
         # 1. Use the new Context Pipeline to build layered context for the InterfaceDesigner
         context_str = context_pipeline.build_agent_context(node_id=node_id, agent_type=self.agent_name)
+
+        # Build scope guidance based on node type
+        if is_leaf:
+            scope_guidance = """
+### Node Scope: LEAF NODE (Full Implementation)
+This is a **leaf node** (no children). You must design and implement ALL layers for this requirement:
+- **DB layer**: Room entities, DAOs (only if not already created by a parent node)
+- **API layer**: Repositories / Services
+- **FUNC layer**: ViewModels / UseCases
+- **UI layer**: Activities, Fragments, Adapters, XML layouts
+
+Implement real logic in stubs (not just `throw UnsupportedOperationException`). Use the actual DAO/Repository calls, return real data from LiveData/queries.
+"""
+        else:
+            scope_guidance = """
+### Node Scope: NON-LEAF NODE (Shared Infrastructure Only)
+This is a **non-leaf node** (it has children). Your job is **ONLY** to design and implement the **shared DB layer** that child nodes will depend on:
+- **DB layer ONLY**: Room Entity classes, Room DAO interfaces, AppDatabase registration
+- Do NOT create Repositories, ViewModels, Fragments, Adapters, or XML layouts — those belong to the child nodes.
+- The DB layer you create here will be reused by all child nodes.
+
+**CRITICAL**: Do not write UI, API, or FUNC layer code. Stop after the DB layer is complete and output your IR JSON.
+"""
 
         user_prompt = f"""
 ### Auto-Prefetched Context for Node [{node_id}]
@@ -106,6 +134,8 @@ Each object in the array must follow this exact schema:
 
 ### Current Target Requirement Node (ID: {node_id})
 {json.dumps(requirement_data, indent=2, ensure_ascii=False)}
+
+{scope_guidance}
 
 Please perform the top-down decomposition for Node [{node_id}].
 Then, generate the stub code files using the `write_file` tool.

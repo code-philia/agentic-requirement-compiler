@@ -458,8 +458,9 @@ class ARCWorkflowManager:
             requirement_data = get_requirement_by_id(node_id)
 
             raw_design_output = await self.interface_designer.design(
-                node_id=node_id, 
-                requirement_data=requirement_data
+                node_id=node_id,
+                requirement_data=requirement_data,
+                is_leaf=is_leaf
             )
             # Parse and store the designed interfaces with file mappings
             interfaces = extract_json_array_from_markdown(raw_design_output)
@@ -469,7 +470,8 @@ class ARCWorkflowManager:
                 repair_prompt_data["__repair_hint"] = "Return ONLY one ```json array``` with valid interface mapping objects."
                 raw_design_output = await self.interface_designer.design(
                     node_id=node_id,
-                    requirement_data=repair_prompt_data
+                    requirement_data=repair_prompt_data,
+                    is_leaf=is_leaf
                 )
                 interfaces = extract_json_array_from_markdown(raw_design_output)
             if interfaces is not None:
