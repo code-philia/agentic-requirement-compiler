@@ -252,14 +252,26 @@ def update_interface_implemented_status(req_id: str, implemented: bool = True):
     """Update implemented status for all interfaces associated with a requirement."""
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
-    
+
     search_term = f'%"{req_id}"%'
     cursor.execute('''
-    UPDATE interfaces 
+    UPDATE interfaces
     SET implemented = ?
     WHERE req_ids LIKE ?
     ''', (1 if implemented else 0, search_term))
-    
+
+    conn.commit()
+    conn.close()
+
+def update_interface_implemented(interface_id: str, implemented: bool = True):
+    """Update implemented status for a single interface by its ID."""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute('''
+    UPDATE interfaces
+    SET implemented = ?
+    WHERE interface_id = ?
+    ''', (1 if implemented else 0, interface_id))
     conn.commit()
     conn.close()
 

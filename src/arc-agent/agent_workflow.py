@@ -13,17 +13,18 @@ from agents.test_generator import TestGenerator
 from agents.test_driven_developer import TestDrivenDeveloper
 
 from traceability.database import (
-    get_requirement_by_id, 
-    set_db_path, 
-    init_db, 
-    update_interface_file_info, 
-    insert_test, 
+    get_requirement_by_id,
+    set_db_path,
+    init_db,
+    update_interface_file_info,
+    insert_test,
     update_test_implemented_status,
     get_interfaces_by_req_id,
     get_tests_by_req_id,
     update_requirement_visuals,
     insert_interface,
-    update_interface_req_ids
+    update_interface_req_ids,
+    update_interface_implemented
 )
 
 from utils import run_npm_install, run_git_init, run_git_commit, set_workspace_root, set_app_type
@@ -447,54 +448,54 @@ class ARCWorkflowManager:
         
         try:
             # ==========================================
-            # Step 1 & 2: Requirement Analysis & Interface Design (Combined)
+            # Step 1: Design IR (Interface Architecture) — JSON only, no code
             # ==========================================
-            await self._log("InterfaceDesigner", f"Starting analysis and interface design for node {node_id}\n {json.dumps(requirement_data, indent=2)}", "analyzing", node_id)
-            
+            await self._log("InterfaceDesigner", f"Starting interface design for node {node_id}", "analyzing", node_id)
+
             dependency_context = build_dependency_context(node_id)
-            
+
             await self.parse_and_store_visual_elements(self.workspace_path, requirement_data)
             # Refresh requirement data after parsing visual elements
             requirement_data = get_requirement_by_id(node_id)
 
-            raw_design_output = await self.interface_designer.design(
+            raw_ir_output = await self.interface_designer.design_ir(
                 node_id=node_id,
                 requirement_data=requirement_data,
                 is_leaf=is_leaf
             )
-            # Parse and store the designed interfaces with file mappings
-            interfaces = extract_json_array_from_markdown(raw_design_output)
+            # Parse IR JSON
+            interfaces = extract_json_array_from_markdown(raw_ir_output)
             if interfaces is None:
-                await self._log("System", "First design output is not a valid JSON array. Triggering one repair attempt.", node_id=node_id)
+                await self._log("System", "First IR output is not a valid JSON array. Triggering one repair attempt.", node_id=node_id)
                 repair_prompt_data = dict(requirement_data)
-                repair_prompt_data["__repair_hint"] = "Return ONLY one ```json array``` with valid interface mapping objects."
-                raw_design_output = await self.interface_designer.design(
+                repair_prompt_data["__repair_hint"] = "Return ONLY one ```json array``` with valid interface mapping objects. Do NOT write any code."
+                raw_ir_output = await self.interface_designer.design_ir(
                     node_id=node_id,
                     requirement_data=repair_prompt_data,
                     is_leaf=is_leaf
                 )
-                interfaces = extract_json_array_from_markdown(raw_design_output)
+                interfaces = extract_json_array_from_markdown(raw_ir_output)
+
             if interfaces is not None:
+                # Store interfaces in DB
                 try:
                     for iface in interfaces:
                         interface_id = iface.get("interface_id", f"{node_id}_UNKNOWN")
                         is_reuse = iface.get("reuse", False)
-                        
+
                         if is_reuse:
-                            # Reusing an existing interface
                             success = update_interface_req_ids(interface_id, node_id)
                             if success:
                                 await self._log("System", f"Reused existing interface: {interface_id}", node_id=node_id)
                             else:
                                 await self._log("System", f"Warning: Attempted to reuse interface {interface_id} but it was not found in DB.", node_id=node_id)
                         else:
-                            # Creating a new interface
                             itype = iface.get("type", "FUNC")
                             callers = iface.get("callers", [])
                             callees = iface.get("callees", [])
                             f_path = iface.get("file_path", "")
                             f_line = iface.get("first_line", "")
-                            
+
                             content_dict = {
                                 "name": iface.get("name", ""),
                                 "description": iface.get("description", ""),
@@ -502,31 +503,53 @@ class ARCWorkflowManager:
                                 "outputs": iface.get("outputs", [])
                             }
                             content_str = json.dumps(content_dict, ensure_ascii=False)
-                            
+
                             insert_interface(
                                 interface_id=interface_id,
                                 req_ids=[node_id],
                                 type=itype,
                                 content=content_str,
-                                file_path=f_path,       
-                                first_line=f_line,      
+                                file_path=f_path,
+                                first_line=f_line,
                                 implemented=False,
                                 callers=callers,
                                 callees=callees
                             )
-                        
-                    await self._log("System", f"Designed, reused, and generated stub code for {len(interfaces)} interfaces.", node_id=node_id)
-                    
-                    # Git Commit for Design
-                    designed_interfaces = [m.get("interface_id", "UNKNOWN") for m in interfaces]
-                    commit_msg = f"feat(design): [{node_id}] designed interfaces: {', '.join(designed_interfaces)}"
-                    await run_git_commit(self.workspace_path, commit_msg, self._log)
+
+                    await self._log("System", f"Designed {len(interfaces)} interfaces for node {node_id}.", node_id=node_id)
                 except Exception as e:
                     await self._log("System", f"Failed to parse/store interface JSON block: {str(e)}", node_id=node_id)
             else:
                 await self._log("System", "Warning: No valid interface JSON block found in output.", node_id=node_id)
-                
-            await self._log("System", "Analysis and Design phase completed.", "designed", node_id)
+
+            await self._log("System", "Interface design phase completed.", "designed", node_id)
+
+            # ==========================================
+            # Step 2: Implement Stub Code (if interfaces were designed)
+            # ==========================================
+            if interfaces is not None and len(interfaces) > 0:
+                await self._log("InterfaceDesigner", f"Implementing stub code for {len(interfaces)} interfaces...", node_id=node_id)
+
+                impl_output = await self.interface_designer.implement_stubs(
+                    node_id=node_id,
+                    interfaces=interfaces,
+                    is_leaf=is_leaf
+                )
+
+                # Mark interfaces as implemented
+                for iface in interfaces:
+                    interface_id = iface.get("interface_id", "")
+                    if interface_id and not iface.get("reuse", False):
+                        update_interface_implemented(interface_id, True)
+
+                await self._log("System", f"Stub code implementation completed for node {node_id}.", node_id=node_id)
+
+                # Git Commit for Design + Implementation
+                designed_interfaces = [m.get("interface_id", "UNKNOWN") for m in interfaces]
+                commit_msg = f"feat(design): [{node_id}] designed & implemented: {', '.join(designed_interfaces)}"
+                await run_git_commit(self.workspace_path, commit_msg, self._log)
+            else:
+                await self._log("System", f"No interfaces to implement for node {node_id}.", node_id=node_id)
 
 
 
@@ -539,58 +562,64 @@ class ARCWorkflowManager:
                 interfaces_ir = get_interfaces_by_req_id(node_id)
 
                 if not interfaces_ir:
-                    await self._log("System", "No IR found. Skipping test generation.", node_id=node_id)
-                else:
-                    # Group interfaces by type
-                    interfaces_by_type = {"DB": [], "FUNC": [], "API": [], "UI": []}
-                    for iface in interfaces_ir:
-                        itype = iface.get("type", "").upper()
-                        if itype in interfaces_by_type:
-                            interfaces_by_type[itype].append(iface)
-                        else:
-                            if "OTHER" not in interfaces_by_type:
-                                interfaces_by_type["OTHER"] = []
-                            interfaces_by_type["OTHER"].append(iface)
+                    # Fallback: generate tests based on requirement description + existing files
+                    # even without formal IR entries
+                    await self._log("System", "No IR in database. Falling back to file-based test generation.", node_id=node_id)
+                    interfaces_ir = []  # will use requirement_data directly
 
-                    all_test_outputs = []
+                # Group interfaces by type
+                interfaces_by_type = {"DB": [], "FUNC": [], "API": [], "UI": []}
+                for iface in interfaces_ir:
+                    itype = iface.get("type", "").upper()
+                    if itype in interfaces_by_type:
+                        interfaces_by_type[itype].append(iface)
+                    else:
+                        if "OTHER" not in interfaces_by_type:
+                            interfaces_by_type["OTHER"] = []
+                        interfaces_by_type["OTHER"].append(iface)
 
-                    # 1. DB & FUNC -> Unit tests
-                    unit_interfaces = interfaces_by_type["DB"] + interfaces_by_type["FUNC"]
-                    if unit_interfaces:
-                        await self._log("TestGenerator", f"Generating Unit Tests for {len(unit_interfaces)} DB/FUNC interfaces...", node_id=node_id)
-                        unit_test_output = await self.test_generator.generate_tests(
-                            node_id=node_id,
-                            requirement_data=requirement_data,
-                            interfaces_ir=unit_interfaces,
-                            test_type="Unit"
-                        )
-                        all_test_outputs.append(unit_test_output)
+                all_test_outputs = []
 
-                    # 2. API -> Integration tests
-                    api_interfaces = interfaces_by_type["API"]
-                    if api_interfaces:
-                        await self._log("TestGenerator", f"Generating Integration Tests for {len(api_interfaces)} API interfaces...", node_id=node_id)
-                        api_test_output = await self.test_generator.generate_tests(
-                            node_id=node_id,
-                            requirement_data=requirement_data,
-                            interfaces_ir=api_interfaces,
-                            test_type="Integration"
-                        )
-                        all_test_outputs.append(api_test_output)
+                # 1. DB & FUNC -> Unit tests
+                unit_interfaces = interfaces_by_type["DB"] + interfaces_by_type["FUNC"]
+                if unit_interfaces or not interfaces_ir:
+                    label = f"{len(unit_interfaces)} DB/FUNC interfaces" if unit_interfaces else "requirement description (no IR)"
+                    await self._log("TestGenerator", f"Generating Unit Tests for {label}...", node_id=node_id)
+                    unit_test_output = await self.test_generator.generate_tests(
+                        node_id=node_id,
+                        requirement_data=requirement_data,
+                        interfaces_ir=unit_interfaces if unit_interfaces else [],
+                        test_type="Unit"
+                    )
+                    all_test_outputs.append(unit_test_output)
 
-                    # 3. UI -> E2E test based on scenario
-                    ui_interfaces = interfaces_by_type["UI"]
-                    if ui_interfaces:
-                        await self._log("TestGenerator", f"Generating E2E Test for scenario...", node_id=node_id)
-                        e2e_test_output = await self.test_generator.generate_tests(
-                            node_id=node_id,
-                            requirement_data=requirement_data,
-                            interfaces_ir=ui_interfaces,
-                            test_type="E2E"
-                        )
-                        all_test_outputs.append(e2e_test_output)
+                # 2. API -> Integration tests
+                api_interfaces = interfaces_by_type["API"]
+                if api_interfaces or (not interfaces_ir and requirement_data.get("scenario")):
+                    label = f"{len(api_interfaces)} API interfaces" if api_interfaces else "requirement description (no IR)"
+                    await self._log("TestGenerator", f"Generating Integration Tests for {label}...", node_id=node_id)
+                    api_test_output = await self.test_generator.generate_tests(
+                        node_id=node_id,
+                        requirement_data=requirement_data,
+                        interfaces_ir=api_interfaces if api_interfaces else [],
+                        test_type="Integration"
+                    )
+                    all_test_outputs.append(api_test_output)
 
-                    # Combine outputs to store in state
+                # 3. UI -> E2E test based on scenario
+                ui_interfaces = interfaces_by_type["UI"]
+                if ui_interfaces or (not interfaces_ir and requirement_data.get("scenario")):
+                    await self._log("TestGenerator", f"Generating E2E Test for scenario...", node_id=node_id)
+                    e2e_test_output = await self.test_generator.generate_tests(
+                        node_id=node_id,
+                        requirement_data=requirement_data,
+                        interfaces_ir=ui_interfaces if ui_interfaces else [],
+                        test_type="E2E"
+                    )
+                    all_test_outputs.append(e2e_test_output)
+
+                # Combine outputs to store in state
+                if all_test_outputs:
                     combined_output = "\n\n".join(all_test_outputs)
                     await self._log("System", f"Generated test output bundle length: {len(combined_output)} chars", node_id=node_id)
 
@@ -619,6 +648,8 @@ class ARCWorkflowManager:
                                 await self._log("System", f"Successfully registered {len(test_mappings)} tests in traceability database.", node_id=node_id)
                             except Exception as e:
                                 await self._log("System", f"Failed to parse/register test mappings from TestGenerator: {str(e)}", node_id=node_id)
+                else:
+                    await self._log("System", "No tests generated.", node_id=node_id)
 
 
                 # ==========================================
