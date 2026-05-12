@@ -9,6 +9,49 @@ from traceability.database import (
     get_tests_by_req_id
 )
 
+class NodeContextCache:
+    """Caches static context layers for a node across agent phases.
+    Avoids re-reading files, re-querying DB, and re-traversing the project tree
+    when the data hasn't changed between phases.
+    """
+    # Layers that are truly global (never change during a run)
+    GLOBAL_LAYERS = {"global_context"}
+    # Layers that change only when files are written (after stub impl, test gen, TDD fix)
+    FILE_DEPENDENT_LAYERS = {"project_structure", "source_code", "test_code"}
+    # Layers that change when DB is updated (after insert_interface, insert_test)
+    DB_DEPENDENT_LAYERS = {"existing_interfaces", "own_interfaces", "related_interfaces"}
+
+    def __init__(self):
+        self._cache = {}  # (node_id, layer_name) -> content_str
+
+    def get_or_compute(self, node_id: str, layer_name: str, compute_fn) -> str:
+        key = (node_id, layer_name)
+        if key not in self._cache:
+            self._cache[key] = compute_fn()
+        return self._cache[key]
+
+    def invalidate(self, node_id: str, layer_name: str = None):
+        """Invalidate cached layers when underlying data changes."""
+        if layer_name:
+            self._cache.pop((node_id, layer_name), None)
+        else:
+            # Invalidate all layers for this node
+            self._cache = {k: v for k, v in self._cache.items() if k[0] != node_id}
+
+    def invalidate_file_layers(self, node_id: str):
+        """Invalidate layers that depend on file contents (after write_file, run_build)."""
+        for layer in self.FILE_DEPENDENT_LAYERS:
+            self._cache.pop((node_id, layer), None)
+
+    def invalidate_db_layers(self, node_id: str):
+        """Invalidate layers that depend on DB state (after insert_interface, insert_test)."""
+        for layer in self.DB_DEPENDENT_LAYERS:
+            self._cache.pop((node_id, layer), None)
+
+    def clear(self):
+        self._cache.clear()
+
+
 class ContextPipeline:
     """
     Inspired by claude-code's context engine.
@@ -21,6 +64,7 @@ class ContextPipeline:
         self.max_interfaces = 20
         self.max_related_interfaces = 30
         self.max_tests = 20
+        self.cache = NodeContextCache()
 
     def _get_global_context(self) -> str:
         """
@@ -186,16 +230,13 @@ class ContextPipeline:
             return ""
         return "<source_code>\n" + "\n\n".join(lines) + "\n</source_code>"
 
-    def _get_test_code_for_node(self, node_id: str) -> str:
+    def _get_test_code_for_node(self, node_id: str, max_files: int = 8,
+                                 max_chars_per_file: int = 2000, total_budget: int = 12000) -> str:
         """Pre-read test files for a node so TDD agent doesn't need read_file calls."""
         from utils import get_abs_path
         tests = get_tests_by_req_id(node_id)
         if not tests:
             return ""
-
-        max_files = 8
-        max_chars_per_file = 2000
-        total_budget = 12000
 
         lines = []
         total = 0
@@ -238,9 +279,13 @@ class ContextPipeline:
                 res += f"  Inputs: {content.get('inputs', [])}\n"
                 res += f"  Outputs: {content.get('outputs', [])}\n"
             elif agent_type == "TestDrivenDeveloper":
-                # TDD cares about implementation status and exact inputs
+                # TDD needs full contract: inputs, outputs, callers, callees
                 res += f"  Status: {'Implemented' if iface['implemented'] else 'Stubbed'}\n"
+                res += f"  Desc: {content.get('description', '')}\n"
                 res += f"  Inputs: {content.get('inputs', [])}\n"
+                res += f"  Outputs: {content.get('outputs', [])}\n"
+                res += f"  Callers: {content.get('callers', [])}\n"
+                res += f"  Callees: {content.get('callees', [])}\n"
             elif agent_type == "TestGenerator":
                 res += f"  Desc: {content.get('description', '')}\n"
                 res += f"  Inputs: {content.get('inputs', [])}\n"
@@ -249,10 +294,12 @@ class ContextPipeline:
             pass
         return res
 
-    def build_agent_context(self, node_id: str, agent_type: str) -> str:
+    def build_agent_context(self, node_id: str, agent_type: str, preloaded_source: str = None) -> str:
         """
         Layer 2: Local/Task Context.
         Prefetches the exact data needed for the current node based on the agent's role.
+        Uses NodeContextCache to avoid redundant I/O across phases.
+        If preloaded_source is provided, uses it instead of re-reading source files from disk.
         """
         req_data = get_requirement_by_id(node_id)
         if not req_data:
@@ -267,50 +314,84 @@ class ContextPipeline:
             "- Keep outputs deterministic and schema-valid.\n"
             "</context_policy>"
         )
-        
-        # 1. Inject Global Context
-        context_parts.append(self._get_global_context())
 
-        # 1.5 Inject Project Structure (saves LLM from calling list_directory)
-        project_structure = self._get_project_structure()
+        # 1. Inject Global Context (cached globally — never changes)
+        context_parts.append(
+            self.cache.get_or_compute(node_id, "global_context", self._get_global_context)
+        )
+
+        # 1.5 Inject Project Structure (cached per node, invalidated after writes)
+        project_structure = self.cache.get_or_compute(
+            node_id, "project_structure", self._get_project_structure
+        )
         if project_structure:
             context_parts.append(project_structure)
 
-        # 1.6 Inject All Existing Interfaces Summary (saves LLM from calling search_interfaces_by_keyword)
-        all_ifaces = self._get_all_interfaces_summary()
+        # 1.6 Inject All Existing Interfaces Summary (cached per node, invalidated after DB changes)
+        all_ifaces = self.cache.get_or_compute(
+            node_id, "existing_interfaces", self._get_all_interfaces_summary
+        )
         if all_ifaces:
             context_parts.append(all_ifaces)
-        
+
         # 2. Current Node Data
         req_json = json.dumps(req_data, indent=2, ensure_ascii=False)
         if len(req_json) > self.max_requirement_chars:
             req_json = req_json[:self.max_requirement_chars] + "\n...[requirement truncated]"
         context_parts.append(f"<current_requirement id=\"{node_id}\">\n{req_json}\n</current_requirement>")
-        
-        # 3. Existing Interfaces for this node
-        own_interfaces = get_interfaces_by_req_id(node_id)[:self.max_interfaces]
-        if own_interfaces:
-            ifaces_str = "\n".join([self._format_interface(i, agent_type) for i in own_interfaces])
-            context_parts.append(f"<own_interfaces>\n{ifaces_str}\n</own_interfaces>")
-            
+
+        # 3. Existing Interfaces for this node (cached per node, invalidated after DB changes)
+        def _compute_own_interfaces():
+            own = get_interfaces_by_req_id(node_id)[:self.max_interfaces]
+            if own:
+                return f"<own_interfaces>\n" + "\n".join([self._format_interface(i, agent_type) for i in own]) + "\n</own_interfaces>"
+            return ""
+
+        own_ifaces_str = self.cache.get_or_compute(node_id, "own_interfaces", _compute_own_interfaces)
+        if own_ifaces_str:
+            context_parts.append(own_ifaces_str)
+
         # 4. Role-Specific Prefetching
         if agent_type == "InterfaceDesigner":
-            # Pre-read existing source code so LLM doesn't need read_file calls
-            source_code = self._get_source_code_for_interfaces(node_id, max_files=15, total_budget=20000)
-            if source_code:
-                context_parts.append(source_code)
+            # Use preloaded_source if available, otherwise cache the disk read
+            if preloaded_source:
+                context_parts.append(preloaded_source)
+            else:
+                source_code = self.cache.get_or_compute(
+                    node_id, "source_code",
+                    lambda: self._get_source_code_for_interfaces(node_id, max_files=15, total_budget=20000)
+                )
+                if source_code:
+                    context_parts.append(source_code)
             # Designer needs to know about surrounding architecture to reuse interfaces
-            related_ifaces = self._get_relational_interfaces(node_id)
-            if related_ifaces:
-                rel_str = "\n".join([self._format_interface(i, agent_type) for i in related_ifaces])
-                context_parts.append(f"<related_architecture_interfaces>\n{rel_str}\n</related_architecture_interfaces>")
+            def _compute_related():
+                related = self._get_relational_interfaces(node_id)
+                if related:
+                    return f"<related_architecture_interfaces>\n" + "\n".join([self._format_interface(i, agent_type) for i in related]) + "\n</related_architecture_interfaces>"
+                return ""
+            related_str = self.cache.get_or_compute(node_id, "related_interfaces", _compute_related)
+            if related_str:
+                context_parts.append(related_str)
 
         elif agent_type == "TestDrivenDeveloper":
-            # TDD needs both source code AND test code pre-injected
-            source_code = self._get_source_code_for_interfaces(node_id, max_files=15, total_budget=20000)
-            if source_code:
-                context_parts.append(source_code)
-            test_code = self._get_test_code_for_node(node_id)
+            # TDD needs both source code AND test code pre-injected with larger budgets
+            if preloaded_source:
+                context_parts.append(preloaded_source)
+            else:
+                source_code = self.cache.get_or_compute(
+                    node_id, "source_code",
+                    lambda: self._get_source_code_for_interfaces(
+                        node_id, max_files=15, max_chars_per_file=3000, total_budget=25000
+                    )
+                )
+                if source_code:
+                    context_parts.append(source_code)
+            test_code = self.cache.get_or_compute(
+                node_id, "test_code",
+                lambda: self._get_test_code_for_node(
+                    node_id, max_files=10, max_chars_per_file=3000, total_budget=15000
+                )
+            )
             if test_code:
                 context_parts.append(test_code)
             # TDD also needs to know about existing tests (metadata)
@@ -320,19 +401,102 @@ class ContextPipeline:
                 for t in tests:
                     tests_str += f"- [{t['test_id']}] Type: {t['type']} Path: `{t['file_path']}`\n"
                 context_parts.append(f"<existing_tests>\n{tests_str}\n</existing_tests>")
-                
+
         elif agent_type == "TestGenerator":
-            # Pre-read source code so LLM doesn't need 50+ read_file calls
-            source_code = self._get_source_code_for_interfaces(node_id)
-            if source_code:
-                context_parts.append(source_code)
+            # Use preloaded_source if available, otherwise cache the disk read
+            if preloaded_source:
+                context_parts.append(preloaded_source)
+            else:
+                source_code = self.cache.get_or_compute(
+                    node_id, "source_code",
+                    lambda: self._get_source_code_for_interfaces(node_id)
+                )
+                if source_code:
+                    context_parts.append(source_code)
             # Test Generator needs to know what interfaces exist and what architecture it connects to
-            related_ifaces = self._get_relational_interfaces(node_id)
-            if related_ifaces:
-                rel_str = "\n".join([self._format_interface(i, agent_type) for i in related_ifaces])
-                context_parts.append(f"<related_architecture_interfaces>\n{rel_str}\n</related_architecture_interfaces>")
+            def _compute_related():
+                related = self._get_relational_interfaces(node_id)
+                if related:
+                    return f"<related_architecture_interfaces>\n" + "\n".join([self._format_interface(i, agent_type) for i in related]) + "\n</related_architecture_interfaces>"
+                return ""
+            related_str = self.cache.get_or_compute(node_id, "related_interfaces", _compute_related)
+            if related_str:
+                context_parts.append(related_str)
 
         return "\n\n".join(context_parts)
+
+    def build_agent_context_split(self, node_id: str, agent_type: str, preloaded_source: str = None) -> tuple:
+        """Split context into (static_context, dynamic_context).
+        Static context goes into the system prompt (sent once, rarely changes).
+        Dynamic context goes into the user prompt (changes per phase/iteration).
+        This reduces per-step token cost since the user prompt is smaller.
+        """
+        full_context = self.build_agent_context(node_id, agent_type, preloaded_source)
+        static = self.get_static_context(node_id)
+        # Remove the static portion from the full context to get the dynamic portion
+        # The static layers appear at the start of full_context
+        if static and static in full_context:
+            idx = full_context.index(static)
+            # Take everything after the static portion
+            dynamic = full_context[idx + len(static):].lstrip("\n")
+        else:
+            # Fallback: put everything in dynamic (no split)
+            dynamic = full_context
+            static = ""
+        return static, dynamic
+
+    def get_static_context(self, node_id: str) -> str:
+        """Return only the static context layers (for system prompt injection).
+        These layers rarely change and can be moved to the system prompt
+        to reduce per-step token cost.
+        """
+        parts = []
+        # context_policy is static
+        parts.append(
+            "<context_policy>\n"
+            "- Prefer reusing existing interfaces before creating new ones.\n"
+            "- If modifying a reused interface, check impacts first.\n"
+            "- Prefer minimal file reads and targeted grep over full scans.\n"
+            "- Keep outputs deterministic and schema-valid.\n"
+            "</context_policy>"
+        )
+        global_ctx = self.cache.get_or_compute(node_id, "global_context", self._get_global_context)
+        parts.append(global_ctx)
+        proj_struct = self.cache.get_or_compute(node_id, "project_structure", self._get_project_structure)
+        if proj_struct:
+            parts.append(proj_struct)
+        all_ifaces = self.cache.get_or_compute(node_id, "existing_interfaces", self._get_all_interfaces_summary)
+        if all_ifaces:
+            parts.append(all_ifaces)
+        return "\n\n".join(parts)
+
+    def build_incremental_context(self, node_id: str, modified_files: list = None) -> str:
+        """For TDD iterations after the first, only inject changed files.
+        Returns a compact delta instead of full context.
+        """
+        if not modified_files:
+            return ""
+        from utils import get_abs_path
+        lines = []
+        total = 0
+        for fp in modified_files:
+            abs_path = get_abs_path(fp)
+            if not os.path.exists(abs_path):
+                continue
+            try:
+                with open(abs_path, 'r', encoding='utf-8', errors='replace') as f:
+                    content = f.read()
+                if len(content) > 3000:
+                    content = content[:3000] + "\n// ... [truncated]"
+                lines.append(f"// === {fp} (modified) ===\n{content}")
+                total += len(content)
+                if total > 15000:
+                    break
+            except Exception:
+                continue
+        if not lines:
+            return ""
+        return "<modified_files>\n" + "\n\n".join(lines) + "\n</modified_files>"
 
 # Singleton instance
 context_pipeline = ContextPipeline()
