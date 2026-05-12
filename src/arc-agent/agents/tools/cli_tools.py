@@ -129,6 +129,10 @@ async def _run_tests_android(test_type: str, test_file_path: str = "") -> str:
 
     - Unit/Integration/E2E: ./gradlew testDebugUnitTest (app/src/test/)
     - All tests run on JVM via Robolectric (no device/emulator required).
+
+    IMPORTANT: Runs subprocess directly (not via execute_command_impl) to get
+    FULL output before filtering. execute_command_impl truncates at 4000 chars,
+    which destroys critical error info in Gradle's verbose --info output.
     """
     gradlew = _gradlew_cmd()
 
@@ -140,32 +144,185 @@ async def _run_tests_android(test_type: str, test_file_path: str = "") -> str:
         cmd += f' --tests "{test_class}"'
     timeout = 180.0
 
-    result = await execute_command_impl(cmd, cwd=".", timeout=timeout)
+    # Run subprocess directly to get FULL output (no 4000-char truncation)
+    abs_cwd = get_abs_path(".")
+    try:
+        process = await asyncio.create_subprocess_shell(
+            cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            cwd=abs_cwd,
+            env={**os.environ, "PYTHONIOENCODING": "utf-8", "JAVA_TOOL_OPTIONS": "-Dfile.encoding=UTF-8"}
+        )
+        stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=timeout)
+        output = stdout.decode('utf-8', errors='replace')
+        error = stderr.decode('utf-8', errors='replace')
+        exit_code = process.returncode
+    except asyncio.TimeoutError:
+        process.kill()
+        return f"Command timed out after {timeout} seconds."
+    except Exception as e:
+        return f"Execution failed: {str(e)}"
 
-    # Extract only test-relevant lines from --info output to avoid overwhelming context
-    lines = result.split('\n')
+    # Parse and filter the --info output to keep only test-relevant information
+    # Process stdout and stderr separately for clarity
+    all_lines = output.split('\n') + error.split('\n')
     relevant = []
-    for line in lines:
-        # Keep: test results, failures, errors, BUILD, Exit Code, test counts
+    has_test_result = False  # Track whether we saw any test execution results
+
+    for line in all_lines:
+        stripped = line.strip()
+        if not stripped:
+            continue
+
+        # Test execution results (Gradle --info format)
+        # e.g., "Gradle Test Run :app:testDebugUnitTest > org.pkg.TestClass > testMethodName PASSED"
+        if any(kw in line for kw in ['PASSED', 'FAILED', 'SKIPPED']):
+            has_test_result = True
+            relevant.append(line)
+            continue
+
+        # Test summary lines (e.g., "Test result: 3 tests, 3 passed, 0 failed")
+        if any(kw in line.lower() for kw in ['test result:', 'tests,', 'test execution', 'tests found', 'no tests found']):
+            has_test_result = True
+            relevant.append(line)
+            continue
+
+        # Build result
+        if 'BUILD ' in line and not stripped.startswith('>'):
+            relevant.append(line)
+            continue
+
+        # Failure/exception details
+        if any(kw in line for kw in ['FAILURE:', 'What went wrong:', 'Execution failed', 'Exception', 'Caused by']):
+            relevant.append(line)
+            continue
+
+        # Key Android/Robolectric errors that must be visible to TDD Agent
         if any(kw in line for kw in [
-            'PASSED', 'FAILED', 'SKIPPED', 'Test ', 'tests ', 'Build ',
-            'BUILD ', 'Exit Code', 'STDOUT', 'STDERR',
-            'Exception', 'Error', 'error:', 'Caused by',
-            'at ',  # stack trace lines
+            'No instrumentation registered', 'InstrumentationRegistry',
+            'IllegalStateException', 'StrictMode', 'not mocked',
+            'AndroidRuntimeException', 'RuntimeException'
         ]):
             relevant.append(line)
+            has_test_result = True  # These ARE test failures
+            continue
 
-    if relevant and len(relevant) < len(lines) * 0.5:
-        # If we filtered significantly, return the condensed version
-        return '\n'.join(relevant)
+        # Stack trace lines (at com.example.Class.method(File.java:123))
+        if stripped.startswith('at ') and '.java:' in line:
+            relevant.append(line)
+            continue
+
+        # Compilation errors (javac output)
+        # e.g., "error: cannot find symbol" or "错误: 找不到符号"
+        if any(kw in line.lower() for kw in ['error:', '错误:', 'cannot find symbol', '找不到符号', 'package does not exist', 'does not exist']):
+            relevant.append(line)
+            continue
+
+        # Gradle task failures
+        if 'FAILED' in line and 'Task' in line:
+            relevant.append(line)
+            continue
+
+    # If no test results were found, add a clear warning
+    if not has_test_result:
+        if exit_code == 0:
+            relevant.append("")
+            relevant.append("WARNING: BUILD SUCCESSFUL but NO test results were found!")
+            relevant.append("This likely means 0 tests were executed. Possible causes:")
+            relevant.append("  1. Test classes have compilation errors and were silently excluded")
+            relevant.append("  2. JUnit5 test discovery failed (missing android-junit5 plugin)")
+            relevant.append("  3. Test class name does not match the --tests filter")
+            relevant.append("Run `run_build` to check for compilation errors in test source code.")
+        else:
+            relevant.append("")
+            relevant.append("WARNING: BUILD FAILED and no test results were captured.")
+            relevant.append("Check the compilation errors above — tests may not compile at all.")
+
+    # Build final result with exit code header
+    result = f"Exit Code: {exit_code}\n"
+    if relevant:
+        result += '\n'.join(relevant)
+
+    # Truncate AFTER filtering (not before) to prevent token explosion
+    # Allow more room since we've already filtered out noise
+    if len(result) > 8000:
+        result = result[:4000] + "\n...[OUTPUT TRUNCATED]...\n" + result[-4000:]
+
     return result
 
 
 async def _run_build_android() -> str:
-    """Run build for Android projects using Gradle."""
+    """Run build for Android projects using Gradle.
+    Compiles both main source and test source to catch test compilation errors early.
+
+    Runs subprocess directly to get FULL output before filtering, same as _run_tests_android.
+    """
     gradlew = _gradlew_cmd()
-    result = await execute_command_impl(f"{gradlew} assembleDebug", cwd=".", timeout=180.0)
-    return f"=== Android Build Result ===\n{result}"
+    cmd = f"{gradlew} assembleDebug compileDebugUnitTestJavaWithJavac"
+    abs_cwd = get_abs_path(".")
+    try:
+        process = await asyncio.create_subprocess_shell(
+            cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            cwd=abs_cwd,
+            env={**os.environ, "PYTHONIOENCODING": "utf-8", "JAVA_TOOL_OPTIONS": "-Dfile.encoding=UTF-8"}
+        )
+        stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=180.0)
+        output = stdout.decode('utf-8', errors='replace')
+        error = stderr.decode('utf-8', errors='replace')
+        exit_code = process.returncode
+    except asyncio.TimeoutError:
+        process.kill()
+        return "=== Android Build Result ===\nCommand timed out after 180 seconds."
+    except Exception as e:
+        return f"=== Android Build Result ===\nExecution failed: {str(e)}"
+
+    # Filter build output: keep only errors, warnings, and BUILD result
+    all_lines = output.split('\n') + error.split('\n')
+    relevant = []
+    for line in all_lines:
+        stripped = line.strip()
+        if not stripped:
+            continue
+        # Build result
+        if 'BUILD ' in line and not stripped.startswith('>'):
+            relevant.append(line)
+            continue
+        # Failure/exception details
+        if any(kw in line for kw in ['FAILURE:', 'What went wrong:', 'Execution failed', 'Exception', 'Caused by']):
+            relevant.append(line)
+            continue
+        # Compilation errors
+        if any(kw in line.lower() for kw in ['error:', '错误:', 'cannot find symbol', '找不到符号', 'package does not exist', 'does not exist', 'warning:']):
+            relevant.append(line)
+            continue
+        # Stack trace lines
+        if stripped.startswith('at ') and '.java:' in line:
+            relevant.append(line)
+            continue
+        # Gradle task failures
+        if 'FAILED' in line and 'Task' in line:
+            relevant.append(line)
+            continue
+
+    result = f"=== Android Build Result ===\nExit Code: {exit_code}\n"
+    if relevant:
+        result += '\n'.join(relevant)
+    else:
+        # If nothing relevant was filtered, include a summary
+        if exit_code == 0:
+            result += "BUILD SUCCESSFUL"
+        else:
+            # Fallback: include last 2000 chars of raw output
+            raw = output + error
+            result += (raw[-2000:] if len(raw) > 2000 else raw)
+
+    if len(result) > 8000:
+        result = result[:4000] + "\n...[OUTPUT TRUNCATED]...\n" + result[-4000:]
+
+    return result
 
 
 # ============================================================
