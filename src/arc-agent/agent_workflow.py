@@ -11,6 +11,7 @@ import requests
 from agents.interface_designer import InterfaceDesigner
 from agents.test_generator import TestGenerator
 from agents.test_driven_developer import TestDrivenDeveloper
+from agents.context_pipeline import context_pipeline
 
 from traceability.database import (
     get_requirement_by_id,
@@ -142,6 +143,14 @@ def build_dependency_context(node_id: str) -> str:
                     desc = content.get('description', '')
                     if desc:
                         ctx += f"    Description: {desc}\n"
+                    if content.get('inputs'):
+                        ctx += f"    Inputs: {content['inputs']}\n"
+                    if content.get('outputs'):
+                        ctx += f"    Outputs: {content['outputs']}\n"
+                    if content.get('callers'):
+                        ctx += f"    Callers: {content['callers']}\n"
+                    if content.get('callees'):
+                        ctx += f"    Callees: {content['callees']}\n"
                 except:
                     pass
         ctx += "\n"
@@ -590,6 +599,37 @@ Return ONLY the package name (e.g., org.billthefarmer.editor) or "UNKNOWN" if no
         from utils import set_android_package, get_android_package
         set_android_package(target_package)
 
+    def _collect_stub_artifacts(self, interfaces: list) -> str:
+        """Read stub files from disk and format as <source_code> context.
+        This allows downstream agents to skip re-reading these files.
+        """
+        from utils import get_abs_path
+        lines = []
+        total = 0
+        for iface in interfaces:
+            if iface.get("reuse", False):
+                continue
+            fp = iface.get("file_path", "")
+            if not fp:
+                continue
+            abs_path = get_abs_path(fp)
+            if not os.path.exists(abs_path):
+                continue
+            try:
+                with open(abs_path, 'r', encoding='utf-8', errors='replace') as f:
+                    content = f.read()
+                if len(content) > 3000:
+                    content = content[:3000] + "\n// ... [truncated]"
+                lines.append(f"// === {fp} ===\n{content}")
+                total += len(content)
+                if total > 25000:
+                    break
+            except Exception:
+                continue
+        if not lines:
+            return ""
+        return "<source_code>\n" + "\n\n".join(lines) + "\n</source_code>"
+
     async def process_node(self, node_id: str) -> dict:
         """Process a single requirement node through the workflow.
 
@@ -683,6 +723,8 @@ Return ONLY the package name (e.g., org.billthefarmer.editor) or "UNKNOWN" if no
                             )
 
                     await self._log("System", f"Designed {len(interfaces)} interfaces for node {node_id}.", node_id=node_id)
+                    # Invalidate DB-dependent cache layers since new interfaces were inserted
+                    context_pipeline.cache.invalidate_db_layers(node_id)
                 except Exception as e:
                     await self._log("System", f"Failed to parse/store interface JSON block: {str(e)}", node_id=node_id)
             else:
@@ -693,6 +735,7 @@ Return ONLY the package name (e.g., org.billthefarmer.editor) or "UNKNOWN" if no
             # ==========================================
             # Step 2: Implement Stub Code (if interfaces were designed)
             # ==========================================
+            stub_artifacts = ""  # Will be populated if stubs are written
             if interfaces is not None and len(interfaces) > 0:
                 await self._log("InterfaceDesigner", f"Implementing stub code for {len(interfaces)} interfaces...", node_id=node_id)
 
@@ -709,6 +752,12 @@ Return ONLY the package name (e.g., org.billthefarmer.editor) or "UNKNOWN" if no
                         update_interface_implemented(interface_id, True)
 
                 await self._log("System", f"Stub code implementation completed for node {node_id}.", node_id=node_id)
+
+                # Invalidate file-dependent cache layers (stubs were written to disk)
+                context_pipeline.cache.invalidate_file_layers(node_id)
+
+                # Collect stub artifacts to pass to downstream agents (avoids re-reading from disk)
+                stub_artifacts = self._collect_stub_artifacts(interfaces)
 
                 # Git Commit for Design + Implementation
                 designed_interfaces = [m.get("interface_id", "UNKNOWN") for m in interfaces]
@@ -742,7 +791,8 @@ Return ONLY the package name (e.g., org.billthefarmer.editor) or "UNKNOWN" if no
                     node_id=node_id,
                     requirement_data=requirement_data,
                     interfaces_ir=interfaces_ir,
-                    test_type="All"
+                    test_type="All",
+                    preloaded_source=stub_artifacts
                 )
                 all_test_outputs.append(all_test_output)
 
@@ -774,6 +824,9 @@ Return ONLY the package name (e.g., org.billthefarmer.editor) or "UNKNOWN" if no
                                     )
 
                                 await self._log("System", f"Successfully registered {len(test_mappings)} tests in traceability database.", node_id=node_id)
+                                # Invalidate DB and file caches (tests were written and registered)
+                                context_pipeline.cache.invalidate_db_layers(node_id)
+                                context_pipeline.cache.invalidate_file_layers(node_id)
                             except Exception as e:
                                 await self._log("System", f"Failed to parse/register test mappings from TestGenerator: {str(e)}", node_id=node_id)
                 else:
@@ -799,7 +852,7 @@ Return ONLY the package name (e.g., org.billthefarmer.editor) or "UNKNOWN" if no
                 # Helper to run TDD loop
                 current_interfaces = get_interfaces_by_req_id(node_id)
 
-                async def run_tdd_loop(target_type: str, tests_batch: list, budget: int, scenario: list = None):
+                async def run_tdd_loop(target_type: str, tests_batch: list, budget: int, scenario: list = None, preloaded_source: str = None):
                     test_files = [t.get("file_path") for t in tests_batch if t.get("file_path")]
                     test_ids = [t.get("test_id") for t in tests_batch if t.get("test_id")]
 
@@ -813,6 +866,22 @@ Return ONLY the package name (e.g., org.billthefarmer.editor) or "UNKNOWN" if no
 
                     for iteration in range(1, budget + 1):
                         await self._log("TestDrivenDeveloper", f"[{target_type}] Iteration {iteration}/{budget}...", node_id=node_id)
+
+                        # First iteration uses preloaded_source; subsequent iterations use incremental context
+                        source_override = preloaded_source if iteration == 1 else None
+
+                        # For iterations after the first, use incremental context (only re-read modified files)
+                        if iteration > 1:
+                            # Invalidate file-dependent cache layers since TDD may have modified source files
+                            context_pipeline.cache.invalidate_file_layers(node_id)
+                            # Rebuild source_code cache from disk (captures TDD's fixes)
+                            incremental_delta = context_pipeline.build_incremental_context(
+                                node_id,
+                                modified_files=[iface.get("file_path", "") for iface in current_interfaces if iface.get("file_path")]
+                            )
+                            if incremental_delta:
+                                source_override = incremental_delta
+
                         final_output = await self.test_driven_developer.implement(
                             node_id=node_id,
                             test_files=test_files,
@@ -820,7 +889,8 @@ Return ONLY the package name (e.g., org.billthefarmer.editor) or "UNKNOWN" if no
                             req_desc=req_desc,
                             scenario=scenario,
                             dependency_context=dependency_context,
-                            current_interfaces=current_interfaces
+                            current_interfaces=current_interfaces,
+                            preloaded_source=source_override
                         )
 
                         if "IMPLEMENTED" in final_output:
@@ -855,12 +925,12 @@ Return ONLY the package name (e.g., org.billthefarmer.editor) or "UNKNOWN" if no
                 # 1. DB & FUNC -> Unit tests
                 unit_tests = tests_by_type["Unit"]
                 if unit_tests:
-                    await run_tdd_loop("Unit", unit_tests, budget=5)
+                    await run_tdd_loop("Unit", unit_tests, budget=5, preloaded_source=stub_artifacts)
 
                 # 2. API -> Integration tests
                 int_tests = tests_by_type["Integration"]
                 if int_tests:
-                    await run_tdd_loop("Integration", int_tests, budget=5)
+                    await run_tdd_loop("Integration", int_tests, budget=5, preloaded_source=stub_artifacts)
 
                 # 3. UI -> E2E tests (One by one per scenario)
                 e2e_tests = tests_by_type["E2E"]
@@ -873,7 +943,7 @@ Return ONLY the package name (e.g., org.billthefarmer.editor) or "UNKNOWN" if no
 
                         scenario_name = f"Scenario {idx+1}"
                         await self._log("System", f"Running E2E for {scenario_name}...", node_id=node_id)
-                        await run_tdd_loop("E2E", [e2e_test], budget=3, scenario=req_scenario)
+                        await run_tdd_loop("E2E", [e2e_test], budget=3, scenario=req_scenario, preloaded_source=stub_artifacts)
 
             else:
                 await self._log("System", f"Non-leaf node {node_id}: skipping Test/TDD (shared interfaces only).", node_id=node_id)

@@ -53,9 +53,9 @@ Your job is to implement the business logic for the provided interfaces until th
 
 Execution protocol (strict):
 - Source code and test code are pre-injected in `<source_code>` and `<test_code>` — do NOT call `read_file` on files already provided in context.
-- Always start with `run_tests` for the requested scope and use failing output as the single source of truth.
-- Fix the minimal set of files needed per iteration. Avoid broad refactors.
-- After each fix, rerun `run_tests` for the same scope.
+- **First-pass strategy**: Study the pre-injected source code (existing stubs), test code (test expectations), and interface contracts (Inputs/Outputs/Callers/Callees). Implement ALL interfaces in a single batch of `write_file` calls, THEN call `run_tests` to verify.
+- Write ALL implementation files FIRST, THEN run tests. Do NOT write one file and test immediately.
+- If tests fail, read the error output carefully, fix the minimal set of files, and rerun `run_tests`.
 - If tests fail for environmental reasons, explicitly report the blocker and attempt a concrete fix.
 - Return exactly "IMPLEMENTED" only when target tests are truly passing.
 
@@ -71,10 +71,12 @@ Execution protocol (strict):
 - If the requirement description mentions a different package name in resource-id patterns, use THAT package name instead.
 
 ### Workflow:
-1. Run the tests using the `run_tests` tool to see the current failures (Red phase).
-2. Use `write_file` to implement the actual logic in the corresponding layers (Green phase).
-3. Re-run `run_tests`. If it fails, read the output log, fix the code, and repeat.
-4. If you need a new npm package, use `execute_command` (e.g., `npm install cors`).
+1. Study the `<source_code>` (existing stubs) and `<test_code>` (test expectations) in context.
+2. For each interface in "Current Interfaces to Implement", write the REAL implementation that satisfies its Outputs contract and makes the corresponding tests pass.
+3. Use `write_file` to write ALL implementation files in one batch.
+4. Call `run_tests` with the target test type to verify (Green phase).
+5. If tests fail, read the error output, fix the code, and rerun `run_tests`.
+6. If you need a new npm package, use `execute_command` (e.g., `npm install cors`).
 
 Once `run_tests` returns a 100% passing state (Exit Code: 0) for the target tests, you MUST output exactly the word "IMPLEMENTED" in your final response to complete the task.
 """
@@ -83,11 +85,13 @@ Once `run_tests` returns a 100% passing state (Exit Code: 0) for the target test
         return ["read_file", "write_file", "delete_file", "insert_lines", "replace_lines", "list_directory", "grep_search",
                 "execute_command", "run_tests", "run_build", "search_interfaces_by_keyword", "search_interfaces_by_relation", "get_node_relations"]
 
-    async def implement(self, node_id: str, test_files: List[str], test_type: str, req_desc: str, scenario: list = None, dependency_context: str = "", current_interfaces: list = None) -> str:
+    async def implement(self, node_id: str, test_files: List[str], test_type: str, req_desc: str, scenario: list = None, dependency_context: str = "", current_interfaces: list = None, preloaded_source: str = None) -> str:
         from .context_pipeline import context_pipeline
 
         # 1. Use the new Context Pipeline to build layered context for the TDD Agent
-        context_str = context_pipeline.build_agent_context(node_id=node_id, agent_type=self.agent_name)
+        static_ctx, dynamic_ctx = context_pipeline.build_agent_context_split(
+            node_id=node_id, agent_type=self.agent_name, preloaded_source=preloaded_source
+        )
 
         scenario_context = ""
         if test_type == "E2E" and scenario:
@@ -101,12 +105,27 @@ Once `run_tests` returns a 100% passing state (Exit Code: 0) for the target test
                     current_interfaces_str += f"  File: `{iface.get('file_path')}`\n"
                 if iface.get('first_line'):
                     current_interfaces_str += f"  Signature: `{iface.get('first_line')}`\n"
+                # Extract full contract from content JSON
+                try:
+                    content = json.loads(iface.get('content', '{}'))
+                    if content.get('description'):
+                        current_interfaces_str += f"  Desc: {content['description']}\n"
+                    if content.get('inputs'):
+                        current_interfaces_str += f"  Inputs: {content['inputs']}\n"
+                    if content.get('outputs'):
+                        current_interfaces_str += f"  Outputs: {content['outputs']}\n"
+                    if content.get('callers'):
+                        current_interfaces_str += f"  Callers: {content['callers']}\n"
+                    if content.get('callees'):
+                        current_interfaces_str += f"  Callees: {content['callees']}\n"
+                except:
+                    pass
         else:
             current_interfaces_str += "No specific interface data provided."
 
         user_prompt = f"""
 ### Auto-Prefetched Context for Node [{node_id}]
-{context_str}
+{dynamic_ctx}
 
 ### Implementation Task for Node [{node_id}]
 Target Test Type: {test_type}
@@ -123,9 +142,11 @@ Target Test Type: {test_type}
 ### Target Test Files
 {json.dumps(test_files, indent=2)}
 
-Please start your TDD loop.
-Call `run_tests` passing the exact test type (`{test_type}`) and optionally the test files to run them.
-Implement the code to make these specific tests pass.
-Do not stop until the target tests pass. Reply with "IMPLEMENTED" when done.
+**Implementation Strategy**:
+1. Study the `<source_code>` (existing stubs) and `<test_code>` (test expectations) above.
+2. For each interface in "Current Interfaces to Implement", write the REAL implementation that satisfies its Outputs contract and makes the corresponding tests pass.
+3. Use `write_file` to write ALL implementation files in one batch.
+4. Call `run_tests` with type `{test_type}` to verify.
+5. If tests fail, fix and rerun. Reply "IMPLEMENTED" when all target tests pass.
 """
-        return await self.run(user_prompt=user_prompt, node_id=node_id, max_steps=15)
+        return await self.run(user_prompt=user_prompt, node_id=node_id, max_steps=15, static_context=static_ctx)

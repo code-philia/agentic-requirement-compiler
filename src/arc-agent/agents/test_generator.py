@@ -97,11 +97,13 @@ Schema for each object:
             "run_build", "search_interfaces_by_keyword", "search_interfaces_by_relation", "get_node_relations"
         ]
 
-    async def generate_tests(self, node_id: str, requirement_data: Dict[str, Any], interfaces_ir: list, test_type: str = "Unit") -> str:
+    async def generate_tests(self, node_id: str, requirement_data: Dict[str, Any], interfaces_ir: list, test_type: str = "Unit", preloaded_source: str = None) -> str:
         from .context_pipeline import context_pipeline
 
         # 1. Use the new Context Pipeline to build layered context for the TestGenerator
-        context_str = context_pipeline.build_agent_context(node_id=node_id, agent_type=self.agent_name)
+        static_ctx, dynamic_ctx = context_pipeline.build_agent_context_split(
+            node_id=node_id, agent_type=self.agent_name, preloaded_source=preloaded_source
+        )
 
         scenario_context = ""
         if requirement_data.get("scenario"):
@@ -128,7 +130,7 @@ Do NOT call `read_file` on source files — they are already provided in the `<s
 
         user_prompt = f"""
 ### Auto-Prefetched Context for Node [{node_id}]
-{context_str}
+{dynamic_ctx}
 
 ### Requirement Description for Node [{node_id}]
 {requirement_data.get("description", "")}
@@ -141,4 +143,4 @@ Do NOT call `read_file` on source files — they are already provided in the `<s
 Ensure the tests correctly import the designed interfaces and cover the logic described in the requirement.
 When finished, output the mapping JSON block so the system can register these tests in the traceability database.
 """
-        return await self.run(user_prompt=user_prompt, node_id=node_id, max_steps=15)
+        return await self.run(user_prompt=user_prompt, node_id=node_id, max_steps=15, static_context=static_ctx)
