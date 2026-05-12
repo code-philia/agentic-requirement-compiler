@@ -88,6 +88,25 @@ class ARCAgent:
         # Keep initial system+user and latest N interactions intact.
         if len(messages) <= 2 + MICROCOMPACT_KEEP_MESSAGES:
             return
+
+        # Proactively evict read_file tool results older than 2 steps
+        # These are typically one-shot reads that the LLM already processed
+        protected_tail = 4  # Don't touch the last 4 messages
+        for i in range(2, len(messages) - protected_tail):
+            msg = messages[i]
+            content = msg.get("content")
+            if (
+                msg.get("role") == "tool"
+                and msg.get("name") == "read_file"
+                and isinstance(content, str)
+                and len(content) > 500
+            ):
+                msg["content"] = (
+                    content[:300]
+                    + "\n\n[read_file result evicted — use read_file again if needed]"
+                )
+
+        # Original microcompact: fold old large tool results
         for msg in messages[2:-MICROCOMPACT_KEEP_MESSAGES]:
             content = msg.get("content")
             if (
@@ -145,9 +164,13 @@ class ARCAgent:
                 await asyncio.sleep(min(2 * attempt, 5))
         raise last_err
 
-    async def run(self, user_prompt: str, node_id: str = None, max_steps: int = 30) -> str:
+    async def run(self, user_prompt: str, node_id: str = None, max_steps: int = 30, static_context: str = None) -> str:
+        system_content = self.get_system_prompt()
+        # Inject static context into system prompt to reduce per-step token cost
+        if static_context:
+            system_content = f"{system_content}\n\n{static_context}"
         messages = [
-            {"role": "system", "content": self.get_system_prompt()},
+            {"role": "system", "content": system_content},
             {"role": "user", "content": user_prompt}
         ]
         

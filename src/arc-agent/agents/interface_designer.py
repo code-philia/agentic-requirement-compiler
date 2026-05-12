@@ -117,7 +117,7 @@ Each object in the array must follow this exact schema:
         """Phase 1: Design interfaces and output IR JSON. No code writing."""
         from .context_pipeline import context_pipeline
 
-        context_str = context_pipeline.build_agent_context(node_id=node_id, agent_type=self.agent_name)
+        static_ctx, dynamic_ctx = context_pipeline.build_agent_context_split(node_id=node_id, agent_type=self.agent_name)
 
         if is_leaf:
             scope_guidance = """
@@ -142,7 +142,7 @@ This is a **non-leaf node** (it has children). Design **ONLY** the **shared DB l
 
         user_prompt = f"""
 ### Auto-Prefetched Context for Node [{node_id}]
-{context_str}
+{dynamic_ctx}
 
 ### Current Target Requirement Node (ID: {node_id})
 {json.dumps(requirement_data, indent=2, ensure_ascii=False)}
@@ -153,14 +153,14 @@ Perform the top-down decomposition for Node [{node_id}].
 Design the interface architecture and output the IR JSON mapping.
 Do NOT write any code files — this phase is ONLY for architecture design.
 """
-        return await self.run(user_prompt=user_prompt, node_id=node_id, max_steps=10)
+        return await self.run(user_prompt=user_prompt, node_id=node_id, max_steps=10, static_context=static_ctx)
 
     async def implement_stubs(self, node_id: str, interfaces: List[Dict], is_leaf: bool = True) -> str:
         """Phase 2: Implement stub code for each interface. Track progress per interface."""
         from .context_pipeline import context_pipeline
         from utils import get_app_type, get_android_package
 
-        context_str = context_pipeline.build_agent_context(node_id=node_id, agent_type=self.agent_name)
+        static_ctx, dynamic_ctx = context_pipeline.build_agent_context_split(node_id=node_id, agent_type=self.agent_name)
 
         # Build a summary of what needs to be implemented
         iface_summaries = []
@@ -205,7 +205,7 @@ After writing all files, call `run_build` to verify compilation. Fix any errors.
 
         user_prompt = f"""
 ### Auto-Prefetched Context for Node [{node_id}]
-{context_str}
+{dynamic_ctx}
 
 ### Implementation Task for Node [{node_id}]
 {impl_guidance}
@@ -229,7 +229,7 @@ When all files are written and compilation passes, output "IMPLEMENTED".
         original_tool_names = self.get_tool_names
         self.get_tool_names = lambda: self._get_implement_tool_names()
         try:
-            result = await self.run(user_prompt=user_prompt, node_id=node_id, max_steps=20)
+            result = await self.run(user_prompt=user_prompt, node_id=node_id, max_steps=20, static_context=static_ctx)
         finally:
             self.get_tool_names = original_tool_names
         return result
