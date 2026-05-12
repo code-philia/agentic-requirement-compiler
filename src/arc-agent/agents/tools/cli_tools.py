@@ -16,14 +16,15 @@ async def execute_command_impl(command: str, cwd: str = ".", timeout: float = 30
             command,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
-            cwd=abs_cwd
+            cwd=abs_cwd,
+            env={**os.environ, "PYTHONIOENCODING": "utf-8", "JAVA_TOOL_OPTIONS": "-Dfile.encoding=UTF-8"}
         )
 
         # Timeout mechanism to prevent hanging commands
         stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=timeout)
 
-        output = stdout.decode()
-        error = stderr.decode()
+        output = stdout.decode('utf-8', errors='replace')
+        error = stderr.decode('utf-8', errors='replace')
 
         result = f"Exit Code: {process.returncode}\n"
         if output: result += f"STDOUT:\n{output}\n"
