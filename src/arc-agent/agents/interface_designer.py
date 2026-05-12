@@ -189,9 +189,11 @@ After writing all files, call `run_build` to verify compilation. Fix any errors.
 {json.dumps(interfaces, indent=2, ensure_ascii=False)}
 ```
 
-Write the stub code files for each interface using `write_file`.
+Write ALL stub code files using `write_file` calls FIRST, then call `run_build` ONCE to verify compilation.
+Do NOT call `read_file` on source files — they are already provided in the `<source_code>` context above.
+Do NOT interleave `read_file` and `write_file` — batch all writes together.
 Ensure all imports, class hierarchies, and method signatures match the interface definitions above.
-After writing all files, call `run_build` to check compilation. Fix any errors found.
+Fix any build errors found.
 When all files are written and compilation passes, output "IMPLEMENTED".
 """
         # Override tool names for implementation phase

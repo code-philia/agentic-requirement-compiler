@@ -152,17 +152,14 @@ class ContextPipeline:
             unique[iface.get("interface_id")] = iface
         return list(unique.values())[:self.max_related_interfaces]
 
-    def _get_source_code_for_interfaces(self, node_id: str) -> str:
-        """Pre-read source files of interfaces to test.
-        Eliminates 50+ read_file calls by the LLM during test generation."""
+    def _get_source_code_for_interfaces(self, node_id: str, max_files: int = 10,
+                                         max_chars_per_file: int = 2000, total_budget: int = 15000) -> str:
+        """Pre-read source files of interfaces for a node.
+        Eliminates 50+ read_file calls by the LLM during test generation / implementation."""
         from utils import get_abs_path
         interfaces = get_interfaces_by_req_id(node_id)
         if not interfaces:
             return ""
-
-        max_files = 10
-        max_chars_per_file = 2000
-        total_budget = 15000
 
         lines = []
         total = 0
@@ -188,6 +185,42 @@ class ContextPipeline:
         if not lines:
             return ""
         return "<source_code>\n" + "\n\n".join(lines) + "\n</source_code>"
+
+    def _get_test_code_for_node(self, node_id: str) -> str:
+        """Pre-read test files for a node so TDD agent doesn't need read_file calls."""
+        from utils import get_abs_path
+        tests = get_tests_by_req_id(node_id)
+        if not tests:
+            return ""
+
+        max_files = 8
+        max_chars_per_file = 2000
+        total_budget = 12000
+
+        lines = []
+        total = 0
+        for t in tests[:max_files]:
+            fp = t.get('file_path', '')
+            if not fp:
+                continue
+            abs_path = get_abs_path(fp)
+            if not os.path.exists(abs_path):
+                continue
+            try:
+                with open(abs_path, 'r', encoding='utf-8', errors='replace') as f:
+                    content = f.read()
+                if len(content) > max_chars_per_file:
+                    content = content[:max_chars_per_file] + "\n// ... [truncated]"
+                lines.append(f"// === {fp} ===\n{content}")
+                total += len(content)
+                if total > total_budget:
+                    break
+            except Exception:
+                continue
+
+        if not lines:
+            return ""
+        return "<test_code>\n" + "\n\n".join(lines) + "\n</test_code>"
 
     def _format_interface(self, iface: Dict, agent_type: str) -> str:
         """Format interface data differently based on agent focus."""
@@ -262,14 +295,25 @@ class ContextPipeline:
             
         # 4. Role-Specific Prefetching
         if agent_type == "InterfaceDesigner":
+            # Pre-read existing source code so LLM doesn't need read_file calls
+            source_code = self._get_source_code_for_interfaces(node_id, max_files=15, total_budget=20000)
+            if source_code:
+                context_parts.append(source_code)
             # Designer needs to know about surrounding architecture to reuse interfaces
             related_ifaces = self._get_relational_interfaces(node_id)
             if related_ifaces:
                 rel_str = "\n".join([self._format_interface(i, agent_type) for i in related_ifaces])
                 context_parts.append(f"<related_architecture_interfaces>\n{rel_str}\n</related_architecture_interfaces>")
-                
+
         elif agent_type == "TestDrivenDeveloper":
-            # TDD needs to know about existing tests
+            # TDD needs both source code AND test code pre-injected
+            source_code = self._get_source_code_for_interfaces(node_id, max_files=15, total_budget=20000)
+            if source_code:
+                context_parts.append(source_code)
+            test_code = self._get_test_code_for_node(node_id)
+            if test_code:
+                context_parts.append(test_code)
+            # TDD also needs to know about existing tests (metadata)
             tests = get_tests_by_req_id(node_id)[:self.max_tests]
             if tests:
                 tests_str = ""
