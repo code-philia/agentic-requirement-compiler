@@ -10,13 +10,15 @@ class TestGenerator(ARCAgent):
         )
 
     def get_system_prompt(self) -> str:
-        from utils import get_app_type
+        from utils import get_app_type, get_android_package
         app_type = get_app_type()
 
         if app_type == "android":
-            test_stack = """
+            android_pkg = get_android_package()
+            pkg_dir = android_pkg.replace('.', '/')
+            test_stack = f"""
 # Testing Stack (Android):
-- **Unit Tests**: JUnit5 + Robolectric — place in `app/src/test/java/<package>/`
+- **Unit Tests**: JUnit5 + Robolectric — place in `app/src/test/java/{pkg_dir}/`
   - Use `@Test` from `org.junit.jupiter.api.Test`
   - Use `@org.robolectric.annotation.Config(sdk = 31)` to configure Robolectric SDK
   - NEVER use `@RunWith(RobolectricTestRunner.class)` — it conflicts with JUnit5
@@ -25,18 +27,27 @@ class TestGenerator(ARCAgent):
   - Use `@Nested` for grouping related tests
   - Target `FUNC` and `DB` interfaces
 - **Integration Tests**: JUnit5 + Robolectric + MockWebServer + Room in-memory DB
-  - Place in `app/src/test/java/<package>/`
+  - Place in `app/src/test/java/{pkg_dir}/`
   - Use `Room.inMemoryDatabaseBuilder(context, AppDatabase.class).allowMainThreadQueries().build()` for real DB
   - Use `MockWebServer` for HTTP testing (enqueue fake responses)
   - Use `@AfterEach` to close DB and shutdown MockWebServer
   - Target `API` interfaces
-- **E2E Tests**: JUnit5 + Robolectric — place in `app/src/test/java/<package>/`
+- **E2E Tests**: JUnit5 + Robolectric — place in `app/src/test/java/{pkg_dir}/`
   - Use `@Config(sdk = 31)` to simulate Activity lifecycle
   - Use `ActivityScenario` from `androidx.test.core` to launch Activities
   - Use MockWebServer to mock backend API responses
   - Target the overarching Requirement Node with the provided UI scenario
 - **Test file naming**: `*Test.java` for unit, `*IntegrationTest.java` for integration, `*E2ETest.java` for E2E
 - **CRITICAL**: Do NOT use `@RunWith` annotations. JUnit5 test discovery is handled by the `android-junit5` Gradle plugin (already configured in build.gradle).
+- **Package**: {android_pkg}
+"""
+            pkg_compliance = f"""
+### Package Compliance (CRITICAL for Android):
+- The application package is `{android_pkg}`. You MUST use this package for ALL test code:
+  - `package {android_pkg};` in every test Java file
+  - `import {android_pkg}.xxx;` to import the classes under test
+  - Place test files under `app/src/test/java/{pkg_dir}/`
+- Do NOT use `com.example.template` or any other package name.
 """
         else:
             test_stack = """
@@ -45,6 +56,7 @@ class TestGenerator(ARCAgent):
 - **Integration Tests**: Target the `API` interfaces. Test how they interact with `FUNC` modules. Write tests based on interface descriptions and requirement content.
 - **E2E Tests**: Target the overarching Requirement Node. You will be provided with a specific UI scenario. Generate Playwright E2E tests covering this specific scenario.
 """
+            pkg_compliance = ""
 
         return f"""You are a Principal Software Development Engineer in Test (SDET).
 Your task is to write comprehensive, executable test cases for a newly designed component following Test-Driven Development (TDD) principles.
@@ -57,6 +69,7 @@ Execution protocol (strict):
 - For each generated test, ensure `test_id`, `type`, `file_path`, and `first_line` exactly match the real file content.
 - If build or syntax fails, fix tests immediately and rerun `run_build`.
 
+{pkg_compliance}
 # Workflow & Testing Strategy:
 1. **Analyze the Context**: Review the provided tech stack, requirement description, and Interface Intermediate Representation (IR).
 2. **Locate Test Directories**: Use `list_directory` to find or decide where to place tests.

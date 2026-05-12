@@ -10,11 +10,12 @@ class TestDrivenDeveloper(ARCAgent):
         )
 
     def get_system_prompt(self) -> str:
-        from utils import get_app_type
+        from utils import get_app_type, get_android_package
         app_type = get_app_type()
 
         if app_type == "android":
-            tech_stack = """
+            android_pkg = get_android_package()
+            tech_stack = f"""
 ### Strict Tech Stack Constraints:
 **Android:**
 - Language: Java 8
@@ -27,10 +28,10 @@ class TestDrivenDeveloper(ARCAgent):
   - Integration: JUnit5 + Robolectric + MockWebServer + Room in-memory DB (app/src/test/)
   - E2E: JUnit5 + Robolectric + ActivityScenario (app/src/test/)
   - **NEVER use `@RunWith(RobolectricTestRunner.class)`** — use `@Config(sdk = 31)` instead
-  - **NEVER add `android-junit5` Gradle plugin** — it is unavailable on Chinese mirrors
   - **NEVER use `@RunWith(AndroidJUnit4.class)` in JVM tests** — only JUnit5 annotations
+  - The `android-junit5` Gradle plugin is already configured — do NOT modify build.gradle to add/remove it
 - Source directories: app/src/main/java/, app/src/test/java/
-- Package: com.example.template
+- Package: {android_pkg}
 """
         else:
             tech_stack = """
@@ -59,6 +60,15 @@ Execution protocol (strict):
 - Return exactly "IMPLEMENTED" only when target tests are truly passing.
 
 {tech_stack}
+
+### Package Compliance (CRITICAL for Android):
+- The application package is `{android_pkg}`. You MUST use this package for ALL generated code:
+  - `package {android_pkg};` in every Java file
+  - `import {android_pkg}.xxx;` for cross-module references
+  - File paths must use `{android_pkg.replace('.', '/')}/` as the package directory
+  - AndroidManifest.xml must reference activities as `{android_pkg}.ActivityName`
+- Do NOT use `com.example.template` or any other package name.
+- If the requirement description mentions a different package name in resource-id patterns, use THAT package name instead.
 
 ### Workflow:
 1. Run the tests using the `run_tests` tool to see the current failures (Red phase).

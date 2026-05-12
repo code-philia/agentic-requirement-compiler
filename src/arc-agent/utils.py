@@ -30,6 +30,17 @@ def get_app_type() -> str:
     global APP_TYPE
     return APP_TYPE
 
+# Android Package Name Management
+ANDROID_PACKAGE = "com.example.template"
+
+def set_android_package(pkg: str):
+    global ANDROID_PACKAGE
+    ANDROID_PACKAGE = pkg.strip()
+
+def get_android_package() -> str:
+    global ANDROID_PACKAGE
+    return ANDROID_PACKAGE
+
 def load_requirements(file_path: str):
     if not os.path.exists(file_path):
         print(f"Requirements file not found: {file_path}")

@@ -10,11 +10,12 @@ class InterfaceDesigner(ARCAgent):
         )
 
     def get_system_prompt(self) -> str:
-        from utils import get_app_type
+        from utils import get_app_type, get_android_package
         app_type = get_app_type()
 
         if app_type == "android":
-            tech_stack = """
+            android_pkg = get_android_package()
+            tech_stack = f"""
 ### Strict Tech Stack Constraints:
 **Android:**
 - Language: Java 8
@@ -22,7 +23,7 @@ class InterfaceDesigner(ARCAgent):
 - UI: XML Layout + AndroidX AppCompat + Material Components + ConstraintLayout
 - Database: Room (SQLite)
 - Source directories: app/src/main/java/, app/src/test/java/
-- Package: com.example.template
+- Package: {android_pkg}
 - Interface decomposition: UI (Activity/Fragment) -> API (Repository/Service) -> FUNC (UseCase/ViewModel) -> DB (Room DAO/Entity)
 """
         else:
@@ -49,15 +50,26 @@ For **leaf nodes**: design ALL layers with real logic (not just `throw Unsupport
 
 {tech_stack}
 
+### Package Compliance (CRITICAL for Android):
+- The application package is `{android_pkg}`. You MUST use this package for ALL generated code:
+  - `package {android_pkg};` in every Java file
+  - `import {android_pkg}.xxx;` for cross-module references
+  - File paths must use `{android_pkg.replace('.', '/')}/` as the package directory
+  - AndroidManifest.xml must reference activities as `{android_pkg}.ActivityName`
+- Do NOT use `com.example.template` or any other package name.
+- If the requirement description mentions a different package name in resource-id patterns (e.g., `org.billthefarmer.editor:id/newFile`), use THAT package name instead of `{android_pkg}`. The resource-id package takes priority.
+
 Design constraints (strict):
 - Prefer stable, deterministic module boundaries. One interface = one clear responsibility.
 - Interface IDs must be stable and explicit: `IF_{{TYPE}}_{{DOMAIN}}_{{ACTION}}` (e.g., `IF_API_USER_LOGIN`).
 - Keep contracts backward-compatible when reusing interfaces; use optional params for extensions.
 - Do not invent dependency interfaces if they already exist in traceability search results.
+- **UI Resource-ID Compliance**: If the requirement description or scenario specifies exact `resource-id` values (e.g., `org.billthefarmer.editor:id/newFile`), you MUST use those exact IDs when designing UI interfaces. The `android:id` in XML layouts and `findViewById(R.id.xxx)` in Java must match the resource-id suffix specified in the scenario. This is critical for automated testing to find the UI elements.
 
 # Workflow:
 1. **Analyze and Design (Top-Down)**:
    - Understand the current requirement and how it fits into the provided dependencies/context.
+   - **Extract Resource-IDs**: If the requirement description contains `resource-id` references (e.g., `` `pkg:id/buttonName` ``), extract and record them. These MUST be used as the actual `android:id` values in the generated UI code.
    - Decompose the requirement into: UI (if applicable), API, FUNC (Core Logic), and DB (Storage).
    - **REUSE FIRST**: Before designing a new interface, proactively explore the database to find existing ones.
      - Use `search_interfaces_by_keyword` to find logic by name (e.g., 'auth', 'payment').
@@ -146,6 +158,7 @@ Do NOT write any code files — this phase is ONLY for architecture design.
     async def implement_stubs(self, node_id: str, interfaces: List[Dict], is_leaf: bool = True) -> str:
         """Phase 2: Implement stub code for each interface. Track progress per interface."""
         from .context_pipeline import context_pipeline
+        from utils import get_app_type, get_android_package
 
         context_str = context_pipeline.build_agent_context(node_id=node_id, agent_type=self.agent_name)
 
@@ -159,19 +172,35 @@ Do NOT write any code files — this phase is ONLY for architecture design.
                 f"Desc: {iface.get('description', '')}"
             )
 
+        # Package compliance for Android
+        pkg_compliance = ""
+        if get_app_type() == "android":
+            android_pkg = get_android_package()
+            pkg_compliance = f"""
+### Package Compliance (CRITICAL):
+- Use `package {android_pkg};` in every Java file.
+- Use `import {android_pkg}.xxx;` for cross-module references.
+- Place files under `app/src/main/java/{android_pkg.replace('.', '/')}/`.
+- Do NOT use `com.example.template` or any other package.
+- If the requirement description mentions a resource-id with a different package (e.g., `org.billthefarmer.editor:id/newFile`), use THAT package instead.
+"""
+
         if is_leaf:
-            impl_guidance = """
+            impl_guidance = f"""
 ### Implementation Scope: LEAF NODE
 Implement ALL interfaces with real logic. Use actual DAO calls, return real data.
 Do NOT use `throw UnsupportedOperationException` — implement working code.
+**UI Resource-ID Compliance**: When writing XML layouts, use the exact `android:id` values specified in the requirement description/scenario (e.g., if scenario says `org.billthefarmer.editor:id/newFile`, the XML must have `android:id="@+id/newFile"`). When writing Java code, use `findViewById(R.id.newFile)` with matching IDs.
 After writing all files, call `run_build` to verify compilation. Fix any errors.
+{pkg_compliance}
 """
         else:
-            impl_guidance = """
+            impl_guidance = f"""
 ### Implementation Scope: NON-LEAF NODE
 Implement ONLY the DB layer interfaces (Entity/DAO/AppDatabase).
 Do NOT create Repository/ViewModel/Fragment/Layout files.
 After writing all files, call `run_build` to verify compilation. Fix any errors.
+{pkg_compliance}
 """
 
         user_prompt = f"""

@@ -14,6 +14,7 @@ from agents.test_driven_developer import TestDrivenDeveloper
 
 from traceability.database import (
     get_requirement_by_id,
+    get_all_requirements,
     set_db_path,
     init_db,
     update_interface_file_info,
@@ -361,7 +362,7 @@ class ARCWorkflowManager:
     async def initialize_project(self):
         """Initialize the project workspace by setting up directories and files."""
         await self._log("System", f"Initializing project environment in {self.workspace_path}...")
-        
+
         # Configure tool context
         set_workspace_root(self.workspace_path)
         set_app_type(self.app_type)
@@ -374,7 +375,7 @@ class ARCWorkflowManager:
         # Initialize .arc database
         arc_dir = os.path.join(self.workspace_path, '.arc')
         db_path = os.path.join(arc_dir, 'database.db')
-        
+
         await self._log("System", f"Initializing traceability database at {db_path}...")
         set_db_path(db_path)
         init_db()
@@ -397,8 +398,17 @@ class ARCWorkflowManager:
             await self._log("System", f"Error copying template: {str(e)}")
             return False
 
-        # For Android: write local.properties with SDK path
+        # For Android: extract target package name from requirements and repackage
         if self.app_type == "android":
+            # Extract target package via LLM (understands natural language, handles any format)
+            target_package = await self._extract_android_package_name_via_llm()
+            if target_package and target_package != "com.example.template":
+                await self._log("System", f"Repackaging Android project: com.example.template -> {target_package}")
+                self._repackage_android_project(target_package)
+            else:
+                await self._log("System", f"Package extraction returned: '{target_package}'. Using default com.example.template.")
+
+            # Write local.properties with SDK path
             sdk_root = os.environ.get("ANDROID_SDK_ROOT") or os.environ.get("ANDROID_HOME")
             if sdk_root:
                 local_props_path = os.path.join(self.workspace_path, "local.properties")
@@ -419,10 +429,166 @@ class ARCWorkflowManager:
             await run_npm_install(frontend_path, self._log)
 
         await self._log("System", "Full-stack workspace initialized completely.")
-        
+
         # Initialize Git
         await self._log("System", "Initializing Git repository...")
         await run_git_init(self.workspace_path, self._log)
+
+    async def _extract_android_package_name_via_llm(self) -> str:
+        """Extract the target Android package name using an LLM call.
+        The LLM reads all requirement descriptions and identifies the application's
+        package name from resource-id patterns, class references, or any other mentions.
+        This handles all formats (backtick-quoted, bare, with special chars, etc.)
+        that static regex would miss.
+        """
+        all_reqs = get_all_requirements()
+
+        # Collect all description texts (truncate each to avoid excessive context)
+        desc_texts = []
+        for req in all_reqs:
+            desc = req.get("description", "")
+            if desc:
+                # Truncate long descriptions but keep the beginning (where package info usually is)
+                if len(desc) > 500:
+                    desc = desc[:500] + "..."
+                desc_texts.append(f"- [{req.get('id', '?')}] {desc}")
+
+        if not desc_texts:
+            return ""
+
+        all_descriptions = "\n".join(desc_texts)
+        # Limit total context to ~4000 chars
+        if len(all_descriptions) > 4000:
+            all_descriptions = all_descriptions[:4000] + "\n... (truncated)"
+
+        system_prompt = """You are an Android package name extractor.
+Given requirement descriptions that may contain resource-id patterns (e.g., `org.billthefarmer.editor:id/newFile`), fully-qualified class names (e.g., com.example.app.MainActivity), or other package references, identify the application's own package name.
+
+Rules:
+- Ignore system packages: com.android.*, android.*, com.google.*, androidx.*, java.*, javax.*, kotlin.*
+- The app's package is the one that appears most frequently in resource-id patterns or is clearly the application's own package.
+- Return ONLY the package name as a single line (e.g., org.billthefarmer.editor).
+- If no app package can be identified, return "UNKNOWN"."""
+
+        user_prompt = f"""Identify the Android application package name from these requirement descriptions:
+
+{all_descriptions}
+
+Return ONLY the package name (e.g., org.billthefarmer.editor) or "UNKNOWN" if not found."""
+
+        try:
+            client = self.interface_designer.client
+            model = self.interface_designer.model
+            response = await client.chat.completions.create(
+                model=model,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt}
+                ],
+                temperature=0.0
+            )
+            result = response.choices[0].message.content.strip()
+            # Clean up: remove any markdown formatting or extra text
+            result = result.strip('`').strip('"').strip("'")
+            # Validate: must look like a package name (at least 2 dot-separated segments, lowercase letters)
+            if result == "UNKNOWN" or not result:
+                return ""
+            if '.' not in result:
+                return ""
+            # Basic sanity check: each segment should be a valid Java identifier
+            segments = result.split('.')
+            for seg in segments:
+                if not seg or not (seg[0].isalpha() or seg[0] == '_'):
+                    return ""
+            await self._log("System", f"LLM extracted package name: {result}")
+            return result
+        except Exception as e:
+            await self._log("System", f"Package extraction via LLM failed: {str(e)}")
+            return ""
+
+    def _repackage_android_project(self, target_package: str):
+        """Repackage the Android project from com.example.template to the target package name.
+        Updates: build.gradle (namespace + applicationId), Java source directories,
+        agent prompts, and moves source files to the correct package directory.
+        """
+        import re as re_mod
+
+        old_pkg = "com.example.template"
+        old_path = old_pkg.replace('.', '/')
+        new_path = target_package.replace('.', '/')
+        ws = self.workspace_path
+
+        # 1. Update app/build.gradle: namespace and applicationId
+        build_gradle_path = os.path.join(ws, "app", "build.gradle")
+        if os.path.exists(build_gradle_path):
+            with open(build_gradle_path, 'r', encoding='utf-8') as f:
+                content = f.read()
+            content = content.replace(f"namespace '{old_pkg}'", f"namespace '{target_package}'")
+            content = content.replace(f'applicationId "{old_pkg}"', f'applicationId "{target_package}"')
+            with open(build_gradle_path, 'w', encoding='utf-8') as f:
+                f.write(content)
+
+        # 2. Move Java source files from old package dir to new package dir
+        src_main = os.path.join(ws, "app", "src", "main", "java")
+        old_dir = os.path.join(src_main, old_path)
+        new_dir = os.path.join(src_main, new_path)
+
+        if os.path.exists(old_dir):
+            os.makedirs(new_dir, exist_ok=True)
+            # Move all files and subdirectories
+            for root, dirs, files in os.walk(old_dir):
+                rel = os.path.relpath(root, old_dir)
+                new_root = os.path.join(new_dir, rel)
+                os.makedirs(new_root, exist_ok=True)
+                for f in files:
+                    old_file = os.path.join(root, f)
+                    new_file = os.path.join(new_root, f)
+                    # Update package declaration in the file
+                    with open(old_file, 'r', encoding='utf-8', errors='replace') as fh:
+                        file_content = fh.read()
+                    file_content = file_content.replace(f"package {old_pkg}", f"package {target_package}")
+                    file_content = file_content.replace(f"import {old_pkg}", f"import {target_package}")
+                    with open(new_file, 'w', encoding='utf-8') as fh:
+                        fh.write(file_content)
+            # Remove old directory tree
+            shutil.rmtree(old_dir)
+
+        # 3. Move test source files similarly
+        src_test = os.path.join(ws, "app", "src", "test", "java")
+        old_test_dir = os.path.join(src_test, old_path)
+        new_test_dir = os.path.join(src_test, new_path)
+
+        if os.path.exists(old_test_dir):
+            os.makedirs(new_test_dir, exist_ok=True)
+            for root, dirs, files in os.walk(old_test_dir):
+                rel = os.path.relpath(root, old_test_dir)
+                new_root = os.path.join(new_test_dir, rel)
+                os.makedirs(new_root, exist_ok=True)
+                for f in files:
+                    old_file = os.path.join(root, f)
+                    new_file = os.path.join(new_root, f)
+                    with open(old_file, 'r', encoding='utf-8', errors='replace') as fh:
+                        file_content = fh.read()
+                    file_content = file_content.replace(f"package {old_pkg}", f"package {target_package}")
+                    file_content = file_content.replace(f"import {old_pkg}", f"import {target_package}")
+                    with open(new_file, 'w', encoding='utf-8') as fh:
+                        fh.write(file_content)
+            shutil.rmtree(old_test_dir)
+
+        # 4. Update AndroidManifest.xml references
+        manifest_path = os.path.join(ws, "app", "src", "main", "AndroidManifest.xml")
+        if os.path.exists(manifest_path):
+            with open(manifest_path, 'r', encoding='utf-8') as f:
+                content = f.read()
+            # Replace both ".{old_pkg}" (activity shorthand) and full "{old_pkg}" references
+            content = content.replace(f".{old_pkg}", f".{target_package}")
+            content = content.replace(old_pkg, target_package)
+            with open(manifest_path, 'w', encoding='utf-8') as f:
+                f.write(content)
+
+        # 5. Store the target package in utils so agents can use it
+        from utils import set_android_package, get_android_package
+        set_android_package(target_package)
 
     async def process_node(self, node_id: str) -> dict:
         """Process a single requirement node through the workflow.
