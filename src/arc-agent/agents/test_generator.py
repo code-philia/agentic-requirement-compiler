@@ -36,7 +36,7 @@ class TestGenerator(ARCAgent):
   - Use MockWebServer to mock backend API responses
   - Target the overarching Requirement Node with the provided UI scenario
 - **Test file naming**: `*Test.java` for unit, `*IntegrationTest.java` for integration, `*E2ETest.java` for E2E
-- **CRITICAL**: Do NOT add `android-junit5` Gradle plugin or `@RunWith` annotations. JUnit5 works natively with `junit-vintage-engine` in the classpath.
+- **CRITICAL**: Do NOT use `@RunWith` annotations. JUnit5 test discovery is handled by the `android-junit5` Gradle plugin (already configured in build.gradle).
 """
         else:
             test_stack = """

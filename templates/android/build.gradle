@@ -2,6 +2,7 @@
 plugins {
     id 'com.android.application' version '8.1.4' apply false
     id 'com.android.library' version '8.1.4' apply false
+    id 'de.mannodermaus.android-junit5' version '1.11.0.0' apply false
 }
 
 task clean(type: Delete) {

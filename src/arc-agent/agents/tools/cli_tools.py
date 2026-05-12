@@ -133,13 +133,31 @@ async def _run_tests_android(test_type: str, test_file_path: str = "") -> str:
     gradlew = _gradlew_cmd()
 
     # All test types run on JVM via testDebugUnitTest
-    cmd = f"{gradlew} testDebugUnitTest"
+    # --info ensures test execution results are printed to console
+    cmd = f"{gradlew} testDebugUnitTest --info"
     if test_file_path:
         test_class = _android_file_to_test_class(test_file_path)
         cmd += f' --tests "{test_class}"'
     timeout = 180.0
 
     result = await execute_command_impl(cmd, cwd=".", timeout=timeout)
+
+    # Extract only test-relevant lines from --info output to avoid overwhelming context
+    lines = result.split('\n')
+    relevant = []
+    for line in lines:
+        # Keep: test results, failures, errors, BUILD, Exit Code, test counts
+        if any(kw in line for kw in [
+            'PASSED', 'FAILED', 'SKIPPED', 'Test ', 'tests ', 'Build ',
+            'BUILD ', 'Exit Code', 'STDOUT', 'STDERR',
+            'Exception', 'Error', 'error:', 'Caused by',
+            'at ',  # stack trace lines
+        ]):
+            relevant.append(line)
+
+    if relevant and len(relevant) < len(lines) * 0.5:
+        # If we filtered significantly, return the condensed version
+        return '\n'.join(relevant)
     return result
 
 
