@@ -293,9 +293,10 @@ def _build_stack_block(app_type: str) -> str:
                 "* **SDK Target** : `compileSdk 34` / `minSdk 31` / `targetSdk 34`",
                 "* **Runtime Entry** : `MainActivity` + `AndroidManifest.xml`",
                 "* **Database** : Room 2.6.1 (runtime + annotation processor)",
-                "* **Testing (Unit)** : JUnit5 5.10.2 + Robolectric 4.11.1 (`app/src/test/`)",
-                "* **Testing (Integration)** : Robolectric + MockWebServer 4.12.0 + Room in-memory DB (`app/src/test/`)",
-                "* **Testing (E2E)** : Robolectric + MockWebServer (`app/src/test/`)",
+                "* **Lifecycle** : ViewModel 2.6.2 + LiveData 2.6.2",
+                "* **Testing (Unit)** : JUnit5 5.10.2 + Robolectric 4.11.1 + Mockito 5.8.0 (`app/src/test/`)",
+                "* **Testing (Integration)** : JUnit5 + Robolectric + MockWebServer 4.12.0 + Room in-memory DB (`app/src/test/`)",
+                "* **Testing (E2E)** : JUnit5 + Robolectric + ActivityScenario (`app/src/test/`)",
                 ARC_STACK_END,
             ]
         )
