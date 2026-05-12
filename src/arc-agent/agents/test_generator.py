@@ -18,17 +18,25 @@ class TestGenerator(ARCAgent):
 # Testing Stack (Android):
 - **Unit Tests**: JUnit5 + Robolectric — place in `app/src/test/java/<package>/`
   - Use `@Test` from `org.junit.jupiter.api.Test`
-  - Use Robolectric `@RunWith(RobolectricTestRunner.class)` when Android context is needed
+  - Use `@org.robolectric.annotation.Config(sdk = 31)` to configure Robolectric SDK
+  - NEVER use `@RunWith(RobolectricTestRunner.class)` — it conflicts with JUnit5
+  - Use `@BeforeEach` / `@AfterEach` (JUnit5) for setup/teardown
+  - Use `@DisplayName` for readable test names
+  - Use `@Nested` for grouping related tests
   - Target `FUNC` and `DB` interfaces
-- **Integration Tests**: Robolectric + MockWebServer + Room in-memory DB — place in `app/src/test/java/<package>/`
-  - Use MockWebServer for API/HTTP testing
-  - Use Room in-memory DB (`Room.inMemoryDatabaseBuilder`) for DB integration testing
+- **Integration Tests**: JUnit5 + Robolectric + MockWebServer + Room in-memory DB
+  - Place in `app/src/test/java/<package>/`
+  - Use `Room.inMemoryDatabaseBuilder(context, AppDatabase.class).allowMainThreadQueries().build()` for real DB
+  - Use `MockWebServer` for HTTP testing (enqueue fake responses)
+  - Use `@AfterEach` to close DB and shutdown MockWebServer
   - Target `API` interfaces
-- **E2E Tests**: Robolectric + MockWebServer — place in `app/src/test/java/<package>/`
-  - Use Robolectric `@RunWith(RobolectricTestRunner.class)` to simulate full Activity lifecycle
-  - Use MockWebServer to mock backend API responses for end-to-end flow testing
+- **E2E Tests**: JUnit5 + Robolectric — place in `app/src/test/java/<package>/`
+  - Use `@Config(sdk = 31)` to simulate Activity lifecycle
+  - Use `ActivityScenario` from `androidx.test.core` to launch Activities
+  - Use MockWebServer to mock backend API responses
   - Target the overarching Requirement Node with the provided UI scenario
 - **Test file naming**: `*Test.java` for unit, `*IntegrationTest.java` for integration, `*E2ETest.java` for E2E
+- **CRITICAL**: Do NOT add `android-junit5` Gradle plugin or `@RunWith` annotations. JUnit5 works natively with `junit-vintage-engine` in the classpath.
 """
         else:
             test_stack = """
@@ -42,7 +50,9 @@ class TestGenerator(ARCAgent):
 Your task is to write comprehensive, executable test cases for a newly designed component following Test-Driven Development (TDD) principles.
 
 Execution protocol (strict):
-- First, inspect target interfaces and test folders (`read_file`/`list_directory`) before writing tests.
+- Source code is pre-injected in `<source_code>` — do NOT call `read_file` on source files already provided in context.
+- Write ALL test files FIRST using multiple `write_file` calls, THEN call `run_build` ONCE.
+- Do NOT interleave `read_file` and `write_file` — batch all writes together.
 - Keep tests deterministic. Do not add random sleeps or flaky waits.
 - For each generated test, ensure `test_id`, `type`, `file_path`, and `first_line` exactly match the real file content.
 - If build or syntax fails, fix tests immediately and rerun `run_build`.
@@ -52,8 +62,7 @@ Execution protocol (strict):
 2. **Locate Test Directories**: Use `list_directory` to find or decide where to place tests.
 3. **Implement Tests**: Use `write_file` to physically create the test scripts. Your tests MUST import the stub code generated in Step 2.
 {test_stack}
-4. **Task Management**: Use `add_todo` if you find missing test utilities or fixtures that need to be implemented later.
-5. **Check Compilation**: You MUST call `run_build` to check for syntax/compilation errors.
+4. **Check Compilation**: You MUST call `run_build` to check for syntax/compilation errors.
 
 # Final Output Requirement:
 After writing all test files, you MUST output a single JSON array enclosed in a markdown block (` ```json ... ``` `).
@@ -82,12 +91,27 @@ Schema for each object:
         context_str = context_pipeline.build_agent_context(node_id=node_id, agent_type=self.agent_name)
 
         scenario_context = ""
-        if test_type == "E2E" and requirement_data.get("scenario"):
+        if requirement_data.get("scenario"):
             scenario_context = (
                 "\n### Target UI Scenario\n"
                 f"{json.dumps(requirement_data.get('scenario'), indent=2, ensure_ascii=False)}\n"
-                "Please write an E2E test specifically for this scenario."
             )
+
+        if test_type == "All":
+            test_instruction = """
+Generate ALL test types in a single pass:
+1. **Unit Tests** for DB and FUNC interfaces
+2. **Integration Tests** for API interfaces
+3. **E2E Tests** for UI interfaces (use the scenario above if provided)
+
+Write ALL test files using `write_file` calls FIRST, then call `run_build` ONCE to verify compilation.
+Do NOT call `read_file` on source files — they are already provided in the `<source_code>` context above.
+"""
+        else:
+            test_instruction = f"""
+Please write the {test_type} test files using the `write_file` tool.
+Do NOT call `read_file` on source files — they are already provided in the `<source_code>` context above.
+"""
 
         user_prompt = f"""
 ### Auto-Prefetched Context for Node [{node_id}]
@@ -96,12 +120,12 @@ Schema for each object:
 ### Requirement Description for Node [{node_id}]
 {requirement_data.get("description", "")}
 
-### Interfaces to Test (Target: {test_type} Tests)
+### Interfaces to Test
 {json.dumps(interfaces_ir, indent=2, ensure_ascii=False)}
 {scenario_context}
 
-Please write the {test_type} test files using the `write_file` tool.
+{test_instruction}
 Ensure the tests correctly import the designed interfaces and cover the logic described in the requirement.
 When finished, output the mapping JSON block so the system can register these tests in the traceability database.
 """
-        return await self.run(user_prompt=user_prompt, node_id=node_id)
+        return await self.run(user_prompt=user_prompt, node_id=node_id, max_steps=15)

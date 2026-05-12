@@ -567,56 +567,18 @@ class ARCWorkflowManager:
                     await self._log("System", "No IR in database. Falling back to file-based test generation.", node_id=node_id)
                     interfaces_ir = []  # will use requirement_data directly
 
-                # Group interfaces by type
-                interfaces_by_type = {"DB": [], "FUNC": [], "API": [], "UI": []}
-                for iface in interfaces_ir:
-                    itype = iface.get("type", "").upper()
-                    if itype in interfaces_by_type:
-                        interfaces_by_type[itype].append(iface)
-                    else:
-                        if "OTHER" not in interfaces_by_type:
-                            interfaces_by_type["OTHER"] = []
-                        interfaces_by_type["OTHER"].append(iface)
-
                 all_test_outputs = []
 
-                # 1. DB & FUNC -> Unit tests
-                unit_interfaces = interfaces_by_type["DB"] + interfaces_by_type["FUNC"]
-                if unit_interfaces or not interfaces_ir:
-                    label = f"{len(unit_interfaces)} DB/FUNC interfaces" if unit_interfaces else "requirement description (no IR)"
-                    await self._log("TestGenerator", f"Generating Unit Tests for {label}...", node_id=node_id)
-                    unit_test_output = await self.test_generator.generate_tests(
-                        node_id=node_id,
-                        requirement_data=requirement_data,
-                        interfaces_ir=unit_interfaces if unit_interfaces else [],
-                        test_type="Unit"
-                    )
-                    all_test_outputs.append(unit_test_output)
-
-                # 2. API -> Integration tests
-                api_interfaces = interfaces_by_type["API"]
-                if api_interfaces or (not interfaces_ir and requirement_data.get("scenario")):
-                    label = f"{len(api_interfaces)} API interfaces" if api_interfaces else "requirement description (no IR)"
-                    await self._log("TestGenerator", f"Generating Integration Tests for {label}...", node_id=node_id)
-                    api_test_output = await self.test_generator.generate_tests(
-                        node_id=node_id,
-                        requirement_data=requirement_data,
-                        interfaces_ir=api_interfaces if api_interfaces else [],
-                        test_type="Integration"
-                    )
-                    all_test_outputs.append(api_test_output)
-
-                # 3. UI -> E2E test based on scenario
-                ui_interfaces = interfaces_by_type["UI"]
-                if ui_interfaces or (not interfaces_ir and requirement_data.get("scenario")):
-                    await self._log("TestGenerator", f"Generating E2E Test for scenario...", node_id=node_id)
-                    e2e_test_output = await self.test_generator.generate_tests(
-                        node_id=node_id,
-                        requirement_data=requirement_data,
-                        interfaces_ir=ui_interfaces if ui_interfaces else [],
-                        test_type="E2E"
-                    )
-                    all_test_outputs.append(e2e_test_output)
+                # Single batch call: generate ALL test types (Unit + Integration + E2E) at once
+                label = f"{len(interfaces_ir)} interfaces" if interfaces_ir else "requirement description (no IR)"
+                await self._log("TestGenerator", f"Generating all test types for {label}...", node_id=node_id)
+                all_test_output = await self.test_generator.generate_tests(
+                    node_id=node_id,
+                    requirement_data=requirement_data,
+                    interfaces_ir=interfaces_ir,
+                    test_type="All"
+                )
+                all_test_outputs.append(all_test_output)
 
                 # Combine outputs to store in state
                 if all_test_outputs:
@@ -680,6 +642,9 @@ class ARCWorkflowManager:
 
                     await self._log("TestDrivenDeveloper", f"Starting {target_type} TDD loop with {len(test_files)} tests (Budget: {budget})...", node_id=node_id)
 
+                    last_error_sig = None
+                    consecutive_same_errors = 0
+
                     for iteration in range(1, budget + 1):
                         await self._log("TestDrivenDeveloper", f"[{target_type}] Iteration {iteration}/{budget}...", node_id=node_id)
                         final_output = await self.test_driven_developer.implement(
@@ -704,6 +669,18 @@ class ARCWorkflowManager:
 
                             return True
                         else:
+                            # Detect repeated failures to avoid wasting budget on the same error
+                            error_sig = final_output[:200] if final_output else ""
+                            if error_sig == last_error_sig:
+                                consecutive_same_errors += 1
+                            else:
+                                consecutive_same_errors = 0
+                                last_error_sig = error_sig
+
+                            if consecutive_same_errors >= 2:
+                                await self._log("System", f"Warning: [{target_type}] Same error repeated 3 consecutive times. Breaking TDD loop early to save budget.", node_id=node_id)
+                                break
+
                             await self._log("System", f"[{target_type}] Agent finished reasoning but tests might not be fully passing. Retrying...", node_id=node_id)
 
                     await self._log("System", f"Warning: [{target_type}] Max TDD iterations reached without a definitive 'IMPLEMENTED' signal.", node_id=node_id)

@@ -152,6 +152,43 @@ class ContextPipeline:
             unique[iface.get("interface_id")] = iface
         return list(unique.values())[:self.max_related_interfaces]
 
+    def _get_source_code_for_interfaces(self, node_id: str) -> str:
+        """Pre-read source files of interfaces to test.
+        Eliminates 50+ read_file calls by the LLM during test generation."""
+        from utils import get_abs_path
+        interfaces = get_interfaces_by_req_id(node_id)
+        if not interfaces:
+            return ""
+
+        max_files = 10
+        max_chars_per_file = 2000
+        total_budget = 15000
+
+        lines = []
+        total = 0
+        for iface in interfaces[:max_files]:
+            fp = iface.get('file_path', '')
+            if not fp:
+                continue
+            abs_path = get_abs_path(fp)
+            if not os.path.exists(abs_path):
+                continue
+            try:
+                with open(abs_path, 'r', encoding='utf-8', errors='replace') as f:
+                    content = f.read()
+                if len(content) > max_chars_per_file:
+                    content = content[:max_chars_per_file] + "\n// ... [truncated]"
+                lines.append(f"// === {fp} ===\n{content}")
+                total += len(content)
+                if total > total_budget:
+                    break
+            except Exception:
+                continue
+
+        if not lines:
+            return ""
+        return "<source_code>\n" + "\n\n".join(lines) + "\n</source_code>"
+
     def _format_interface(self, iface: Dict, agent_type: str) -> str:
         """Format interface data differently based on agent focus."""
         res = f"- [{iface['interface_id']}] Type: {iface['type']}\n"
@@ -241,6 +278,10 @@ class ContextPipeline:
                 context_parts.append(f"<existing_tests>\n{tests_str}\n</existing_tests>")
                 
         elif agent_type == "TestGenerator":
+            # Pre-read source code so LLM doesn't need 50+ read_file calls
+            source_code = self._get_source_code_for_interfaces(node_id)
+            if source_code:
+                context_parts.append(source_code)
             # Test Generator needs to know what interfaces exist and what architecture it connects to
             related_ifaces = self._get_relational_interfaces(node_id)
             if related_ifaces:

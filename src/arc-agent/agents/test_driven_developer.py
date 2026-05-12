@@ -22,9 +22,13 @@ class TestDrivenDeveloper(ARCAgent):
 - UI: XML Layout + AndroidX AppCompat + Material Components + ConstraintLayout
 - Database: Room (SQLite)
 - Testing:
+  - All tests run on JVM via `./gradlew testDebugUnitTest` (no device/emulator)
   - Unit: JUnit5 + Robolectric (app/src/test/)
-  - Integration: Robolectric + MockWebServer + Room in-memory DB (app/src/test/)
-  - E2E: Robolectric + MockWebServer (app/src/test/) — full flow on JVM
+  - Integration: JUnit5 + Robolectric + MockWebServer + Room in-memory DB (app/src/test/)
+  - E2E: JUnit5 + Robolectric + ActivityScenario (app/src/test/)
+  - **NEVER use `@RunWith(RobolectricTestRunner.class)`** — use `@Config(sdk = 31)` instead
+  - **NEVER add `android-junit5` Gradle plugin** — it is unavailable on Chinese mirrors
+  - **NEVER use `@RunWith(AndroidJUnit4.class)` in JVM tests** — only JUnit5 annotations
 - Source directories: app/src/main/java/, app/src/test/java/
 - Package: com.example.template
 """
