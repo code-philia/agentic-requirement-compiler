@@ -88,11 +88,13 @@ class DebugLogger:
     def log(self, tag: str, content: str):
         ts = time.strftime("%H:%M:%S")
         with self._lock:
+            os.makedirs(os.path.dirname(self._path), exist_ok=True)
             with open(self._path, "a", encoding="utf-8") as f:
                 f.write(f"[{ts}] [{tag}] {content}\n")
 
     def log_raw(self, content: str):
         with self._lock:
+            os.makedirs(os.path.dirname(self._path), exist_ok=True)
             with open(self._path, "a", encoding="utf-8") as f:
                 f.write(content + "\n")
 
