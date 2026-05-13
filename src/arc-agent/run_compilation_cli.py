@@ -373,8 +373,8 @@ def _upsert_metadata(project_path: str, app_type: str) -> str:
 def _print_banner():
     logo = f"""{Fore.CYAN}
     ╔═══════════════════════════════════════╗
-    ║          ARC Requirement Compiler      ║
-    ║        Agentic · Multi-Agent · TDD     ║
+    ║       ARC Requirement Compiler        ║
+    ║      Agentic · Multi-Agent · TDD      ║
     ╚═══════════════════════════════════════╝{Style.RESET_ALL}"""
     print(logo)
 
