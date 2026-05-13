@@ -1,6 +1,7 @@
 import asyncio
 import json
 import os
+import re
 from typing import List, Dict, Any, Callable, Awaitable
 from openai import AsyncOpenAI
 from dotenv import load_dotenv
@@ -11,7 +12,7 @@ load_dotenv()
 
 # Global Debug Flag
 DEBUG_MODE = int(os.environ.get("ARC_DEBUG", "1"))
-MAX_TOOL_OUTPUT_LENGTH = int(os.environ.get("ARC_MAX_TOOL_OUTPUT_CHARS", "10000"))
+MAX_TOOL_OUTPUT_LENGTH = int(os.environ.get("ARC_MAX_TOOL_OUTPUT_CHARS", "100000"))
 MAX_CONTEXT_CHARS = int(os.environ.get("ARC_MAX_CONTEXT_CHARS", "500000"))
 # Two-level compact thresholds (fraction of MAX_CONTEXT_CHARS)
 DEDUP_THRESHOLD = 0.70    # Level 1: remove duplicate/redundant tool results
@@ -90,15 +91,57 @@ class ARCAgent:
         for msg in messages:
             if msg.get("role") == "assistant" and msg.get("tool_calls"):
                 for tc in msg["tool_calls"]:
-                    if tc.function.name == "read_file":
+                    func = tc.get("function", {}) if isinstance(tc, dict) else (tc.function if hasattr(tc, 'function') else {})
+                    name = func.get("name", "") if isinstance(func, dict) else (func.name if hasattr(func, 'name') else "")
+                    if name == "read_file":
                         try:
-                            args = json.loads(tc.function.arguments)
+                            args_raw = func.get("arguments", "{}") if isinstance(func, dict) else (func.arguments if hasattr(func, 'arguments') else "{}")
+                            args = json.loads(args_raw)
                             path = args.get("path", "")
                             if path and path not in read_files:
                                 read_files.append(path)
                         except Exception:
                             pass
         return read_files
+
+    async def _summarize_tool_error(self, tool_name: str, raw_output: str) -> str:
+        """Summarize long build/test error output via a quick single-shot LLM call.
+        Returns a concise diagnostic summary that replaces the raw output for the agent.
+        """
+        summary_prompt = f"""You are a build/test error diagnostician. Analyze the following {tool_name} output and produce a concise diagnostic summary.
+
+Rules:
+- Identify each distinct error (compilation error, test failure, runtime exception)
+- For each error: what file/class, what line if available, what the error is, and a one-line suggestion for fixing it
+- If there are multiple errors, list them in order
+- Keep the total summary under 2000 characters
+- Format as plain text, no markdown
+
+Output from {tool_name}:
+{raw_output[:100000]}"""
+
+        try:
+            response = await self._create_chat_completion_with_retry(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": "You are a concise build/test error diagnostician. Analyze error output and summarize: what failed, where, why, and how to fix it."},
+                    {"role": "user", "content": summary_prompt}
+                ],
+                temperature=0.1,
+                max_tokens=120000
+            )
+            summary = response.choices[0].message.content.strip()
+            # Return summary with original exit code preserved
+            exit_code_line = ""
+            for line in raw_output.split('\n'):
+                if line.strip().startswith("Exit Code:"):
+                    exit_code_line = line.strip()
+                    break
+            header = f"{exit_code_line}\n" if exit_code_line else ""
+            return f"{header}[LLM Diagnostic Summary]\n{summary}\n\n[Raw output: {len(raw_output)} chars, summarized for clarity]"
+        except Exception as e:
+            # If summarization fails, fall back to truncated raw output
+            return raw_output[:MAX_TOOL_OUTPUT_LENGTH]
 
     def _microcompact_messages(self, messages: List[Dict[str, Any]]) -> None:
         # Keep initial system+user and latest N interactions intact.
@@ -329,8 +372,15 @@ class ARCAgent:
                         any_cache_miss = True
                         tool_result = f"Error: Tool '{tool_name}' not permitted or not found."
 
-                    # 3. Tool Output Budget: Truncate long tool outputs
+                    # 3. Tool Output Budget: Summarize long error outputs, then truncate
                     tool_result_str = str(tool_result)
+
+                    # For run_build / run_tests with errors, summarize via a quick LLM call
+                    if tool_name in ("run_build", "run_tests") and len(tool_result_str) > 3000:
+                        exit_code_match = re.search(r'Exit Code:\s*(\d+)', tool_result_str)
+                        if exit_code_match and exit_code_match.group(1) != "0":
+                            tool_result_str = await self._summarize_tool_error(tool_name, tool_result_str)
+
                     if len(tool_result_str) > MAX_TOOL_OUTPUT_LENGTH:
                         tool_result_str = tool_result_str[:MAX_TOOL_OUTPUT_LENGTH] + "\n... [Output truncated due to length. Please use grep or narrow your search.]"
 
