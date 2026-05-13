@@ -428,11 +428,12 @@ class ARCWorkflowManager:
         if self.app_type == "android":
             # Extract target package via LLM (understands natural language, handles any format)
             target_package = await self._extract_android_package_name_via_llm()
-            if target_package and target_package != "com.example.template":
-                await self._log("System", f"Repackaging Android project: com.example.template -> {target_package}")
-                self._repackage_android_project(target_package)
+            if target_package:
+                await self._log("System", f"Extracted package name: {target_package}")
+                self._setup_android_package(target_package)
             else:
-                await self._log("System", f"Package extraction returned: '{target_package}'. Using default com.example.template.")
+                await self._log("System", f"Package extraction failed. Using fallback: com.example.app")
+                self._setup_android_package("com.example.app")
 
             # Write local.properties with SDK path
             sdk_root = os.environ.get("ANDROID_SDK_ROOT") or os.environ.get("ANDROID_HOME")
@@ -466,6 +467,10 @@ class ARCWorkflowManager:
         package name from resource-id patterns, class references, or any other mentions.
         This handles all formats (backtick-quoted, bare, with special chars, etc.)
         that static regex would miss.
+
+        Fallback strategy if LLM fails:
+        1. Extract from first resource-id pattern in requirements (e.g., org.billthefarmer.editor:id/xxx)
+        2. Generate from project directory name (e.g., Echo -> com.echo.app)
         """
         all_reqs = get_all_requirements()
 
@@ -480,7 +485,7 @@ class ARCWorkflowManager:
                 desc_texts.append(f"- [{req.get('id', '?')}] {desc}")
 
         if not desc_texts:
-            return ""
+            return self._fallback_package_name_extraction(all_reqs)
 
         all_descriptions = "\n".join(desc_texts)
         # Limit total context to ~4000 chars
@@ -518,19 +523,81 @@ Return ONLY the package name (e.g., org.billthefarmer.editor) or "UNKNOWN" if no
             result = result.strip('`').strip('"').strip("'")
             # Validate: must look like a package name (at least 2 dot-separated segments, lowercase letters)
             if result == "UNKNOWN" or not result:
-                return ""
+                return self._fallback_package_name_extraction(all_reqs)
             if '.' not in result:
-                return ""
+                return self._fallback_package_name_extraction(all_reqs)
             # Basic sanity check: each segment should be a valid Java identifier
             segments = result.split('.')
             for seg in segments:
                 if not seg or not (seg[0].isalpha() or seg[0] == '_'):
-                    return ""
+                    return self._fallback_package_name_extraction(all_reqs)
             await self._log("System", f"LLM extracted package name: {result}")
             return result
         except Exception as e:
             await self._log("System", f"Package extraction via LLM failed: {str(e)}")
-            return ""
+            return self._fallback_package_name_extraction(all_reqs)
+
+    def _fallback_package_name_extraction(self, all_reqs: list) -> str:
+        """Fallback package name extraction when LLM fails.
+        Strategy:
+        1. Extract from first resource-id pattern (e.g., org.billthefarmer.editor:id/xxx)
+        2. Generate from project directory name (e.g., Echo -> com.echo.app)
+        """
+        import re
+        # Strategy 1: Extract from resource-id patterns
+        for req in all_reqs:
+            desc = req.get("description", "")
+            # Match resource-id patterns like `org.billthefarmer.editor:id/newFile`
+            matches = re.findall(r'`([a-z][a-z0-9_.]*):id/[a-zA-Z0-9_]+`', desc)
+            for match in matches:
+                # Filter out system packages
+                if match.startswith(('com.android.', 'android.', 'com.google.', 'androidx.')):
+                    continue
+                if '.' in match and len(match.split('.')) >= 2:
+                    return match
+
+        # Strategy 2: Generate from project directory name
+        project_name = os.path.basename(self.workspace_path).lower()
+        # Sanitize: remove non-alphanumeric, replace spaces/dashes with nothing
+        project_name = re.sub(r'[^a-z0-9]', '', project_name)
+        if project_name:
+            return f"com.{project_name}.app"
+
+        # Last resort: use a generic package
+        return "com.example.app"
+
+    def _setup_android_package(self, target_package: str):
+        """Setup Android project with the target package name.
+        Creates package directory structure, updates build.gradle, and stores package name.
+        """
+        ws = self.workspace_path
+        pkg_dir = target_package.replace('.', '/')
+
+        # 1. Update app/build.gradle: namespace and applicationId
+        build_gradle_path = os.path.join(ws, "app", "build.gradle")
+        if os.path.exists(build_gradle_path):
+            with open(build_gradle_path, 'r', encoding='utf-8') as f:
+                content = f.read()
+            content = content.replace("namespace ''", f"namespace '{target_package}'")
+            content = content.replace('applicationId ""', f'applicationId "{target_package}"')
+            with open(build_gradle_path, 'w', encoding='utf-8') as f:
+                f.write(content)
+
+        # 2. Create package directory structure for main and test
+        src_main = os.path.join(ws, "app", "src", "main", "java", pkg_dir)
+        src_test = os.path.join(ws, "app", "src", "test", "java", pkg_dir)
+        os.makedirs(src_main, exist_ok=True)
+        os.makedirs(src_test, exist_ok=True)
+
+        # Create .gitkeep to preserve empty directories
+        with open(os.path.join(src_main, ".gitkeep"), "w") as f:
+            f.write("")
+        with open(os.path.join(src_test, ".gitkeep"), "w") as f:
+            f.write("")
+
+        # 3. Store the target package in utils so agents can use it
+        from utils import set_android_package
+        set_android_package(target_package)
 
     def _repackage_android_project(self, target_package: str):
         """Repackage the Android project from com.example.template to the target package name.

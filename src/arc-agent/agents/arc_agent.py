@@ -11,11 +11,11 @@ load_dotenv()
 
 # Global Debug Flag
 DEBUG_MODE = int(os.environ.get("ARC_DEBUG", "1"))
-MAX_TOOL_OUTPUT_LENGTH = int(os.environ.get("ARC_MAX_TOOL_OUTPUT_CHARS", "8000"))
-MAX_CONTEXT_CHARS = int(os.environ.get("ARC_MAX_CONTEXT_CHARS", "60000"))
+MAX_TOOL_OUTPUT_LENGTH = int(os.environ.get("ARC_MAX_TOOL_OUTPUT_CHARS", "10000"))
+MAX_CONTEXT_CHARS = int(os.environ.get("ARC_MAX_CONTEXT_CHARS", "500000"))
 # Two-level compact thresholds (fraction of MAX_CONTEXT_CHARS)
 DEDUP_THRESHOLD = 0.70    # Level 1: remove duplicate/redundant tool results
-SUMMARIZE_THRESHOLD = 0.90  # Level 2: ask LLM to summarize (current behavior)
+SUMMARIZE_THRESHOLD = 0.8  # Level 2: ask LLM to summarize
 MICROCOMPACT_MIN_TOOL_OUTPUT = int(os.environ.get("ARC_MICROCOMPACT_MIN_CHARS", "1000"))
 MICROCOMPACT_KEEP_MESSAGES = int(os.environ.get("ARC_MICROCOMPACT_KEEP_MESSAGES", "10"))
 MODEL_RETRY_COUNT = int(os.environ.get("ARC_MODEL_RETRY_COUNT", "2"))
@@ -83,6 +83,22 @@ class ARCAgent:
             elif content is not None:
                 total += len(str(content))
         return total
+
+    def _extract_read_files(self, messages: List[Dict[str, Any]]) -> List[str]:
+        """Extract list of files that have been read via read_file tool calls."""
+        read_files = []
+        for msg in messages:
+            if msg.get("role") == "assistant" and msg.get("tool_calls"):
+                for tc in msg["tool_calls"]:
+                    if tc.function.name == "read_file":
+                        try:
+                            args = json.loads(tc.function.arguments)
+                            path = args.get("path", "")
+                            if path and path not in read_files:
+                                read_files.append(path)
+                        except Exception:
+                            pass
+        return read_files
 
     def _microcompact_messages(self, messages: List[Dict[str, Any]]) -> None:
         # Keep initial system+user and latest N interactions intact.
@@ -193,13 +209,21 @@ class ARCAgent:
                     total_chars = self._estimate_context_chars(messages)
                     await self._log(f"[Dedup] Removed {chars_removed} chars of duplicate tool results. Context now: {total_chars}", node_id=node_id)
 
-            # Level 2: Summarize — ask LLM for a summary (at 90% threshold)
+            # Level 2: Summarize — ask LLM for a summary (at 85% threshold)
             if total_chars > MAX_CONTEXT_CHARS * SUMMARIZE_THRESHOLD:
                 await self._log(f"Triggering Auto-Compact (Step {step}, Chars: {total_chars})...", node_id=node_id)
+
+                # Extract list of files already read to preserve in summary
+                read_files = self._extract_read_files(messages)
+                read_files_context = ""
+                if read_files:
+                    read_files_context = "\n\nFiles you have already read (do NOT re-read these unless absolutely necessary):\n" + "\n".join([f"- {f}" for f in read_files[:20]])
+
                 summary_prompt = (
                     "You have been working on this task for several steps. "
                     "Please provide a concise summary (max 300 words) of what you have accomplished so far, "
                     "the current blockers or errors, and your immediate next plan."
+                    f"{read_files_context}"
                 )
 
                 # Ask the model to summarize the current progress
