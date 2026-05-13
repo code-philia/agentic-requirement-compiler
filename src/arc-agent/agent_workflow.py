@@ -185,7 +185,6 @@ async def check_prerequisites(app_type: str, log_cb: Callable[[str], Awaitable[N
             await log_cb("System", f"Prerequisite check passed: Android SDK found at {sdk_root}")
         else:
             # Try common default locations
-            # TODO hard code sdk path for different OS, and also consider using `sdkmanager` command if available for more robust detection
             default_paths = [
                 "D:/Android/Sdk",
                 os.path.expanduser("~/AppData/Local/Android/Sdk"),
@@ -204,6 +203,26 @@ async def check_prerequisites(app_type: str, log_cb: Callable[[str], Awaitable[N
             if not found:
                 await log_cb("System", "Prerequisite check FAILED: Android SDK not found. Set ANDROID_SDK_ROOT environment variable or install Android Studio.")
                 return False
+
+        # Auto-accept Android SDK licenses
+        sdkmanager_path = os.path.join(sdk_root, "cmdline-tools", "latest", "bin", "sdkmanager")
+        if os.name == "nt":
+            sdkmanager_path = sdkmanager_path + ".bat"
+        if os.path.exists(sdkmanager_path):
+            await log_cb("System", "Auto-accepting Android SDK licenses...")
+            try:
+                accept_process = await asyncio.create_subprocess_shell(
+                    f'yes | "{sdkmanager_path}" --licenses',
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                    timeout=30
+                )
+                await asyncio.wait_for(accept_process.communicate(), timeout=30)
+                await log_cb("System", "Android SDK licenses accepted.")
+            except Exception as e:
+                await log_cb("System", f"SDK license acceptance skipped (non-fatal): {str(e)}")
+        else:
+            await log_cb("System", "sdkmanager not found at expected path; skipping license acceptance.")
 
         return True
 
@@ -445,6 +464,36 @@ class ARCWorkflowManager:
                     f.write(f"sdk.dir={sdk_dir_gradle}\n")
                 await self._log("System", f"Wrote local.properties with sdk.dir={sdk_dir_gradle}")
 
+            # Fix gradlew execution permission (required on Linux/macOS; Windows uses gradlew.bat)
+            if os.name != "nt":
+                gradlew_path = os.path.join(self.workspace_path, "gradlew")
+                if os.path.exists(gradlew_path):
+                    try:
+                        os.chmod(gradlew_path, 0o755)
+                        await self._log("System", "Set gradlew execution permission (chmod +x)")
+                    except Exception as e:
+                        await self._log("System", f"Could not set gradlew permission (non-fatal): {str(e)}")
+
+            # Auto-detect JDK path and update gradle.properties
+            gradle_props_path = os.path.join(self.workspace_path, "gradle.properties")
+            if os.path.exists(gradle_props_path):
+                jdk_home = await self._detect_jdk_home()
+                if jdk_home:
+                    jdk_gradle = jdk_home.replace("\\", "/")
+                    with open(gradle_props_path, 'r', encoding='utf-8') as f:
+                        props = f.read()
+                    # Replace or add org.gradle.java.home
+                    if "org.gradle.java.home" in props:
+                        import re
+                        props = re.sub(r'org\.gradle\.java\.home=.*', f'org.gradle.java.home={jdk_gradle}', props)
+                    else:
+                        props += f"\norg.gradle.java.home={jdk_gradle}\n"
+                    with open(gradle_props_path, 'w', encoding='utf-8') as f:
+                        f.write(props)
+                    await self._log("System", f"Set org.gradle.java.home={jdk_gradle} in gradle.properties")
+                else:
+                    await self._log("System", "Could not auto-detect JDK path. Please set org.gradle.java.home in gradle.properties manually.")
+
         backend_path = os.path.join(self.workspace_path, 'backend')
         if os.path.exists(backend_path):
             await self._log("System", "Installing backend dependencies. This might take a moment...")
@@ -598,6 +647,48 @@ Return ONLY the package name (e.g., org.billthefarmer.editor) or "UNKNOWN" if no
         # 3. Store the target package in utils so agents can use it
         from utils import set_android_package
         set_android_package(target_package)
+
+    async def _detect_jdk_home(self) -> str:
+        """Auto-detect JDK home path for Gradle.
+        Checks JAVA_HOME, common install paths, and java -XshowSettings:properties.
+        """
+        # 1. Check JAVA_HOME env var
+        java_home = os.environ.get("JAVA_HOME")
+        if java_home and os.path.isdir(java_home):
+            return java_home
+
+        # 2. Check common install paths
+        common_paths = [
+            "D:/JDK/jdk21.0.6",
+            "D:/JDK/jdk-21",
+            "C:/Program Files/Java/jdk-21",
+            "C:/Program Files/Eclipse Adoptium/jdk-21",
+            "/usr/lib/jvm/java-21",
+            "/usr/lib/jvm/jdk-21",
+        ]
+        for p in common_paths:
+            if os.path.isdir(p):
+                return p
+
+        # 3. Detect from running java binary
+        try:
+            process = await asyncio.create_subprocess_shell(
+                "java -XshowSettings:properties -version 2>&1 | grep 'java.home'",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+            stdout, _ = await asyncio.wait_for(process.communicate(), timeout=10.0)
+            output = stdout.decode('utf-8', errors='replace')
+            for line in output.split('\n'):
+                line = line.strip()
+                if line.startswith("java.home"):
+                    path = line.split("=", 1)[1].strip()
+                    if os.path.isdir(path):
+                        return path
+        except Exception:
+            pass
+
+        return ""
 
     def _repackage_android_project(self, target_package: str):
         """Repackage the Android project from com.example.template to the target package name.
