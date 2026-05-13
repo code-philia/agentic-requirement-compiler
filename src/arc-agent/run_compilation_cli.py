@@ -179,13 +179,33 @@ def _format_log(message: Dict[str, Any]) -> str:
         return f"{node_prefix}{Fore.CYAN}>> Thinking {step_info}{Style.RESET_ALL}"
 
     if is_tool_call:
-        # Extract tool name
+        # Extract tool name and show args summary
         tool_match = re.search(r'`(\w+)`', msg_text)
         tool_name = tool_match.group(1) if tool_match else "tool"
-        return f"{node_prefix}{Fore.YELLOW}> {tool_name}{Style.RESET_ALL}"
+        # Extract args from the message
+        args_match = re.search(r'with args: (.*)', msg_text, re.DOTALL)
+        args_summary = ""
+        if args_match:
+            args_text = args_match.group(1).strip()
+            if len(args_text) > 200:
+                args_summary = " " + args_text[:200] + "..."
+            else:
+                args_summary = " " + args_text
+        return f"{node_prefix}{Fore.YELLOW}> {tool_name}{Style.RESET_ALL}{args_summary}"
 
     if is_task_done:
         return f"{node_prefix}{Fore.GREEN}[OK] Task completed{Style.RESET_ALL}"
+
+    # Tool result display (truncated)
+    is_tool_result = msg_text.startswith("Tool `") and ("result:" in msg_text or "result length:" in msg_text)
+    if is_tool_result:
+        # Show a compact version
+        if "content not shown" in msg_text:
+            return f"{node_prefix}{Fore.WHITE}  {msg_text}{Style.RESET_ALL}"
+        # Truncate the result content for display
+        if len(msg_text) > 300:
+            return f"{node_prefix}{Fore.WHITE}  {msg_text[:300]}...{Style.RESET_ALL}"
+        return f"{node_prefix}{Fore.WHITE}  {msg_text}{Style.RESET_ALL}"
 
     # Prerequisite check messages
     if "Prerequisite check passed" in msg_text:
