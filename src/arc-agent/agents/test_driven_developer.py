@@ -24,16 +24,20 @@ class TestDrivenDeveloper(ARCAgent):
 - Database: Room (SQLite)
 - Testing:
   - All tests run on JVM via `./gradlew testDebugUnitTest` (no device/emulator)
-  - Unit: JUnit5 + Robolectric (app/src/test/)
-  - Integration: JUnit5 + Robolectric + MockWebServer + Room in-memory DB (app/src/test/)
-  - E2E: JUnit5 + Robolectric + ActivityScenario (app/src/test/)
-  - **CRITICAL**: Every test class using Android context MUST have both:
-    - `@ExtendWith(RobolectricExtension.class)` — activates Robolectric in JUnit5
-    - `@Config(sdk = 31)` — sets the Android SDK version
-  - **NEVER use `@RunWith(RobolectricTestRunner.class)`** — use `@ExtendWith(RobolectricExtension.class)` instead
+  - **Test directory structure** (sub-packages by type):
+    ```
+    app/src/test/java/{android_pkg.replace(".", "/")}/
+      unit/           package {android_pkg}.unit;       Gradle: --tests "{android_pkg}.unit.*"
+      integration/    package {android_pkg}.integration; Gradle: --tests "{android_pkg}.integration.*"
+      e2e/            package {android_pkg}.e2e;         Gradle: --tests "{android_pkg}.e2e.*"
+    ```
+  - **CRITICAL**: Every test class using Android context MUST have `@Config(sdk = 31)` to activate Robolectric
+  - The `android-junit5` Gradle plugin bridges Robolectric with JUnit5 automatically — no @ExtendWith or @RunWith needed
+  - **NEVER use `@RunWith(RobolectricTestRunner.class)`** — conflicts with JUnit5
   - **NEVER use `@RunWith(AndroidJUnit4.class)` in JVM tests** — only JUnit5 annotations
   - The `android-junit5` Gradle plugin is already configured — do NOT modify build.gradle to add/remove it
-- Source directories: app/src/main/java/, app/src/test/java/
+  - **Package MUST match directory**: test files in `unit/` use `package {android_pkg}.unit;`, etc.
+- Source directories: app/src/main/java/, app/src/test/java/{android_pkg.replace(".", "/")}/
 - Package: {android_pkg}
 """
         else:
@@ -66,12 +70,21 @@ Execution protocol (strict):
 
 ### Package Compliance (CRITICAL for Android):
 - The application package is `{android_pkg}`. You MUST use this package for ALL generated code:
-  - `package {android_pkg};` in every Java file
+  - `package {android_pkg};` in every main source Java file
   - `import {android_pkg}.xxx;` for cross-module references
   - File paths must use `{android_pkg.replace('.', '/')}/` as the package directory
-  - AndroidManifest.xml must reference activities as `{android_pkg}.ActivityName`
+  - AndroidManifest.xml must reference activities as `{android_pkg}.ActivityName
+- For TEST code, use the correct sub-package matching the test type directory:
+  - Unit tests: `package {android_pkg}.unit;`
+  - Integration tests: `package {android_pkg}.integration;`
+  - E2E tests: `package {android_pkg}.e2e;`
 - Do NOT use `com.example.template` or any other package name.
 - If the requirement description mentions a different package name in resource-id patterns, use THAT package name instead.
+
+### How `run_tests` works:
+- Call `run_tests(test_type="unit")` — the system automatically applies the correct Gradle `--tests` filter based on the test sub-package (e.g., `--tests "{android_pkg}.unit.*"`).
+- You do NOT need to specify the filter yourself — just pass the `test_type`.
+- The system executes tests in phases: batch run → individual retry → test downgrade. You only need to fix code and rerun when tests fail.
 
 ### Workflow:
 1. Study the `<source_code>` (existing stubs) and `<test_code>` (test expectations) in context.

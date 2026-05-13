@@ -18,38 +18,55 @@ class TestGenerator(ARCAgent):
             pkg_dir = android_pkg.replace('.', '/')
             test_stack = f"""
 # Testing Stack (Android):
-- **Unit Tests**: JUnit5 + Robolectric — place in `app/src/test/java/{pkg_dir}/`
-  - Use `@Test` from `org.junit.jupiter.api.Test`
-  - **CRITICAL**: Every test class that uses Android context (ApplicationProvider, Context, Room, etc.) MUST have both annotations:
-    - `@ExtendWith(RobolectricExtension.class)` — activates Robolectric in JUnit5
-    - `@Config(sdk = 31)` — sets the Android SDK version
-  - NEVER use `@RunWith(RobolectricTestRunner.class)` — it conflicts with JUnit5
-  - Use `@BeforeEach` / `@AfterEach` (JUnit5) for setup/teardown
-  - Use `@DisplayName` for readable test names
-  - Use `@Nested` for grouping related tests
-  - Target `FUNC` and `DB` interfaces
-- **Integration Tests**: JUnit5 + Robolectric + MockWebServer + Room in-memory DB
-  - Place in `app/src/test/java/{pkg_dir}/`
-  - **CRITICAL**: Must have `@ExtendWith(RobolectricExtension.class)` and `@Config(sdk = 31)` on the test class
-  - Use `Room.inMemoryDatabaseBuilder(context, AppDatabase.class).allowMainThreadQueries().build()` for real DB
-  - Use `MockWebServer` for HTTP testing (enqueue fake responses)
-  - Use `@AfterEach` to close DB and shutdown MockWebServer
-  - Target `API` interfaces
-- **E2E Tests**: JUnit5 + Robolectric — place in `app/src/test/java/{pkg_dir}/`
-  - **CRITICAL**: Must have `@ExtendWith(RobolectricExtension.class)` and `@Config(sdk = 31)` on the test class
-  - Use `ActivityScenario` from `androidx.test.core` to launch Activities
-  - Use MockWebServer to mock backend API responses
-  - Target the overarching Requirement Node with the provided UI scenario
-- **Test file naming**: `*Test.java` for unit, `*IntegrationTest.java` for integration, `*E2ETest.java` for E2E
-- **CRITICAL**: Do NOT use `@RunWith` annotations. JUnit5 test discovery is handled by the `android-junit5` Gradle plugin (already configured in build.gradle).
-- **Package**: {android_pkg}
+
+## Test Directory Structure (MANDATORY)
+Tests are organized into sub-packages by type. Each type has its own directory and package:
+```
+app/src/test/java/{pkg_dir}/
+  unit/                    ← Unit tests
+    *Test.java             package {android_pkg}.unit;
+  integration/             ← Integration tests
+    *IntegrationTest.java  package {android_pkg}.integration;
+  e2e/                     ← E2E tests
+    *E2ETest.java          package {android_pkg}.e2e;
+```
+Gradle filters by package prefix: `--tests "{android_pkg}.unit.*"`, `--tests "{android_pkg}.integration.*"`, `--tests "{android_pkg}.e2e.*"`
+
+## Unit Tests
+- Place in `app/src/test/java/{pkg_dir}/unit/` with `package {android_pkg}.unit;`
+- JUnit5 + Robolectric. Target `FUNC` and `DB` interfaces.
+- **CRITICAL**: Every test class MUST have `@Config(sdk = 31)` to activate Robolectric
+- Use `@Test`, `@BeforeEach`/`@AfterEach`, `@DisplayName`, `@Nested` (JUnit5 only)
+- NEVER use `@RunWith(RobolectricTestRunner.class)` or `@RunWith(AndroidJUnit4.class)` — conflicts with JUnit5
+- The `android-junit5` Gradle plugin bridges Robolectric with JUnit5 automatically
+
+## Integration Tests
+- Place in `app/src/test/java/{pkg_dir}/integration/` with `package {android_pkg}.integration;`
+- JUnit5 + Robolectric + MockWebServer + Room in-memory DB. Target `API` interfaces.
+- **CRITICAL**: Must have `@Config(sdk = 31)` on the test class
+- Use `Room.inMemoryDatabaseBuilder(context, AppDatabase.class).allowMainThreadQueries().build()` for real DB
+- Use `MockWebServer` for HTTP testing (enqueue fake responses)
+- Use `@AfterEach` to close DB and shutdown MockWebServer
+
+## E2E Tests
+- Place in `app/src/test/java/{pkg_dir}/e2e/` with `package {android_pkg}.e2e;`
+- JUnit5 + Robolectric + ActivityScenario. Target the Requirement Node with the UI scenario.
+- **CRITICAL**: Must have `@Config(sdk = 31)` on the test class
+- Use `ActivityScenario` from `androidx.test.core` to launch Activities
+- Use MockWebServer to mock backend API responses
+
+## Test file naming: `*Test.java` for unit, `*IntegrationTest.java` for integration, `*E2ETest.java` for E2E
 """
             pkg_compliance = f"""
 ### Package Compliance (CRITICAL for Android):
-- The application package is `{android_pkg}`. You MUST use this package for ALL test code:
-  - `package {android_pkg};` in every test Java file
-  - `import {android_pkg}.xxx;` to import the classes under test
-  - Place test files under `app/src/test/java/{pkg_dir}/`
+- The application package is `{android_pkg}`.
+- **Main source code**: `package {android_pkg};` — files in `app/src/main/java/{pkg_dir}/`
+- **Test code MUST use sub-packages matching the directory**:
+  - Unit: `package {android_pkg}.unit;` → `app/src/test/java/{pkg_dir}/unit/`
+  - Integration: `package {android_pkg}.integration;` → `app/src/test/java/{pkg_dir}/integration/`
+  - E2E: `package {android_pkg}.e2e;` → `app/src/test/java/{pkg_dir}/e2e/`
+- Import classes under test with `import {android_pkg}.xxx;` (from the main package)
+- The package declaration MUST match the directory — Java compilation fails otherwise.
 - Do NOT use `com.example.template` or any other package name.
 """
         else:
@@ -73,12 +90,19 @@ Execution protocol (strict):
 - If build or syntax fails, fix tests immediately and rerun `run_build`.
 
 {pkg_compliance}
-# Workflow & Testing Strategy:
-1. **Analyze the Context**: Review the provided tech stack, requirement description, and Interface Intermediate Representation (IR).
-2. **Locate Test Directories**: Use `list_directory` to find or decide where to place tests.
-3. **Implement Tests**: Use `write_file` to physically create the test scripts. Your tests MUST import the stub code generated in Step 2.
 {test_stack}
-4. **Check Compilation**: You MUST call `run_build` to check for syntax/compilation errors.
+
+# Workflow:
+1. **Analyze**: Review the tech stack, requirement description, and Interface IR.
+2. **Place tests**: Use `list_directory` to confirm the test directory structure, then `write_file` to create test files in the correct subdirectory for each type.
+3. **Verify compilation**: You MUST call `run_build` to check for syntax/compilation errors. Fix any errors and rerun.
+
+# Test Execution (handled by the system, NOT by you):
+The system executes tests in a 3-phase strategy after you finish generating them:
+- **Phase A**: Batch run all tests of each type (Unit → Integration → E2E) via `run_tests(test_type)`. The `--tests` filter automatically targets the correct sub-package.
+- **Phase B**: For any failing tests, retry individually with extra budget.
+- **Phase C**: For tests still failing, simplify the test (relax assertions, remove flaky checks) and retry.
+You do NOT need to call `run_tests` — just ensure tests compile via `run_build`.
 
 # Final Output Requirement:
 After writing all test files, you MUST output a single JSON array enclosed in a markdown block (` ```json ... ``` `).
@@ -89,8 +113,8 @@ Schema for each object:
   "req_id": "The ID of the requirement node being tested",
   "interface_ids": ["List of interface_ids that this test specifically covers"],
   "type": "Must be exactly one of: Unit, Integration, E2E",
-  "file_path": "Relative path to the written test file (e.g., tests/unit/test_auth.py)",
-  "first_line": "The exact first line of the test definition (e.g., 'async def test_login_success():')"
+  "file_path": "Relative path to the written test file (e.g., app/src/test/java/com/example/app/unit/FooTest.java)",
+  "first_line": "The exact first line of the test definition (e.g., 'void testAddition()')"
 }}
 """
 
