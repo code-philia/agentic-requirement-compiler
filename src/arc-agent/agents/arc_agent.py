@@ -264,9 +264,13 @@ class ARCAgent:
                 api_kwargs["tool_choice"] = "auto"
 
             if DEBUG_MODE:
-                # Log last message sent to model
-                last_msg = messages[-1].get("content")
-                await self._log(f"[DEBUG] Input to model:\n{last_msg}", node_id=node_id)
+                # Log last message sent to model (truncated)
+                last_msg = messages[-1].get("content", "")
+                if isinstance(last_msg, str) and len(last_msg) > 500:
+                    display_msg = last_msg[:500] + f"\n... [input truncated, total {len(last_msg)} chars]"
+                else:
+                    display_msg = last_msg
+                await self._log(f"[DEBUG] Input to model:\n{display_msg}", node_id=node_id)
 
             response = await self._create_chat_completion_with_retry(**api_kwargs)
             message = response.choices[0].message
@@ -294,7 +298,13 @@ class ARCAgent:
                     except json.JSONDecodeError:
                         tool_args = {}
 
-                    await self._log(f"Calling tool: `{tool_name}` with args: {json.dumps(tool_args, indent=2)}", node_id=node_id)
+                    # Log tool call with args (truncate write_file content)
+                    args_str = json.dumps(tool_args, indent=2, ensure_ascii=False)
+                    if tool_name == "write_file" and len(args_str) > 500:
+                        args_str = args_str[:500] + f"\n... [args truncated, total {len(args_str)} chars]"
+                    elif len(args_str) > 1000:
+                        args_str = args_str[:1000] + f"\n... [args truncated, total {len(args_str)} chars]"
+                    await self._log(f"Calling tool: `{tool_name}` with args: {args_str}", node_id=node_id)
 
                     # Look up and execute the actual tool function from the registry
                     cache_key = f"{tool_name}::{json.dumps(tool_args, ensure_ascii=False, sort_keys=True)}"
@@ -325,19 +335,19 @@ class ARCAgent:
                         tool_result_str = tool_result_str[:MAX_TOOL_OUTPUT_LENGTH] + "\n... [Output truncated due to length. Please use grep or narrow your search.]"
 
                     if DEBUG_MODE:
-                        await self._log(f"Tool `{tool_name}` result length: {len(tool_result_str)} chars", node_id=node_id)
-                        # Log tool output to debug file
+                        # Log tool result: skip read_file content, truncate others
+                        if tool_name == "read_file":
+                            await self._log(f"Tool `read_file` result: {len(tool_result_str)} chars (content not shown)", node_id=node_id)
+                        else:
+                            display_result = tool_result_str
+                            if len(display_result) > 500:
+                                display_result = display_result[:500] + f"\n... [result truncated, total {len(tool_result_str)} chars]"
+                            await self._log(f"Tool `{tool_name}` result:\n{display_result}", node_id=node_id)
+                        # Full tool output to debug log file (never truncated)
                         try:
                             from run_compilation_cli import debug_logger
                             if debug_logger:
-                                # For list_directory, log only first 2000 chars
-                                if tool_name == "list_directory":
-                                    log_content = tool_result_str[:2000]
-                                    if len(tool_result_str) > 2000:
-                                        log_content += f"\n... [list_directory output truncated in log, total {len(tool_result_str)} chars]"
-                                    debug_logger.log(f"TOOL_RESULT[{tool_name}]", log_content)
-                                else:
-                                    debug_logger.log(f"TOOL_RESULT[{tool_name}]", tool_result_str)
+                                debug_logger.log(f"TOOL_RESULT[{tool_name}]", tool_result_str)
                         except ImportError:
                             pass
 
