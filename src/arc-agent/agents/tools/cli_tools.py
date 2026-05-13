@@ -124,11 +124,13 @@ def _gradlew_cmd() -> str:
     return "./gradlew"
 
 
-async def _run_tests_android(test_type: str, test_file_path: str = "") -> str:
+async def _run_tests_android(test_type: str, test_file_path: str = "", test_class_pattern: str = "") -> str:
     """Run tests for Android projects using Gradle.
 
     - Unit/Integration/E2E: ./gradlew testDebugUnitTest (app/src/test/)
     - All tests run on JVM via Robolectric (no device/emulator required).
+    - test_class_pattern: Gradle --tests class name pattern to filter specific test classes
+      e.g., "*IntegrationTest" to run only integration tests, "*E2ETest" for E2E
 
     IMPORTANT: Runs subprocess directly (not via execute_command_impl) to get
     FULL output before filtering. execute_command_impl truncates at 4000 chars,
@@ -142,6 +144,8 @@ async def _run_tests_android(test_type: str, test_file_path: str = "") -> str:
     if test_file_path:
         test_class = _android_file_to_test_class(test_file_path)
         cmd += f' --tests "{test_class}"'
+    elif test_class_pattern:
+        cmd += f' --tests "{test_class_pattern}"'
     timeout = 180.0
 
     # Run subprocess directly to get FULL output (no 4000-char truncation)
@@ -164,101 +168,52 @@ async def _run_tests_android(test_type: str, test_file_path: str = "") -> str:
     except Exception as e:
         return f"Execution failed: {str(e)}"
 
-    # Parse and filter the --info output to keep only test-relevant information
-    # Process stdout and stderr separately for clarity
-    all_lines = output.split('\n') + error.split('\n')
-    relevant = []
-    has_test_result = False  # Track whether we saw any test execution results
-
-    for line in all_lines:
+    # Filter Gradle noise lines before returning to LLM
+    # Keep: test results, errors, failures, build result, task failures, stack traces
+    # Remove: Transforming, Compiling resources, Caching, VCS cleanup, etc.
+    raw = output + "\n" + error
+    filtered_lines = []
+    noise_patterns = [
+        'Transforming ', 'Compiling XML table', 'Compiling file ',
+        'Caching disabled', 'is not up-to-date', 'VCS Checkout Cache',
+        'dependencies-accessors', 'cleaned up in', 'removing files',
+        'Watched directory', 'Input property ', 'Value of input',
+        'Merging result: MERGED', 'ADDED from', 'android:supportsRtl',
+        'android:roundIcon', 'android:allowBackup', 'android:icon',
+        'android:label', 'android:theme', 'android:exported',
+        'android:name', 'xmlns:android', 'intent-filter#',
+        'action#', 'category#', 'See https://developer.android.com',
+        'Run with --stacktrace', 'Run with --debug', 'Run with --scan',
+        'Get more help at', 'actionable tasks',
+    ]
+    for line in raw.split('\n'):
         stripped = line.strip()
         if not stripped:
             continue
-
-        # Test execution results (Gradle --info format)
-        # e.g., "Gradle Test Run :app:testDebugUnitTest > org.pkg.TestClass > testMethodName PASSED"
-        if any(kw in line for kw in ['PASSED', 'FAILED', 'SKIPPED']):
-            has_test_result = True
-            relevant.append(line)
-            continue
-
-        # Test summary lines (e.g., "Test result: 3 tests, 3 passed, 0 failed")
-        if any(kw in line.lower() for kw in ['test result:', 'tests,', 'test execution', 'tests found', 'no tests found']):
-            has_test_result = True
-            relevant.append(line)
-            continue
-
-        # Build result
-        if 'BUILD ' in line and not stripped.startswith('>'):
-            relevant.append(line)
-            continue
-
-        # Failure/exception details
-        if any(kw in line for kw in ['FAILURE:', 'What went wrong:', 'Execution failed', 'Exception', 'Caused by']):
-            relevant.append(line)
-            continue
-
-        # Key Android/Robolectric errors that must be visible to TDD Agent
+        # Keep lines that matter
         if any(kw in line for kw in [
-            'No instrumentation registered', 'InstrumentationRegistry',
-            'IllegalStateException', 'StrictMode', 'not mocked',
-            'AndroidRuntimeException', 'RuntimeException'
+            'PASSED', 'FAILED', 'SKIPPED', 'BUILD ', 'FAILURE:',
+            'What went wrong', 'Execution failed', 'Exception',
+            'Caused by', 'error:', 'Error:', '错误:',
+            'cannot find symbol', 'package does not exist',
+            'Merging result: ERROR', 'Manifest merger failed',
+            'Exit Code', 'Test result', 'tests,', 'no tests found',
+            'Task :app:', 'at ', 'WARNING:',
         ]):
-            relevant.append(line)
-            has_test_result = True  # These ARE test failures
+            filtered_lines.append(line)
             continue
-
-        # Stack trace lines (at com.example.Class.method(File.java:123))
-        if stripped.startswith('at ') and '.java:' in line:
-            relevant.append(line)
+        # Skip noise
+        if any(kw in line for kw in noise_patterns):
             continue
+        # Keep unknown lines (might be important)
+        filtered_lines.append(line)
 
-        # Compilation errors (javac output)
-        # e.g., "error: cannot find symbol" or "错误: 找不到符号"
-        if any(kw in line.lower() for kw in ['error:', '错误:', 'cannot find symbol', '找不到符号', 'package does not exist', 'does not exist']):
-            relevant.append(line)
-            continue
-
-        # Gradle task failures
-        if 'FAILED' in line and 'Task' in line:
-            relevant.append(line)
-            continue
-
-    # If no test results were found, add a clear warning
-    if not has_test_result:
-        if exit_code == 0:
-            relevant.append("")
-            relevant.append("WARNING: BUILD SUCCESSFUL but NO test results were found!")
-            relevant.append("This likely means 0 tests were executed. Possible causes:")
-            relevant.append("  1. Test classes have compilation errors and were silently excluded")
-            relevant.append("  2. JUnit5 test discovery failed (missing android-junit5 plugin)")
-            relevant.append("  3. Test class name does not match the --tests filter")
-            relevant.append("Run `run_build` to check for compilation errors in test source code.")
-        else:
-            relevant.append("")
-            relevant.append("WARNING: BUILD FAILED and no test results were captured.")
-            relevant.append("Check the compilation errors above — tests may not compile at all.")
-
-    # Build final result with exit code header
     result = f"Exit Code: {exit_code}\n"
-
-    # If build failed and no test results were found, return raw output (truncated)
-    # rather than filtered output that may miss compilation error details
-    if exit_code != 0 and not has_test_result:
-        raw = output + "\n" + error
-        if len(raw) > 6000:
-            raw = raw[:3000] + "\n...[OUTPUT TRUNCATED]...\n" + raw[-3000:]
-        result += raw
-        return result
-
-    if relevant:
-        result += '\n'.join(relevant)
-
-    # Truncate AFTER filtering (not before) to prevent token explosion
-    # Allow more room since we've already filtered out noise
-    if len(result) > 8000:
-        result = result[:4000] + "\n...[OUTPUT TRUNCATED]...\n" + result[-4000:]
-
+    filtered = '\n'.join(filtered_lines)
+    if len(filtered) > 30000:
+        result += filtered[:15000] + "\n...[OUTPUT TRUNCATED]...\n" + filtered[-15000:]
+    else:
+        result += filtered
     return result
 
 
@@ -269,7 +224,7 @@ async def _run_build_android() -> str:
     Runs subprocess directly to get FULL output before filtering, same as _run_tests_android.
     """
     gradlew = _gradlew_cmd()
-    cmd = f"{gradlew} assembleDebug compileDebugUnitTestJavaWithJavac"
+    cmd = f"{gradlew} assembleDebug compileDebugUnitTestJavaWithJavac --info"
     abs_cwd = get_abs_path(".")
     try:
         process = await asyncio.create_subprocess_shell(
@@ -289,52 +244,50 @@ async def _run_build_android() -> str:
     except Exception as e:
         return f"=== Android Build Result ===\nExecution failed: {str(e)}"
 
-    # Filter build output: keep only errors, warnings, and BUILD result
-    all_lines = output.split('\n') + error.split('\n')
-    relevant = []
-    for line in all_lines:
+    # Filter Gradle noise lines before returning to LLM (same as _run_tests_android)
+    raw = output + "\n" + error
+    filtered_lines = []
+    noise_patterns = [
+        'Transforming ', 'Compiling XML table', 'Compiling file ',
+        'Caching disabled', 'is not up-to-date', 'VCS Checkout Cache',
+        'dependencies-accessors', 'cleaned up in', 'removing files',
+        'Watched directory', 'Input property ', 'Value of input',
+        'Merging result: MERGED', 'ADDED from', 'android:supportsRtl',
+        'android:roundIcon', 'android:allowBackup', 'android:icon',
+        'android:label', 'android:theme', 'android:exported',
+        'android:name', 'xmlns:android', 'intent-filter#',
+        'action#', 'category#', 'See https://developer.android.com',
+        'Run with --stacktrace', 'Run with --debug', 'Run with --scan',
+        'Get more help at', 'actionable tasks',
+    ]
+    for line in raw.split('\n'):
         stripped = line.strip()
         if not stripped:
             continue
-        # Build result
-        if 'BUILD ' in line and not stripped.startswith('>'):
-            relevant.append(line)
+        # Keep lines that matter
+        if any(kw in line for kw in [
+            'PASSED', 'FAILED', 'SKIPPED', 'BUILD ', 'FAILURE:',
+            'What went wrong', 'Execution failed', 'Exception',
+            'Caused by', 'error:', 'Error:', '错误:',
+            'cannot find symbol', 'package does not exist',
+            'Merging result: ERROR', 'Manifest merger failed',
+            'Exit Code', 'Test result', 'tests,', 'no tests found',
+            'Task :app:', 'at ', 'WARNING:',
+        ]):
+            filtered_lines.append(line)
             continue
-        # Failure/exception details
-        if any(kw in line for kw in ['FAILURE:', 'What went wrong:', 'Execution failed', 'Exception', 'Caused by']):
-            relevant.append(line)
+        # Skip noise
+        if any(kw in line for kw in noise_patterns):
             continue
-        # Compilation errors
-        if any(kw in line.lower() for kw in ['error:', '错误:', 'cannot find symbol', '找不到符号', 'package does not exist', 'does not exist', 'warning:']):
-            relevant.append(line)
-            continue
-        # Stack trace lines
-        if stripped.startswith('at ') and '.java:' in line:
-            relevant.append(line)
-            continue
-        # Gradle task failures
-        if 'FAILED' in line and 'Task' in line:
-            relevant.append(line)
-            continue
+        # Keep unknown lines (might be important)
+        filtered_lines.append(line)
 
     result = f"=== Android Build Result ===\nExit Code: {exit_code}\n"
-
-    # If build failed, return raw output (truncated) to preserve compilation error details
-    if exit_code != 0:
-        raw = output + "\n" + error
-        if len(raw) > 6000:
-            raw = raw[:3000] + "\n...[OUTPUT TRUNCATED]...\n" + raw[-3000:]
-        result += raw
-        return result
-
-    if relevant:
-        result += '\n'.join(relevant)
+    filtered = '\n'.join(filtered_lines)
+    if len(filtered) > 30000:
+        result += filtered[:15000] + "\n...[OUTPUT TRUNCATED]...\n" + filtered[-15000:]
     else:
-        result += "BUILD SUCCESSFUL"
-
-    if len(result) > 8000:
-        result = result[:4000] + "\n...[OUTPUT TRUNCATED]...\n" + result[-4000:]
-
+        result += filtered
     return result
 
 
@@ -342,12 +295,26 @@ async def _run_build_android() -> str:
 # Unified dispatchers
 # ============================================================
 
-async def run_tests_impl(test_type: str, test_file_path: str = "") -> str:
-    """Run the test suite using the project's testing frameworks."""
+async def run_tests_impl(test_type: str, test_file_path: str = "", test_class_pattern: str = "") -> str:
+    """Run the test suite using the project's testing frameworks.
+    test_class_pattern: Gradle --tests pattern for Android (e.g., "com.example.app.unit.*").
+    If not provided, auto-derived from test_type using package-based subdirectory filtering.
+    """
     app_type = get_app_type()
 
     if app_type == "android":
-        return await _run_tests_android(test_type, test_file_path)
+        # Auto-derive package-based class pattern from test_type if not explicitly provided
+        if not test_class_pattern and not test_file_path:
+            from utils import get_android_package
+            pkg = get_android_package()
+            tt = test_type.lower()
+            if tt == "unit":
+                test_class_pattern = f"{pkg}.unit.*"
+            elif tt == "integration":
+                test_class_pattern = f"{pkg}.integration.*"
+            elif tt == "e2e":
+                test_class_pattern = f"{pkg}.e2e.*"
+        return await _run_tests_android(test_type, test_file_path, test_class_pattern)
     else:
         return await _run_tests_web(test_type, test_file_path)
 
