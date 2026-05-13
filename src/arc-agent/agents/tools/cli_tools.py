@@ -339,6 +339,62 @@ async def run_tests_impl(test_type: str, test_file_path: str = "") -> str:
         return await _run_tests_web(test_type, test_file_path)
 
 
+def parse_test_results(test_output: str) -> dict:
+    """Parse test output to identify individual test pass/fail.
+    Returns {"passed": [test_name, ...], "failed": [test_name, ...], "exit_code": int}
+    """
+    app_type = get_app_type()
+    result = {"passed": [], "failed": [], "exit_code": -1}
+
+    # Extract exit code
+    for line in test_output.split('\n'):
+        if "Exit Code:" in line:
+            try:
+                result["exit_code"] = int(line.split("Exit Code:")[1].strip())
+            except (ValueError, IndexError):
+                pass
+
+    if app_type == "android":
+        # Gradle --info format:
+        # "Gradle Test Run ... > org.pkg.TestClass > testMethodName PASSED"
+        # "org.pkg.TestClass > testMethodName() FAILED"
+        for line in test_output.split('\n'):
+            stripped = line.strip()
+            if 'PASSED' in stripped:
+                # Extract test identifier before "PASSED"
+                test_name = stripped.split('PASSED')[0].strip().rstrip('>').strip()
+                if test_name:
+                    result["passed"].append(test_name)
+            elif 'FAILED' in stripped:
+                test_name = stripped.split('FAILED')[0].strip().rstrip('>').strip()
+                if test_name:
+                    result["failed"].append(test_name)
+    else:
+        # Web (Jest/Vitest) format:
+        # "PASS src/__tests__/foo.test.js" / "FAIL src/__tests__/foo.test.js"
+        # "  ✓ testBar (5ms)" / "  ✕ testBaz (3ms)"
+        current_file = None
+        for line in test_output.split('\n'):
+            stripped = line.strip()
+            if stripped.startswith('PASS '):
+                current_file = stripped[5:].strip()
+            elif stripped.startswith('FAIL '):
+                current_file = stripped[5:].strip()
+            elif stripped.startswith('✓') or stripped.startswith('√'):
+                test_name = stripped.lstrip('✓√').strip()
+                if current_file:
+                    test_name = f"{current_file} > {test_name}"
+                result["passed"].append(test_name)
+            elif stripped.startswith('✕') or stripped.startswith('×') or stripped.startswith('FAIL'):
+                if stripped.startswith('✕') or stripped.startswith('×'):
+                    test_name = stripped.lstrip('✕×').strip()
+                    if current_file:
+                        test_name = f"{current_file} > {test_name}"
+                    result["failed"].append(test_name)
+
+    return result
+
+
 async def run_build_impl() -> str:
     """Run the build process for the current project to check for compilation errors."""
     app_type = get_app_type()

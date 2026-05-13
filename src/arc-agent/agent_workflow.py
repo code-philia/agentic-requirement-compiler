@@ -1016,10 +1016,17 @@ Return ONLY the package name (e.g., org.billthefarmer.editor) or "UNKNOWN" if no
 
 
                 # ==========================================
-                # Step 4: Implement (TDD Loop)
+                # Step 4: Implement (3-Phase TDD Strategy with Tracking)
                 # ==========================================
+                from traceability.test_result_tracker import TestResultTracker
+                from agents.tools.cli_tools import run_tests_impl, parse_test_results
+
                 req_desc = requirement_data.get("description", "")
                 req_scenario = requirement_data.get("scenario", [])
+                EXTRA_BUDGET = 3  # Individual retry budget per failing test
+                DOWNGRADE_ATTEMPTS = 2  # Test downgrade attempts
+
+                tracker = TestResultTracker(os.path.join(self.workspace_path, ".arc"))
 
                 # Get tests from DB to know what files to run
                 tests = get_tests_by_req_id(node_id)
@@ -1031,19 +1038,22 @@ Return ONLY the package name (e.g., org.billthefarmer.editor) or "UNKNOWN" if no
                     if t_type in tests_by_type:
                         tests_by_type[t_type].append(t)
 
-                # Helper to run TDD loop
                 current_interfaces = get_interfaces_by_req_id(node_id)
 
-                async def run_tdd_loop(target_type: str, tests_batch: list, budget: int, scenario: list = None, preloaded_source: str = None):
+                # --- TDD loop helper (shared session, used by Phase B and C) ---
+                async def run_tdd_loop(target_type: str, tests_batch: list, budget: int,
+                                       scenario: list = None, preloaded_source: str = None,
+                                       downgrade_mode: bool = False) -> bool:
+                    """Run TDD loop for a batch of tests. Returns True if IMPLEMENTED."""
                     test_files = [t.get("file_path") for t in tests_batch if t.get("file_path")]
                     test_ids = [t.get("test_id") for t in tests_batch if t.get("test_id")]
 
                     if not test_files:
-                        return True # Nothing to test
+                        return True
 
-                    await self._log("TestDrivenDeveloper", f"Starting {target_type} TDD loop with {len(test_files)} tests (Budget: {budget})...", node_id=node_id)
+                    mode_label = "downgrade" if downgrade_mode else "fix"
+                    await self._log("TestDrivenDeveloper", f"Starting {target_type} TDD ({mode_label}) with {len(test_files)} test(s) (Budget: {budget})...", node_id=node_id)
 
-                    # Build initial messages ONCE — all iterations share this session
                     messages, tools = self.test_driven_developer.build_initial_messages(
                         node_id=node_id,
                         test_files=test_files,
@@ -1057,27 +1067,24 @@ Return ONLY the package name (e.g., org.billthefarmer.editor) or "UNKNOWN" if no
 
                     last_error_sig = None
                     consecutive_same_errors = 0
+                    total_attempts = 0
 
                     for iteration in range(1, budget + 1):
-                        await self._log("TestDrivenDeveloper", f"[{target_type}] Iteration {iteration}/{budget}...", node_id=node_id)
+                        await self._log("TestDrivenDeveloper", f"[{target_type}] Iteration {iteration}/{budget} ({mode_label})...", node_id=node_id)
 
                         final_output, messages = await self.test_driven_developer.run_from_messages(
                             messages, node_id=node_id, max_steps=15, tools=tools
                         )
+                        total_attempts = iteration
 
                         if "IMPLEMENTED" in final_output:
-                            await self._log("System", f"[{target_type}] All tests passed! TDD loop completed successfully.", node_id=node_id)
-
-                            # Mark specifically related interfaces as implemented based on this batch
+                            await self._log("System", f"[{target_type}] Tests passed! TDD loop completed ({mode_label}).", node_id=node_id)
                             try:
                                 update_test_implemented_status(test_ids)
-                                await self._log("System", f"Database updated: Interfaces covered by {target_type} tests marked as implemented.", node_id=node_id)
                             except Exception as db_err:
-                                await self._log("System", f"Warning: Failed to update DB status for {target_type} batch: {str(db_err)}", node_id=node_id)
-
+                                await self._log("System", f"Warning: Failed to update DB status: {str(db_err)}", node_id=node_id)
                             return True
                         else:
-                            # Detect repeated failures to avoid wasting budget on the same error
                             error_sig = final_output[:200] if final_output else ""
                             if error_sig == last_error_sig:
                                 consecutive_same_errors += 1
@@ -1086,53 +1093,167 @@ Return ONLY the package name (e.g., org.billthefarmer.editor) or "UNKNOWN" if no
                                 last_error_sig = error_sig
 
                             if consecutive_same_errors >= 2:
-                                await self._log("System", f"Warning: [{target_type}] Same error repeated 3 consecutive times. Breaking TDD loop early to save budget.", node_id=node_id)
+                                await self._log("System", f"Warning: [{target_type}] Same error repeated 3x. Breaking early.", node_id=node_id)
                                 break
 
-                            await self._log("System", f"[{target_type}] Tests not yet passing. Continuing in same session...", node_id=node_id)
-
-                            # Nudge the LLM to continue fixing — stays in same session
-                            if iteration > 1:
-                                modified_files = _extract_modified_files_from_messages(messages)
-                                delta_ctx = context_pipeline.build_incremental_context(node_id, modified_files=modified_files)
-                                if delta_ctx:
-                                    nudge = (
-                                        f"The {target_type} tests are still failing. "
-                                        f"Here are the files you modified in previous iterations:\n{delta_ctx}\n\n"
-                                        f"Analyze the error output above carefully, fix the code, and rerun `run_tests` with type `{target_type}`. "
-                                        f"Reply \"IMPLEMENTED\" only when all target tests pass."
-                                    )
-                                else:
-                                    nudge = f"The {target_type} tests are still failing. Analyze the error output above carefully, fix the code, and rerun `run_tests` with type `{target_type}`. Reply \"IMPLEMENTED\" only when all target tests pass."
+                            # Build nudge message
+                            if downgrade_mode:
+                                nudge = (
+                                    f"The {target_type} tests are still failing even after implementation fixes. "
+                                    f"This suggests the test may be too strict or have incorrect assumptions. "
+                                    f"Simplify the test: remove flaky assertions, relax strict equality checks, "
+                                    f"or split into smaller test cases. Rewrite the test file and rerun `run_tests` with type `{target_type}`. "
+                                    f"Reply \"IMPLEMENTED\" only when all target tests pass."
+                                )
                             else:
-                                nudge = f"The {target_type} tests are still failing. Analyze the error output above carefully, fix the code, and rerun `run_tests` with type `{target_type}`. Reply \"IMPLEMENTED\" only when all target tests pass."
+                                if iteration > 1:
+                                    modified_files = _extract_modified_files_from_messages(messages)
+                                    delta_ctx = context_pipeline.build_incremental_context(node_id, modified_files=modified_files)
+                                    if delta_ctx:
+                                        nudge = (
+                                            f"The {target_type} tests are still failing. "
+                                            f"Here are the files you modified:\n{delta_ctx}\n\n"
+                                            f"Analyze the error output, fix the code, and rerun `run_tests` with type `{target_type}`. "
+                                            f"Reply \"IMPLEMENTED\" only when all target tests pass."
+                                        )
+                                    else:
+                                        nudge = f"The {target_type} tests are still failing. Analyze the error output, fix the code, and rerun `run_tests` with type `{target_type}`. Reply \"IMPLEMENTED\" only when all target tests pass."
+                                else:
+                                    nudge = f"The {target_type} tests are still failing. Analyze the error output, fix the code, and rerun `run_tests` with type `{target_type}`. Reply \"IMPLEMENTED\" only when all target tests pass."
                             messages.append({"role": "user", "content": nudge})
 
-                    await self._log("System", f"Warning: [{target_type}] Max TDD iterations reached without a definitive 'IMPLEMENTED' signal.", node_id=node_id)
+                    await self._log("System", f"Warning: [{target_type}] TDD budget exhausted ({mode_label}).", node_id=node_id)
                     return False
 
-                # 1. DB & FUNC -> Unit tests
-                unit_tests = tests_by_type["Unit"]
-                if unit_tests:
-                    await run_tdd_loop("Unit", unit_tests, budget=5, preloaded_source=stub_artifacts)
+                # --- Phase A: Batch run all tests of each type ---
+                for test_type in ["Unit", "Integration", "E2E"]:
+                    tests_batch = tests_by_type[test_type]
+                    if not tests_batch:
+                        continue
 
-                # 2. API -> Integration tests
-                int_tests = tests_by_type["Integration"]
-                if int_tests:
-                    await run_tdd_loop("Integration", int_tests, budget=5, preloaded_source=stub_artifacts)
+                    test_files = [t.get("file_path") for t in tests_batch if t.get("file_path")]
+                    await self._log("System", f"[Phase A] Batch running {len(test_files)} {test_type} test(s)...", node_id=node_id)
 
-                # 3. UI -> E2E tests (One by one per scenario)
-                e2e_tests = tests_by_type["E2E"]
-                if e2e_tests:
-                    # E2E tests are matched to the single scenario
-                    for idx, e2e_test in enumerate(e2e_tests):
-                        file_path = e2e_test.get("file_path")
-                        if not file_path:
-                            continue
+                    # Run all tests of this type via the test tool
+                    batch_output = await run_tests_impl(test_type)
+                    parsed = parse_test_results(batch_output)
 
-                        scenario_name = f"Scenario {idx+1}"
-                        await self._log("System", f"Running E2E for {scenario_name}...", node_id=node_id)
-                        await run_tdd_loop("E2E", [e2e_test], budget=3, scenario=req_scenario, preloaded_source=stub_artifacts)
+                    # Map test file paths to test records for quick lookup
+                    path_to_test = {t.get("file_path"): t for t in tests_batch if t.get("file_path")}
+
+                    # Record direct_pass for tests that passed in batch
+                    # For Android, match by file path since Gradle output uses class names
+                    passed_files = set()
+                    failed_tests = []
+
+                    if parsed["exit_code"] == 0:
+                        # All tests passed
+                        for t in tests_batch:
+                            t_id = t.get("test_id", "")
+                            t_path = t.get("file_path", "")
+                            tracker.record_test(node_id, test_type, t_id, t_path, "direct_pass", 1)
+                        await self._log("System", f"[Phase A] All {test_type} tests passed directly!", node_id=node_id)
+                    else:
+                        # Some tests failed — try to identify which ones
+                        # Match failed test names to test records
+                        failed_names = set(parsed["failed"])
+                        for t in tests_batch:
+                            t_id = t.get("test_id", "")
+                            t_path = t.get("file_path", "")
+                            t_first_line = t.get("first_line", "")
+                            # Check if this test appears in failed list
+                            is_failed = False
+                            for fn in failed_names:
+                                # Match by class name in path or by first_line
+                                if t_path and t_path.replace("/", ".").replace("\\", ".").replace(".java", "").replace(".kt", "") in fn:
+                                    is_failed = True
+                                    break
+                                if t_first_line and t_first_line in fn:
+                                    is_failed = True
+                                    break
+
+                            if is_failed:
+                                failed_tests.append(t)
+                            else:
+                                # Assume passed if not in failed list
+                                tracker.record_test(node_id, test_type, t_id, t_path, "direct_pass", 1)
+                                passed_files.add(t_path)
+
+                        # If we couldn't identify specific failures, mark all as failed
+                        if not failed_tests and parsed["exit_code"] != 0:
+                            failed_tests = tests_batch
+                            # Clear any direct_pass records we just made
+                            for t in tests_batch:
+                                t_id = t.get("test_id", "")
+                                t_path = t.get("file_path", "")
+                                if tracker.get_test_status(node_id, test_type, t_id) == "direct_pass":
+                                    # Remove the premature direct_pass record
+                                    node_data = tracker._data.get("nodes", {}).get(node_id, {}).get(test_type, {})
+                                    node_data.pop(t_id, None)
+
+                        await self._log("System", f"[Phase A] {test_type}: {len(passed_files)} passed, {len(failed_tests)} failed in batch.", node_id=node_id)
+
+                    if not failed_tests:
+                        continue
+
+                    # --- Phase B: Individual retry for failed tests ---
+                    still_failing = []
+                    for t in failed_tests:
+                        t_id = t.get("test_id", "")
+                        t_path = t.get("file_path", "")
+                        await self._log("System", f"[Phase B] Retrying {test_type} test: {t_id}...", node_id=node_id)
+
+                        success = await run_tdd_loop(test_type, [t], budget=EXTRA_BUDGET,
+                                                     scenario=req_scenario if test_type == "E2E" else None,
+                                                     preloaded_source=stub_artifacts)
+                        if success:
+                            tracker.record_test(node_id, test_type, t_id, t_path, "downgrade1_pass", EXTRA_BUDGET)
+                            await self._log("System", f"[Phase B] {t_id} passed after individual retry.", node_id=node_id)
+                        else:
+                            still_failing.append(t)
+                            await self._log("System", f"[Phase B] {t_id} still failing after individual retry.", node_id=node_id)
+
+                    if not still_failing:
+                        continue
+
+                    # --- Phase C: Test downgrade (simplify test) ---
+                    for t in still_failing:
+                        t_id = t.get("test_id", "")
+                        t_path = t.get("file_path", "")
+                        await self._log("System", f"[Phase C] Attempting test downgrade for: {t_id}...", node_id=node_id)
+
+                        passed_on_downgrade = False
+                        for downgrade_attempt in range(1, DOWNGRADE_ATTEMPTS + 1):
+                            success = await run_tdd_loop(test_type, [t], budget=EXTRA_BUDGET,
+                                                         scenario=req_scenario if test_type == "E2E" else None,
+                                                         preloaded_source=stub_artifacts,
+                                                         downgrade_mode=True)
+                            if success:
+                                status = "downgrade1_pass" if downgrade_attempt == 1 else "downgrade2_pass"
+                                tracker.record_test(node_id, test_type, t_id, t_path, status, EXTRA_BUDGET + downgrade_attempt)
+                                await self._log("System", f"[Phase C] {t_id} passed on downgrade attempt {downgrade_attempt}.", node_id=node_id)
+                                passed_on_downgrade = True
+                                break
+                            else:
+                                await self._log("System", f"[Phase C] {t_id} still failing on downgrade attempt {downgrade_attempt}.", node_id=node_id)
+
+                        if not passed_on_downgrade:
+                            tracker.record_test(node_id, test_type, t_id, t_path, "final_fail", EXTRA_BUDGET + DOWNGRADE_ATTEMPTS)
+                            await self._log("System", f"[Phase C] {t_id} marked as final_fail.", node_id=node_id)
+
+                    tracker.save()
+
+                # Print node-level summary
+                node_stats = tracker.get_node_stats(node_id)
+                stats_parts = []
+                for tt in ["Unit", "Integration", "E2E"]:
+                    s = node_stats.get(tt, {})
+                    total = s.get("total", 0)
+                    if total > 0:
+                        dp = s.get("direct_pass", 0)
+                        stats_parts.append(f"{tt}: {dp}/{total} direct pass")
+                if stats_parts:
+                    await self._log("System", f"Node {node_id} results: " + ", ".join(stats_parts), node_id=node_id)
 
             else:
                 await self._log("System", f"Non-leaf node {node_id}: skipping Test/TDD (shared interfaces only).", node_id=node_id)

@@ -118,6 +118,14 @@ async def run_compilation(project_path: str, requirement_path: str, clear_all: b
 
     await manager.broadcast({"type": "log", "agent": "System", "message": "All requirements processed successfully. Project compiled!"})
 
+    # 5. Print Test Results Summary
+    if app_type == "android" or app_type == "web":
+        from traceability.test_result_tracker import TestResultTracker
+        arc_dir = os.path.join(project_path, ".arc")
+        tracker = TestResultTracker(arc_dir)
+        summary = tracker.format_summary()
+        await manager.broadcast({"type": "log", "agent": "System", "message": summary})
+
 from traceability.database import set_db_path
 
 @app.websocket("/ws/compiler")
