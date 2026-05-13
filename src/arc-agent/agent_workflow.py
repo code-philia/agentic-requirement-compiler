@@ -254,9 +254,11 @@ def _extract_modified_files_from_messages(messages):
     for msg in messages:
         if msg.get("role") == "assistant" and msg.get("tool_calls"):
             for tc in msg["tool_calls"]:
-                if tc.function.name == "write_file":
+                func = tc.get("function", {}) if isinstance(tc, dict) else (tc.function if hasattr(tc, 'function') else {})
+                if func.get("name") == "write_file" or (hasattr(func, 'name') and func.name == "write_file"):
                     try:
-                        args = json.loads(tc.function.arguments)
+                        args_raw = func.get("arguments", "{}") if isinstance(func, dict) else (func.arguments if hasattr(func, 'arguments') else "{}")
+                        args = json.loads(args_raw)
                         fp = args.get("file_path", "")
                         if fp:
                             modified.add(fp)
@@ -627,24 +629,64 @@ Return ONLY the package name (e.g., org.billthefarmer.editor) or "UNKNOWN" if no
         if os.path.exists(build_gradle_path):
             with open(build_gradle_path, 'r', encoding='utf-8') as f:
                 content = f.read()
+            # Replace both empty and default template namespace
+            content = content.replace("namespace 'com.example.template'", f"namespace '{target_package}'")
             content = content.replace("namespace ''", f"namespace '{target_package}'")
+            content = content.replace('applicationId "com.example.template"', f'applicationId "{target_package}"')
             content = content.replace('applicationId ""', f'applicationId "{target_package}"')
             with open(build_gradle_path, 'w', encoding='utf-8') as f:
                 f.write(content)
 
-        # 2. Create package directory structure for main and test
+        # 2. Update AndroidManifest.xml: package attribute
+        manifest_path = os.path.join(ws, "app", "src", "main", "AndroidManifest.xml")
+        if os.path.exists(manifest_path):
+            with open(manifest_path, 'r', encoding='utf-8') as f:
+                content = f.read()
+            content = content.replace('package="com.example.template"', f'package="{target_package}"')
+            content = content.replace('package=""', f'package="{target_package}"')
+            with open(manifest_path, 'w', encoding='utf-8') as f:
+                f.write(content)
+
+        # 3. Update template_info.json: package_name
+        info_path = os.path.join(ws, "template_info.json")
+        if os.path.exists(info_path):
+            with open(info_path, 'r', encoding='utf-8') as f:
+                content = f.read()
+            content = content.replace('"package_name": "com.example.template"', f'"package_name": "{target_package}"')
+            with open(info_path, 'w', encoding='utf-8') as f:
+                f.write(content)
+
+        # 4. Update package declarations in template test files
+        # Template test files are under app/src/test/java/com/example/template/{unit,integration,e2e}/
+        template_test_base = os.path.join(ws, "app", "src", "test", "java", "com", "example", "template")
+        if os.path.exists(template_test_base):
+            for root, dirs, files in os.walk(template_test_base):
+                for fname in files:
+                    if fname.endswith('.java') or fname.endswith('.kt'):
+                        fpath = os.path.join(root, fname)
+                        with open(fpath, 'r', encoding='utf-8') as f:
+                            content = f.read()
+                        content = content.replace('package com.example.template', f'package {target_package}')
+                        content = content.replace('import com.example.template', f'import {target_package}')
+                        with open(fpath, 'w', encoding='utf-8') as f:
+                            f.write(content)
+
+        # 5. Create package directory structure for main and test subdirectories
         src_main = os.path.join(ws, "app", "src", "main", "java", pkg_dir)
-        src_test = os.path.join(ws, "app", "src", "test", "java", pkg_dir)
+        src_test_unit = os.path.join(ws, "app", "src", "test", "java", pkg_dir, "unit")
+        src_test_integration = os.path.join(ws, "app", "src", "test", "java", pkg_dir, "integration")
+        src_test_e2e = os.path.join(ws, "app", "src", "test", "java", pkg_dir, "e2e")
         os.makedirs(src_main, exist_ok=True)
-        os.makedirs(src_test, exist_ok=True)
+        os.makedirs(src_test_unit, exist_ok=True)
+        os.makedirs(src_test_integration, exist_ok=True)
+        os.makedirs(src_test_e2e, exist_ok=True)
 
         # Create .gitkeep to preserve empty directories
-        with open(os.path.join(src_main, ".gitkeep"), "w") as f:
-            f.write("")
-        with open(os.path.join(src_test, ".gitkeep"), "w") as f:
-            f.write("")
+        for d in [src_main, src_test_unit, src_test_integration, src_test_e2e]:
+            with open(os.path.join(d, ".gitkeep"), "w") as f:
+                f.write("")
 
-        # 3. Store the target package in utils so agents can use it
+        # 6. Store the target package in utils so agents can use it
         from utils import set_android_package
         set_android_package(target_package)
 
@@ -770,7 +812,16 @@ Return ONLY the package name (e.g., org.billthefarmer.editor) or "UNKNOWN" if no
             with open(manifest_path, 'w', encoding='utf-8') as f:
                 f.write(content)
 
-        # 5. Store the target package in utils so agents can use it
+        # 5. Update template_info.json: package_name
+        info_path = os.path.join(ws, "template_info.json")
+        if os.path.exists(info_path):
+            with open(info_path, 'r', encoding='utf-8') as f:
+                content = f.read()
+            content = content.replace(f'"package_name": "{old_pkg}"', f'"package_name": "{target_package}"')
+            with open(info_path, 'w', encoding='utf-8') as f:
+                f.write(content)
+
+        # 6. Store the target package in utils so agents can use it
         from utils import set_android_package, get_android_package
         set_android_package(target_package)
 
@@ -1135,6 +1186,7 @@ Return ONLY the package name (e.g., org.billthefarmer.editor) or "UNKNOWN" if no
                     await self._log("System", f"[Phase A] Batch running {len(test_files)} {test_type} test(s)...", node_id=node_id)
 
                     # Run all tests of this type via the test tool
+                    # Package-based --tests pattern is auto-derived in run_tests_impl()
                     batch_output = await run_tests_impl(test_type)
                     parsed = parse_test_results(batch_output)
 
