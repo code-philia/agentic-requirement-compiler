@@ -169,8 +169,16 @@ class ARCAgent:
         Returns (final_text, messages) so the caller can inspect/continue the session.
         """
         if tools is None:
-            allowed_tool_names = self.get_tool_names()
+            allowed_tool_names = set(self.get_tool_names())
             tools = [TOOL_REGISTRY[n]["schema"] for n in allowed_tool_names if n in TOOL_REGISTRY]
+        else:
+            # Derive allowed tool names from the provided tools list (supports both dict and object schemas)
+            allowed_tool_names = set()
+            for t in tools:
+                if isinstance(t, dict) and "function" in t and "name" in t["function"]:
+                    allowed_tool_names.add(t["function"]["name"])
+                elif hasattr(t, 'function') and hasattr(t.function, 'name'):
+                    allowed_tool_names.add(t.function.name)
 
         tool_result_cache: Dict[str, str] = {}
         step = 0
@@ -253,11 +261,6 @@ class ARCAgent:
 
             if message.tool_calls:
                 any_cache_miss = False
-                # Extract allowed tool names from the tools list for cache check
-                allowed_tool_names = set()
-                for t in tools:
-                    if hasattr(t, 'function') and hasattr(t.function, 'name'):
-                        allowed_tool_names.add(t.function.name)
 
                 for tool_call in message.tool_calls:
                     tool_name = tool_call.function.name
