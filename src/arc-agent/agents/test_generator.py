@@ -20,7 +20,9 @@ class TestGenerator(ARCAgent):
 # Testing Stack (Android):
 - **Unit Tests**: JUnit5 + Robolectric — place in `app/src/test/java/{pkg_dir}/`
   - Use `@Test` from `org.junit.jupiter.api.Test`
-  - Use `@org.robolectric.annotation.Config(sdk = 31)` to configure Robolectric SDK
+  - **CRITICAL**: Every test class that uses Android context (ApplicationProvider, Context, Room, etc.) MUST have both annotations:
+    - `@ExtendWith(RobolectricExtension.class)` — activates Robolectric in JUnit5
+    - `@Config(sdk = 31)` — sets the Android SDK version
   - NEVER use `@RunWith(RobolectricTestRunner.class)` — it conflicts with JUnit5
   - Use `@BeforeEach` / `@AfterEach` (JUnit5) for setup/teardown
   - Use `@DisplayName` for readable test names
@@ -28,12 +30,13 @@ class TestGenerator(ARCAgent):
   - Target `FUNC` and `DB` interfaces
 - **Integration Tests**: JUnit5 + Robolectric + MockWebServer + Room in-memory DB
   - Place in `app/src/test/java/{pkg_dir}/`
+  - **CRITICAL**: Must have `@ExtendWith(RobolectricExtension.class)` and `@Config(sdk = 31)` on the test class
   - Use `Room.inMemoryDatabaseBuilder(context, AppDatabase.class).allowMainThreadQueries().build()` for real DB
   - Use `MockWebServer` for HTTP testing (enqueue fake responses)
   - Use `@AfterEach` to close DB and shutdown MockWebServer
   - Target `API` interfaces
 - **E2E Tests**: JUnit5 + Robolectric — place in `app/src/test/java/{pkg_dir}/`
-  - Use `@Config(sdk = 31)` to simulate Activity lifecycle
+  - **CRITICAL**: Must have `@ExtendWith(RobolectricExtension.class)` and `@Config(sdk = 31)` on the test class
   - Use `ActivityScenario` from `androidx.test.core` to launch Activities
   - Use MockWebServer to mock backend API responses
   - Target the overarching Requirement Node with the provided UI scenario

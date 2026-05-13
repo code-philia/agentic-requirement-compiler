@@ -27,7 +27,10 @@ class TestDrivenDeveloper(ARCAgent):
   - Unit: JUnit5 + Robolectric (app/src/test/)
   - Integration: JUnit5 + Robolectric + MockWebServer + Room in-memory DB (app/src/test/)
   - E2E: JUnit5 + Robolectric + ActivityScenario (app/src/test/)
-  - **NEVER use `@RunWith(RobolectricTestRunner.class)`** — use `@Config(sdk = 31)` instead
+  - **CRITICAL**: Every test class using Android context MUST have both:
+    - `@ExtendWith(RobolectricExtension.class)` — activates Robolectric in JUnit5
+    - `@Config(sdk = 31)` — sets the Android SDK version
+  - **NEVER use `@RunWith(RobolectricTestRunner.class)`** — use `@ExtendWith(RobolectricExtension.class)` instead
   - **NEVER use `@RunWith(AndroidJUnit4.class)` in JVM tests** — only JUnit5 annotations
   - The `android-junit5` Gradle plugin is already configured — do NOT modify build.gradle to add/remove it
 - Source directories: app/src/main/java/, app/src/test/java/
