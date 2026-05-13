@@ -311,7 +311,7 @@ run_tests_schema = {
     "type": "function",
     "function": {
         "name": "run_tests",
-        "description": "Run the test suite using the project's testing frameworks. Uses Vitest/Playwright for web projects and Gradle for Android projects.",
+        "description": "Run the test suite using the project's testing frameworks. Uses Vitest/Playwright for web projects and Gradle for Android projects. For Android, automatically filters by test type using package-based Gradle --tests pattern (e.g., com.example.app.unit.*, com.example.app.integration.*, com.example.app.e2e.*).",
         "parameters": {
             "type": "object",
             "properties": {
