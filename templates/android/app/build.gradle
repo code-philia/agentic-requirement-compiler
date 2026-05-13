@@ -4,11 +4,11 @@ plugins {
 }
 
 android {
-    namespace ''
+    namespace 'com.example.template'
     compileSdk 34
 
     defaultConfig {
-        applicationId ""
+        applicationId "com.example.template"
         minSdk 31
         targetSdk 34
         versionCode 1
@@ -59,7 +59,6 @@ dependencies {
 
     // Robolectric (run Android code on JVM)
     testImplementation 'org.robolectric:robolectric:4.11.1'
-    testImplementation 'org.robolectric:robolectric-junit5:4.11.1'
 
     // Mockito for mocking in unit/integration tests
     testImplementation 'org.mockito:mockito-core:5.8.0'
