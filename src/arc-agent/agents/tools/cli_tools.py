@@ -241,6 +241,16 @@ async def _run_tests_android(test_type: str, test_file_path: str = "") -> str:
 
     # Build final result with exit code header
     result = f"Exit Code: {exit_code}\n"
+
+    # If build failed and no test results were found, return raw output (truncated)
+    # rather than filtered output that may miss compilation error details
+    if exit_code != 0 and not has_test_result:
+        raw = output + "\n" + error
+        if len(raw) > 6000:
+            raw = raw[:3000] + "\n...[OUTPUT TRUNCATED]...\n" + raw[-3000:]
+        result += raw
+        return result
+
     if relevant:
         result += '\n'.join(relevant)
 
@@ -308,16 +318,19 @@ async def _run_build_android() -> str:
             continue
 
     result = f"=== Android Build Result ===\nExit Code: {exit_code}\n"
+
+    # If build failed, return raw output (truncated) to preserve compilation error details
+    if exit_code != 0:
+        raw = output + "\n" + error
+        if len(raw) > 6000:
+            raw = raw[:3000] + "\n...[OUTPUT TRUNCATED]...\n" + raw[-3000:]
+        result += raw
+        return result
+
     if relevant:
         result += '\n'.join(relevant)
     else:
-        # If nothing relevant was filtered, include a summary
-        if exit_code == 0:
-            result += "BUILD SUCCESSFUL"
-        else:
-            # Fallback: include last 2000 chars of raw output
-            raw = output + error
-            result += (raw[-2000:] if len(raw) > 2000 else raw)
+        result += "BUILD SUCCESSFUL"
 
     if len(result) > 8000:
         result = result[:4000] + "\n...[OUTPUT TRUNCATED]...\n" + result[-4000:]
