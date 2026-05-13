@@ -85,7 +85,10 @@ Once `run_tests` returns a 100% passing state (Exit Code: 0) for the target test
         return ["read_file", "write_file", "delete_file", "insert_lines", "replace_lines", "list_directory", "grep_search",
                 "execute_command", "run_tests", "run_build", "search_interfaces_by_keyword", "search_interfaces_by_relation", "get_node_relations"]
 
-    async def implement(self, node_id: str, test_files: List[str], test_type: str, req_desc: str, scenario: list = None, dependency_context: str = "", current_interfaces: list = None, preloaded_source: str = None) -> str:
+    def build_initial_messages(self, node_id: str, test_files: List[str], test_type: str, req_desc: str, scenario: list = None, dependency_context: str = "", current_interfaces: list = None, preloaded_source: str = None) -> tuple:
+        """Build the [system, user] messages and tools list without calling run().
+        Returns (messages, tools) so the caller can use run_from_messages() or continue a session.
+        """
         from .context_pipeline import context_pipeline
 
         # 1. Use the new Context Pipeline to build layered context for the TDD Agent
@@ -149,4 +152,23 @@ Target Test Type: {test_type}
 4. Call `run_tests` with type `{test_type}` to verify.
 5. If tests fail, fix and rerun. Reply "IMPLEMENTED" when all target tests pass.
 """
-        return await self.run(user_prompt=user_prompt, node_id=node_id, max_steps=15, static_context=static_ctx)
+        system_content = self.get_system_prompt()
+        if static_ctx:
+            system_content = f"{system_content}\n\n{static_ctx}"
+        messages = [
+            {"role": "system", "content": system_content},
+            {"role": "user", "content": user_prompt}
+        ]
+        from .tools import TOOL_REGISTRY
+        tools = [TOOL_REGISTRY[n]["schema"] for n in self.get_tool_names() if n in TOOL_REGISTRY]
+        return messages, tools
+
+    async def implement(self, node_id: str, test_files: List[str], test_type: str, req_desc: str, scenario: list = None, dependency_context: str = "", current_interfaces: list = None, preloaded_source: str = None) -> str:
+        """Backwards-compatible: build initial messages then run a new session."""
+        messages, tools = self.build_initial_messages(
+            node_id=node_id, test_files=test_files, test_type=test_type,
+            req_desc=req_desc, scenario=scenario, dependency_context=dependency_context,
+            current_interfaces=current_interfaces, preloaded_source=preloaded_source
+        )
+        result, _ = await self.run_from_messages(messages, node_id=node_id, max_steps=15, tools=tools)
+        return result

@@ -15,9 +15,9 @@ class NodeContextCache:
     when the data hasn't changed between phases.
     """
     # Layers that are truly global (never change during a run)
-    GLOBAL_LAYERS = {"global_context"}
+    GLOBAL_LAYERS = {"global_context", "project_structure"}
     # Layers that change only when files are written (after stub impl, test gen, TDD fix)
-    FILE_DEPENDENT_LAYERS = {"project_structure", "source_code", "test_code"}
+    FILE_DEPENDENT_LAYERS = {"source_code", "test_code"}
     # Layers that change when DB is updated (after insert_interface, insert_test)
     DB_DEPENDENT_LAYERS = {"existing_interfaces", "own_interfaces", "related_interfaces"}
 
@@ -497,6 +497,11 @@ class ContextPipeline:
         if not lines:
             return ""
         return "<modified_files>\n" + "\n\n".join(lines) + "\n</modified_files>"
+
+    def prewarm(self, node_id: str):
+        """Eagerly populate global cache layers so subsequent calls get cache hits."""
+        self.cache.get_or_compute(node_id, "global_context", self._get_global_context)
+        self.cache.get_or_compute(node_id, "project_structure", self._get_project_structure)
 
 # Singleton instance
 context_pipeline = ContextPipeline()

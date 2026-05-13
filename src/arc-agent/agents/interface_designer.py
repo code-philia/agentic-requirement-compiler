@@ -113,8 +113,10 @@ Each object in the array must follow this exact schema:
             "find_interface_impacts", "get_node_relations"
         ]
 
-    async def design_ir(self, node_id: str, requirement_data: dict, is_leaf: bool = True) -> str:
-        """Phase 1: Design interfaces and output IR JSON. No code writing."""
+    async def design_ir(self, node_id: str, requirement_data: dict, is_leaf: bool = True) -> tuple:
+        """Phase 1: Design interfaces and output IR JSON. No code writing.
+        Returns (ir_output, messages) so the session can be continued by implement_stubs_from_session().
+        """
         from .context_pipeline import context_pipeline
 
         static_ctx, dynamic_ctx = context_pipeline.build_agent_context_split(node_id=node_id, agent_type=self.agent_name)
@@ -153,14 +155,30 @@ Perform the top-down decomposition for Node [{node_id}].
 Design the interface architecture and output the IR JSON mapping.
 Do NOT write any code files — this phase is ONLY for architecture design.
 """
-        return await self.run(user_prompt=user_prompt, node_id=node_id, max_steps=10, static_context=static_ctx)
+        system_content = self.get_system_prompt()
+        if static_ctx:
+            system_content = f"{system_content}\n\n{static_ctx}"
+        messages = [
+            {"role": "system", "content": system_content},
+            {"role": "user", "content": user_prompt}
+        ]
+        from .tools import TOOL_REGISTRY
+        tools = [TOOL_REGISTRY[n]["schema"] for n in self.get_tool_names() if n in TOOL_REGISTRY]
+        result, messages = await self.run_from_messages(messages, node_id=node_id, max_steps=10, tools=tools)
+        return result, messages
 
-    async def implement_stubs(self, node_id: str, interfaces: List[Dict], is_leaf: bool = True) -> str:
-        """Phase 2: Implement stub code for each interface. Track progress per interface."""
+    async def implement_stubs_from_session(self, messages: List[Dict], interfaces: List[Dict], node_id: str, is_leaf: bool = True) -> tuple:
+        """Phase 2: Continue from design_ir's session to implement stub code.
+        The LLM already understands the architecture from design_ir, so it can
+        start writing code immediately without re-reading/re-understanding the context.
+        Returns (output, messages).
+        """
         from .context_pipeline import context_pipeline
         from utils import get_app_type, get_android_package
+        from .tools import TOOL_REGISTRY
 
-        static_ctx, dynamic_ctx = context_pipeline.build_agent_context_split(node_id=node_id, agent_type=self.agent_name)
+        # Switch to implementation tool set (adds write_file, run_build, etc.)
+        impl_tools = [TOOL_REGISTRY[n]["schema"] for n in self._get_implement_tool_names() if n in TOOL_REGISTRY]
 
         # Build a summary of what needs to be implemented
         iface_summaries = []
@@ -203,10 +221,7 @@ After writing all files, call `run_build` to verify compilation. Fix any errors.
 {pkg_compliance}
 """
 
-        user_prompt = f"""
-### Auto-Prefetched Context for Node [{node_id}]
-{dynamic_ctx}
-
+        impl_prompt = f"""
 ### Implementation Task for Node [{node_id}]
 {impl_guidance}
 
@@ -219,17 +234,13 @@ After writing all files, call `run_build` to verify compilation. Fix any errors.
 ```
 
 Write ALL stub code files using `write_file` calls FIRST, then call `run_build` ONCE to verify compilation.
-Do NOT call `read_file` on source files — they are already provided in the `<source_code>` context above.
+Do NOT call `read_file` on source files — you already have the context from the previous design phase.
 Do NOT interleave `read_file` and `write_file` — batch all writes together.
 Ensure all imports, class hierarchies, and method signatures match the interface definitions above.
 Fix any build errors found.
 When all files are written and compilation passes, output "IMPLEMENTED".
 """
-        # Override tool names for implementation phase
-        original_tool_names = self.get_tool_names
-        self.get_tool_names = lambda: self._get_implement_tool_names()
-        try:
-            result = await self.run(user_prompt=user_prompt, node_id=node_id, max_steps=20, static_context=static_ctx)
-        finally:
-            self.get_tool_names = original_tool_names
-        return result
+        # Append implementation prompt to the existing session
+        messages.append({"role": "user", "content": impl_prompt})
+        result, messages = await self.run_from_messages(messages, node_id=node_id, max_steps=20, tools=impl_tools)
+        return result, messages

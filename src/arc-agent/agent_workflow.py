@@ -229,6 +229,23 @@ async def check_prerequisites(app_type: str, log_cb: Callable[[str], Awaitable[N
     return True  # Unknown app_type -- don't block
 
 
+def _extract_modified_files_from_messages(messages):
+    """Scan messages for write_file tool calls and return the set of modified file paths."""
+    modified = set()
+    for msg in messages:
+        if msg.get("role") == "assistant" and msg.get("tool_calls"):
+            for tc in msg["tool_calls"]:
+                if tc.function.name == "write_file":
+                    try:
+                        args = json.loads(tc.function.arguments)
+                        fp = args.get("file_path", "")
+                        if fp:
+                            modified.add(fp)
+                    except Exception:
+                        pass
+    return list(modified)
+
+
 class ARCWorkflowManager:
     """Manage the lifecycle of a single requirement node and multi-agent TDD state transitions"""
     
@@ -643,6 +660,9 @@ Return ONLY the package name (e.g., org.billthefarmer.editor) or "UNKNOWN" if no
             await self._log("System", f"Error: Requirement node {node_id} not found in database.", node_id=node_id)
             return False
 
+        # Pre-warm context pipeline cache for this node (global layers only)
+        context_pipeline.prewarm(node_id)
+
         # Determine if this is a leaf node (no children)
         children_ids = requirement_data.get("children_ids", [])
         is_leaf = not children_ids
@@ -664,7 +684,7 @@ Return ONLY the package name (e.g., org.billthefarmer.editor) or "UNKNOWN" if no
             # Refresh requirement data after parsing visual elements
             requirement_data = get_requirement_by_id(node_id)
 
-            raw_ir_output = await self.interface_designer.design_ir(
+            raw_ir_output, design_messages = await self.interface_designer.design_ir(
                 node_id=node_id,
                 requirement_data=requirement_data,
                 is_leaf=is_leaf
@@ -675,7 +695,7 @@ Return ONLY the package name (e.g., org.billthefarmer.editor) or "UNKNOWN" if no
                 await self._log("System", "First IR output is not a valid JSON array. Triggering one repair attempt.", node_id=node_id)
                 repair_prompt_data = dict(requirement_data)
                 repair_prompt_data["__repair_hint"] = "Return ONLY one ```json array``` with valid interface mapping objects. Do NOT write any code."
-                raw_ir_output = await self.interface_designer.design_ir(
+                raw_ir_output, design_messages = await self.interface_designer.design_ir(
                     node_id=node_id,
                     requirement_data=repair_prompt_data,
                     is_leaf=is_leaf
@@ -739,9 +759,10 @@ Return ONLY the package name (e.g., org.billthefarmer.editor) or "UNKNOWN" if no
             if interfaces is not None and len(interfaces) > 0:
                 await self._log("InterfaceDesigner", f"Implementing stub code for {len(interfaces)} interfaces...", node_id=node_id)
 
-                impl_output = await self.interface_designer.implement_stubs(
-                    node_id=node_id,
+                impl_output, _ = await self.interface_designer.implement_stubs_from_session(
+                    messages=design_messages,
                     interfaces=interfaces,
+                    node_id=node_id,
                     is_leaf=is_leaf
                 )
 
@@ -787,12 +808,15 @@ Return ONLY the package name (e.g., org.billthefarmer.editor) or "UNKNOWN" if no
                 # Single batch call: generate ALL test types (Unit + Integration + E2E) at once
                 label = f"{len(interfaces_ir)} interfaces" if interfaces_ir else "requirement description (no IR)"
                 await self._log("TestGenerator", f"Generating all test types for {label}...", node_id=node_id)
-                all_test_output = await self.test_generator.generate_tests(
+                test_messages, test_tools = self.test_generator.build_initial_messages(
                     node_id=node_id,
                     requirement_data=requirement_data,
                     interfaces_ir=interfaces_ir,
                     test_type="All",
                     preloaded_source=stub_artifacts
+                )
+                all_test_output, _ = await self.test_generator.run_from_messages(
+                    test_messages, node_id=node_id, max_steps=15, tools=test_tools
                 )
                 all_test_outputs.append(all_test_output)
 
@@ -861,36 +885,26 @@ Return ONLY the package name (e.g., org.billthefarmer.editor) or "UNKNOWN" if no
 
                     await self._log("TestDrivenDeveloper", f"Starting {target_type} TDD loop with {len(test_files)} tests (Budget: {budget})...", node_id=node_id)
 
+                    # Build initial messages ONCE — all iterations share this session
+                    messages, tools = self.test_driven_developer.build_initial_messages(
+                        node_id=node_id,
+                        test_files=test_files,
+                        test_type=target_type,
+                        req_desc=req_desc,
+                        scenario=scenario,
+                        dependency_context=dependency_context,
+                        current_interfaces=current_interfaces,
+                        preloaded_source=preloaded_source
+                    )
+
                     last_error_sig = None
                     consecutive_same_errors = 0
 
                     for iteration in range(1, budget + 1):
                         await self._log("TestDrivenDeveloper", f"[{target_type}] Iteration {iteration}/{budget}...", node_id=node_id)
 
-                        # First iteration uses preloaded_source; subsequent iterations use incremental context
-                        source_override = preloaded_source if iteration == 1 else None
-
-                        # For iterations after the first, use incremental context (only re-read modified files)
-                        if iteration > 1:
-                            # Invalidate file-dependent cache layers since TDD may have modified source files
-                            context_pipeline.cache.invalidate_file_layers(node_id)
-                            # Rebuild source_code cache from disk (captures TDD's fixes)
-                            incremental_delta = context_pipeline.build_incremental_context(
-                                node_id,
-                                modified_files=[iface.get("file_path", "") for iface in current_interfaces if iface.get("file_path")]
-                            )
-                            if incremental_delta:
-                                source_override = incremental_delta
-
-                        final_output = await self.test_driven_developer.implement(
-                            node_id=node_id,
-                            test_files=test_files,
-                            test_type=target_type,
-                            req_desc=req_desc,
-                            scenario=scenario,
-                            dependency_context=dependency_context,
-                            current_interfaces=current_interfaces,
-                            preloaded_source=source_override
+                        final_output, messages = await self.test_driven_developer.run_from_messages(
+                            messages, node_id=node_id, max_steps=15, tools=tools
                         )
 
                         if "IMPLEMENTED" in final_output:
@@ -917,7 +931,24 @@ Return ONLY the package name (e.g., org.billthefarmer.editor) or "UNKNOWN" if no
                                 await self._log("System", f"Warning: [{target_type}] Same error repeated 3 consecutive times. Breaking TDD loop early to save budget.", node_id=node_id)
                                 break
 
-                            await self._log("System", f"[{target_type}] Agent finished reasoning but tests might not be fully passing. Retrying...", node_id=node_id)
+                            await self._log("System", f"[{target_type}] Tests not yet passing. Continuing in same session...", node_id=node_id)
+
+                            # Nudge the LLM to continue fixing — stays in same session
+                            if iteration > 1:
+                                modified_files = _extract_modified_files_from_messages(messages)
+                                delta_ctx = context_pipeline.build_incremental_context(node_id, modified_files=modified_files)
+                                if delta_ctx:
+                                    nudge = (
+                                        f"The {target_type} tests are still failing. "
+                                        f"Here are the files you modified in previous iterations:\n{delta_ctx}\n\n"
+                                        f"Analyze the error output above carefully, fix the code, and rerun `run_tests` with type `{target_type}`. "
+                                        f"Reply \"IMPLEMENTED\" only when all target tests pass."
+                                    )
+                                else:
+                                    nudge = f"The {target_type} tests are still failing. Analyze the error output above carefully, fix the code, and rerun `run_tests` with type `{target_type}`. Reply \"IMPLEMENTED\" only when all target tests pass."
+                            else:
+                                nudge = f"The {target_type} tests are still failing. Analyze the error output above carefully, fix the code, and rerun `run_tests` with type `{target_type}`. Reply \"IMPLEMENTED\" only when all target tests pass."
+                            messages.append({"role": "user", "content": nudge})
 
                     await self._log("System", f"Warning: [{target_type}] Max TDD iterations reached without a definitive 'IMPLEMENTED' signal.", node_id=node_id)
                     return False

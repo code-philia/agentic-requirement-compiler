@@ -97,10 +97,12 @@ Schema for each object:
             "run_build", "search_interfaces_by_keyword", "search_interfaces_by_relation", "get_node_relations"
         ]
 
-    async def generate_tests(self, node_id: str, requirement_data: Dict[str, Any], interfaces_ir: list, test_type: str = "Unit", preloaded_source: str = None) -> str:
+    def build_initial_messages(self, node_id: str, requirement_data: Dict[str, Any], interfaces_ir: list, test_type: str = "Unit", preloaded_source: str = None) -> tuple:
+        """Build the [system, user] messages and tools list without calling run().
+        Returns (messages, tools) so the caller can use run_from_messages() or continue a session.
+        """
         from .context_pipeline import context_pipeline
 
-        # 1. Use the new Context Pipeline to build layered context for the TestGenerator
         static_ctx, dynamic_ctx = context_pipeline.build_agent_context_split(
             node_id=node_id, agent_type=self.agent_name, preloaded_source=preloaded_source
         )
@@ -143,4 +145,22 @@ Do NOT call `read_file` on source files — they are already provided in the `<s
 Ensure the tests correctly import the designed interfaces and cover the logic described in the requirement.
 When finished, output the mapping JSON block so the system can register these tests in the traceability database.
 """
-        return await self.run(user_prompt=user_prompt, node_id=node_id, max_steps=15, static_context=static_ctx)
+        system_content = self.get_system_prompt()
+        if static_ctx:
+            system_content = f"{system_content}\n\n{static_ctx}"
+        messages = [
+            {"role": "system", "content": system_content},
+            {"role": "user", "content": user_prompt}
+        ]
+        from .tools import TOOL_REGISTRY
+        tools = [TOOL_REGISTRY[n]["schema"] for n in self.get_tool_names() if n in TOOL_REGISTRY]
+        return messages, tools
+
+    async def generate_tests(self, node_id: str, requirement_data: Dict[str, Any], interfaces_ir: list, test_type: str = "Unit", preloaded_source: str = None) -> str:
+        messages, tools = self.build_initial_messages(
+            node_id=node_id, requirement_data=requirement_data,
+            interfaces_ir=interfaces_ir, test_type=test_type,
+            preloaded_source=preloaded_source
+        )
+        result, _ = await self.run_from_messages(messages, node_id=node_id, max_steps=15, tools=tools)
+        return result

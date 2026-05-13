@@ -164,25 +164,15 @@ class ARCAgent:
                 await asyncio.sleep(min(2 * attempt, 5))
         raise last_err
 
-    async def run(self, user_prompt: str, node_id: str = None, max_steps: int = 30, static_context: str = None) -> str:
-        system_content = self.get_system_prompt()
-        # Inject static context into system prompt to reduce per-step token cost
-        if static_context:
-            system_content = f"{system_content}\n\n{static_context}"
-        messages = [
-            {"role": "system", "content": system_content},
-            {"role": "user", "content": user_prompt}
-        ]
-        
-        # Dynamically assemble the tool schemas this agent is allowed to use from the registry
-        allowed_tool_names = self.get_tool_names()
-        tools = [
-            TOOL_REGISTRY[name]["schema"] 
-            for name in allowed_tool_names 
-            if name in TOOL_REGISTRY
-        ]
-        tool_result_cache: Dict[str, str] = {}
+    async def run_from_messages(self, messages: List[Dict[str, Any]], node_id: str = None, max_steps: int = 30, tools: List = None) -> tuple:
+        """Continue an existing session from the given messages list.
+        Returns (final_text, messages) so the caller can inspect/continue the session.
+        """
+        if tools is None:
+            allowed_tool_names = self.get_tool_names()
+            tools = [TOOL_REGISTRY[n]["schema"] for n in allowed_tool_names if n in TOOL_REGISTRY]
 
+        tool_result_cache: Dict[str, str] = {}
         step = 0
         while step < max_steps:
             # 1. Two-level Auto-Compact: Prevent context overflow
@@ -231,7 +221,7 @@ class ARCAgent:
             self._microcompact_messages(messages)
 
             await self._log(f"Thinking... (Step {step + 1}/{max_steps})", node_id=node_id)
-            
+
             api_kwargs = {
                 "model": self.model,
                 "messages": messages,
@@ -240,16 +230,16 @@ class ARCAgent:
             if tools:
                 api_kwargs["tools"] = tools
                 api_kwargs["tool_choice"] = "auto"
-                
+
             if DEBUG_MODE:
                 # Log last message sent to model
                 last_msg = messages[-1].get("content")
                 await self._log(f"[DEBUG] Input to model:\n{last_msg}", node_id=node_id)
-                
+
             response = await self._create_chat_completion_with_retry(**api_kwargs)
             message = response.choices[0].message
             messages.append(message.model_dump(exclude_none=True))
-            
+
             if DEBUG_MODE:
                 reply_content = message.content or ""
                 await self._log(f"[DEBUG] Model reply:\n{reply_content}", node_id=node_id)
@@ -263,6 +253,12 @@ class ARCAgent:
 
             if message.tool_calls:
                 any_cache_miss = False
+                # Extract allowed tool names from the tools list for cache check
+                allowed_tool_names = set()
+                for t in tools:
+                    if hasattr(t, 'function') and hasattr(t.function, 'name'):
+                        allowed_tool_names.add(t.function.name)
+
                 for tool_call in message.tool_calls:
                     tool_name = tool_call.function.name
 
@@ -295,7 +291,7 @@ class ARCAgent:
                     else:
                         any_cache_miss = True
                         tool_result = f"Error: Tool '{tool_name}' not permitted or not found."
-                    
+
                     # 3. Tool Output Budget: Truncate long tool outputs
                     tool_result_str = str(tool_result)
                     if len(tool_result_str) > MAX_TOOL_OUTPUT_LENGTH:
@@ -317,7 +313,7 @@ class ARCAgent:
                                     debug_logger.log(f"TOOL_RESULT[{tool_name}]", tool_result_str)
                         except ImportError:
                             pass
-                    
+
                     # Return the result back to the LLM
                     messages.append({
                         "role": "tool",
@@ -325,13 +321,34 @@ class ARCAgent:
                         "name": tool_name,
                         "content": tool_result_str
                     })
-                    
+
                 # After tools are executed, advance step only if there was a cache miss
                 if any_cache_miss:
                     step += 1
                 continue
             else:
                 await self._log("Task completed.", node_id=node_id)
-                return message.content
+                return message.content, messages
 
-        return "Error: Agent reached maximum reasoning steps without a final conclusion."
+        return "Error: Agent reached maximum reasoning steps without a final conclusion.", messages
+
+    async def run(self, user_prompt: str, node_id: str = None, max_steps: int = 30, static_context: str = None) -> str:
+        """Start a new session. Backwards-compatible wrapper around run_from_messages()."""
+        system_content = self.get_system_prompt()
+        # Inject static context into system prompt to reduce per-step token cost
+        if static_context:
+            system_content = f"{system_content}\n\n{static_context}"
+        messages = [
+            {"role": "system", "content": system_content},
+            {"role": "user", "content": user_prompt}
+        ]
+
+        # Dynamically assemble the tool schemas this agent is allowed to use from the registry
+        allowed_tool_names = self.get_tool_names()
+        tools = [
+            TOOL_REGISTRY[name]["schema"]
+            for name in allowed_tool_names
+            if name in TOOL_REGISTRY
+        ]
+        result, _ = await self.run_from_messages(messages, node_id, max_steps, tools)
+        return result
