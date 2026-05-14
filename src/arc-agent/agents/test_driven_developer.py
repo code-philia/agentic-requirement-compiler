@@ -23,7 +23,7 @@ class TestDrivenDeveloper(ARCAgent):
 - UI: XML Layout + AndroidX AppCompat + Material Components + ConstraintLayout
 - Database: Room (SQLite)
 - Testing:
-  - All tests run on JVM via `./gradlew testDebugUnitTest` (no device/emulator)
+  - All tests run on JVM via `./gradlew testDebugUnitTest` (no device/emulator — STRICTLY JVM only)
   - **Test directory structure** (sub-packages by type):
     ```
     app/src/test/java/{android_pkg.replace(".", "/")}/
@@ -35,6 +35,10 @@ class TestDrivenDeveloper(ARCAgent):
   - The `android-junit5` Gradle plugin bridges Robolectric with JUnit5 automatically — no @ExtendWith or @RunWith needed
   - **NEVER use `@RunWith(RobolectricTestRunner.class)`** — conflicts with JUnit5
   - **NEVER use `@RunWith(AndroidJUnit4.class)` in JVM tests** — only JUnit5 annotations
+  - **NEVER import `androidx.test.core.app.ApplicationProvider`** — use `RuntimeEnvironment.getApplication()` instead
+  - **NEVER import `androidx.test.core.app.ActivityScenario`** — use `Robolectric.buildActivity(MyActivity.class).create().resume().get()`
+  - **NEVER import `InstrumentationRegistry` or any Espresso API** — no instrumentation available
+  - **NEVER use `InstantTaskExecutorRule`** (JUnit4 @Rule) — use `@ExtendWith(InstantTaskExecutorExtension.class)` instead
   - The `android-junit5` Gradle plugin is already configured — do NOT modify build.gradle to add/remove it
   - **Package MUST match directory**: test files in `unit/` use `package {android_pkg}.unit;`, etc.
 - Source directories: app/src/main/java/, app/src/test/java/{android_pkg.replace(".", "/")}/

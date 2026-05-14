@@ -32,27 +32,42 @@ app/src/test/java/{pkg_dir}/
 ```
 Gradle filters by package prefix: `--tests "{android_pkg}.unit.*"`, `--tests "{android_pkg}.integration.*"`, `--tests "{android_pkg}.e2e.*"`
 
+## ⚠️ STRICTLY JVM-ONLY — No Instrumentation, No Emulator
+ALL tests run on the JVM via `./gradlew testDebugUnitTest`. There is NO device, NO emulator, and NO Android instrumentation registered.
+
+**NEVER import or use:**
+- `androidx.test.core.app.ApplicationProvider` — requires instrumentation; use `RuntimeEnvironment.getApplication()` instead
+- `androidx.test.core.app.ActivityScenario` — requires instrumentation; use `Robolectric.buildActivity(MyActivity.class).create().resume().get()` instead
+- `androidx.test.ext.junit.runners.AndroidJUnit4` / `@RunWith(AndroidJUnit4.class)` — conflicts with JUnit5
+- `@RunWith(RobolectricTestRunner.class)` — conflicts with JUnit5
+- `androidx.test.espresso.*` — requires a device
+- `InstrumentationRegistry` — requires instrumentation
+- `InstantTaskExecutorRule` (JUnit4 `@Rule`) — use `@ExtendWith(InstantTaskExecutorExtension.class)` (JUnit5) instead; the `InstantTaskExecutorExtension` class is already provided in your test package
+- NEVER write to `app/src/androidTest/` — that directory is for on-device tests and is not part of this build
+
 ## Unit Tests
 - Place in `app/src/test/java/{pkg_dir}/unit/` with `package {android_pkg}.unit;`
 - JUnit5 + Robolectric. Target `FUNC` and `DB` interfaces.
 - **CRITICAL**: Every test class MUST have `@Config(sdk = 31)` to activate Robolectric
-- Use `@Test`, `@BeforeEach`/`@AfterEach`, `@DisplayName`, `@Nested` (JUnit5 only)
-- NEVER use `@RunWith(RobolectricTestRunner.class)` or `@RunWith(AndroidJUnit4.class)` — conflicts with JUnit5
+- Use `@Test`, `@BeforeEach`/`@AfterEach`, `@DisplayName`, `@Nested` (JUnit5 annotations only)
+- For Android context: use `RuntimeEnvironment.getApplication()` (Robolectric)
 - The `android-junit5` Gradle plugin bridges Robolectric with JUnit5 automatically
 
 ## Integration Tests
 - Place in `app/src/test/java/{pkg_dir}/integration/` with `package {android_pkg}.integration;`
 - JUnit5 + Robolectric + MockWebServer + Room in-memory DB. Target `API` interfaces.
 - **CRITICAL**: Must have `@Config(sdk = 31)` on the test class
-- Use `Room.inMemoryDatabaseBuilder(context, AppDatabase.class).allowMainThreadQueries().build()` for real DB
+- For Android context: use `RuntimeEnvironment.getApplication()` — NOT `ApplicationProvider`
+- Use `Room.inMemoryDatabaseBuilder(RuntimeEnvironment.getApplication(), AppDatabase.class).allowMainThreadQueries().build()` for real DB
 - Use `MockWebServer` for HTTP testing (enqueue fake responses)
 - Use `@AfterEach` to close DB and shutdown MockWebServer
 
 ## E2E Tests
 - Place in `app/src/test/java/{pkg_dir}/e2e/` with `package {android_pkg}.e2e;`
-- JUnit5 + Robolectric + ActivityScenario. Target the Requirement Node with the UI scenario.
+- JUnit5 + Robolectric. Target the Requirement Node with the UI scenario.
 - **CRITICAL**: Must have `@Config(sdk = 31)` on the test class
-- Use `ActivityScenario` from `androidx.test.core` to launch Activities
+- Launch activities via Robolectric: `Robolectric.buildActivity(MyActivity.class).create().resume().get()`
+- Interact with views via: `activity.findViewById(R.id.someId)` and call methods directly
 - Use MockWebServer to mock backend API responses
 
 ## Test file naming: `*Test.java` for unit, `*IntegrationTest.java` for integration, `*E2ETest.java` for E2E

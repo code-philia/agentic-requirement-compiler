@@ -685,27 +685,43 @@ Return a JSON object with "package_name" and "resource_ids" fields."""
             for res_name, comp_type in sorted(resource_ids.items()):
                 lines.append(f"| `{package_name}:id/{res_name}` | {comp_type} |")
 
-        # List template scaffold files already present in the workspace so agents
-        # know to build upon them rather than create conflicting parallel implementations.
-        src_root = os.path.join(self.workspace_path, "app", "src", "main", "java", pkg_dir)
-        test_root = os.path.join(self.workspace_path, "app", "src", "test", "java", pkg_dir)
-        scaffold_files = []
-        for base, label in [(src_root, "main"), (test_root, "test")]:
-            if os.path.exists(base):
-                for root, dirs, files in os.walk(base):
-                    for fname in sorted(files):
-                        if fname.endswith('.java') or fname.endswith('.kt'):
-                            rel = os.path.relpath(os.path.join(root, fname), self.workspace_path)
-                            scaffold_files.append(rel.replace(os.sep, "/"))
-        if scaffold_files:
+        # List example reference files in .arc/examples/ so agents know they exist
+        # and can read them for architectural patterns.
+        examples_root = os.path.join(self.workspace_path, ".arc", "examples")
+        example_files = []
+        if os.path.exists(examples_root):
+            for root, dirs, files in os.walk(examples_root):
+                for fname in sorted(files):
+                    if fname.endswith('.java') or fname.endswith('.kt'):
+                        rel = os.path.relpath(os.path.join(root, fname), self.workspace_path)
+                        example_files.append(rel.replace(os.sep, "/"))
+        if example_files:
             lines.append("")
-            lines.append("## Template Scaffold (pre-existing files — build upon these, do NOT duplicate)")
-            lines.append("These files are already in the workspace. Extend or replace their logic;")
-            lines.append("do NOT create a second class with the same role.")
-            for sf in scaffold_files[:40]:
-                lines.append(f"- `{sf}`")
-            if len(scaffold_files) > 40:
-                lines.append(f"- ... ({len(scaffold_files) - 40} more)")
+            lines.append("## Template Examples (read-only reference — NOT on the build path)")
+            lines.append("These counter-app files demonstrate the correct architectural patterns")
+            lines.append("(ViewModel, Repository, DAO, Room setup, Robolectric test helpers).")
+            lines.append("Read them for guidance. Do NOT copy their `com.example.template` package")
+            lines.append("declarations — use the target package instead.")
+            for ef in example_files[:40]:
+                lines.append(f"- `{ef}`")
+            if len(example_files) > 40:
+                lines.append(f"- ... ({len(example_files) - 40} more)")
+
+        # List generic test infra already in the real test package (agents can import directly)
+        test_root = os.path.join(self.workspace_path, "app", "src", "test", "java", pkg_dir)
+        infra_files = []
+        if os.path.exists(test_root):
+            for root, dirs, files in os.walk(test_root):
+                for fname in sorted(files):
+                    if (fname.endswith('.java') or fname.endswith('.kt')) and not fname.endswith('Test.java'):
+                        rel = os.path.relpath(os.path.join(root, fname), self.workspace_path)
+                        infra_files.append(rel.replace(os.sep, "/"))
+        if infra_files:
+            lines.append("")
+            lines.append("## Test Infrastructure (already in your test package — import directly)")
+            lines.append("These utility classes are compiled alongside your tests. Do NOT recreate them.")
+            for inf in infra_files:
+                lines.append(f"- `{inf}`")
 
         lines.append("")
 
@@ -794,51 +810,82 @@ Return a JSON object with "package_name" and "resource_ids" fields."""
             with open(info_path, 'w', encoding='utf-8') as f:
                 f.write(content)
 
-        template_src_base = os.path.join(ws, "app", "src", "main", "java", "com", "example", "template")
+        import shutil as _shutil
+
+        template_src_base  = os.path.join(ws, "app", "src", "main", "java", "com", "example", "template")
         template_test_base = os.path.join(ws, "app", "src", "test", "java", "com", "example", "template")
-        new_src_base = os.path.join(ws, "app", "src", "main", "java", pkg_dir)
-        new_test_base = os.path.join(ws, "app", "src", "test", "java", pkg_dir)
+        new_test_base      = os.path.join(ws, "app", "src", "test", "java", pkg_dir)
+        examples_main      = os.path.join(ws, ".arc", "examples", "main")
+        examples_test      = os.path.join(ws, ".arc", "examples", "test")
+        os.makedirs(examples_main, exist_ok=True)
+        os.makedirs(examples_test, exist_ok=True)
 
-        def _relocate_java_tree(old_root, new_root):
-            """Update package/import declarations and move files from old_root to new_root."""
-            if not os.path.exists(old_root):
-                return
-            for root, dirs, files in os.walk(old_root, topdown=False):
+        def _clean_empty_parents(path, stop_at):
+            """Remove empty ancestor directories up to (but not including) stop_at."""
+            while path and path != stop_at:
+                if os.path.isdir(path) and not os.listdir(path):
+                    os.rmdir(path)
+                    path = os.path.dirname(path)
+                else:
+                    break
+
+        # 4. Archive ALL main source files to .arc/examples/main/ (original declarations
+        #    preserved — readable reference for agents, not on the Gradle compile path).
+        if os.path.exists(template_src_base):
+            for root, dirs, files in os.walk(template_src_base, topdown=False):
                 for fname in files:
-                    old_path = os.path.join(root, fname)
-                    # Compute relative path within the old tree to preserve sub-package structure
-                    rel = os.path.relpath(old_path, old_root)
-                    new_path = os.path.join(new_root, rel)
-                    os.makedirs(os.path.dirname(new_path), exist_ok=True)
-                    if fname.endswith('.java') or fname.endswith('.kt'):
-                        with open(old_path, 'r', encoding='utf-8') as f:
-                            content = f.read()
-                        content = content.replace('package com.example.template', f'package {target_package}')
-                        content = content.replace('import com.example.template', f'import {target_package}')
-                        with open(new_path, 'w', encoding='utf-8') as f:
-                            f.write(content)
+                    src = os.path.join(root, fname)
+                    rel = os.path.relpath(src, template_src_base)
+                    dst = os.path.join(examples_main, rel)
+                    os.makedirs(os.path.dirname(dst), exist_ok=True)
+                    _shutil.copy2(src, dst)
+                    os.remove(src)
+            _shutil.rmtree(template_src_base, ignore_errors=True)
+            _clean_empty_parents(
+                os.path.dirname(template_src_base),
+                os.path.join(ws, "app", "src", "main", "java"),
+            )
+
+        # 5. Split template test files:
+        #    - Counter-specific tests (*Test.java) → .arc/examples/test/ (reference only)
+        #    - Generic infra (InstantTaskExecutorExtension, TestCounterApp, etc.) → move to
+        #      the real test package with updated declarations so agents can import them.
+        if os.path.exists(template_test_base):
+            for root, dirs, files in os.walk(template_test_base, topdown=False):
+                for fname in files:
+                    src = os.path.join(root, fname)
+                    rel = os.path.relpath(src, template_test_base)
+                    is_test_class = fname.endswith("Test.java") or fname.endswith("Test.kt")
+                    if is_test_class:
+                        dst = os.path.join(examples_test, rel)
+                        os.makedirs(os.path.dirname(dst), exist_ok=True)
+                        _shutil.copy2(src, dst)
                     else:
-                        import shutil as _shutil
-                        _shutil.copy2(old_path, new_path)
-                    os.remove(old_path)
-            # Remove now-empty original directory tree
-            import shutil as _shutil
-            _shutil.rmtree(old_root, ignore_errors=True)
-
-        # 4. Move + repackage main source files
-        _relocate_java_tree(template_src_base, new_src_base)
-
-        # 5. Move + repackage test files (declarations were already updated above, but
-        #    files were left at the wrong path — Java requires path == package structure)
-        _relocate_java_tree(template_test_base, new_test_base)
+                        # Generic infra — move to real test tree with repackaged declarations
+                        new_path = os.path.join(new_test_base, rel)
+                        os.makedirs(os.path.dirname(new_path), exist_ok=True)
+                        if fname.endswith(".java") or fname.endswith(".kt"):
+                            with open(src, "r", encoding="utf-8") as f:
+                                content = f.read()
+                            content = content.replace("package com.example.template", f"package {target_package}")
+                            content = content.replace("import com.example.template", f"import {target_package}")
+                            with open(new_path, "w", encoding="utf-8") as f:
+                                f.write(content)
+                        else:
+                            _shutil.copy2(src, new_path)
+                    os.remove(src)
+            _shutil.rmtree(template_test_base, ignore_errors=True)
+            _clean_empty_parents(
+                os.path.dirname(template_test_base),
+                os.path.join(ws, "app", "src", "test", "java"),
+            )
 
         # 6. Ensure test sub-package directories exist (agents write into these)
         for sub in ("unit", "integration", "e2e"):
             d = os.path.join(new_test_base, sub)
             os.makedirs(d, exist_ok=True)
-            gitkeep = os.path.join(d, ".gitkeep")
-            if not os.listdir(d):
-                with open(gitkeep, "w") as f:
+            if not any(f for f in os.listdir(d) if not f.startswith(".")):
+                with open(os.path.join(d, ".gitkeep"), "w") as f:
                     f.write("")
 
         # 7. Store the target package in utils so agents can use it
@@ -980,19 +1027,32 @@ Return a JSON object with "package_name" and "resource_ids" fields."""
         from utils import set_android_package, get_android_package
         set_android_package(target_package)
 
-    def _collect_stub_artifacts(self, interfaces: list) -> str:
+    def _collect_stub_artifacts(self, interfaces: list, impl_messages: list = None) -> str:
         """Read stub files from disk and format as <source_code> context.
-        This allows downstream agents to skip re-reading these files.
+        Covers files declared in interfaces IR plus any extra files the InterfaceDesigner
+        wrote during implementation (captured from its message history).
         """
         from utils import get_abs_path
-        lines = []
-        total = 0
+        # Collect paths from IR (non-reused interfaces)
+        paths = []
+        seen = set()
         for iface in interfaces:
             if iface.get("reuse", False):
                 continue
             fp = iface.get("file_path", "")
-            if not fp:
-                continue
+            if fp and fp not in seen:
+                paths.append(fp)
+                seen.add(fp)
+        # Also capture extra files written by the implementation session
+        if impl_messages:
+            for fp in _extract_modified_files_from_messages(impl_messages):
+                if fp not in seen:
+                    paths.append(fp)
+                    seen.add(fp)
+
+        lines = []
+        total = 0
+        for fp in paths:
             abs_path = get_abs_path(fp)
             if not os.path.exists(abs_path):
                 continue
@@ -1123,7 +1183,7 @@ Return a JSON object with "package_name" and "resource_ids" fields."""
             if interfaces is not None and len(interfaces) > 0:
                 await self._log("InterfaceDesigner", f"Implementing stub code for {len(interfaces)} interfaces...", node_id=node_id)
 
-                impl_output, _ = await self.interface_designer.implement_stubs_from_session(
+                impl_output, impl_messages = await self.interface_designer.implement_stubs_from_session(
                     messages=design_messages,
                     interfaces=interfaces,
                     node_id=node_id,
@@ -1141,8 +1201,15 @@ Return a JSON object with "package_name" and "resource_ids" fields."""
                 # Invalidate file-dependent cache layers (stubs were written to disk)
                 context_pipeline.cache.invalidate_file_layers(node_id)
 
-                # Collect stub artifacts to pass to downstream agents (avoids re-reading from disk)
-                stub_artifacts = self._collect_stub_artifacts(interfaces)
+                # Collect stub artifacts — IR files + anything InterfaceDesigner also wrote
+                stub_artifacts = self._collect_stub_artifacts(interfaces, impl_messages)
+
+                # Gate: verify stubs compile before investing in test generation
+                from agents.tools.cli_tools import run_build_impl as _run_build
+                _stub_build = await _run_build()
+                if "Exit Code: 0" not in _stub_build:
+                    await self._log("System", f"Stub build FAILED for node {node_id} — skipping test generation. Fix compile errors first.", node_id=node_id)
+                    is_leaf = False  # skip test/TDD steps for this node
 
                 # Git Commit for Design + Implementation
                 designed_interfaces = [m.get("interface_id", "UNKNOWN") for m in interfaces]
@@ -1150,8 +1217,6 @@ Return a JSON object with "package_name" and "resource_ids" fields."""
                 await run_git_commit(self.workspace_path, commit_msg, self._log)
             else:
                 await self._log("System", f"No interfaces to implement for node {node_id}.", node_id=node_id)
-
-
 
             if is_leaf:
                 # ==========================================
@@ -1179,9 +1244,26 @@ Return a JSON object with "package_name" and "resource_ids" fields."""
                     test_type="All",
                     preloaded_source=stub_artifacts
                 )
-                all_test_output, _ = await self.test_generator.run_from_messages(
-                    test_messages, node_id=node_id, max_steps=15, tools=test_tools
+                all_test_output, test_run_messages = await self.test_generator.run_from_messages(
+                    test_messages, node_id=node_id, max_steps=25, tools=test_tools
                 )
+                # If the agent ran out of steps without outputting the JSON mapping block,
+                # send a single targeted follow-up to retrieve it.
+                if extract_json_array_from_markdown(all_test_output) is None:
+                    await self._log("TestGenerator", "JSON mapping block missing — requesting it now.", node_id=node_id)
+                    test_run_messages.append({
+                        "role": "user",
+                        "content": (
+                            "You did not output the required JSON test mapping block. "
+                            "Do NOT write any more files. Output ONLY the ```json ... ``` block now, "
+                            "listing every test file you wrote with test_id, req_id, interface_ids, "
+                            "type, file_path, and first_line."
+                        )
+                    })
+                    nudge_output, _ = await self.test_generator.run_from_messages(
+                        test_run_messages, node_id=node_id, max_steps=3, tools=test_tools
+                    )
+                    all_test_output = nudge_output
                 all_test_outputs.append(all_test_output)
 
                 # Combine outputs to store in state
@@ -1226,6 +1308,9 @@ Return a JSON object with "package_name" and "resource_ids" fields."""
                 # ==========================================
                 from traceability.test_result_tracker import TestResultTracker
                 from agents.tools.cli_tools import run_tests_impl, parse_test_results
+
+                # Refresh dependency context — interfaces are now in the DB
+                dependency_context = build_dependency_context(node_id)
 
                 req_desc = requirement_data.get("description", "")
                 req_scenario = requirement_data.get("scenario", [])
@@ -1466,19 +1551,18 @@ Return a JSON object with "package_name" and "resource_ids" fields."""
                 await self._log("System", f"Non-leaf node {node_id}: skipping Test/TDD (shared interfaces only).", node_id=node_id)
 
             # ==========================================
-            # Final Build Verification (always runs)
+            # Final Build Verification (all nodes)
             # ==========================================
-            if is_leaf:
-                from agents.tools.cli_tools import run_build_impl
-                await self._log("System", f"Running final build verification for node {node_id}...", node_id=node_id)
-                build_result = await run_build_impl()
-                # Check if build succeeded
-                if "Exit Code: 0" in build_result:
-                    await self._log("System", f"Final build verification PASSED for node {node_id}", node_id=node_id)
-                else:
-                    await self._log("System", f"Final build verification FAILED for node {node_id} — see build output for details", node_id=node_id)
+            from agents.tools.cli_tools import run_build_impl
+            await self._log("System", f"Running final build verification for node {node_id}...", node_id=node_id)
+            build_result = await run_build_impl()
+            build_ok = "Exit Code: 0" in build_result
+            if build_ok:
+                await self._log("System", f"Final build verification PASSED for node {node_id}", node_id=node_id)
+            else:
+                await self._log("System", f"Final build verification FAILED for node {node_id} — see build output for details", node_id=node_id)
 
-            return True
+            return build_ok
 
         except Exception as e:
             await self._log("System", f"Workflow failed due to an error: {str(e)}", node_id=node_id)

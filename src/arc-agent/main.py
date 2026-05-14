@@ -102,6 +102,7 @@ async def run_compilation(project_path: str, requirement_path: str, clear_all: b
     await asyncio.sleep(1)
 
     # 4. Process Nodes
+    failed_nodes = []
     for node_id in process_queue:
         update_node_status(workflow_manager.workspace_path, node_id, "analyzing")
         await manager.broadcast({"type": "node_update", "nodeId": node_id, "status": "analyzing"})
@@ -111,12 +112,15 @@ async def run_compilation(project_path: str, requirement_path: str, clear_all: b
             update_node_status(workflow_manager.workspace_path, node_id, "completed")
             await manager.broadcast({"type": "node_update", "nodeId": node_id, "status": "completed"})
         else:
+            failed_nodes.append(node_id)
             update_node_status(workflow_manager.workspace_path, node_id, "error")
             await manager.broadcast({"type": "node_update", "nodeId": node_id, "status": "error"})
             await manager.broadcast({"type": "error-event", "agent": "System", "message": f"Node {node_id} failed. Continue with next node."})
-        
 
-    await manager.broadcast({"type": "log", "agent": "System", "message": "All requirements processed successfully. Project compiled!"})
+    if failed_nodes:
+        await manager.broadcast({"type": "log", "agent": "System", "message": f"Completed with {len(failed_nodes)} failed node(s): {', '.join(failed_nodes)}. Check build logs for details."})
+    else:
+        await manager.broadcast({"type": "log", "agent": "System", "message": "All requirements processed successfully. Project compiled!"})
 
     # 5. Print Test Results Summary
     if app_type == "android" or app_type == "web":
