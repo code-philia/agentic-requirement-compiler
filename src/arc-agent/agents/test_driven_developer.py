@@ -23,7 +23,7 @@ class TestDrivenDeveloper(ARCAgent):
 - UI: XML Layout + AndroidX AppCompat + Material Components + ConstraintLayout
 - Database: Room (SQLite)
 - Testing:
-  - All tests run on JVM via `./gradlew testDebugUnitTest` (no device/emulator — STRICTLY JVM only)
+  - All tests run on JVM via `./gradlew testDebugUnitTest` — STRICTLY JVM, no device/emulator
   - **Test directory structure** (sub-packages by type):
     ```
     app/src/test/java/{android_pkg.replace(".", "/")}/
@@ -31,15 +31,16 @@ class TestDrivenDeveloper(ARCAgent):
       integration/    package {android_pkg}.integration; Gradle: --tests "{android_pkg}.integration.*"
       e2e/            package {android_pkg}.e2e;         Gradle: --tests "{android_pkg}.e2e.*"
     ```
-  - **CRITICAL**: Every test class using Android context MUST have `@Config(sdk = 31)` to activate Robolectric
-  - The `android-junit5` Gradle plugin bridges Robolectric with JUnit5 automatically — no @ExtendWith or @RunWith needed
-  - **NEVER use `@RunWith(RobolectricTestRunner.class)`** — conflicts with JUnit5
-  - **NEVER use `@RunWith(AndroidJUnit4.class)` in JVM tests** — only JUnit5 annotations
-  - **NEVER import `androidx.test.core.app.ApplicationProvider`** — use `RuntimeEnvironment.getApplication()` instead
-  - **NEVER import `androidx.test.core.app.ActivityScenario`** — use `Robolectric.buildActivity(MyActivity.class).create().resume().get()`
-  - **NEVER import `InstrumentationRegistry` or any Espresso API** — no instrumentation available
-  - **NEVER use `InstantTaskExecutorRule`** (JUnit4 @Rule) — use `@ExtendWith(InstantTaskExecutorExtension.class)` instead
-  - The `android-junit5` Gradle plugin is already configured — do NOT modify build.gradle to add/remove it
+  - **Runner selection — two valid patterns only:**
+    - **JUnit5** (no `@RunWith`) — pure-JVM unit tests where ALL Android deps are mocked with Mockito. Use `@ExtendWith(InstantTaskExecutorExtension.class)` for LiveData. Import it from `{android_pkg}.unit.InstantTaskExecutorExtension`.
+    - **JUnit4 + `@RunWith(RobolectricTestRunner.class)` + `@Config(sdk = 31)`** — any test that needs Android Context, Activity, Room, or `AndroidViewModel`. Use `RuntimeEnvironment.getApplication()` for Context.
+  - **NEVER use `@RunWith(AndroidJUnit4.class)`** — requires instrumentation
+  - **NEVER import `androidx.test.core.app.ApplicationProvider`** — use `RuntimeEnvironment.getApplication()`
+  - **NEVER import `androidx.test.core.app.ActivityScenario`** — use `Robolectric.buildActivity()`
+  - **NEVER import `InstrumentationRegistry` or `androidx.test.espresso.*`**
+  - **NEVER use `InstantTaskExecutorRule`** (`@Rule` is JUnit4) — use `@ExtendWith(InstantTaskExecutorExtension.class)`
+  - **AndroidViewModel** needs a real Application — test with JUnit4+Robolectric or refactor to plain ViewModel + mock deps
+  - **NEVER modify `app/build.gradle`** — all dependencies are pre-declared; if a class is missing, fix your import path, not the build file
   - **Package MUST match directory**: test files in `unit/` use `package {android_pkg}.unit;`, etc.
 - Source directories: app/src/main/java/, app/src/test/java/{android_pkg.replace(".", "/")}/
 - Package: {android_pkg}

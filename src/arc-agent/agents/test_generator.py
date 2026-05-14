@@ -33,42 +33,69 @@ app/src/test/java/{pkg_dir}/
 Gradle filters by package prefix: `--tests "{android_pkg}.unit.*"`, `--tests "{android_pkg}.integration.*"`, `--tests "{android_pkg}.e2e.*"`
 
 ## ⚠️ STRICTLY JVM-ONLY — No Instrumentation, No Emulator
-ALL tests run on the JVM via `./gradlew testDebugUnitTest`. There is NO device, NO emulator, and NO Android instrumentation registered.
+ALL tests run on the JVM via `./gradlew testDebugUnitTest`. There is NO device, NO emulator.
 
 **NEVER import or use:**
-- `androidx.test.core.app.ApplicationProvider` — requires instrumentation; use `RuntimeEnvironment.getApplication()` instead
-- `androidx.test.core.app.ActivityScenario` — requires instrumentation; use `Robolectric.buildActivity(MyActivity.class).create().resume().get()` instead
-- `androidx.test.ext.junit.runners.AndroidJUnit4` / `@RunWith(AndroidJUnit4.class)` — conflicts with JUnit5
-- `@RunWith(RobolectricTestRunner.class)` — conflicts with JUnit5
+- `androidx.test.core.app.ApplicationProvider` — requires instrumentation
+- `androidx.test.core.app.ActivityScenario` — requires instrumentation
+- `@RunWith(AndroidJUnit4.class)` — requires instrumentation
 - `androidx.test.espresso.*` — requires a device
 - `InstrumentationRegistry` — requires instrumentation
-- `InstantTaskExecutorRule` (JUnit4 `@Rule`) — use `@ExtendWith(InstantTaskExecutorExtension.class)` (JUnit5) instead; the `InstantTaskExecutorExtension` class is already provided in your test package
-- NEVER write to `app/src/androidTest/` — that directory is for on-device tests and is not part of this build
+- NEVER write to `app/src/androidTest/`
+- NEVER modify `app/build.gradle` — all required dependencies are already declared
 
-## Unit Tests
+## Runner selection — CRITICAL
+There are two valid runners. Choose based on whether the test touches Android framework types:
+
+**JUnit 5 (no `@RunWith`)** — for pure-JVM unit tests where ALL Android dependencies are mocked:
+```java
+@ExtendWith(InstantTaskExecutorExtension.class)   // only needed for LiveData
+class FooViewModelTest {{
+    private FooRepository mockRepo = mock(FooRepository.class);
+    private FooViewModel vm;
+    @BeforeEach void setUp() {{ vm = new FooViewModel(mockRepo); }}
+}}
+```
+- Use `@Test`, `@BeforeEach`/`@AfterEach`, `@DisplayName` (JUnit5 annotations)
+- `InstantTaskExecutorExtension` is already in your test package — import `{android_pkg}.unit.InstantTaskExecutorExtension`
+- **NEVER use `InstantTaskExecutorRule`** (that is a JUnit4 `@Rule`)
+- Unit tests MUST mock ALL collaborators (Repository, Service, etc.) with Mockito — do NOT construct real Room databases or open real I/O in unit tests
+
+**JUnit 4 + `@RunWith(RobolectricTestRunner.class)`** — for any test that needs a real Android Context, Activity, Room database, or `AndroidViewModel`:
+```java
+@RunWith(RobolectricTestRunner.class)
+@Config(sdk = 31, application = TestCounterApp.class)
+public class FooIntegrationTest {{
+    @Before public void setUp() {{
+        Context ctx = RuntimeEnvironment.getApplication();
+        db = Room.inMemoryDatabaseBuilder(ctx, AppDatabase.class).allowMainThreadQueries().build();
+    }}
+    @After public void tearDown() {{ db.close(); }}
+    @Test public void someTest() {{ ... }}
+}}
+```
+- Use `@Test`, `@Before`/`@After` (JUnit4 annotations)
+- Use `RuntimeEnvironment.getApplication()` for Context — NOT `ApplicationProvider`
+- `@Config(application = TestCounterApp.class)` swaps the DB for in-memory; required for E2E tests
+
+**AndroidViewModel rule:** `AndroidViewModel` needs an `Application` instance. Always test it with JUnit4 + `@RunWith(RobolectricTestRunner.class)` so Robolectric provides a real Application, OR refactor to plain `ViewModel` + inject a mock dependency. Never call `new Application()` manually.
+
+## Unit Tests (JUnit5, pure-JVM)
 - Place in `app/src/test/java/{pkg_dir}/unit/` with `package {android_pkg}.unit;`
-- JUnit5 + Robolectric. Target `FUNC` and `DB` interfaces.
-- **CRITICAL**: Every test class MUST have `@Config(sdk = 31)` to activate Robolectric
-- Use `@Test`, `@BeforeEach`/`@AfterEach`, `@DisplayName`, `@Nested` (JUnit5 annotations only)
-- For Android context: use `RuntimeEnvironment.getApplication()` (Robolectric)
-- The `android-junit5` Gradle plugin bridges Robolectric with JUnit5 automatically
+- Mock ALL Android dependencies. Target `FUNC` interfaces and ViewModels whose deps are mockable.
 
-## Integration Tests
+## Integration Tests (JUnit4 + Robolectric)
 - Place in `app/src/test/java/{pkg_dir}/integration/` with `package {android_pkg}.integration;`
-- JUnit5 + Robolectric + MockWebServer + Room in-memory DB. Target `API` interfaces.
-- **CRITICAL**: Must have `@Config(sdk = 31)` on the test class
-- For Android context: use `RuntimeEnvironment.getApplication()` — NOT `ApplicationProvider`
-- Use `Room.inMemoryDatabaseBuilder(RuntimeEnvironment.getApplication(), AppDatabase.class).allowMainThreadQueries().build()` for real DB
-- Use `MockWebServer` for HTTP testing (enqueue fake responses)
-- Use `@AfterEach` to close DB and shutdown MockWebServer
+- `@RunWith(RobolectricTestRunner.class)` + `@Config(sdk = 31)`. Target `DB` and `API` interfaces.
+- Build Room in-memory DB: `Room.inMemoryDatabaseBuilder(RuntimeEnvironment.getApplication(), AppDatabase.class).allowMainThreadQueries().build()`
+- Use `MockWebServer` for HTTP; always close in `@After`
 
-## E2E Tests
+## E2E Tests (JUnit4 + Robolectric)
 - Place in `app/src/test/java/{pkg_dir}/e2e/` with `package {android_pkg}.e2e;`
-- JUnit5 + Robolectric. Target the Requirement Node with the UI scenario.
-- **CRITICAL**: Must have `@Config(sdk = 31)` on the test class
-- Launch activities via Robolectric: `Robolectric.buildActivity(MyActivity.class).create().resume().get()`
-- Interact with views via: `activity.findViewById(R.id.someId)` and call methods directly
-- Use MockWebServer to mock backend API responses
+- `@RunWith(RobolectricTestRunner.class)` + `@Config(sdk = 31, application = TestCounterApp.class)`
+- Launch: `ActivityController<MyActivity> ctrl = Robolectric.buildActivity(MyActivity.class); MyActivity activity = ctrl.create().start().resume().get();`
+- Interact: `activity.findViewById(R.id.someId).performClick()` / `((TextView) ...).getText()`
+- Destroy in `@After`: `ctrl.pause().stop().destroy()`
 
 ## Test file naming: `*Test.java` for unit, `*IntegrationTest.java` for integration, `*E2ETest.java` for E2E
 """

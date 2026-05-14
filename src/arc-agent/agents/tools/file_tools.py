@@ -32,8 +32,18 @@ async def read_file_impl(path: str, start_line: int = None, end_line: int = None
     except Exception as e:
         return f"Error reading file {path}: {str(e)}"
     
+_PROTECTED_PATHS = {"app/build.gradle", "build.gradle", "settings.gradle", "gradle.properties", "gradlew", "gradlew.bat"}
+
 async def write_file_impl(path: str, content: str) -> str:
     """Write to a file, automatically creating directories if they do not exist"""
+    # Protect build files — test/TDD agents must not edit them
+    norm = path.replace("\\", "/").lstrip("./")
+    if norm in _PROTECTED_PATHS or norm.endswith("/build.gradle") and "src" not in norm:
+        return (
+            f"Error: writing to `{path}` is not allowed. "
+            "All required build dependencies are pre-declared in the template. "
+            "Fix your import path instead of modifying the build file."
+        )
     abs_path = get_abs_path(path)
     try:
         os.makedirs(os.path.dirname(abs_path), exist_ok=True)
