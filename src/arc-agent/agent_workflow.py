@@ -448,6 +448,7 @@ class ARCWorkflowManager:
         # For Android: extract target package name from requirements and repackage
         if self.app_type == "android":
             # Extract target package via LLM (understands natural language, handles any format)
+            # Also extracts resource-id mappings and writes to .arc/metadata.md as global context
             target_package = await self._extract_android_package_name_via_llm()
             if target_package:
                 await self._log("System", f"Extracted package name: {target_package}")
@@ -455,6 +456,8 @@ class ARCWorkflowManager:
             else:
                 await self._log("System", f"Package extraction failed. Using fallback: com.example.app")
                 self._setup_android_package("com.example.app")
+                # Write fallback package info to metadata
+                self._write_android_package_metadata("com.example.app", {})
 
             # Write local.properties with SDK path
             sdk_root = os.environ.get("ANDROID_SDK_ROOT") or os.environ.get("ANDROID_HOME")
@@ -513,11 +516,12 @@ class ARCWorkflowManager:
         await run_git_init(self.workspace_path, self._log)
 
     async def _extract_android_package_name_via_llm(self) -> str:
-        """Extract the target Android package name using an LLM call.
-        The LLM reads all requirement descriptions and identifies the application's
-        package name from resource-id patterns, class references, or any other mentions.
-        This handles all formats (backtick-quoted, bare, with special chars, etc.)
-        that static regex would miss.
+        """Extract the target Android package name and resource-id mapping using an LLM call.
+        The LLM reads all requirement descriptions and identifies:
+        1. The application's package name from resource-id patterns, class references, etc.
+        2. All resource-id → component mappings (e.g., floatingActionButton → FAB)
+
+        Results are written to .arc/metadata.md as global context for downstream agents.
 
         Fallback strategy if LLM fails:
         1. Extract from first resource-id pattern in requirements (e.g., org.billthefarmer.editor:id/xxx)
@@ -531,32 +535,49 @@ class ARCWorkflowManager:
             desc = req.get("description", "")
             if desc:
                 # Truncate long descriptions but keep the beginning (where package info usually is)
-                if len(desc) > 500:
-                    desc = desc[:500] + "..."
+                if len(desc) > 800:
+                    desc = desc[:800] + "..."
                 desc_texts.append(f"- [{req.get('id', '?')}] {desc}")
 
         if not desc_texts:
             return self._fallback_package_name_extraction(all_reqs)
 
         all_descriptions = "\n".join(desc_texts)
-        # Limit total context to ~4000 chars
-        if len(all_descriptions) > 4000:
-            all_descriptions = all_descriptions[:4000] + "\n... (truncated)"
+        # Limit total context to ~8000 chars
+        if len(all_descriptions) > 8000:
+            all_descriptions = all_descriptions[:8000] + "\n... (truncated)"
 
-        system_prompt = """You are an Android package name extractor.
-Given requirement descriptions that may contain resource-id patterns (e.g., `org.billthefarmer.editor:id/newFile`), fully-qualified class names (e.g., com.example.app.MainActivity), or other package references, identify the application's own package name.
+        system_prompt = """You are an Android package and resource analyzer.
+Given requirement descriptions that contain resource-id patterns (e.g., `org.billthefarmer.editor:id/newFile`), fully-qualified class names, or other package references, extract:
 
-Rules:
+1. The application's own package name
+2. All resource-id mappings (resource name → UI component type)
+
+Rules for package name:
 - Ignore system packages: com.android.*, android.*, com.google.*, androidx.*, java.*, javax.*, kotlin.*
 - The app's package is the one that appears most frequently in resource-id patterns or is clearly the application's own package.
-- Return ONLY the package name as a single line (e.g., org.billthefarmer.editor).
-- If no app package can be identified, return "UNKNOWN"."""
 
-        user_prompt = f"""Identify the Android application package name from these requirement descriptions:
+Rules for resource-id mapping:
+- From patterns like `org.billthefarmer.editor:id/newFile`, extract: newFile → Button
+- From patterns like `org.billthefarmer.editor:id/vscroll`, extract: vscroll → ScrollView
+- Infer the UI component type from the resource name (e.g., "button" → Button, "scroll" → ScrollView, "fab" → FloatingActionButton, "edit" → Button/EditText, "view" → Button, "save" → Button, "pathText" → EditText, "count" → TextView)
+
+Return a JSON object with exactly these fields:
+{
+  "package_name": "the.app.package.name",
+  "resource_ids": {
+    "resourceName": "ComponentType",
+    ...
+  }
+}
+
+If no app package can be identified, set package_name to "UNKNOWN"."""
+
+        user_prompt = f"""Analyze these requirement descriptions and extract the Android package name and resource-id mappings:
 
 {all_descriptions}
 
-Return ONLY the package name (e.g., org.billthefarmer.editor) or "UNKNOWN" if not found."""
+Return a JSON object with "package_name" and "resource_ids" fields."""
 
         try:
             client = self.interface_designer.client
@@ -569,24 +590,93 @@ Return ONLY the package name (e.g., org.billthefarmer.editor) or "UNKNOWN" if no
                 ],
                 temperature=0.0
             )
-            result = response.choices[0].message.content.strip()
-            # Clean up: remove any markdown formatting or extra text
-            result = result.strip('`').strip('"').strip("'")
-            # Validate: must look like a package name (at least 2 dot-separated segments, lowercase letters)
-            if result == "UNKNOWN" or not result:
+            result_text = response.choices[0].message.content.strip()
+
+            # Parse JSON from response (handle markdown code blocks)
+            import re as re_mod
+            json_match = re_mod.search(r'\{[\s\S]*\}', result_text)
+            if not json_match:
+                await self._log("System", f"Package extraction: no JSON found in LLM response, using fallback")
                 return self._fallback_package_name_extraction(all_reqs)
-            if '.' not in result:
+
+            parsed = json.loads(json_match.group())
+            package_name = parsed.get("package_name", "UNKNOWN")
+            resource_ids = parsed.get("resource_ids", {})
+
+            # Validate package name
+            package_name = package_name.strip().strip('`').strip('"').strip("'")
+            if package_name == "UNKNOWN" or not package_name or '.' not in package_name:
                 return self._fallback_package_name_extraction(all_reqs)
-            # Basic sanity check: each segment should be a valid Java identifier
-            segments = result.split('.')
+            segments = package_name.split('.')
             for seg in segments:
                 if not seg or not (seg[0].isalpha() or seg[0] == '_'):
                     return self._fallback_package_name_extraction(all_reqs)
-            await self._log("System", f"LLM extracted package name: {result}")
-            return result
+
+            await self._log("System", f"LLM extracted package name: {package_name}")
+            if resource_ids:
+                await self._log("System", f"LLM extracted {len(resource_ids)} resource-id mappings")
+
+            # Write package info and resource-id mapping to .arc/metadata.md as global context
+            self._write_android_package_metadata(package_name, resource_ids)
+
+            return package_name
         except Exception as e:
             await self._log("System", f"Package extraction via LLM failed: {str(e)}")
             return self._fallback_package_name_extraction(all_reqs)
+
+    def _write_android_package_metadata(self, package_name: str, resource_ids: dict):
+        """Write Android package info and resource-id mapping to .arc/metadata.md.
+        This becomes global context visible to all downstream agents.
+        """
+        metadata_path = os.path.join(self.workspace_path, ".arc", "metadata.md")
+        if not os.path.exists(metadata_path):
+            return
+
+        with open(metadata_path, 'r', encoding='utf-8') as f:
+            content = f.read()
+
+        # Build the package info block
+        pkg_dir = package_name.replace('.', '/')
+        lines = [
+            "",
+            "## Android Package Configuration",
+            f"- **Package**: `{package_name}`",
+            f"- **Package directory**: `{pkg_dir}`",
+            f"- **Main source**: `app/src/main/java/{pkg_dir}/`",
+            f"- **Unit tests**: `app/src/test/java/{pkg_dir}/unit/` — package `{package_name}.unit`",
+            f"- **Integration tests**: `app/src/test/java/{pkg_dir}/integration/` — package `{package_name}.integration`",
+            f"- **E2E tests**: `app/src/test/java/{pkg_dir}/e2e/` — package `{package_name}.e2e`",
+        ]
+
+        if resource_ids:
+            lines.append("")
+            lines.append("## Resource-ID Mapping (from requirements)")
+            lines.append("All resource-ids MUST use this package as prefix:")
+            lines.append(f"  Pattern: `{package_name}:id/<resourceName>`")
+            lines.append("")
+            lines.append("| Resource ID | Component Type |")
+            lines.append("|-------------|---------------|")
+            for res_name, comp_type in sorted(resource_ids.items()):
+                lines.append(f"| `{package_name}:id/{res_name}` | {comp_type} |")
+
+        lines.append("")
+
+        pkg_block = "\n".join(lines)
+
+        # Replace existing package config block or append
+        start_marker = "## Android Package Configuration"
+        start = content.find(start_marker)
+        if start != -1:
+            # Find end of this section (next ## heading or end of file)
+            end = content.find("\n## ", start + len(start_marker))
+            if end == -1:
+                end = len(content)
+            content = content[:start] + pkg_block + content[end:]
+        else:
+            content = content.rstrip() + "\n" + pkg_block
+
+        with open(metadata_path, 'w', encoding='utf-8') as f:
+            f.write(content)
 
     def _fallback_package_name_extraction(self, all_reqs: list) -> str:
         """Fallback package name extraction when LLM fails.
