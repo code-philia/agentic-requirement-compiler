@@ -31,6 +31,37 @@ READONLY_CACHEABLE_TOOLS = {
     "get_node_relations",
 }
 
+MUTATING_TOOLS = {"write_file", "replace_lines", "insert_lines", "delete_file"}
+
+# Required args per mutating tool — validated before dispatch to surface clean errors.
+_REQUIRED_TOOL_ARGS: Dict[str, list] = {
+    "write_file":    ["path", "content"],
+    "replace_lines": ["path", "start_line", "end_line", "content"],
+    "insert_lines":  ["path", "line_number", "content"],
+    "delete_file":   ["path"],
+}
+
+def _evict_mutated_path(cache: dict, affected_path: str) -> None:
+    """Remove stale read_file / list_directory cache entries after a file is mutated."""
+    stale = []
+    for k in cache:
+        if k.startswith("read_file::") and affected_path in k:
+            stale.append(k)
+        elif k.startswith("list_directory::"):
+            try:
+                cached_args = json.loads(k.split("::", 1)[1])
+                cached_dir = cached_args.get("path", "").rstrip("/")
+                if cached_dir and (
+                    affected_path.startswith(cached_dir + "/")
+                    or affected_path.startswith(cached_dir + os.sep)
+                    or affected_path == cached_dir
+                ):
+                    stale.append(k)
+            except Exception:
+                pass
+    for k in stale:
+        del cache[k]
+
 class ARCAgent:
     """
     Base class for the ARC multi-agent system.
@@ -254,6 +285,7 @@ Output from {tool_name}:
 
         tool_result_cache: Dict[str, str] = {}
         step = 0
+        _consecutive_cache_only = 0
         while step < max_steps:
             # 1. Two-level Auto-Compact: Prevent context overflow
             total_chars = self._estimate_context_chars(messages)
@@ -362,28 +394,44 @@ Output from {tool_name}:
                         args_str = args_str[:1000] + f"\n... [args truncated, total {len(args_str)} chars]"
                     await self._log(f"Calling tool: `{tool_name}` with args: {args_str}", node_id=node_id)
 
-                    # Look up and execute the actual tool function from the registry
-                    cache_key = f"{tool_name}::{json.dumps(tool_args, ensure_ascii=False, sort_keys=True)}"
-                    is_cache_hit = False
-                    if tool_name in TOOL_REGISTRY and tool_name in allowed_tool_names:
-                        if tool_name in READONLY_CACHEABLE_TOOLS and cache_key in tool_result_cache:
-                            tool_result = tool_result_cache[cache_key]
-                            is_cache_hit = True
-                            if DEBUG_MODE:
-                                await self._log(f"[DEBUG] Reusing cached tool result for `{tool_name}`", node_id=node_id)
+                    # Validate required args for mutating tools before dispatch
+                    _missing = [
+                        p for p in _REQUIRED_TOOL_ARGS.get(tool_name, [])
+                        if p not in tool_args
+                    ]
+                    if _missing:
+                        tool_result = (
+                            f"Tool call error: `{tool_name}` is missing required argument(s): "
+                            f"{', '.join(_missing)}. Re-issue the call with all required arguments."
+                        )
+                        any_cache_miss = True
+                    else:
+                        # Look up and execute the actual tool function from the registry
+                        cache_key = f"{tool_name}::{json.dumps(tool_args, ensure_ascii=False, sort_keys=True)}"
+                        is_cache_hit = False
+                        if tool_name in TOOL_REGISTRY and tool_name in allowed_tool_names:
+                            if tool_name in READONLY_CACHEABLE_TOOLS and cache_key in tool_result_cache:
+                                tool_result = tool_result_cache[cache_key]
+                                is_cache_hit = True
+                                if DEBUG_MODE:
+                                    await self._log(f"[DEBUG] Reusing cached tool result for `{tool_name}`", node_id=node_id)
+                            else:
+                                any_cache_miss = True
+                                tool_func = TOOL_REGISTRY[tool_name]["func"]
+                                try:
+                                    tool_result = await tool_func(**tool_args)
+                                    if tool_name in READONLY_CACHEABLE_TOOLS:
+                                        tool_result_cache[cache_key] = str(tool_result)
+                                    elif tool_name in MUTATING_TOOLS:
+                                        # Evict stale cache entries for the affected path
+                                        affected = tool_args.get("path", "")
+                                        if affected:
+                                            _evict_mutated_path(tool_result_cache, affected)
+                                except Exception as e:
+                                    tool_result = f"Tool execution error: {str(e)}"
                         else:
                             any_cache_miss = True
-                            tool_func = TOOL_REGISTRY[tool_name]["func"]
-                            try:
-                                # Dynamically call the corresponding async function
-                                tool_result = await tool_func(**tool_args)
-                                if tool_name in READONLY_CACHEABLE_TOOLS:
-                                    tool_result_cache[cache_key] = str(tool_result)
-                            except Exception as e:
-                                tool_result = f"Tool execution error: {str(e)}"
-                    else:
-                        any_cache_miss = True
-                        tool_result = f"Error: Tool '{tool_name}' not permitted or not found."
+                            tool_result = f"Error: Tool '{tool_name}' not permitted or not found."
 
                     # 3. Tool Output Budget: Summarize long error outputs, then truncate
                     tool_result_str = str(tool_result)
@@ -422,9 +470,19 @@ Output from {tool_name}:
                         "content": tool_result_str
                     })
 
-                # After tools are executed, advance step only if there was a cache miss
+                # Advance step on real work; break infinite cached-read loops
                 if any_cache_miss:
                     step += 1
+                    _consecutive_cache_only = 0
+                else:
+                    _consecutive_cache_only += 1
+                    if _consecutive_cache_only >= 3:
+                        await self._log(
+                            f"[WARN] {_consecutive_cache_only} consecutive turns with only cached reads — "
+                            "forcing step advance to prevent infinite loop.", node_id=node_id
+                        )
+                        step += 1
+                        _consecutive_cache_only = 0
                 continue
             else:
                 await self._log("Task completed.", node_id=node_id)
