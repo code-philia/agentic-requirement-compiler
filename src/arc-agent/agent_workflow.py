@@ -523,10 +523,34 @@ class ARCWorkflowManager:
 
         Results are written to .arc/metadata.md as global context for downstream agents.
 
+        Reads requirements directly from the YAML file (not from DB, since DB may not
+        be populated yet at this point in the initialization flow).
+
         Fallback strategy if LLM fails:
         1. Extract from first resource-id pattern in requirements (e.g., org.billthefarmer.editor:id/xxx)
         2. Generate from project directory name (e.g., Echo -> com.echo.app)
         """
+        # Read requirements directly from YAML file instead of DB
+        # (DB is not yet populated at this point in the initialization flow)
+        all_reqs = []
+        if self.requirement_path and os.path.exists(self.requirement_path):
+            try:
+                from utils import load_requirements
+                data = load_requirements(self.requirement_path)
+                # Flatten the tree into a list of requirement dicts
+                def flatten(node, result=None):
+                    if result is None:
+                        result = []
+                    if isinstance(node, dict):
+                        result.append(node)
+                        for child in node.get("children", []):
+                            flatten(child, result)
+                    return result
+                all_reqs = flatten(data)
+            except Exception as e:
+                await self._log("System", f"Failed to read requirements from YAML: {str(e)}. Trying DB fallback.")
+                all_reqs = get_all_requirements()
+        else:
         all_reqs = get_all_requirements()
 
         # Collect all description texts (truncate each to avoid excessive context)
@@ -1399,6 +1423,19 @@ Return a JSON object with "package_name" and "resource_ids" fields."""
 
             else:
                 await self._log("System", f"Non-leaf node {node_id}: skipping Test/TDD (shared interfaces only).", node_id=node_id)
+
+            # ==========================================
+            # Final Build Verification (always runs)
+            # ==========================================
+            if is_leaf:
+                from agents.tools.cli_tools import run_build_impl
+                await self._log("System", f"Running final build verification for node {node_id}...", node_id=node_id)
+                build_result = await run_build_impl()
+                # Check if build succeeded
+                if "Exit Code: 0" in build_result:
+                    await self._log("System", f"Final build verification PASSED for node {node_id}", node_id=node_id)
+                else:
+                    await self._log("System", f"Final build verification FAILED for node {node_id} — see build output for details", node_id=node_id)
 
             return True
 
