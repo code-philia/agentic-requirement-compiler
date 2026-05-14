@@ -215,7 +215,6 @@ async def check_prerequisites(app_type: str, log_cb: Callable[[str], Awaitable[N
                     f'yes | "{sdkmanager_path}" --licenses',
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
-                    timeout=30
                 )
                 await asyncio.wait_for(accept_process.communicate(), timeout=30)
                 await log_cb("System", "Android SDK licenses accepted.")
@@ -551,7 +550,7 @@ class ARCWorkflowManager:
                 await self._log("System", f"Failed to read requirements from YAML: {str(e)}. Trying DB fallback.")
                 all_reqs = get_all_requirements()
         else:
-        all_reqs = get_all_requirements()
+            all_reqs = get_all_requirements()
 
         # Collect all description texts (truncate each to avoid excessive context)
         desc_texts = []
@@ -606,13 +605,16 @@ Return a JSON object with "package_name" and "resource_ids" fields."""
         try:
             client = self.interface_designer.client
             model = self.interface_designer.model
-            response = await client.chat.completions.create(
-                model=model,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt}
-                ],
-                temperature=0.0
+            response = await asyncio.wait_for(
+                client.chat.completions.create(
+                    model=model,
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_prompt}
+                    ],
+                    temperature=0.0
+                ),
+                timeout=60.0
             )
             result_text = response.choices[0].message.content.strip()
 
@@ -682,6 +684,28 @@ Return a JSON object with "package_name" and "resource_ids" fields."""
             lines.append("|-------------|---------------|")
             for res_name, comp_type in sorted(resource_ids.items()):
                 lines.append(f"| `{package_name}:id/{res_name}` | {comp_type} |")
+
+        # List template scaffold files already present in the workspace so agents
+        # know to build upon them rather than create conflicting parallel implementations.
+        src_root = os.path.join(self.workspace_path, "app", "src", "main", "java", pkg_dir)
+        test_root = os.path.join(self.workspace_path, "app", "src", "test", "java", pkg_dir)
+        scaffold_files = []
+        for base, label in [(src_root, "main"), (test_root, "test")]:
+            if os.path.exists(base):
+                for root, dirs, files in os.walk(base):
+                    for fname in sorted(files):
+                        if fname.endswith('.java') or fname.endswith('.kt'):
+                            rel = os.path.relpath(os.path.join(root, fname), self.workspace_path)
+                            scaffold_files.append(rel.replace(os.sep, "/"))
+        if scaffold_files:
+            lines.append("")
+            lines.append("## Template Scaffold (pre-existing files — build upon these, do NOT duplicate)")
+            lines.append("These files are already in the workspace. Extend or replace their logic;")
+            lines.append("do NOT create a second class with the same role.")
+            for sf in scaffold_files[:40]:
+                lines.append(f"- `{sf}`")
+            if len(scaffold_files) > 40:
+                lines.append(f"- ... ({len(scaffold_files) - 40} more)")
 
         lines.append("")
 
@@ -770,37 +794,54 @@ Return a JSON object with "package_name" and "resource_ids" fields."""
             with open(info_path, 'w', encoding='utf-8') as f:
                 f.write(content)
 
-        # 4. Update package declarations in template test files
-        # Template test files are under app/src/test/java/com/example/template/{unit,integration,e2e}/
+        template_src_base = os.path.join(ws, "app", "src", "main", "java", "com", "example", "template")
         template_test_base = os.path.join(ws, "app", "src", "test", "java", "com", "example", "template")
-        if os.path.exists(template_test_base):
-            for root, dirs, files in os.walk(template_test_base):
+        new_src_base = os.path.join(ws, "app", "src", "main", "java", pkg_dir)
+        new_test_base = os.path.join(ws, "app", "src", "test", "java", pkg_dir)
+
+        def _relocate_java_tree(old_root, new_root):
+            """Update package/import declarations and move files from old_root to new_root."""
+            if not os.path.exists(old_root):
+                return
+            for root, dirs, files in os.walk(old_root, topdown=False):
                 for fname in files:
+                    old_path = os.path.join(root, fname)
+                    # Compute relative path within the old tree to preserve sub-package structure
+                    rel = os.path.relpath(old_path, old_root)
+                    new_path = os.path.join(new_root, rel)
+                    os.makedirs(os.path.dirname(new_path), exist_ok=True)
                     if fname.endswith('.java') or fname.endswith('.kt'):
-                        fpath = os.path.join(root, fname)
-                        with open(fpath, 'r', encoding='utf-8') as f:
+                        with open(old_path, 'r', encoding='utf-8') as f:
                             content = f.read()
                         content = content.replace('package com.example.template', f'package {target_package}')
                         content = content.replace('import com.example.template', f'import {target_package}')
-                        with open(fpath, 'w', encoding='utf-8') as f:
+                        with open(new_path, 'w', encoding='utf-8') as f:
                             f.write(content)
+                    else:
+                        import shutil as _shutil
+                        _shutil.copy2(old_path, new_path)
+                    os.remove(old_path)
+            # Remove now-empty original directory tree
+            import shutil as _shutil
+            _shutil.rmtree(old_root, ignore_errors=True)
 
-        # 5. Create package directory structure for main and test subdirectories
-        src_main = os.path.join(ws, "app", "src", "main", "java", pkg_dir)
-        src_test_unit = os.path.join(ws, "app", "src", "test", "java", pkg_dir, "unit")
-        src_test_integration = os.path.join(ws, "app", "src", "test", "java", pkg_dir, "integration")
-        src_test_e2e = os.path.join(ws, "app", "src", "test", "java", pkg_dir, "e2e")
-        os.makedirs(src_main, exist_ok=True)
-        os.makedirs(src_test_unit, exist_ok=True)
-        os.makedirs(src_test_integration, exist_ok=True)
-        os.makedirs(src_test_e2e, exist_ok=True)
+        # 4. Move + repackage main source files
+        _relocate_java_tree(template_src_base, new_src_base)
 
-        # Create .gitkeep to preserve empty directories
-        for d in [src_main, src_test_unit, src_test_integration, src_test_e2e]:
-            with open(os.path.join(d, ".gitkeep"), "w") as f:
-                f.write("")
+        # 5. Move + repackage test files (declarations were already updated above, but
+        #    files were left at the wrong path — Java requires path == package structure)
+        _relocate_java_tree(template_test_base, new_test_base)
 
-        # 6. Store the target package in utils so agents can use it
+        # 6. Ensure test sub-package directories exist (agents write into these)
+        for sub in ("unit", "integration", "e2e"):
+            d = os.path.join(new_test_base, sub)
+            os.makedirs(d, exist_ok=True)
+            gitkeep = os.path.join(d, ".gitkeep")
+            if not os.listdir(d):
+                with open(gitkeep, "w") as f:
+                    f.write("")
+
+        # 7. Store the target package in utils so agents can use it
         from utils import set_android_package
         set_android_package(target_package)
 

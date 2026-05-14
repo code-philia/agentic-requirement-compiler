@@ -209,6 +209,19 @@ Output from {tool_name}:
         return chars_removed
 
     async def _create_chat_completion_with_retry(self, **api_kwargs):
+        # Auto-switch token-limit param for OpenAI models only
+        model = api_kwargs.get("model", self.model).lower()
+        is_o_series = bool(re.match(r'^o\d', model))
+        is_gpt_series = model.startswith("gpt-")
+        if is_o_series or is_gpt_series:
+            token_value = None
+            for param in ("max_tokens", "max_completion_tokens", "max_output_tokens"):
+                if param in api_kwargs:
+                    token_value = api_kwargs.pop(param)
+                    break
+            if token_value is not None:
+                api_kwargs["max_completion_tokens" if is_o_series else "max_tokens"] = token_value
+
         last_err = None
         for attempt in range(1, MODEL_RETRY_COUNT + 2):
             try:
