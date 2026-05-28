@@ -3,7 +3,7 @@ read_file_schema = {
     "type": "function",
     "function": {
         "name": "read_file",
-        "description": "Read the contents of a file. Supports reading the whole file or a specific range of lines.",
+        "description": "Read the contents of a file. Returns content with line numbers in 'cat -n' format (line_number<TAB>content). By default reads up to 2000 lines from the beginning. Use offset and limit for large files.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -11,13 +11,13 @@ read_file_schema = {
                     "type": "string",
                     "description": "The relative or absolute path to the file."
                 },
-                "start_line": {
+                "offset": {
                     "type": "integer",
-                    "description": "The line number to start reading from (1-based). Optional."
+                    "description": "Starting line number (1-based). Optional, defaults to 1."
                 },
-                "end_line": {
+                "limit": {
                     "type": "integer",
-                    "description": "The line number to stop reading at (1-based, inclusive). Optional."
+                    "description": "Number of lines to read. Optional, defaults to entire file."
                 }
             },
             "required": ["path"]
@@ -29,7 +29,7 @@ write_file_schema = {
     "type": "function",
     "function": {
         "name": "write_file",
-        "description": "Write content to a file (overwrites entire file). Automatically creates directories.",
+        "description": "Write content to a file (overwrites entire file). Automatically creates directories. Use this for creating new files or complete rewrites. For modifying existing files, prefer edit_file.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -43,6 +43,36 @@ write_file_schema = {
                 }
             },
             "required": ["path", "content"]
+        }
+    }
+}
+
+edit_file_schema = {
+    "type": "function",
+    "function": {
+        "name": "edit_file",
+        "description": "Perform exact string replacement in a file. The old_string must match exactly (including whitespace and indentation). When editing text from read_file output, preserve exact indentation AFTER the line number prefix (line_number<TAB>). Never include the line number prefix in old_string or new_string.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "The path to the file."
+                },
+                "old_string": {
+                    "type": "string",
+                    "description": "The exact string to find and replace. Must match exactly including all whitespace."
+                },
+                "new_string": {
+                    "type": "string",
+                    "description": "The string to replace with."
+                },
+                "replace_all": {
+                    "type": "boolean",
+                    "description": "If true, replace all occurrences. If false (default), require unique match. Use true for renaming variables across the file."
+                }
+            },
+            "required": ["path", "old_string", "new_string"]
         }
     }
 }
@@ -61,62 +91,6 @@ delete_file_schema = {
                 }
             },
             "required": ["path"]
-        }
-    }
-}
-
-insert_lines_schema = {
-    "type": "function",
-    "function": {
-        "name": "insert_lines",
-        "description": "Insert content into a file at a specific line number.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "path": {
-                    "type": "string",
-                    "description": "The path to the file."
-                },
-                "line_number": {
-                    "type": "integer",
-                    "description": "The line number to insert at (1-based). Content will be inserted BEFORE this line."
-                },
-                "content": {
-                    "type": "string",
-                    "description": "The content to insert."
-                }
-            },
-            "required": ["path", "line_number", "content"]
-        }
-    }
-}
-
-replace_lines_schema = {
-    "type": "function",
-    "function": {
-        "name": "replace_lines",
-        "description": "Replace a range of lines in a file with new content.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "path": {
-                    "type": "string",
-                    "description": "The path to the file."
-                },
-                "start_line": {
-                    "type": "integer",
-                    "description": "The starting line number to replace (1-based)."
-                },
-                "end_line": {
-                    "type": "integer",
-                    "description": "The ending line number to replace (1-based, inclusive)."
-                },
-                "content": {
-                    "type": "string",
-                    "description": "The new content to replace the specified lines with."
-                }
-            },
-            "required": ["path", "start_line", "end_line", "content"]
         }
     }
 }

@@ -31,13 +31,12 @@ READONLY_CACHEABLE_TOOLS = {
     "get_node_relations",
 }
 
-MUTATING_TOOLS = {"write_file", "replace_lines", "insert_lines", "delete_file"}
+MUTATING_TOOLS = {"write_file", "edit_file", "delete_file"}
 
 # Required args per mutating tool — validated before dispatch to surface clean errors.
 _REQUIRED_TOOL_ARGS: Dict[str, list] = {
     "write_file":    ["path", "content"],
-    "replace_lines": ["path", "start_line", "end_line", "content"],
-    "insert_lines":  ["path", "line_number", "content"],
+    "edit_file":     ["path", "old_string", "new_string"],
     "delete_file":   ["path"],
 }
 

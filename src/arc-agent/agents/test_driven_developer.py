@@ -67,7 +67,7 @@ Execution protocol (strict):
 - Source code and test code are pre-injected in `<source_code>` and `<test_code>` — do NOT call `read_file` on files already provided in context.
 - **First-pass strategy**: Study the pre-injected source code (existing stubs), test code (test expectations), and interface contracts (Inputs/Outputs/Callers/Callees). Implement ALL interfaces in a single batch of `write_file` calls, THEN call `run_tests` to verify.
 - Write ALL implementation files FIRST, THEN run tests. Do NOT write one file and test immediately.
-- If tests fail, read the error output carefully, fix the minimal set of files, and rerun `run_tests`.
+- If tests fail, read the error output carefully, use `edit_file` to fix the minimal set of issues (provide exact old_string/new_string), and rerun `run_tests`.
 - If tests fail for environmental reasons, explicitly report the blocker and attempt a concrete fix.
 - Return exactly "IMPLEMENTED" only when target tests are truly passing.
 
@@ -103,7 +103,7 @@ Once `run_tests` returns a 100% passing state (Exit Code: 0) for the target test
 """
 
     def get_tool_names(self) -> List[str]:
-        return ["read_file", "write_file", "delete_file", "insert_lines", "replace_lines", "list_directory", "grep_search",
+        return ["read_file", "write_file", "edit_file", "delete_file", "list_directory", "grep_search",
                 "execute_command", "run_tests", "run_build", "search_interfaces_by_keyword", "search_interfaces_by_relation", "get_node_relations"]
 
     def build_initial_messages(self, node_id: str, test_files: List[str], test_type: str, req_desc: str, scenario: list = None, dependency_context: str = "", current_interfaces: list = None, preloaded_source: str = None) -> tuple:
@@ -171,7 +171,7 @@ Target Test Type: {test_type}
 2. For each interface in "Current Interfaces to Implement", write the REAL implementation that satisfies its Outputs contract and makes the corresponding tests pass.
 3. Use `write_file` to write ALL implementation files in one batch.
 4. Call `run_tests` with type `{test_type}` to verify.
-5. If tests fail, fix and rerun. Reply "IMPLEMENTED" when all target tests pass.
+5. If tests fail, use `edit_file` (exact old_string/new_string replacements) to fix and rerun. Reply "IMPLEMENTED" when all target tests pass.
 """
         system_content = self.get_system_prompt()
         if static_ctx:

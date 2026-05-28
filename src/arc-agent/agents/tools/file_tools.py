@@ -2,33 +2,49 @@ import os
 import aiofiles
 from utils import get_abs_path
 
-async def read_file_impl(path: str, start_line: int = None, end_line: int = None) -> str:
-    """Real file-reading tool implementation with line range support"""
+async def read_file_impl(path: str, offset: int = None, limit: int = None) -> str:
+    """
+    Read file contents with optional line range.
+    Returns content with line numbers in 'cat -n' format (line_number<TAB>content).
+
+    Args:
+        path: File path (relative or absolute)
+        offset: Starting line number (1-based, optional)
+        limit: Number of lines to read (optional)
+    """
     abs_path = get_abs_path(path)
     try:
         if not os.path.exists(abs_path):
             return f"Error: File not found at {path}"
-            
+
         async with aiofiles.open(abs_path, mode='r', encoding='utf-8') as f:
             lines = await f.readlines()
-            
+
         total_lines = len(lines)
-        
-        if start_line is None:
-            start_line = 1
-        if end_line is None:
-            end_line = total_lines
-            
+
+        # Default: read entire file
+        if offset is None:
+            offset = 1
+        if limit is None:
+            limit = total_lines
+
         # Validate ranges
-        if start_line < 1: start_line = 1
-        if end_line > total_lines: end_line = total_lines
-        if start_line > end_line:
-            return f"Error: start_line ({start_line}) cannot be greater than end_line ({end_line})"
-            
-        # Adjust for 0-based indexing
-        selected_lines = lines[start_line-1 : end_line]
-        return "".join(selected_lines)
-            
+        if offset < 1:
+            offset = 1
+        if offset > total_lines:
+            return f"Error: offset ({offset}) exceeds file length ({total_lines} lines)"
+
+        # Calculate end line
+        end_line = min(offset + limit - 1, total_lines)
+
+        # Format with line numbers (cat -n style: line_number<TAB>content)
+        result_lines = []
+        for i in range(offset - 1, end_line):
+            line_num = i + 1
+            result_lines.append(f"{line_num}\t{lines[i]}")
+
+        return "".join(result_lines)
+
     except Exception as e:
         return f"Error reading file {path}: {str(e)}"
     
@@ -53,6 +69,54 @@ async def write_file_impl(path: str, content: str) -> str:
     except Exception as e:
         return f"Error writing file {path}: {str(e)}"
 
+async def edit_file_impl(path: str, old_string: str, new_string: str, replace_all: bool = False) -> str:
+    """
+    Perform exact string replacement in a file.
+
+    Args:
+        path: File path
+        old_string: Exact string to find (must match exactly, including whitespace)
+        new_string: String to replace with
+        replace_all: If True, replace all occurrences; if False, require unique match
+
+    Returns:
+        Success message or error description
+    """
+    abs_path = get_abs_path(path)
+    try:
+        if not os.path.exists(abs_path):
+            return f"Error: File not found at {path}"
+
+        async with aiofiles.open(abs_path, mode='r', encoding='utf-8') as f:
+            content = await f.read()
+
+        # Check if old_string exists
+        if old_string not in content:
+            return f"Error: old_string not found in {path}. Make sure the string matches exactly, including all whitespace and indentation."
+
+        # Count occurrences
+        occurrences = content.count(old_string)
+
+        if not replace_all and occurrences > 1:
+            return (
+                f"Error: old_string appears {occurrences} times in {path}. "
+                "Either provide a larger unique string with more context, or set replace_all=true to replace all occurrences."
+            )
+
+        # Perform replacement
+        new_content = content.replace(old_string, new_string) if replace_all else content.replace(old_string, new_string, 1)
+
+        async with aiofiles.open(abs_path, mode='w', encoding='utf-8') as f:
+            await f.write(new_content)
+
+        if replace_all:
+            return f"Success: Replaced {occurrences} occurrence(s) in {path}"
+        else:
+            return f"Success: Replaced 1 occurrence in {path}"
+
+    except Exception as e:
+        return f"Error editing file {path}: {str(e)}"
+
 async def delete_file_impl(path: str) -> str:
     """Delete a file"""
     abs_path = get_abs_path(path)
@@ -63,68 +127,6 @@ async def delete_file_impl(path: str) -> str:
         return f"Success: Deleted file {path}"
     except Exception as e:
         return f"Error deleting file {path}: {str(e)}"
-
-async def insert_lines_impl(path: str, line_number: int, content: str) -> str:
-    """Insert content at a specific line number"""
-    abs_path = get_abs_path(path)
-    try:
-        if not os.path.exists(abs_path):
-            return f"Error: File not found at {path}"
-            
-        async with aiofiles.open(abs_path, mode='r', encoding='utf-8') as f:
-            lines = await f.readlines()
-            
-        if line_number < 1:
-            line_number = 1
-        if line_number > len(lines) + 1:
-            line_number = len(lines) + 1
-            
-        # Ensure content ends with newline if it's multiple lines or meant to be a line
-        if not content.endswith('\n'):
-            content += '\n'
-            
-        lines.insert(line_number - 1, content)
-        
-        async with aiofiles.open(abs_path, mode='w', encoding='utf-8') as f:
-            await f.writelines(lines)
-            
-        return f"Success: Inserted content at line {line_number} in {path}"
-    except Exception as e:
-        return f"Error inserting lines in {path}: {str(e)}"
-
-async def replace_lines_impl(path: str, start_line: int, end_line: int, content: str) -> str:
-    """Replace a range of lines with new content"""
-    abs_path = get_abs_path(path)
-    try:
-        if not os.path.exists(abs_path):
-            return f"Error: File not found at {path}"
-            
-        async with aiofiles.open(abs_path, mode='r', encoding='utf-8') as f:
-            lines = await f.readlines()
-            
-        total_lines = len(lines)
-        if start_line < 1: start_line = 1
-        if end_line > total_lines: end_line = total_lines
-        if start_line > end_line:
-             return f"Error: start_line ({start_line}) cannot be greater than end_line ({end_line})"
-
-        # Ensure content ends with newline if needed
-        if not content.endswith('\n'):
-            content += '\n'
-            
-        # Replace logic:
-        # Keep lines before start_line
-        # Insert new content
-        # Keep lines after end_line
-        
-        new_lines = lines[:start_line-1] + [content] + lines[end_line:]
-        
-        async with aiofiles.open(abs_path, mode='w', encoding='utf-8') as f:
-            await f.writelines(new_lines)
-            
-        return f"Success: Replaced lines {start_line}-{end_line} in {path}"
-    except Exception as e:
-        return f"Error replacing lines in {path}: {str(e)}"
 
 async def list_directory_impl(path: str, depth: int = 3) -> str:
     """List all files and folders under the given directory up to a specific depth"""

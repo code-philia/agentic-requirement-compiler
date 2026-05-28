@@ -129,7 +129,7 @@ Execution protocol (strict):
 - Do NOT interleave `read_file` and `write_file` — batch all writes together.
 - Keep tests deterministic. Do not add random sleeps or flaky waits.
 - For each generated test, ensure `test_id`, `type`, `file_path`, and `first_line` exactly match the real file content.
-- If build or syntax fails, fix tests immediately and rerun `run_build`.
+- If build or syntax fails, fix tests immediately using `edit_file` (provide exact old_string/new_string) and rerun `run_build`.
 
 {pkg_compliance}
 {test_stack}
@@ -162,7 +162,7 @@ Schema for each object:
 
     def get_tool_names(self) -> List[str]:
         return [
-            "read_file", "write_file", "delete_file", "insert_lines", "replace_lines", "list_directory", "grep_search",
+            "read_file", "write_file", "edit_file", "delete_file", "list_directory", "grep_search",
             "run_build", "search_interfaces_by_keyword", "search_interfaces_by_relation", "get_node_relations"
         ]
 

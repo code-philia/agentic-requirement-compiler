@@ -107,7 +107,7 @@ Each object in the array must follow this exact schema:
 
     def _get_implement_tool_names(self) -> List[str]:
         return [
-            "read_file", "write_file", "delete_file", "insert_lines", "replace_lines",
+            "read_file", "write_file", "edit_file", "delete_file",
             "list_directory", "grep_search", "run_build",
             "search_interfaces_by_keyword", "search_interfaces_by_relation",
             "find_interface_impacts", "get_node_relations"
@@ -237,7 +237,7 @@ Write ALL stub code files using `write_file` calls FIRST, then call `run_build` 
 Do NOT call `read_file` on source files — you already have the context from the previous design phase.
 Do NOT interleave `read_file` and `write_file` — batch all writes together.
 Ensure all imports, class hierarchies, and method signatures match the interface definitions above.
-Fix any build errors found.
+Fix any build errors found using `edit_file` (provide exact old_string/new_string for precise replacements).
 When all files are written and compilation passes, output "IMPLEMENTED".
 """
         # Append implementation prompt to the existing session
