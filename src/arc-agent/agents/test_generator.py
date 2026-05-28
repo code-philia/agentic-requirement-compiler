@@ -162,7 +162,7 @@ Schema for each object:
 
     def get_tool_names(self) -> List[str]:
         return [
-            "read_file", "write_file", "edit_file", "delete_file", "list_directory", "grep_search",
+            "read_file", "write_file", "edit_file", "delete_file", "list_directory", "glob", "grep",
             "run_build", "search_interfaces_by_keyword", "search_interfaces_by_relation", "get_node_relations"
         ]
 

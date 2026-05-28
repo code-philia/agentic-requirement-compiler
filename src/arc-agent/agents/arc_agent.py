@@ -24,7 +24,8 @@ MODEL_RETRY_COUNT = int(os.environ.get("ARC_MODEL_RETRY_COUNT", "2"))
 READONLY_CACHEABLE_TOOLS = {
     "read_file",
     "list_directory",
-    "grep_search",
+    "glob",
+    "grep",
     "search_interfaces_by_keyword",
     "search_interfaces_by_relation",
     "find_interface_impacts",

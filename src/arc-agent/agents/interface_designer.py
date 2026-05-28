@@ -100,7 +100,7 @@ Each object in the array must follow this exact schema:
 
     def get_tool_names(self) -> List[str]:
         return [
-            "read_file", "list_directory", "grep_search",
+            "read_file", "list_directory", "glob", "grep",
             "search_interfaces_by_keyword", "search_interfaces_by_relation",
             "find_interface_impacts", "get_node_relations"
         ]
@@ -108,7 +108,7 @@ Each object in the array must follow this exact schema:
     def _get_implement_tool_names(self) -> List[str]:
         return [
             "read_file", "write_file", "edit_file", "delete_file",
-            "list_directory", "grep_search", "run_build",
+            "list_directory", "glob", "grep", "run_build",
             "search_interfaces_by_keyword", "search_interfaces_by_relation",
             "find_interface_impacts", "get_node_relations"
         ]

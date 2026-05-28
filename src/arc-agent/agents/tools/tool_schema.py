@@ -117,16 +117,73 @@ list_directory_schema = {
     }
 }
 
-grep_search_schema = {
+glob_schema = {
     "type": "function",
     "function": {
-        "name": "grep_search",
-        "description": "Search for a regex pattern in the contents of files within a directory.",
+        "name": "glob",
+        "description": "Fast file pattern matching tool. Supports glob patterns like \"**/*.js\" or \"src/**/*.ts\". Returns matching file paths sorted by modification time. Use this when you need to find files by name patterns.",
         "parameters": {
             "type": "object",
             "properties": {
-                "pattern": {"type": "string", "description": "The regex pattern to search for."},
-                "dir_path": {"type": "string", "description": "The directory to search in. Default is current directory '.'"}
+                "pattern": {
+                    "type": "string",
+                    "description": "The glob pattern to match files against (e.g., \"**/*.py\", \"src/**/*.java\")."
+                },
+                "path": {
+                    "type": "string",
+                    "description": "The directory to search in. If not specified, the current working directory will be used. Optional."
+                }
+            },
+            "required": ["pattern"]
+        }
+    }
+}
+
+grep_schema = {
+    "type": "function",
+    "function": {
+        "name": "grep",
+        "description": "A powerful search tool for finding regex patterns in file contents. Supports full regex syntax, multiple output modes, and filtering. ALWAYS use this tool for content search - NEVER use grep/rg as shell commands.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "pattern": {
+                    "type": "string",
+                    "description": "The regex pattern to search for (e.g., 'log.*Error', 'function\\s+\\w+')."
+                },
+                "path": {
+                    "type": "string",
+                    "description": "File or directory to search in. Defaults to current working directory. Optional."
+                },
+                "glob": {
+                    "type": "string",
+                    "description": "Glob pattern to filter files (e.g., '*.js', '**/*.tsx'). Optional."
+                },
+                "output_mode": {
+                    "type": "string",
+                    "enum": ["content", "files_with_matches", "count"],
+                    "description": "Output mode: 'content' shows matching lines, 'files_with_matches' shows only file paths (default), 'count' shows match counts per file."
+                },
+                "context": {
+                    "type": "integer",
+                    "description": "Number of lines to show before and after each match (content mode only). Optional."
+                },
+                "case_insensitive": {
+                    "type": "boolean",
+                    "description": "Case insensitive search. Default is false. Optional."
+                },
+                "head_limit": {
+                    "type": "integer",
+                    "description": "Limit output to first N results. Defaults to 250. Pass 0 for unlimited (use sparingly). Optional."
+                },
+                "offset": {
+                    "type": "integer",
+                    "description": "Skip first N results before applying head_limit. Defaults to 0. Optional."
+                },
+                "multiline": {
+                    "type": "boolean",
+                    "description": "Enable multiline mode where . matches newlines and patterns can span lines. Default is false. Optional."
+                }
             },
             "required": ["pattern"]
         }

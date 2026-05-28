@@ -103,7 +103,7 @@ Once `run_tests` returns a 100% passing state (Exit Code: 0) for the target test
 """
 
     def get_tool_names(self) -> List[str]:
-        return ["read_file", "write_file", "edit_file", "delete_file", "list_directory", "grep_search",
+        return ["read_file", "write_file", "edit_file", "delete_file", "list_directory", "glob", "grep",
                 "execute_command", "run_tests", "run_build", "search_interfaces_by_keyword", "search_interfaces_by_relation", "get_node_relations"]
 
     def build_initial_messages(self, node_id: str, test_files: List[str], test_type: str, req_desc: str, scenario: list = None, dependency_context: str = "", current_interfaces: list = None, preloaded_source: str = None) -> tuple:

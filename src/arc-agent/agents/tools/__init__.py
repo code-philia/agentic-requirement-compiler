@@ -34,6 +34,10 @@ TOOL_REGISTRY = {
         "schema": list_directory_schema,
         "func": list_directory_impl
     },
+    "glob": {
+        "schema": glob_schema,
+        "func": glob_impl
+    },
     "add_todo": {
         "schema": add_todo_schema,
         "func": add_todo_impl
@@ -50,9 +54,9 @@ TOOL_REGISTRY = {
         "schema": clear_todos_schema,
         "func": clear_todos_impl
     },
-    "grep_search": {
-        "schema": grep_search_schema,
-        "func": grep_search_impl
+    "grep": {
+        "schema": grep_schema,
+        "func": grep_impl
     },
     "search_interfaces_by_keyword": {
         "schema": search_interfaces_by_keyword_schema,
