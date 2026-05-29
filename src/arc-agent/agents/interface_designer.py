@@ -12,9 +12,9 @@ class InterfaceDesigner(ARCAgent):
     def get_system_prompt(self) -> str:
         from utils import get_app_type, get_android_package
         app_type = get_app_type()
+        android_pkg = get_android_package() if app_type == "android" else ""
 
         if app_type == "android":
-            android_pkg = get_android_package()
             tech_stack = f"""
 ### Strict Tech Stack Constraints:
 **Android:**
@@ -25,6 +25,16 @@ class InterfaceDesigner(ARCAgent):
 - Source directories: app/src/main/java/, app/src/test/java/
 - Package: {android_pkg}
 - Interface decomposition: UI (Activity/Fragment) -> API (Repository/Service) -> FUNC (UseCase/ViewModel) -> DB (Room DAO/Entity)
+"""
+            pkg_compliance = f"""
+### Package Compliance (CRITICAL for Android):
+- The application package is `{android_pkg}`. You MUST use this package for ALL generated code:
+  - `package {android_pkg};` in every Java file
+  - `import {android_pkg}.xxx;` for cross-module references
+  - File paths must use `{android_pkg.replace('.', '/')}/` as the package directory
+  - AndroidManifest.xml must reference activities as `{android_pkg}.ActivityName`
+- Do NOT use `com.example.template` or any other package name.
+- If the requirement description mentions a different package name in resource-id patterns (e.g., `org.billthefarmer.editor:id/newFile`), use THAT package name instead of `{android_pkg}`. The resource-id package takes priority.
 """
         else:
             tech_stack = """
@@ -40,6 +50,7 @@ class InterfaceDesigner(ARCAgent):
 - Framework: Express.js
 - Database: SQLite3 (`sqlite3` driver, file-based)
 """
+            pkg_compliance = ""
 
         return f"""You are a Principal Software Architect.
 Your task is to analyze a raw software requirement and design its interfaces (UI -> API -> FUNC -> DB).
@@ -50,15 +61,7 @@ For **leaf nodes**: design ALL layers with real logic (not just `throw Unsupport
 
 {tech_stack}
 
-### Package Compliance (CRITICAL for Android):
-- The application package is `{android_pkg}`. You MUST use this package for ALL generated code:
-  - `package {android_pkg};` in every Java file
-  - `import {android_pkg}.xxx;` for cross-module references
-  - File paths must use `{android_pkg.replace('.', '/')}/` as the package directory
-  - AndroidManifest.xml must reference activities as `{android_pkg}.ActivityName`
-- Do NOT use `com.example.template` or any other package name.
-- If the requirement description mentions a different package name in resource-id patterns (e.g., `org.billthefarmer.editor:id/newFile`), use THAT package name instead of `{android_pkg}`. The resource-id package takes priority.
-
+{pkg_compliance}
 Design constraints (strict):
 - Prefer stable, deterministic module boundaries. One interface = one clear responsibility.
 - Interface IDs must be stable and explicit: `IF_{{TYPE}}_{{DOMAIN}}_{{ACTION}}` (e.g., `IF_API_USER_LOGIN`).
