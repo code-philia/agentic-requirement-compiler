@@ -7,8 +7,11 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 import uvicorn
 
 from utils import *
-from agent_workflow import ARCWorkflowManager, run_agent_workflow
+from agent_workflow import ARCWorkflowManager
 from traceability import store_all_requirement, get_traceability_data
+from traceability.database import get_requirement_by_id, upsert_node_state
+from compiler_driver import ARCCompilerDriver
+from compiler_state import NodeState
 
 app = FastAPI(title="ARC Multi-Agent Backend")
 
@@ -96,26 +99,39 @@ async def run_compilation(project_path: str, requirement_path: str, clear_all: b
     # Store requirements into the initialized database
     store_all_requirement(data)
 
-    process_queue = dfs_preorder(data)
+    root_id = data.get("id") if isinstance(data, dict) else None
+    if not root_id:
+        await manager.broadcast({"type": "error-event", "agent": "System", "message": "Requirement root node id is missing."})
+        return
 
-    await manager.broadcast({"type": "log", "agent": "DependencyManager", "message": f"Processing order (DFS pre-order): {', '.join(process_queue)}"})
+    await manager.broadcast({
+        "type": "log",
+        "agent": "DependencyManager",
+        "message": f"Processing roots (recursive DFS driver): {root_id}"
+    })
     await asyncio.sleep(1)
 
-    # 4. Process Nodes
-    failed_nodes = []
-    for node_id in process_queue:
-        update_node_status(workflow_manager.workspace_path, node_id, "analyzing")
-        await manager.broadcast({"type": "node_update", "nodeId": node_id, "status": "analyzing"})
-
-        ok = await workflow_manager.process_node(node_id)
-        if ok:
+    async def on_state_change(node_id: str, state: NodeState):
+        upsert_node_state(node_id, state.value)
+        if state == NodeState.WORKING:
+            update_node_status(workflow_manager.workspace_path, node_id, "analyzing")
+            await manager.broadcast({"type": "node_update", "nodeId": node_id, "status": "analyzing"})
+        elif state == NodeState.DONE:
             update_node_status(workflow_manager.workspace_path, node_id, "completed")
             await manager.broadcast({"type": "node_update", "nodeId": node_id, "status": "completed"})
-        else:
-            failed_nodes.append(node_id)
+        elif state == NodeState.FAILED:
             update_node_status(workflow_manager.workspace_path, node_id, "error")
             await manager.broadcast({"type": "node_update", "nodeId": node_id, "status": "error"})
-            await manager.broadcast({"type": "error-event", "agent": "System", "message": f"Node {node_id} failed. Continue with next node."})
+            await manager.broadcast({"type": "error-event", "agent": "System", "message": f"Node {node_id} failed."})
+
+    driver = ARCCompilerDriver(
+        workflow_manager=workflow_manager,
+        roots=[root_id],
+        requirement_getter=get_requirement_by_id,
+        on_state_change=on_state_change
+    )
+    compile_result = await driver.compile_all()
+    failed_nodes = compile_result.get("failed_nodes", [])
 
     if failed_nodes:
         await manager.broadcast({"type": "log", "agent": "System", "message": f"Completed with {len(failed_nodes)} failed node(s): {', '.join(failed_nodes)}. Check build logs for details."})
