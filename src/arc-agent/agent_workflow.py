@@ -26,10 +26,12 @@ from traceability.database import (
     update_requirement_visuals,
     insert_interface,
     update_interface_req_ids,
-    update_interface_implemented
+    update_interface_implemented,
+    insert_call_edge,
+    upsert_implementation
 )
 
-from utils import run_npm_install, run_git_init, run_git_commit, set_workspace_root, set_app_type
+from utils import run_npm_install, run_git_init, set_workspace_root, set_app_type
 
 from dotenv import load_dotenv
 
@@ -90,17 +92,17 @@ def visual_analysis_prompt() -> str:
     * **Layout:** Flex-row, gap 20px.
     * **Items (Transcription Examples):**
         * *If English:* "Home", "Products", "Contact Us" (Bold, Black).
-        * *If Chinese:* "首页", "产品中心", "联系我们" (Regular, Gray).
+        * *If Chinese:* "Shouye", "Chanpin Zhongxin", "Lianxi Women" (Regular, Gray).
 * **Child Element 2:** [Type: Form Component]
     * **Container Style:** Border, shadow, padding.
     * **Internal Layout:** Vertical stack.
     * **Content (Transcription Examples):**
-        * **Label:** "Username" OR "用户名" (Exact text).
-        * **Input Placeholder:** "Enter your email..." OR "请输入邮箱地址..." (Exact text).
-        * **Button:** "Submit" OR "立即提交" (White text on Blue bg).
+        * **Label:** "Username" OR "Yonghu Ming" (Exact text).
+        * **Input Placeholder:** "Enter your email..." OR "Qingshuru Youxiang Dizhi..." (Exact text).
+        * **Button:** "Submit" OR "Liji Tijiao" (White text on Blue bg).
 * **Child Element 3:** [Type: Banner/Hero]
-    * **Headline:** "Build Faster" OR "极速构建" (Font size ~32px, Bold).
-    * **Sub-text:** "Start your journey today." OR "开启您的数字化之旅。" (Gray, ~16px).
+    * **Headline:** "Build Faster" OR "Jisu Goujian" (Font size ~32px, Bold).
+    * **Sub-text:** "Start your journey today." OR "Kaiqi Ninde Shuzihua Zhilu." (Gray, ~16px).
 
 **Action:** Start the "Blind Transcription". Ensure EVERY character (CN/EN) visible in the image is recorded in your description.
 """
@@ -518,7 +520,7 @@ class ARCWorkflowManager:
         """Extract the target Android package name and resource-id mapping using an LLM call.
         The LLM reads all requirement descriptions and identifies:
         1. The application's package name from resource-id patterns, class references, etc.
-        2. All resource-id → component mappings (e.g., floatingActionButton → FAB)
+        2. All resource-id ->component mappings (e.g., floatingActionButton ->FAB)
 
         Results are written to .arc/metadata.md as global context for downstream agents.
 
@@ -574,16 +576,16 @@ class ARCWorkflowManager:
 Given requirement descriptions that contain resource-id patterns (e.g., `org.billthefarmer.editor:id/newFile`), fully-qualified class names, or other package references, extract:
 
 1. The application's own package name
-2. All resource-id mappings (resource name → UI component type)
+2. All resource-id mappings (resource name ->UI component type)
 
 Rules for package name:
 - Ignore system packages: com.android.*, android.*, com.google.*, androidx.*, java.*, javax.*, kotlin.*
 - The app's package is the one that appears most frequently in resource-id patterns or is clearly the application's own package.
 
 Rules for resource-id mapping:
-- From patterns like `org.billthefarmer.editor:id/newFile`, extract: newFile → Button
-- From patterns like `org.billthefarmer.editor:id/vscroll`, extract: vscroll → ScrollView
-- Infer the UI component type from the resource name (e.g., "button" → Button, "scroll" → ScrollView, "fab" → FloatingActionButton, "edit" → Button/EditText, "view" → Button, "save" → Button, "pathText" → EditText, "count" → TextView)
+- From patterns like `org.billthefarmer.editor:id/newFile`, extract: newFile ->Button
+- From patterns like `org.billthefarmer.editor:id/vscroll`, extract: vscroll ->ScrollView
+- Infer the UI component type from the resource name (e.g., "button" ->Button, "scroll" ->ScrollView, "fab" ->FloatingActionButton, "edit" ->Button/EditText, "view" ->Button, "save" ->Button, "pathText" ->EditText, "count" ->TextView)
 
 Return a JSON object with exactly these fields:
 {
@@ -669,9 +671,9 @@ Return a JSON object with "package_name" and "resource_ids" fields."""
             f"- **Package**: `{package_name}`",
             f"- **Package directory**: `{pkg_dir}`",
             f"- **Main source**: `app/src/main/java/{pkg_dir}/`",
-            f"- **Unit tests**: `app/src/test/java/{pkg_dir}/unit/` — package `{package_name}.unit`",
-            f"- **Integration tests**: `app/src/test/java/{pkg_dir}/integration/` — package `{package_name}.integration`",
-            f"- **E2E tests**: `app/src/test/java/{pkg_dir}/e2e/` — package `{package_name}.e2e`",
+            f"- **Unit tests**: `app/src/test/java/{pkg_dir}/unit/` --package `{package_name}.unit`",
+            f"- **Integration tests**: `app/src/test/java/{pkg_dir}/integration/` --package `{package_name}.integration`",
+            f"- **E2E tests**: `app/src/test/java/{pkg_dir}/e2e/` --package `{package_name}.e2e`",
         ]
 
         if resource_ids:
@@ -697,11 +699,11 @@ Return a JSON object with "package_name" and "resource_ids" fields."""
                         example_files.append(rel.replace(os.sep, "/"))
         if example_files:
             lines.append("")
-            lines.append("## Template Examples (read-only reference — NOT on the build path)")
+            lines.append("## Template Examples (read-only reference --NOT on the build path)")
             lines.append("These counter-app files demonstrate the correct architectural patterns")
             lines.append("(ViewModel, Repository, DAO, Room setup, Robolectric test helpers).")
             lines.append("Read them for guidance. Do NOT copy their `com.example.template` package")
-            lines.append("declarations — use the target package instead.")
+            lines.append("declarations --use the target package instead.")
             for ef in example_files[:40]:
                 lines.append(f"- `{ef}`")
             if len(example_files) > 40:
@@ -718,7 +720,7 @@ Return a JSON object with "package_name" and "resource_ids" fields."""
                         infra_files.append(rel.replace(os.sep, "/"))
         if infra_files:
             lines.append("")
-            lines.append("## Test Infrastructure (already in your test package — import directly)")
+            lines.append("## Test Infrastructure (already in your test package --import directly)")
             lines.append("These utility classes are compiled alongside your tests. Do NOT recreate them.")
             for inf in infra_files:
                 lines.append(f"- `{inf}`")
@@ -830,7 +832,7 @@ Return a JSON object with "package_name" and "resource_ids" fields."""
                     break
 
         # 4. Archive ALL main source files to .arc/examples/main/ (original declarations
-        #    preserved — readable reference for agents, not on the Gradle compile path).
+        #    preserved --readable reference for agents, not on the Gradle compile path).
         if os.path.exists(template_src_base):
             for root, dirs, files in os.walk(template_src_base, topdown=False):
                 for fname in files:
@@ -847,8 +849,8 @@ Return a JSON object with "package_name" and "resource_ids" fields."""
             )
 
         # 5. Split template test files:
-        #    - Counter-specific tests (*Test.java) → .arc/examples/test/ (reference only)
-        #    - Generic infra (InstantTaskExecutorExtension, TestCounterApp, etc.) → move to
+        #    - Counter-specific tests (*Test.java) ->.arc/examples/test/ (reference only)
+        #    - Generic infra (InstantTaskExecutorExtension, TestCounterApp, etc.) ->move to
         #      the real test package with updated declarations so agents can import them.
         if os.path.exists(template_test_base):
             for root, dirs, files in os.walk(template_test_base, topdown=False):
@@ -861,7 +863,7 @@ Return a JSON object with "package_name" and "resource_ids" fields."""
                         os.makedirs(os.path.dirname(dst), exist_ok=True)
                         _shutil.copy2(src, dst)
                     else:
-                        # Generic infra — move to real test tree with repackaged declarations
+                        # Generic infra --move to real test tree with repackaged declarations
                         new_path = os.path.join(new_test_base, rel)
                         os.makedirs(os.path.dirname(new_path), exist_ok=True)
                         if fname.endswith(".java") or fname.endswith(".kt"):
@@ -1071,503 +1073,518 @@ Return a JSON object with "package_name" and "resource_ids" fields."""
             return ""
         return "<source_code>\n" + "\n\n".join(lines) + "\n</source_code>"
 
-    async def process_node(self, node_id: str) -> dict:
-        """Process a single requirement node through the workflow.
+    async def synthesize_interfaces_and_tests(self, node_id: str, requirement_data: dict, is_leaf: bool) -> dict:
+        """Run design and test synthesis phases (no code implementation)."""
+        await self._log("InterfaceDesigner", f"Starting interface design for node {node_id}", "analyzing", node_id)
 
-        Leaf nodes (no children): full 4-step pipeline (Design → Test → TDD).
-        Non-leaf nodes (have children): only Step 1-2 (Design shared interfaces), skip Test/TDD.
-        """
+        await self.parse_and_store_visual_elements(self.workspace_path, requirement_data)
+        requirement_data = get_requirement_by_id(node_id) or requirement_data
 
-        # Get requirement data from database
+        raw_ir_output, design_messages = await self.interface_designer.design_ir(
+            node_id=node_id,
+            requirement_data=requirement_data,
+            is_leaf=is_leaf
+        )
+        interfaces = extract_json_array_from_markdown(raw_ir_output)
+        if interfaces is None:
+            await self._log("System", "First IR output is not a valid JSON array. Triggering one repair attempt.", node_id=node_id)
+            repair_prompt_data = dict(requirement_data)
+            repair_prompt_data["__repair_hint"] = "Return ONLY one ```json array``` with valid interface mapping objects. Do NOT write any code."
+            raw_ir_output, design_messages = await self.interface_designer.design_ir(
+                node_id=node_id,
+                requirement_data=repair_prompt_data,
+                is_leaf=is_leaf
+            )
+            interfaces = extract_json_array_from_markdown(raw_ir_output)
+
+        if interfaces is not None:
+            try:
+                for iface in interfaces:
+                    interface_id = iface.get("interface_id", f"{node_id}_UNKNOWN")
+                    is_reuse = iface.get("reuse", False)
+
+                    if is_reuse:
+                        success = update_interface_req_ids(interface_id, node_id)
+                        if success:
+                            await self._log("System", f"Reused existing interface: {interface_id}", node_id=node_id)
+                        else:
+                            await self._log("System", f"Warning: Attempted to reuse interface {interface_id} but it was not found in DB.", node_id=node_id)
+                    else:
+                        itype = iface.get("type", "FUNC")
+                        callers = iface.get("callers", [])
+                        callees = iface.get("callees", [])
+                        f_path = iface.get("file_path", "")
+                        f_line = iface.get("first_line", "")
+
+                        content_dict = {
+                            "name": iface.get("name", ""),
+                            "description": iface.get("description", ""),
+                            "inputs": iface.get("inputs", []),
+                            "outputs": iface.get("outputs", [])
+                        }
+                        content_str = json.dumps(content_dict, ensure_ascii=False)
+
+                        insert_interface(
+                            interface_id=interface_id,
+                            req_ids=[node_id],
+                            type=itype,
+                            content=content_str,
+                            file_path=f_path,
+                            first_line=f_line,
+                            implemented=False,
+                            callers=callers,
+                            callees=callees
+                        )
+
+                await self._log("System", f"Designed {len(interfaces)} interfaces for node {node_id}.", node_id=node_id)
+                context_pipeline.cache.invalidate_db_layers(node_id)
+            except Exception as e:
+                await self._log("System", f"Failed to parse/store interface JSON block: {str(e)}", node_id=node_id)
+        else:
+            await self._log("System", "Warning: No valid interface JSON block found in output.", node_id=node_id)
+
+        await self._log("System", "Interface design phase completed.", "designed", node_id)
+
+        stub_artifacts = ""
+        run_tdd = True
+        if interfaces is not None and len(interfaces) > 0:
+            await self._log(
+                "System",
+                f"Design phase finished for node {node_id}; moving directly to test generation (test-first).",
+                node_id=node_id
+            )
+        else:
+            await self._log(
+                "System",
+                f"No interfaces designed for node {node_id}; test generation will rely on requirement content.",
+                node_id=node_id
+            )
+
+        if run_tdd:
+            await self._log("TestGenerator", f"Generating test suite for node {node_id}...", node_id=node_id)
+
+            interfaces_ir = get_interfaces_by_req_id(node_id)
+            if not interfaces_ir:
+                await self._log("System", "No IR in database. Falling back to file-based test generation.", node_id=node_id)
+                interfaces_ir = []
+
+            all_test_outputs = []
+            label = f"{len(interfaces_ir)} interfaces" if interfaces_ir else "requirement description (no IR)"
+            await self._log("TestGenerator", f"Generating all test types for {label}...", node_id=node_id)
+            test_messages, test_tools = self.test_generator.build_initial_messages(
+                node_id=node_id,
+                requirement_data=requirement_data,
+                interfaces_ir=interfaces_ir,
+                test_type="All",
+                preloaded_source=stub_artifacts
+            )
+            all_test_output, test_run_messages = await self.test_generator.run_from_messages(
+                test_messages, node_id=node_id, max_steps=25, tools=test_tools
+            )
+            if extract_json_array_from_markdown(all_test_output) is None:
+                await self._log("TestGenerator", "JSON mapping block missing --requesting it now.", node_id=node_id)
+                test_run_messages.append({
+                    "role": "user",
+                    "content": (
+                        "You did not output the required JSON test mapping block. "
+                        "Do NOT write any more files. Output ONLY the ```json ... ``` block now, "
+                        "listing every test file you wrote with test_id, req_id, interface_ids, "
+                        "type, file_path, and first_line."
+                    )
+                })
+                nudge_output, _ = await self.test_generator.run_from_messages(
+                    test_run_messages, node_id=node_id, max_steps=3, tools=test_tools
+                )
+                all_test_output = nudge_output
+            all_test_outputs.append(all_test_output)
+
+            if all_test_outputs:
+                combined_output = "\n\n".join(all_test_outputs)
+                await self._log("System", f"Generated test output bundle length: {len(combined_output)} chars", node_id=node_id)
+
+                for raw_test_output in all_test_outputs:
+                    test_mappings = extract_json_array_from_markdown(raw_test_output)
+                    if test_mappings is not None:
+                        try:
+                            for mapping in test_mappings:
+                                t_id = mapping.get("test_id", f"TEST_{node_id}_UNKNOWN")
+                                r_id = mapping.get("req_id", node_id)
+                                i_ids = mapping.get("interface_ids", [])
+                                t_type = mapping.get("type", "Unit")
+                                f_path = mapping.get("file_path", "")
+                                f_line = mapping.get("first_line", "")
+
+                                insert_test(
+                                    test_id=t_id,
+                                    req_id=r_id,
+                                    interface_ids=i_ids,
+                                    type=t_type,
+                                    file_path=f_path,
+                                    first_line=f_line
+                                )
+
+                            await self._log("System", f"Successfully registered {len(test_mappings)} tests in traceability database.", node_id=node_id)
+                            context_pipeline.cache.invalidate_db_layers(node_id)
+                            context_pipeline.cache.invalidate_file_layers(node_id)
+                        except Exception as e:
+                            await self._log("System", f"Failed to parse/register test mappings from TestGenerator: {str(e)}", node_id=node_id)
+            else:
+                await self._log("System", "No tests generated.", node_id=node_id)
+        return {
+            "run_tdd": run_tdd,
+            "stub_artifacts": stub_artifacts,
+            "requirement_data": requirement_data,
+        }
+
+    async def implement_with_reactive_loop(self, node_id: str, requirement_data: dict, stub_artifacts: str) -> None:
+        """Run TDD implementation loop with phase-based retries."""
+        from traceability.test_result_tracker import TestResultTracker
+        from agents.tools.cli_tools import run_tests_impl, parse_test_results
+
+        dependency_context = build_dependency_context(node_id)
+        req_desc = requirement_data.get("description", "")
+        req_scenario = requirement_data.get("scenario", [])
+        EXTRA_BUDGET = 3
+        enable_test_downgrade = os.environ.get("ARC_ENABLE_TEST_DOWNGRADE", "0") == "1"
+        DOWNGRADE_ATTEMPTS = 2 if enable_test_downgrade else 0
+
+        tracker = TestResultTracker(os.path.join(self.workspace_path, ".arc"))
+        tests = get_tests_by_req_id(node_id)
+
+        tests_by_type = {"Unit": [], "Integration": [], "E2E": []}
+        for t in tests:
+            t_type = t.get("type", "Unit")
+            if t_type in tests_by_type:
+                tests_by_type[t_type].append(t)
+
+        current_interfaces = get_interfaces_by_req_id(node_id)
+
+        async def run_tdd_loop(target_type: str, tests_batch: list, budget: int,
+                               scenario: list = None, preloaded_source: str = None,
+                               downgrade_mode: bool = False) -> bool:
+            test_files = [t.get("file_path") for t in tests_batch if t.get("file_path")]
+            test_ids = [t.get("test_id") for t in tests_batch if t.get("test_id")]
+
+            if not test_files:
+                return True
+
+            mode_label = "downgrade" if downgrade_mode else "fix"
+            await self._log("TestDrivenDeveloper", f"Starting {target_type} TDD ({mode_label}) with {len(test_files)} test(s) (Budget: {budget})...", node_id=node_id)
+
+            messages, tools = self.test_driven_developer.build_initial_messages(
+                node_id=node_id,
+                test_files=test_files,
+                test_type=target_type,
+                req_desc=req_desc,
+                scenario=scenario,
+                dependency_context=dependency_context,
+                current_interfaces=current_interfaces,
+                preloaded_source=preloaded_source
+            )
+
+            last_error_sig = None
+            consecutive_same_errors = 0
+
+            for iteration in range(1, budget + 1):
+                await self._log("TestDrivenDeveloper", f"[{target_type}] Iteration {iteration}/{budget} ({mode_label})...", node_id=node_id)
+
+                final_output, messages = await self.test_driven_developer.run_from_messages(
+                    messages, node_id=node_id, max_steps=15, tools=tools
+                )
+
+                if "IMPLEMENTED" in final_output:
+                    await self._log("System", f"[{target_type}] Tests passed! TDD loop completed ({mode_label}).", node_id=node_id)
+                    try:
+                        update_test_implemented_status(test_ids)
+                    except Exception as db_err:
+                        await self._log("System", f"Warning: Failed to update DB status: {str(db_err)}", node_id=node_id)
+                    return True
+                else:
+                    error_sig = final_output[:200] if final_output else ""
+                    if error_sig == last_error_sig:
+                        consecutive_same_errors += 1
+                    else:
+                        consecutive_same_errors = 0
+                        last_error_sig = error_sig
+
+                    if consecutive_same_errors >= 2:
+                        await self._log("System", f"Warning: [{target_type}] Same error repeated 3x. Breaking early.", node_id=node_id)
+                        break
+
+                    if downgrade_mode:
+                        nudge = (
+                            f"The {target_type} tests are still failing even after implementation fixes. "
+                            f"This suggests the test may be too strict or have incorrect assumptions. "
+                            f"Simplify the test: remove flaky assertions, relax strict equality checks, "
+                            f"or split into smaller test cases. Rewrite the test file and rerun `run_tests` with type `{target_type}`. "
+                            f"Reply \"IMPLEMENTED\" only when all target tests pass."
+                        )
+                    else:
+                        if iteration > 1:
+                            modified_files = _extract_modified_files_from_messages(messages)
+                            delta_ctx = context_pipeline.build_incremental_context(node_id, modified_files=modified_files)
+                            if delta_ctx:
+                                nudge = (
+                                    f"The {target_type} tests are still failing. "
+                                    f"Here are the files you modified:\n{delta_ctx}\n\n"
+                                    f"Analyze the error output, fix the code, and rerun `run_tests` with type `{target_type}`. "
+                                    f"Reply \"IMPLEMENTED\" only when all target tests pass."
+                                )
+                            else:
+                                nudge = f"The {target_type} tests are still failing. Analyze the error output, fix the code, and rerun `run_tests` with type `{target_type}`. Reply \"IMPLEMENTED\" only when all target tests pass."
+                        else:
+                            nudge = f"The {target_type} tests are still failing. Analyze the error output, fix the code, and rerun `run_tests` with type `{target_type}`. Reply \"IMPLEMENTED\" only when all target tests pass."
+                    messages.append({"role": "user", "content": nudge})
+
+            await self._log("System", f"Warning: [{target_type}] TDD budget exhausted ({mode_label}).", node_id=node_id)
+            return False
+
+        for test_type in ["Unit", "Integration", "E2E"]:
+            tests_batch = tests_by_type[test_type]
+            if not tests_batch:
+                continue
+
+            test_files = [t.get("file_path") for t in tests_batch if t.get("file_path")]
+            await self._log("System", f"[Phase A] Batch running {len(test_files)} {test_type} test(s)...", node_id=node_id)
+
+            batch_output = await run_tests_impl(test_type)
+            parsed = parse_test_results(batch_output)
+
+            passed_files = set()
+            failed_tests = []
+
+            if parsed["exit_code"] == 0:
+                for t in tests_batch:
+                    t_id = t.get("test_id", "")
+                    t_path = t.get("file_path", "")
+                    tracker.record_test(node_id, test_type, t_id, t_path, "direct_pass", 1)
+                await self._log("System", f"[Phase A] All {test_type} tests passed directly!", node_id=node_id)
+            else:
+                failed_names = set(parsed["failed"])
+                for t in tests_batch:
+                    t_id = t.get("test_id", "")
+                    t_path = t.get("file_path", "")
+                    t_first_line = t.get("first_line", "")
+                    is_failed = False
+                    for fn in failed_names:
+                        if t_path and t_path.replace("/", ".").replace("\\", ".").replace(".java", "").replace(".kt", "") in fn:
+                            is_failed = True
+                            break
+                        if t_first_line and t_first_line in fn:
+                            is_failed = True
+                            break
+
+                    if is_failed:
+                        failed_tests.append(t)
+                    else:
+                        tracker.record_test(node_id, test_type, t_id, t_path, "direct_pass", 1)
+                        passed_files.add(t_path)
+
+                if not failed_tests and parsed["exit_code"] != 0:
+                    failed_tests = tests_batch
+                    for t in tests_batch:
+                        t_id = t.get("test_id", "")
+                        if tracker.get_test_status(node_id, test_type, t_id) == "direct_pass":
+                            node_data = tracker._data.get("nodes", {}).get(node_id, {}).get(test_type, {})
+                            node_data.pop(t_id, None)
+
+                await self._log("System", f"[Phase A] {test_type}: {len(passed_files)} passed, {len(failed_tests)} failed in batch.", node_id=node_id)
+
+            if not failed_tests:
+                continue
+
+            still_failing = []
+            for t in failed_tests:
+                t_id = t.get("test_id", "")
+                t_path = t.get("file_path", "")
+                await self._log("System", f"[Phase B] Retrying {test_type} test: {t_id}...", node_id=node_id)
+
+                success = await run_tdd_loop(test_type, [t], budget=EXTRA_BUDGET,
+                                             scenario=req_scenario if test_type == "E2E" else None,
+                                             preloaded_source=stub_artifacts)
+                if success:
+                    tracker.record_test(node_id, test_type, t_id, t_path, "retry_pass", EXTRA_BUDGET)
+                    await self._log("System", f"[Phase B] {t_id} passed after individual retry.", node_id=node_id)
+                else:
+                    still_failing.append(t)
+                    await self._log("System", f"[Phase B] {t_id} still failing after individual retry.", node_id=node_id)
+
+            if not still_failing:
+                continue
+
+            if DOWNGRADE_ATTEMPTS <= 0:
+                for t in still_failing:
+                    t_id = t.get("test_id", "")
+                    t_path = t.get("file_path", "")
+                    tracker.record_test(node_id, test_type, t_id, t_path, "final_fail", EXTRA_BUDGET)
+                    await self._log("System", f"[Phase C] Test downgrade disabled; {t_id} marked as final_fail.", node_id=node_id)
+                tracker.save()
+                continue
+
+            for t in still_failing:
+                t_id = t.get("test_id", "")
+                t_path = t.get("file_path", "")
+                await self._log("System", f"[Phase C] Attempting test downgrade for: {t_id}...", node_id=node_id)
+
+                passed_on_downgrade = False
+                for downgrade_attempt in range(1, DOWNGRADE_ATTEMPTS + 1):
+                    success = await run_tdd_loop(test_type, [t], budget=EXTRA_BUDGET,
+                                                 scenario=req_scenario if test_type == "E2E" else None,
+                                                 preloaded_source=stub_artifacts,
+                                                 downgrade_mode=True)
+                    if success:
+                        status = "retry_pass" if downgrade_attempt == 1 else "relaxed_pass"
+                        tracker.record_test(node_id, test_type, t_id, t_path, status, EXTRA_BUDGET + downgrade_attempt)
+                        await self._log("System", f"[Phase C] {t_id} passed on downgrade attempt {downgrade_attempt}.", node_id=node_id)
+                        passed_on_downgrade = True
+                        break
+                    else:
+                        await self._log("System", f"[Phase C] {t_id} still failing on downgrade attempt {downgrade_attempt}.", node_id=node_id)
+
+                if not passed_on_downgrade:
+                    tracker.record_test(node_id, test_type, t_id, t_path, "final_fail", EXTRA_BUDGET + DOWNGRADE_ATTEMPTS)
+                    await self._log("System", f"[Phase C] {t_id} marked as final_fail.", node_id=node_id)
+
+            tracker.save()
+
+        node_stats = tracker.get_node_stats(node_id)
+        stats_parts = []
+        for tt in ["Unit", "Integration", "E2E"]:
+            s = node_stats.get(tt, {})
+            total = s.get("total", 0)
+            if total > 0:
+                dp = s.get("direct_pass", 0)
+                stats_parts.append(f"{tt}: {dp}/{total} direct pass")
+        if stats_parts:
+            await self._log("System", f"Node {node_id} results: " + ", ".join(stats_parts), node_id=node_id)
+
+    async def record_parent_child_call_edges(self, parent_node_id: str, child_node_id: str) -> int:
+        """Persist explicit call-graph edges between a parent node and a child node."""
+        try:
+            parent_interfaces = get_interfaces_by_req_id(parent_node_id)
+            child_interfaces = get_interfaces_by_req_id(child_node_id)
+            edge_count = 0
+            for p_iface in parent_interfaces:
+                p_id = p_iface.get("interface_id")
+                if not p_id:
+                    continue
+                for c_iface in child_interfaces:
+                    c_id = c_iface.get("interface_id")
+                    if not c_id:
+                        continue
+                    insert_call_edge(
+                        source_req_id=parent_node_id,
+                        target_req_id=child_node_id,
+                        from_interface_id=p_id,
+                        to_interface_id=c_id,
+                        edge_type="dfs_parent_child"
+                    )
+                    edge_count += 1
+            if edge_count > 0:
+                await self._log(
+                    "System",
+                    f"Recorded {edge_count} call edge(s) from node {parent_node_id} to child {child_node_id}.",
+                    node_id=parent_node_id
+                )
+            return edge_count
+        except Exception as e:
+            await self._log(
+                "System",
+                f"Failed to record call edges for parent {parent_node_id} -> child {child_node_id}: {str(e)}",
+                node_id=parent_node_id
+            )
+            return 0
+
+    async def prepare_node(self, node_id: str) -> dict:
+        """Top-down phase for one node: synthesize interfaces and tests."""
         requirement_data = get_requirement_by_id(node_id)
         if not requirement_data:
             await self._log("System", f"Error: Requirement node {node_id} not found in database.", node_id=node_id)
-            return False
+            return {"ok": False, "node_id": node_id}
 
-        # Pre-warm context pipeline cache for this node (global layers only)
         context_pipeline.prewarm(node_id)
 
-        # Determine if this is a leaf node (no children)
         children_ids = requirement_data.get("children_ids", [])
         is_leaf = not children_ids
-
-        if not is_leaf:
-            await self._log("System", f"Node {node_id} is a non-leaf node (children: {children_ids}). Will design shared interfaces only.", node_id=node_id)
+        if is_leaf:
+            await self._log("System", f"Node {node_id} is a leaf node. Entering top-down synthesis.", node_id=node_id)
         else:
-            await self._log("System", f"Node {node_id} is a leaf node. Will run full pipeline (Design → Test → TDD).", node_id=node_id)
-        
+            await self._log("System", f"Node {node_id} is a non-leaf node (children: {children_ids}). Entering top-down synthesis.", node_id=node_id)
+
         try:
-            # ==========================================
-            # Step 1: Design IR (Interface Architecture) — JSON only, no code
-            # ==========================================
-            await self._log("InterfaceDesigner", f"Starting interface design for node {node_id}", "analyzing", node_id)
-
-            dependency_context = build_dependency_context(node_id)
-
-            await self.parse_and_store_visual_elements(self.workspace_path, requirement_data)
-            # Refresh requirement data after parsing visual elements
-            requirement_data = get_requirement_by_id(node_id)
-
-            raw_ir_output, design_messages = await self.interface_designer.design_ir(
+            phase_a = await self.synthesize_interfaces_and_tests(
                 node_id=node_id,
                 requirement_data=requirement_data,
                 is_leaf=is_leaf
             )
-            # Parse IR JSON
-            interfaces = extract_json_array_from_markdown(raw_ir_output)
-            if interfaces is None:
-                await self._log("System", "First IR output is not a valid JSON array. Triggering one repair attempt.", node_id=node_id)
-                repair_prompt_data = dict(requirement_data)
-                repair_prompt_data["__repair_hint"] = "Return ONLY one ```json array``` with valid interface mapping objects. Do NOT write any code."
-                raw_ir_output, design_messages = await self.interface_designer.design_ir(
-                    node_id=node_id,
-                    requirement_data=repair_prompt_data,
-                    is_leaf=is_leaf
-                )
-                interfaces = extract_json_array_from_markdown(raw_ir_output)
+            phase_a["ok"] = True
+            phase_a["node_id"] = node_id
+            return phase_a
+        except Exception as e:
+            await self._log("System", f"Top-down synthesis failed due to an error: {str(e)}", node_id=node_id)
+            return {"ok": False, "node_id": node_id}
 
-            if interfaces is not None:
-                # Store interfaces in DB
-                try:
-                    for iface in interfaces:
-                        interface_id = iface.get("interface_id", f"{node_id}_UNKNOWN")
-                        is_reuse = iface.get("reuse", False)
+    async def implement_node(self, node_id: str, prepared: dict) -> bool:
+        """Bottom-up phase for one node: implement and verify."""
+        if not prepared or not prepared.get("ok", False):
+            await self._log("System", f"Skipping bottom-up implementation for node {node_id} due to failed preparation.", node_id=node_id)
+            return False
 
-                        if is_reuse:
-                            success = update_interface_req_ids(interface_id, node_id)
-                            if success:
-                                await self._log("System", f"Reused existing interface: {interface_id}", node_id=node_id)
-                            else:
-                                await self._log("System", f"Warning: Attempted to reuse interface {interface_id} but it was not found in DB.", node_id=node_id)
-                        else:
-                            itype = iface.get("type", "FUNC")
-                            callers = iface.get("callers", [])
-                            callees = iface.get("callees", [])
-                            f_path = iface.get("file_path", "")
-                            f_line = iface.get("first_line", "")
+        requirement_data = prepared.get("requirement_data", {}) or {}
+        stub_artifacts = prepared.get("stub_artifacts", "")
 
-                            content_dict = {
-                                "name": iface.get("name", ""),
-                                "description": iface.get("description", ""),
-                                "inputs": iface.get("inputs", []),
-                                "outputs": iface.get("outputs", [])
-                            }
-                            content_str = json.dumps(content_dict, ensure_ascii=False)
+        try:
+            await self.implement_with_reactive_loop(
+                node_id=node_id,
+                requirement_data=requirement_data,
+                stub_artifacts=stub_artifacts
+            )
 
-                            insert_interface(
-                                interface_id=interface_id,
-                                req_ids=[node_id],
-                                type=itype,
-                                content=content_str,
-                                file_path=f_path,
-                                first_line=f_line,
-                                implemented=False,
-                                callers=callers,
-                                callees=callees
-                            )
-
-                    await self._log("System", f"Designed {len(interfaces)} interfaces for node {node_id}.", node_id=node_id)
-                    # Invalidate DB-dependent cache layers since new interfaces were inserted
-                    context_pipeline.cache.invalidate_db_layers(node_id)
-                except Exception as e:
-                    await self._log("System", f"Failed to parse/store interface JSON block: {str(e)}", node_id=node_id)
-            else:
-                await self._log("System", "Warning: No valid interface JSON block found in output.", node_id=node_id)
-
-            await self._log("System", "Interface design phase completed.", "designed", node_id)
-
-            # ==========================================
-            # Step 2: Implement Stub Code (if interfaces were designed)
-            # ==========================================
-            stub_artifacts = ""  # Will be populated if stubs are written
-            if interfaces is not None and len(interfaces) > 0:
-                await self._log("InterfaceDesigner", f"Implementing stub code for {len(interfaces)} interfaces...", node_id=node_id)
-
-                impl_output, impl_messages = await self.interface_designer.implement_stubs_from_session(
-                    messages=design_messages,
-                    interfaces=interfaces,
-                    node_id=node_id,
-                    is_leaf=is_leaf
-                )
-
-                # Mark interfaces as implemented
-                for iface in interfaces:
-                    interface_id = iface.get("interface_id", "")
-                    if interface_id and not iface.get("reuse", False):
-                        update_interface_implemented(interface_id, True)
-
-                await self._log("System", f"Stub code implementation completed for node {node_id}.", node_id=node_id)
-
-                # Invalidate file-dependent cache layers (stubs were written to disk)
-                context_pipeline.cache.invalidate_file_layers(node_id)
-
-                # Collect stub artifacts — IR files + anything InterfaceDesigner also wrote
-                stub_artifacts = self._collect_stub_artifacts(interfaces, impl_messages)
-
-                # Gate: verify stubs compile before investing in test generation
-                from agents.tools.cli_tools import run_build_impl as _run_build
-                _stub_build = await _run_build()
-                if "Exit Code: 0" not in _stub_build:
-                    await self._log("System", f"Stub build FAILED for node {node_id} — skipping test generation. Fix compile errors first.", node_id=node_id)
-                    is_leaf = False  # skip test/TDD steps for this node
-
-                # Git Commit for Design + Implementation
-                designed_interfaces = [m.get("interface_id", "UNKNOWN") for m in interfaces]
-                commit_msg = f"feat(design): [{node_id}] designed & implemented: {', '.join(designed_interfaces)}"
-                await run_git_commit(self.workspace_path, commit_msg, self._log)
-            else:
-                await self._log("System", f"No interfaces to implement for node {node_id}.", node_id=node_id)
-
-            if is_leaf:
-                # ==========================================
-                # Step 3: Generate Tests (TDD Preparations)
-                # ==========================================
-                await self._log("TestGenerator", f"Generating test suite for node {node_id}...", node_id=node_id)
-
-                interfaces_ir = get_interfaces_by_req_id(node_id)
-
-                if not interfaces_ir:
-                    # Fallback: generate tests based on requirement description + existing files
-                    # even without formal IR entries
-                    await self._log("System", "No IR in database. Falling back to file-based test generation.", node_id=node_id)
-                    interfaces_ir = []  # will use requirement_data directly
-
-                all_test_outputs = []
-
-                # Single batch call: generate ALL test types (Unit + Integration + E2E) at once
-                label = f"{len(interfaces_ir)} interfaces" if interfaces_ir else "requirement description (no IR)"
-                await self._log("TestGenerator", f"Generating all test types for {label}...", node_id=node_id)
-                test_messages, test_tools = self.test_generator.build_initial_messages(
-                    node_id=node_id,
-                    requirement_data=requirement_data,
-                    interfaces_ir=interfaces_ir,
-                    test_type="All",
-                    preloaded_source=stub_artifacts
-                )
-                all_test_output, test_run_messages = await self.test_generator.run_from_messages(
-                    test_messages, node_id=node_id, max_steps=25, tools=test_tools
-                )
-                # If the agent ran out of steps without outputting the JSON mapping block,
-                # send a single targeted follow-up to retrieve it.
-                if extract_json_array_from_markdown(all_test_output) is None:
-                    await self._log("TestGenerator", "JSON mapping block missing — requesting it now.", node_id=node_id)
-                    test_run_messages.append({
-                        "role": "user",
-                        "content": (
-                            "You did not output the required JSON test mapping block. "
-                            "Do NOT write any more files. Output ONLY the ```json ... ``` block now, "
-                            "listing every test file you wrote with test_id, req_id, interface_ids, "
-                            "type, file_path, and first_line."
-                        )
-                    })
-                    nudge_output, _ = await self.test_generator.run_from_messages(
-                        test_run_messages, node_id=node_id, max_steps=3, tools=test_tools
-                    )
-                    all_test_output = nudge_output
-                all_test_outputs.append(all_test_output)
-
-                # Combine outputs to store in state
-                if all_test_outputs:
-                    combined_output = "\n\n".join(all_test_outputs)
-                    await self._log("System", f"Generated test output bundle length: {len(combined_output)} chars", node_id=node_id)
-
-                    # parse test mappings
-                    for raw_test_output in all_test_outputs:
-                        test_mappings = extract_json_array_from_markdown(raw_test_output)
-                        if test_mappings is not None:
-                            try:
-                                for mapping in test_mappings:
-                                    t_id = mapping.get("test_id", f"TEST_{node_id}_UNKNOWN")
-                                    r_id = mapping.get("req_id", node_id)
-                                    i_ids = mapping.get("interface_ids", [])
-                                    t_type = mapping.get("type", "Unit")
-                                    f_path = mapping.get("file_path", "")
-                                    f_line = mapping.get("first_line", "")
-
-                                    insert_test(
-                                        test_id=t_id,
-                                        req_id=r_id,
-                                        interface_ids=i_ids,
-                                        type=t_type,
-                                        file_path=f_path,
-                                        first_line=f_line
-                                    )
-
-                                await self._log("System", f"Successfully registered {len(test_mappings)} tests in traceability database.", node_id=node_id)
-                                # Invalidate DB and file caches (tests were written and registered)
-                                context_pipeline.cache.invalidate_db_layers(node_id)
-                                context_pipeline.cache.invalidate_file_layers(node_id)
-                            except Exception as e:
-                                await self._log("System", f"Failed to parse/register test mappings from TestGenerator: {str(e)}", node_id=node_id)
-                else:
-                    await self._log("System", "No tests generated.", node_id=node_id)
-
-
-                # ==========================================
-                # Step 4: Implement (3-Phase TDD Strategy with Tracking)
-                # ==========================================
-                from traceability.test_result_tracker import TestResultTracker
-                from agents.tools.cli_tools import run_tests_impl, parse_test_results
-
-                # Refresh dependency context — interfaces are now in the DB
-                dependency_context = build_dependency_context(node_id)
-
-                req_desc = requirement_data.get("description", "")
-                req_scenario = requirement_data.get("scenario", [])
-                EXTRA_BUDGET = 3  # Individual retry budget per failing test
-                DOWNGRADE_ATTEMPTS = 2  # Test downgrade attempts
-
-                tracker = TestResultTracker(os.path.join(self.workspace_path, ".arc"))
-
-                # Get tests from DB to know what files to run
-                tests = get_tests_by_req_id(node_id)
-
-                # Group tests by type
-                tests_by_type = {"Unit": [], "Integration": [], "E2E": []}
-                for t in tests:
-                    t_type = t.get("type", "Unit")
-                    if t_type in tests_by_type:
-                        tests_by_type[t_type].append(t)
-
-                current_interfaces = get_interfaces_by_req_id(node_id)
-
-                # --- TDD loop helper (shared session, used by Phase B and C) ---
-                async def run_tdd_loop(target_type: str, tests_batch: list, budget: int,
-                                       scenario: list = None, preloaded_source: str = None,
-                                       downgrade_mode: bool = False) -> bool:
-                    """Run TDD loop for a batch of tests. Returns True if IMPLEMENTED."""
-                    test_files = [t.get("file_path") for t in tests_batch if t.get("file_path")]
-                    test_ids = [t.get("test_id") for t in tests_batch if t.get("test_id")]
-
-                    if not test_files:
-                        return True
-
-                    mode_label = "downgrade" if downgrade_mode else "fix"
-                    await self._log("TestDrivenDeveloper", f"Starting {target_type} TDD ({mode_label}) with {len(test_files)} test(s) (Budget: {budget})...", node_id=node_id)
-
-                    messages, tools = self.test_driven_developer.build_initial_messages(
-                        node_id=node_id,
-                        test_files=test_files,
-                        test_type=target_type,
-                        req_desc=req_desc,
-                        scenario=scenario,
-                        dependency_context=dependency_context,
-                        current_interfaces=current_interfaces,
-                        preloaded_source=preloaded_source
-                    )
-
-                    last_error_sig = None
-                    consecutive_same_errors = 0
-                    total_attempts = 0
-
-                    for iteration in range(1, budget + 1):
-                        await self._log("TestDrivenDeveloper", f"[{target_type}] Iteration {iteration}/{budget} ({mode_label})...", node_id=node_id)
-
-                        final_output, messages = await self.test_driven_developer.run_from_messages(
-                            messages, node_id=node_id, max_steps=15, tools=tools
-                        )
-                        total_attempts = iteration
-
-                        if "IMPLEMENTED" in final_output:
-                            await self._log("System", f"[{target_type}] Tests passed! TDD loop completed ({mode_label}).", node_id=node_id)
-                            try:
-                                update_test_implemented_status(test_ids)
-                            except Exception as db_err:
-                                await self._log("System", f"Warning: Failed to update DB status: {str(db_err)}", node_id=node_id)
-                            return True
-                        else:
-                            error_sig = final_output[:200] if final_output else ""
-                            if error_sig == last_error_sig:
-                                consecutive_same_errors += 1
-                            else:
-                                consecutive_same_errors = 0
-                                last_error_sig = error_sig
-
-                            if consecutive_same_errors >= 2:
-                                await self._log("System", f"Warning: [{target_type}] Same error repeated 3x. Breaking early.", node_id=node_id)
-                                break
-
-                            # Build nudge message
-                            if downgrade_mode:
-                                nudge = (
-                                    f"The {target_type} tests are still failing even after implementation fixes. "
-                                    f"This suggests the test may be too strict or have incorrect assumptions. "
-                                    f"Simplify the test: remove flaky assertions, relax strict equality checks, "
-                                    f"or split into smaller test cases. Rewrite the test file and rerun `run_tests` with type `{target_type}`. "
-                                    f"Reply \"IMPLEMENTED\" only when all target tests pass."
-                                )
-                            else:
-                                if iteration > 1:
-                                    modified_files = _extract_modified_files_from_messages(messages)
-                                    delta_ctx = context_pipeline.build_incremental_context(node_id, modified_files=modified_files)
-                                    if delta_ctx:
-                                        nudge = (
-                                            f"The {target_type} tests are still failing. "
-                                            f"Here are the files you modified:\n{delta_ctx}\n\n"
-                                            f"Analyze the error output, fix the code, and rerun `run_tests` with type `{target_type}`. "
-                                            f"Reply \"IMPLEMENTED\" only when all target tests pass."
-                                        )
-                                    else:
-                                        nudge = f"The {target_type} tests are still failing. Analyze the error output, fix the code, and rerun `run_tests` with type `{target_type}`. Reply \"IMPLEMENTED\" only when all target tests pass."
-                                else:
-                                    nudge = f"The {target_type} tests are still failing. Analyze the error output, fix the code, and rerun `run_tests` with type `{target_type}`. Reply \"IMPLEMENTED\" only when all target tests pass."
-                            messages.append({"role": "user", "content": nudge})
-
-                    await self._log("System", f"Warning: [{target_type}] TDD budget exhausted ({mode_label}).", node_id=node_id)
-                    return False
-
-                # --- Phase A: Batch run all tests of each type ---
-                for test_type in ["Unit", "Integration", "E2E"]:
-                    tests_batch = tests_by_type[test_type]
-                    if not tests_batch:
-                        continue
-
-                    test_files = [t.get("file_path") for t in tests_batch if t.get("file_path")]
-                    await self._log("System", f"[Phase A] Batch running {len(test_files)} {test_type} test(s)...", node_id=node_id)
-
-                    # Run all tests of this type via the test tool
-                    # Package-based --tests pattern is auto-derived in run_tests_impl()
-                    batch_output = await run_tests_impl(test_type)
-                    parsed = parse_test_results(batch_output)
-
-                    # Map test file paths to test records for quick lookup
-                    path_to_test = {t.get("file_path"): t for t in tests_batch if t.get("file_path")}
-
-                    # Record direct_pass for tests that passed in batch
-                    # For Android, match by file path since Gradle output uses class names
-                    passed_files = set()
-                    failed_tests = []
-
-                    if parsed["exit_code"] == 0:
-                        # All tests passed
-                        for t in tests_batch:
-                            t_id = t.get("test_id", "")
-                            t_path = t.get("file_path", "")
-                            tracker.record_test(node_id, test_type, t_id, t_path, "direct_pass", 1)
-                        await self._log("System", f"[Phase A] All {test_type} tests passed directly!", node_id=node_id)
-                    else:
-                        # Some tests failed — try to identify which ones
-                        # Match failed test names to test records
-                        failed_names = set(parsed["failed"])
-                        for t in tests_batch:
-                            t_id = t.get("test_id", "")
-                            t_path = t.get("file_path", "")
-                            t_first_line = t.get("first_line", "")
-                            # Check if this test appears in failed list
-                            is_failed = False
-                            for fn in failed_names:
-                                # Match by class name in path or by first_line
-                                if t_path and t_path.replace("/", ".").replace("\\", ".").replace(".java", "").replace(".kt", "") in fn:
-                                    is_failed = True
-                                    break
-                                if t_first_line and t_first_line in fn:
-                                    is_failed = True
-                                    break
-
-                            if is_failed:
-                                failed_tests.append(t)
-                            else:
-                                # Assume passed if not in failed list
-                                tracker.record_test(node_id, test_type, t_id, t_path, "direct_pass", 1)
-                                passed_files.add(t_path)
-
-                        # If we couldn't identify specific failures, mark all as failed
-                        if not failed_tests and parsed["exit_code"] != 0:
-                            failed_tests = tests_batch
-                            # Clear any direct_pass records we just made
-                            for t in tests_batch:
-                                t_id = t.get("test_id", "")
-                                t_path = t.get("file_path", "")
-                                if tracker.get_test_status(node_id, test_type, t_id) == "direct_pass":
-                                    # Remove the premature direct_pass record
-                                    node_data = tracker._data.get("nodes", {}).get(node_id, {}).get(test_type, {})
-                                    node_data.pop(t_id, None)
-
-                        await self._log("System", f"[Phase A] {test_type}: {len(passed_files)} passed, {len(failed_tests)} failed in batch.", node_id=node_id)
-
-                    if not failed_tests:
-                        continue
-
-                    # --- Phase B: Individual retry for failed tests ---
-                    still_failing = []
-                    for t in failed_tests:
-                        t_id = t.get("test_id", "")
-                        t_path = t.get("file_path", "")
-                        await self._log("System", f"[Phase B] Retrying {test_type} test: {t_id}...", node_id=node_id)
-
-                        success = await run_tdd_loop(test_type, [t], budget=EXTRA_BUDGET,
-                                                     scenario=req_scenario if test_type == "E2E" else None,
-                                                     preloaded_source=stub_artifacts)
-                        if success:
-                            tracker.record_test(node_id, test_type, t_id, t_path, "downgrade1_pass", EXTRA_BUDGET)
-                            await self._log("System", f"[Phase B] {t_id} passed after individual retry.", node_id=node_id)
-                        else:
-                            still_failing.append(t)
-                            await self._log("System", f"[Phase B] {t_id} still failing after individual retry.", node_id=node_id)
-
-                    if not still_failing:
-                        continue
-
-                    # --- Phase C: Test downgrade (simplify test) ---
-                    for t in still_failing:
-                        t_id = t.get("test_id", "")
-                        t_path = t.get("file_path", "")
-                        await self._log("System", f"[Phase C] Attempting test downgrade for: {t_id}...", node_id=node_id)
-
-                        passed_on_downgrade = False
-                        for downgrade_attempt in range(1, DOWNGRADE_ATTEMPTS + 1):
-                            success = await run_tdd_loop(test_type, [t], budget=EXTRA_BUDGET,
-                                                         scenario=req_scenario if test_type == "E2E" else None,
-                                                         preloaded_source=stub_artifacts,
-                                                         downgrade_mode=True)
-                            if success:
-                                status = "downgrade1_pass" if downgrade_attempt == 1 else "downgrade2_pass"
-                                tracker.record_test(node_id, test_type, t_id, t_path, status, EXTRA_BUDGET + downgrade_attempt)
-                                await self._log("System", f"[Phase C] {t_id} passed on downgrade attempt {downgrade_attempt}.", node_id=node_id)
-                                passed_on_downgrade = True
-                                break
-                            else:
-                                await self._log("System", f"[Phase C] {t_id} still failing on downgrade attempt {downgrade_attempt}.", node_id=node_id)
-
-                        if not passed_on_downgrade:
-                            tracker.record_test(node_id, test_type, t_id, t_path, "final_fail", EXTRA_BUDGET + DOWNGRADE_ATTEMPTS)
-                            await self._log("System", f"[Phase C] {t_id} marked as final_fail.", node_id=node_id)
-
-                    tracker.save()
-
-                # Print node-level summary
-                node_stats = tracker.get_node_stats(node_id)
-                stats_parts = []
-                for tt in ["Unit", "Integration", "E2E"]:
-                    s = node_stats.get(tt, {})
-                    total = s.get("total", 0)
-                    if total > 0:
-                        dp = s.get("direct_pass", 0)
-                        stats_parts.append(f"{tt}: {dp}/{total} direct pass")
-                if stats_parts:
-                    await self._log("System", f"Node {node_id} results: " + ", ".join(stats_parts), node_id=node_id)
-
-            else:
-                await self._log("System", f"Non-leaf node {node_id}: skipping Test/TDD (shared interfaces only).", node_id=node_id)
-
-            # ==========================================
-            # Final Build Verification (all nodes)
-            # ==========================================
             from agents.tools.cli_tools import run_build_impl
             await self._log("System", f"Running final build verification for node {node_id}...", node_id=node_id)
             build_result = await run_build_impl()
             build_ok = "Exit Code: 0" in build_result
+            artifact_paths = []
+            for iface in get_interfaces_by_req_id(node_id):
+                fp = iface.get("file_path")
+                if fp and fp not in artifact_paths:
+                    artifact_paths.append(fp)
             if build_ok:
                 await self._log("System", f"Final build verification PASSED for node {node_id}", node_id=node_id)
+                upsert_implementation(
+                    req_id=node_id,
+                    status="passed",
+                    attempts=1,
+                    artifact_paths=artifact_paths,
+                    summary=build_result[:2000]
+                )
             else:
-                await self._log("System", f"Final build verification FAILED for node {node_id} — see build output for details", node_id=node_id)
-
+                await self._log("System", f"Final build verification FAILED for node {node_id} - see build output for details", node_id=node_id)
+                upsert_implementation(
+                    req_id=node_id,
+                    status="failed",
+                    attempts=1,
+                    artifact_paths=artifact_paths,
+                    summary=build_result[:2000]
+                )
             return build_ok
-
         except Exception as e:
-            await self._log("System", f"Workflow failed due to an error: {str(e)}", node_id=node_id)
+            await self._log("System", f"Bottom-up implementation failed due to an error: {str(e)}", node_id=node_id)
+            upsert_implementation(
+                req_id=node_id,
+                status="error",
+                attempts=1,
+                artifact_paths=[],
+                summary=str(e)[:2000]
+            )
             return False
 
+    async def process_node(self, node_id: str) -> dict:
+        """Process a single requirement node via phased orchestration."""
+        prepared = await self.prepare_node(node_id)
+        if not prepared.get("ok", False):
+            return False
+        return await self.implement_node(node_id, prepared)
 
 
 async def run_agent_workflow(manager: ARCWorkflowManager, node_id: str, requirement_data: dict):
@@ -1575,3 +1592,4 @@ async def run_agent_workflow(manager: ARCWorkflowManager, node_id: str, requirem
     _ = requirement_data
     final_state = await manager.process_node(node_id)
     return final_state
+

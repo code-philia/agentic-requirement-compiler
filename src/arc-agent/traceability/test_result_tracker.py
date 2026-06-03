@@ -2,8 +2,12 @@ import os
 import json
 from typing import Dict, List, Optional
 
-# Valid test statuses: direct_pass, downgrade1_pass, downgrade2_pass, final_fail
-VALID_STATUSES = {"direct_pass", "downgrade1_pass", "downgrade2_pass", "final_fail"}
+# Valid test statuses: direct_pass, retry_pass, relaxed_pass, final_fail
+VALID_STATUSES = {"direct_pass", "retry_pass", "relaxed_pass", "final_fail"}
+_LEGACY_STATUS_MAP = {
+    "downgrade1_pass": "retry_pass",
+    "downgrade2_pass": "relaxed_pass",
+}
 TEST_TYPES = {"Unit", "Integration", "E2E"}
 
 
@@ -20,10 +24,22 @@ class TestResultTracker:
         if os.path.exists(self._path):
             try:
                 with open(self._path, "r", encoding="utf-8") as f:
-                    return json.load(f)
+                    data = json.load(f)
+                    self._normalize_legacy_statuses(data)
+                    return data
             except (json.JSONDecodeError, IOError):
                 pass
         return {"nodes": {}}
+
+    def _normalize_legacy_statuses(self, data: dict):
+        """Map old status names to the current vocabulary."""
+        nodes = data.get("nodes", {})
+        for _, node in nodes.items():
+            for _, tests_of_type in node.items():
+                for _, info in tests_of_type.items():
+                    status = info.get("status")
+                    if status in _LEGACY_STATUS_MAP:
+                        info["status"] = _LEGACY_STATUS_MAP[status]
 
     def save(self):
         os.makedirs(os.path.dirname(self._path), exist_ok=True)
@@ -56,13 +72,13 @@ class TestResultTracker:
 
     def get_node_stats(self, node_id: str) -> Dict:
         """Compute per-type pass rate stats for a node.
-        Returns { "Unit": {"direct_pass": n, "downgrade1_pass": n, ...}, ... }
+        Returns { "Unit": {"direct_pass": n, "retry_pass": n, ...}, ... }
         """
         result = {}
         node = self._data.get("nodes", {}).get(node_id, {})
         for test_type in TEST_TYPES:
             tests = node.get(test_type, {})
-            stats = {"direct_pass": 0, "downgrade1_pass": 0, "downgrade2_pass": 0, "final_fail": 0, "total": 0}
+            stats = {"direct_pass": 0, "retry_pass": 0, "relaxed_pass": 0, "final_fail": 0, "total": 0}
             for test_id, info in tests.items():
                 status = info.get("status", "")
                 if status in stats:
@@ -77,7 +93,7 @@ class TestResultTracker:
         """
         summary = {}
         for test_type in list(TEST_TYPES) + ["all"]:
-            summary[test_type] = {"direct_pass": 0, "downgrade1_pass": 0, "downgrade2_pass": 0, "final_fail": 0, "total": 0}
+            summary[test_type] = {"direct_pass": 0, "retry_pass": 0, "relaxed_pass": 0, "final_fail": 0, "total": 0}
 
         for node_id, node in self._data.get("nodes", {}).items():
             for test_type in TEST_TYPES:
@@ -120,12 +136,12 @@ class TestResultTracker:
                     total = stats.get("total", 0)
                     if total > 0:
                         dp = stats.get("direct_pass", 0)
-                        d1 = stats.get("downgrade1_pass", 0)
-                        d2 = stats.get("downgrade2_pass", 0)
+                        rp = stats.get("retry_pass", 0)
+                        lp = stats.get("relaxed_pass", 0)
                         ff = stats.get("final_fail", 0)
                         node_parts.append(
                             f"{test_type}: Direct {dp}/{total} ({dp*100//total}%), "
-                            f"Down1 {d1}/{total}, Down2 {d2}/{total}, Fail {ff}/{total}"
+                            f"Retry {rp}/{total}, Relaxed {lp}/{total}, Fail {ff}/{total}"
                         )
                 if node_parts:
                     lines.append(f"\nNode {node_id}:")
@@ -139,12 +155,12 @@ class TestResultTracker:
         if total == 0:
             return "  No tests recorded."
         dp = stats.get("direct_pass", 0)
-        d1 = stats.get("downgrade1_pass", 0)
-        d2 = stats.get("downgrade2_pass", 0)
+        rp = stats.get("retry_pass", 0)
+        lp = stats.get("relaxed_pass", 0)
         ff = stats.get("final_fail", 0)
         return (
             f"  Direct Pass:    {dp:>3}/{total} ({dp*100/total:5.1f}%)\n"
-            f"  Downgrade1:     {d1:>3}/{total} ({d1*100/total:5.1f}%)\n"
-            f"  Downgrade2:     {d2:>3}/{total} ({d2*100/total:5.1f}%)\n"
+            f"  Retry Pass:     {rp:>3}/{total} ({rp*100/total:5.1f}%)\n"
+            f"  Relaxed Pass:   {lp:>3}/{total} ({lp*100/total:5.1f}%)\n"
             f"  Final Fail:     {ff:>3}/{total} ({ff*100/total:5.1f}%)"
         )
