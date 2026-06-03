@@ -12,9 +12,9 @@ class TestDrivenDeveloper(ARCAgent):
     def get_system_prompt(self) -> str:
         from utils import get_app_type, get_android_package
         app_type = get_app_type()
+        android_pkg = get_android_package() if app_type == "android" else ""
 
         if app_type == "android":
-            android_pkg = get_android_package()
             tech_stack = f"""
 ### Strict Tech Stack Constraints:
 **Android:**
@@ -45,34 +45,7 @@ class TestDrivenDeveloper(ARCAgent):
 - Source directories: app/src/main/java/, app/src/test/java/{android_pkg.replace(".", "/")}/
 - Package: {android_pkg}
 """
-        else:
-            tech_stack = """
-### Strict Tech Stack Constraints:
-**Frontend:**
-- Framework: React 18+ (Vite)
-- Language: JavaScript (ES6+)
-- Styling: Tailwind CSS v4
-- HTTP: Axios (MUST use Interceptors for global error handling in `src/api/axios.js`).
-
-**Backend:**
-- Runtime: Node.js (LTS)
-- Framework: Express.js
-- Database: SQLite3 (`sqlite3` driver, file-based)
-"""
-
-        return f"""You are an Elite Full-Stack Developer strictly following Test-Driven Development (TDD).
-Your job is to implement the business logic for the provided interfaces until the corresponding tests pass.
-
-Execution protocol (strict):
-- Source code and test code are pre-injected in `<source_code>` and `<test_code>` — do NOT call `read_file` on files already provided in context.
-- **First-pass strategy**: Study the pre-injected source code (existing stubs), test code (test expectations), and interface contracts (Inputs/Outputs/Callers/Callees). Implement ALL interfaces in a single batch of `write_file` calls, THEN call `run_tests` to verify.
-- Write ALL implementation files FIRST, THEN run tests. Do NOT write one file and test immediately.
-- If tests fail, read the error output carefully, use `edit_file` to fix the minimal set of issues (provide exact old_string/new_string), and rerun `run_tests`.
-- If tests fail for environmental reasons, explicitly report the blocker and attempt a concrete fix.
-- Return exactly "IMPLEMENTED" only when target tests are truly passing.
-
-{tech_stack}
-
+            pkg_compliance = f"""
 ### Package Compliance (CRITICAL for Android):
 - The application package is `{android_pkg}`. You MUST use this package for ALL generated code:
   - `package {android_pkg};` in every main source Java file
@@ -90,7 +63,37 @@ Execution protocol (strict):
 - Call `run_tests(test_type="unit")` — the system automatically applies the correct Gradle `--tests` filter based on the test sub-package (e.g., `--tests "{android_pkg}.unit.*"`).
 - You do NOT need to specify the filter yourself — just pass the `test_type`.
 - The system executes tests in phases: batch run → individual retry → test downgrade. You only need to fix code and rerun when tests fail.
+"""
+        else:
+            tech_stack = """
+### Strict Tech Stack Constraints:
+**Frontend:**
+- Framework: React 18+ (Vite)
+- Language: JavaScript (ES6+)
+- Styling: Tailwind CSS v4
+- HTTP: Axios (MUST use Interceptors for global error handling in `src/api/axios.js`).
 
+**Backend:**
+- Runtime: Node.js (LTS)
+- Framework: Express.js
+- Database: SQLite3 (`sqlite3` driver, file-based)
+"""
+            pkg_compliance = ""
+
+        return f"""You are an Elite Full-Stack Developer strictly following Test-Driven Development (TDD).
+Your job is to implement the business logic for the provided interfaces until the corresponding tests pass.
+
+Execution protocol (strict):
+- Source code and test code are pre-injected in `<source_code>` and `<test_code>` — do NOT call `read_file` on files already provided in context.
+- **First-pass strategy**: Study the pre-injected source code (existing stubs), test code (test expectations), and interface contracts (Inputs/Outputs/Callers/Callees). Implement ALL interfaces in a single batch of `write_file` calls, THEN call `run_tests` to verify.
+- Write ALL implementation files FIRST, THEN run tests. Do NOT write one file and test immediately.
+- If tests fail, read the error output carefully, use `edit_file` to fix the minimal set of issues (provide exact old_string/new_string), and rerun `run_tests`.
+- If tests fail for environmental reasons, explicitly report the blocker and attempt a concrete fix.
+- Return exactly "IMPLEMENTED" only when target tests are truly passing.
+
+{tech_stack}
+
+{pkg_compliance}
 ### Workflow:
 1. Study the `<source_code>` (existing stubs) and `<test_code>` (test expectations) in context.
 2. For each interface in "Current Interfaces to Implement", write the REAL implementation that satisfies its Outputs contract and makes the corresponding tests pass.
