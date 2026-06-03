@@ -64,7 +64,7 @@ Design constraints (strict):
 - Interface IDs must be stable and explicit: `IF_{{TYPE}}_{{DOMAIN}}_{{ACTION}}` (e.g., `IF_API_USER_LOGIN`).
 - Keep contracts backward-compatible when reusing interfaces; use optional params for extensions.
 - Do not invent dependency interfaces if they already exist in traceability search results.
-- **UI Resource-ID Compliance**: If the requirement description or scenario specifies exact `resource-id` values (e.g., `org.billthefarmer.editor:id/newFile`), you MUST use those exact IDs when designing UI interfaces. The `android:id` in XML layouts and `findViewById(R.id.xxx)` in Java must match the resource-id suffix specified in the scenario. This is critical for automated testing to find the UI elements.
+- **UI Resource-ID Compliance**: If the requirement description or scenarios specify exact `resource-id` values (e.g., `org.billthefarmer.editor:id/newFile`), you MUST use those exact IDs when designing UI interfaces. The `android:id` in XML layouts and `findViewById(R.id.xxx)` in Java must match the resource-id suffix specified in the scenarios. This is critical for automated testing to find the UI elements.
 
 # Workflow:
 1. **Analyze and Design (Top-Down)**:
@@ -208,7 +208,7 @@ Do NOT write any code files — this phase is ONLY for architecture design.
 ### Implementation Scope: LEAF NODE
 Implement ALL interfaces with real logic. Use actual DAO calls, return real data.
 Do NOT use `throw UnsupportedOperationException` — implement working code.
-**UI Resource-ID Compliance**: When writing XML layouts, use the exact `android:id` values specified in the requirement description/scenario (e.g., if scenario says `org.billthefarmer.editor:id/newFile`, the XML must have `android:id="@+id/newFile"`). When writing Java code, use `findViewById(R.id.newFile)` with matching IDs.
+**UI Resource-ID Compliance**: When writing XML layouts, use the exact `android:id` values specified in the requirement description/scenarios (e.g., if a scenario says `org.billthefarmer.editor:id/newFile`, the XML must have `android:id="@+id/newFile"`). When writing Java code, use `findViewById(R.id.newFile)` with matching IDs.
 After writing all files, call `run_build` to verify compilation. Fix any errors.
 {pkg_compliance}
 """

@@ -1243,7 +1243,7 @@ Return a JSON object with "package_name" and "resource_ids" fields."""
 
         dependency_context = build_dependency_context(node_id)
         req_desc = requirement_data.get("description", "")
-        req_scenario = requirement_data.get("scenario", [])
+        req_scenarios = requirement_data.get("scenarios", [])
         EXTRA_BUDGET = 3
         enable_test_downgrade = os.environ.get("ARC_ENABLE_TEST_DOWNGRADE", "0") == "1"
         DOWNGRADE_ATTEMPTS = 2 if enable_test_downgrade else 0
@@ -1260,7 +1260,7 @@ Return a JSON object with "package_name" and "resource_ids" fields."""
         current_interfaces = get_interfaces_by_req_id(node_id)
 
         async def run_tdd_loop(target_type: str, tests_batch: list, budget: int,
-                               scenario: list = None, preloaded_source: str = None,
+                               scenarios: list = None, preloaded_source: str = None,
                                downgrade_mode: bool = False) -> bool:
             test_files = [t.get("file_path") for t in tests_batch if t.get("file_path")]
             test_ids = [t.get("test_id") for t in tests_batch if t.get("test_id")]
@@ -1276,7 +1276,7 @@ Return a JSON object with "package_name" and "resource_ids" fields."""
                 test_files=test_files,
                 test_type=target_type,
                 req_desc=req_desc,
-                scenario=scenario,
+                scenarios=scenarios,
                 dependency_context=dependency_context,
                 current_interfaces=current_interfaces,
                 preloaded_source=preloaded_source
@@ -1400,7 +1400,7 @@ Return a JSON object with "package_name" and "resource_ids" fields."""
                 await self._log("System", f"[Phase B] Retrying {test_type} test: {t_id}...", node_id=node_id)
 
                 success = await run_tdd_loop(test_type, [t], budget=EXTRA_BUDGET,
-                                             scenario=req_scenario if test_type == "E2E" else None,
+                                             scenarios=req_scenarios if test_type == "E2E" else None,
                                              preloaded_source=stub_artifacts)
                 if success:
                     tracker.record_test(node_id, test_type, t_id, t_path, "retry_pass", EXTRA_BUDGET)
@@ -1429,7 +1429,7 @@ Return a JSON object with "package_name" and "resource_ids" fields."""
                 passed_on_downgrade = False
                 for downgrade_attempt in range(1, DOWNGRADE_ATTEMPTS + 1):
                     success = await run_tdd_loop(test_type, [t], budget=EXTRA_BUDGET,
-                                                 scenario=req_scenario if test_type == "E2E" else None,
+                                                 scenarios=req_scenarios if test_type == "E2E" else None,
                                                  preloaded_source=stub_artifacts,
                                                  downgrade_mode=True)
                     if success:

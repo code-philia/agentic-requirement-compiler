@@ -116,7 +116,7 @@ public class FooIntegrationTest {{
 # Testing Stack (Web):
 - **Unit Tests**: Target the `FUNC` and `DB` interfaces. Mock external dependencies. Write tests based on interface descriptions and requirement content.
 - **Integration Tests**: Target the `API` interfaces. Test how they interact with `FUNC` modules. Write tests based on interface descriptions and requirement content.
-- **E2E Tests**: Target the overarching Requirement Node. You will be provided with a specific UI scenario. Generate Playwright E2E tests covering this specific scenario.
+- **E2E Tests**: Target the overarching Requirement Node. You will be provided with UI scenarios. Generate Playwright E2E tests that cover these scenarios.
 """
             pkg_compliance = ""
 
@@ -176,11 +176,11 @@ Schema for each object:
             node_id=node_id, agent_type=self.agent_name, preloaded_source=preloaded_source
         )
 
-        scenario_context = ""
-        if requirement_data.get("scenario"):
-            scenario_context = (
-                "\n### Target UI Scenario\n"
-                f"{json.dumps(requirement_data.get('scenario'), indent=2, ensure_ascii=False)}\n"
+        scenarios_context = ""
+        if requirement_data.get("scenarios"):
+            scenarios_context = (
+                "\n### Target UI Scenarios\n"
+                f"{json.dumps(requirement_data.get('scenarios'), indent=2, ensure_ascii=False)}\n"
             )
 
         if test_type == "All":
@@ -188,7 +188,7 @@ Schema for each object:
 Generate ALL test types in a single pass:
 1. **Unit Tests** for DB and FUNC interfaces
 2. **Integration Tests** for API interfaces
-3. **E2E Tests** for UI interfaces (use the scenario above if provided)
+3. **E2E Tests** for UI interfaces (use the scenarios above if provided)
 
 Write ALL test files using `write_file` calls FIRST, then call `run_build` ONCE to verify compilation.
 Do NOT call `read_file` on source files — they are already provided in the `<source_code>` context above.
@@ -208,7 +208,7 @@ Do NOT call `read_file` on source files — they are already provided in the `<s
 
 ### Interfaces to Test
 {json.dumps(interfaces_ir, indent=2, ensure_ascii=False)}
-{scenario_context}
+{scenarios_context}
 
 {test_instruction}
 Ensure the tests correctly import the designed interfaces and cover the logic described in the requirement.

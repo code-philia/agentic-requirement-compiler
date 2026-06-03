@@ -106,7 +106,7 @@ Once `run_tests` returns a 100% passing state (Exit Code: 0) for the target test
         return ["read_file", "write_file", "edit_file", "delete_file", "list_directory", "glob", "grep",
                 "execute_command", "run_tests", "run_build", "search_interfaces_by_keyword", "search_interfaces_by_relation", "get_node_relations"]
 
-    def build_initial_messages(self, node_id: str, test_files: List[str], test_type: str, req_desc: str, scenario: list = None, dependency_context: str = "", current_interfaces: list = None, preloaded_source: str = None) -> tuple:
+    def build_initial_messages(self, node_id: str, test_files: List[str], test_type: str, req_desc: str, scenarios: list = None, dependency_context: str = "", current_interfaces: list = None, preloaded_source: str = None) -> tuple:
         """Build the [system, user] messages and tools list without calling run().
         Returns (messages, tools) so the caller can use run_from_messages() or continue a session.
         """
@@ -117,9 +117,9 @@ Once `run_tests` returns a 100% passing state (Exit Code: 0) for the target test
             node_id=node_id, agent_type=self.agent_name, preloaded_source=preloaded_source
         )
 
-        scenario_context = ""
-        if test_type == "E2E" and scenario:
-            scenario_context = f"\n### Target UI Scenario\n{json.dumps(scenario, indent=2, ensure_ascii=False)}"
+        scenarios_context = ""
+        if test_type == "E2E" and scenarios:
+            scenarios_context = f"\n### Target UI Scenarios\n{json.dumps(scenarios, indent=2, ensure_ascii=False)}"
 
         current_interfaces_str = "### Current Interfaces to Implement\n"
         if current_interfaces:
@@ -156,7 +156,7 @@ Target Test Type: {test_type}
 
 ### Requirement Description
 {req_desc}
-{scenario_context}
+{scenarios_context}
 
 ### Dependency Context
 {dependency_context}
@@ -184,11 +184,11 @@ Target Test Type: {test_type}
         tools = [TOOL_REGISTRY[n]["schema"] for n in self.get_tool_names() if n in TOOL_REGISTRY]
         return messages, tools
 
-    async def implement(self, node_id: str, test_files: List[str], test_type: str, req_desc: str, scenario: list = None, dependency_context: str = "", current_interfaces: list = None, preloaded_source: str = None) -> str:
+    async def implement(self, node_id: str, test_files: List[str], test_type: str, req_desc: str, scenarios: list = None, dependency_context: str = "", current_interfaces: list = None, preloaded_source: str = None) -> str:
         """Backwards-compatible: build initial messages then run a new session."""
         messages, tools = self.build_initial_messages(
             node_id=node_id, test_files=test_files, test_type=test_type,
-            req_desc=req_desc, scenario=scenario, dependency_context=dependency_context,
+            req_desc=req_desc, scenarios=scenarios, dependency_context=dependency_context,
             current_interfaces=current_interfaces, preloaded_source=preloaded_source
         )
         result, _ = await self.run_from_messages(messages, node_id=node_id, max_steps=15, tools=tools)

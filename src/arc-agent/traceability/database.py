@@ -35,7 +35,7 @@ def init_db():
         req_id TEXT PRIMARY KEY,
         description TEXT,
         visual_reference TEXT,
-        scenario TEXT,
+        scenarios TEXT,
         parent_id TEXT,
         children_ids TEXT,
         dependencies TEXT
@@ -126,7 +126,7 @@ def get_requirement_by_id(req_id: str):
         # Parse JSON fields back to lists
         try:
             data['visual_reference'] = json.loads(data['visual_reference']) if data['visual_reference'] else []
-            data['scenario'] = json.loads(data['scenario']) if data.get('scenario') else []
+            data['scenarios'] = json.loads(data['scenarios']) if data.get('scenarios') else []
             data['children_ids'] = json.loads(data['children_ids']) if data['children_ids'] else []
             data['dependencies'] = json.loads(data['dependencies']) if data['dependencies'] else []
         except json.JSONDecodeError:
@@ -148,7 +148,7 @@ def get_all_requirements():
         data = dict(row)
         try:
             data['visual_reference'] = json.loads(data['visual_reference']) if data.get('visual_reference') else []
-            data['scenario'] = json.loads(data['scenario']) if data.get('scenario') else []
+            data['scenarios'] = json.loads(data['scenarios']) if data.get('scenarios') else []
             data['children_ids'] = json.loads(data['children_ids']) if data.get('children_ids') else []
             data['dependencies'] = json.loads(data['dependencies']) if data.get('dependencies') else []
         except json.JSONDecodeError:
@@ -160,21 +160,21 @@ def get_all_requirements():
 """
 Requirement Record
 """
-def insert_requirement(req_id: str, description: str, visual_reference: list, 
-                       scenario: list, parent_id: str, children_ids: list, dependencies: list):
+def insert_requirement(req_id: str, description: str, visual_reference: list,
+                       scenarios: list, parent_id: str, children_ids: list, dependencies: list):
     """Insert or update a single requirement record in the database."""
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     
     cursor.execute('''
     INSERT OR REPLACE INTO requirements 
-    (req_id, description, visual_reference, scenario, parent_id, children_ids, dependencies)
+    (req_id, description, visual_reference, scenarios, parent_id, children_ids, dependencies)
     VALUES (?, ?, ?, ?, ?, ?, ?)
     ''', (
         req_id, 
         description or "", 
         json.dumps(visual_reference) if visual_reference else '[]',
-        json.dumps(scenario) if scenario else '[]',
+        json.dumps(scenarios) if scenarios else '[]',
         parent_id or "",
         json.dumps(children_ids) if children_ids else '[]',
         json.dumps(dependencies) if dependencies else '[]'

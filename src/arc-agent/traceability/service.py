@@ -84,7 +84,7 @@ def store_all_requirement(node: dict, parent_id: str = ""):
     req_id = node.get('id', 'UNKNOWN_ID')
     description = node.get('description', '')
     visual_reference = node.get('visual_reference', [])
-    scenario = node.get('scenario', [])
+    scenarios = node.get('scenarios', [])
     dependencies = node.get('dependencies', [])
     
     # Extract children list
@@ -101,7 +101,7 @@ def store_all_requirement(node: dict, parent_id: str = ""):
         req_id=req_id,
         description=description,
         visual_reference=visual_reference,
-        scenario=scenario,
+        scenarios=scenarios,
         parent_id=parent_id,
         children_ids=children_ids,
         dependencies=dependencies
