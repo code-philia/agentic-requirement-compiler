@@ -12,7 +12,8 @@ class InterfaceDesigner(ARCAgent):
     def get_system_prompt(self) -> str:
         from utils import get_app_type, get_android_package
         app_type = get_app_type()
-        android_pkg = get_android_package() if app_type == "android" else ""
+        android_pkg = ""
+        pkg_compliance = ""
 
         if app_type == "android":
             tech_stack = f"""
@@ -60,8 +61,8 @@ For **non-leaf nodes**: design ONLY the shared DB layer (Room Entity/DAO). Do NO
 For **leaf nodes**: design ALL layers with real logic (not just `throw UnsupportedOperationException`). Use actual DAO calls, return real data, wire up LiveData/queries.
 
 {tech_stack}
-
 {pkg_compliance}
+
 Design constraints (strict):
 - Prefer stable, deterministic module boundaries. One interface = one clear responsibility.
 - Interface IDs must be stable and explicit: `IF_{{TYPE}}_{{DOMAIN}}_{{ACTION}}` (e.g., `IF_API_USER_LOGIN`).

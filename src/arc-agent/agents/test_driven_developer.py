@@ -12,7 +12,8 @@ class TestDrivenDeveloper(ARCAgent):
     def get_system_prompt(self) -> str:
         from utils import get_app_type, get_android_package
         app_type = get_app_type()
-        android_pkg = get_android_package() if app_type == "android" else ""
+        # Keep a safe default so web mode does not crash when formatting shared prompt sections.
+        android_pkg = "com.example.app"
 
         if app_type == "android":
             tech_stack = f"""
