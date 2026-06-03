@@ -16,6 +16,7 @@ class TestDrivenDeveloper(ARCAgent):
         android_pkg = "com.example.app"
 
         if app_type == "android":
+            android_pkg = get_android_package()
             tech_stack = f"""
 ### Strict Tech Stack Constraints:
 **Android:**
