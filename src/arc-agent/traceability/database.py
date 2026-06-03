@@ -22,6 +22,9 @@ def init_db():
     cursor.execute('PRAGMA foreign_keys = ON;')
     
     # Drop existing tables if they exist to clear old data
+    cursor.execute('DROP TABLE IF EXISTS node_states')
+    cursor.execute('DROP TABLE IF EXISTS implementations')
+    cursor.execute('DROP TABLE IF EXISTS call_edges')
     cursor.execute('DROP TABLE IF EXISTS tests')
     cursor.execute('DROP TABLE IF EXISTS interfaces')
     cursor.execute('DROP TABLE IF EXISTS requirements')
@@ -64,6 +67,42 @@ def init_db():
         type TEXT,           -- Unit, Integration, E2E
         file_path TEXT,
         first_line TEXT,
+        FOREIGN KEY(req_id) REFERENCES requirements(req_id)
+    )
+    ''')
+
+    # 4. Create the Call Edges table (explicit parent-child interface call graph)
+    cursor.execute('''
+    CREATE TABLE call_edges (
+        source_req_id TEXT,
+        target_req_id TEXT,
+        from_interface_id TEXT,
+        to_interface_id TEXT,
+        edge_type TEXT,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (source_req_id, target_req_id, from_interface_id, to_interface_id)
+    )
+    ''')
+
+    # 5. Create the Implementations table (node-level implementation trace)
+    cursor.execute('''
+    CREATE TABLE implementations (
+        req_id TEXT PRIMARY KEY,
+        status TEXT,
+        attempts INTEGER,
+        artifact_paths TEXT,
+        summary TEXT,
+        updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY(req_id) REFERENCES requirements(req_id)
+    )
+    ''')
+
+    # 6. Create node state table (state machine snapshots)
+    cursor.execute('''
+    CREATE TABLE node_states (
+        req_id TEXT PRIMARY KEY,
+        state TEXT,
+        updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
         FOREIGN KEY(req_id) REFERENCES requirements(req_id)
     )
     ''')
@@ -418,3 +457,152 @@ def get_all_tests():
             pass
         tests.append(data)
     return tests
+
+
+"""
+Call Edge Record
+"""
+def insert_call_edge(source_req_id: str, target_req_id: str, from_interface_id: str,
+                     to_interface_id: str, edge_type: str = "parent_child"):
+    """Insert a requirement/interface-level call edge. Duplicate edges are ignored."""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute('''
+    INSERT OR IGNORE INTO call_edges
+    (source_req_id, target_req_id, from_interface_id, to_interface_id, edge_type)
+    VALUES (?, ?, ?, ?, ?)
+    ''', (source_req_id, target_req_id, from_interface_id, to_interface_id, edge_type))
+    conn.commit()
+    conn.close()
+
+
+def get_call_edges_by_req_id(req_id: str):
+    """Retrieve all call edges where req_id is either source or target."""
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+    cursor.execute('''
+    SELECT * FROM call_edges
+    WHERE source_req_id = ? OR target_req_id = ?
+    ORDER BY source_req_id, target_req_id, from_interface_id, to_interface_id
+    ''', (req_id, req_id))
+    rows = cursor.fetchall()
+    conn.close()
+    return [dict(row) for row in rows]
+
+
+def get_all_call_edges():
+    """Retrieve all call edges."""
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+    cursor.execute('SELECT * FROM call_edges ORDER BY source_req_id, target_req_id, from_interface_id, to_interface_id')
+    rows = cursor.fetchall()
+    conn.close()
+    return [dict(row) for row in rows]
+
+
+"""
+Implementation Record
+"""
+def upsert_implementation(req_id: str, status: str, attempts: int = 1,
+                          artifact_paths: list | None = None, summary: str = ""):
+    """Insert or update one implementation trace record."""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute('''
+    INSERT INTO implementations (req_id, status, attempts, artifact_paths, summary, updated_at)
+    VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+    ON CONFLICT(req_id) DO UPDATE SET
+        status=excluded.status,
+        attempts=excluded.attempts,
+        artifact_paths=excluded.artifact_paths,
+        summary=excluded.summary,
+        updated_at=CURRENT_TIMESTAMP
+    ''', (
+        req_id,
+        status,
+        attempts,
+        json.dumps(artifact_paths) if artifact_paths else '[]',
+        summary or ""
+    ))
+    conn.commit()
+    conn.close()
+
+
+def get_implementation_by_req_id(req_id: str):
+    """Retrieve implementation trace record for one requirement."""
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+    cursor.execute('SELECT * FROM implementations WHERE req_id = ?', (req_id,))
+    row = cursor.fetchone()
+    conn.close()
+    if not row:
+        return None
+    data = dict(row)
+    try:
+        data['artifact_paths'] = json.loads(data['artifact_paths']) if data.get('artifact_paths') else []
+    except json.JSONDecodeError:
+        data['artifact_paths'] = []
+    return data
+
+
+def get_all_implementations():
+    """Retrieve all implementation trace records."""
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+    cursor.execute('SELECT * FROM implementations ORDER BY req_id')
+    rows = cursor.fetchall()
+    conn.close()
+
+    implementations = []
+    for row in rows:
+        data = dict(row)
+        try:
+            data['artifact_paths'] = json.loads(data['artifact_paths']) if data.get('artifact_paths') else []
+        except json.JSONDecodeError:
+            data['artifact_paths'] = []
+        implementations.append(data)
+    return implementations
+
+
+"""
+Node State Record
+"""
+def upsert_node_state(req_id: str, state: str):
+    """Insert or update current node state."""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute('''
+    INSERT INTO node_states (req_id, state, updated_at)
+    VALUES (?, ?, CURRENT_TIMESTAMP)
+    ON CONFLICT(req_id) DO UPDATE SET
+        state=excluded.state,
+        updated_at=CURRENT_TIMESTAMP
+    ''', (req_id, state))
+    conn.commit()
+    conn.close()
+
+
+def get_node_state(req_id: str):
+    """Retrieve node state for one requirement."""
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+    cursor.execute('SELECT * FROM node_states WHERE req_id = ?', (req_id,))
+    row = cursor.fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+def get_all_node_states():
+    """Retrieve node states for all requirements."""
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+    cursor.execute('SELECT * FROM node_states ORDER BY req_id')
+    rows = cursor.fetchall()
+    conn.close()
+    return [dict(row) for row in rows]
