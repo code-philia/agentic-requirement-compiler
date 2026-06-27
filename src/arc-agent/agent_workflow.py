@@ -11,6 +11,7 @@ from traceability import store_all_requirement
 from traceability.database import get_requirement_by_id, init_db, set_db_path, upsert_node_state
 from utils import (
     build_commit_message,
+    ensure_arc_gitignore,
     load_requirements,
     read_json_file,
     run_git_commit,
@@ -28,7 +29,6 @@ load_dotenv()
 # ======================================================================================
 
 QUEUE_FILENAME = "processing_queue.json"
-STATUS_FILENAME = "status.json"
 
 PHASE_DESIGN = "DESIGN"
 PHASE_IMPLEMENT = "IMPLEMENT"
@@ -65,7 +65,6 @@ class ARCWorkflowManager:
 
         self.arc_dir = os.path.join(self.workspace_path, ".arc")
         self.queue_path = os.path.join(self.arc_dir, QUEUE_FILENAME)
-        self.status_path = os.path.join(self.arc_dir, STATUS_FILENAME)
 
         # Keep agent instances here so compile steps can directly orchestrate them later.
         self.interface_designer = InterfaceDesigner(log_cb)
@@ -112,7 +111,7 @@ class ARCWorkflowManager:
         set_workspace_root(self.workspace_path)
         set_app_type(self.app_type)
 
-        db_path = os.path.join(self.arc_dir, "database.db")
+        db_path = os.path.join(self.arc_dir, "traceability.db")
         await self.log_cb("System", f"Initializing traceability database at {db_path}...")
         set_db_path(db_path)
         init_db()
@@ -129,6 +128,7 @@ class ARCWorkflowManager:
             return False
 
         await self.log_cb("System", "Full-stack workspace initialized completely.")
+        gitignore_path = ensure_arc_gitignore(self.workspace_path)
         await self.log_cb("System", "Initializing Git repository...")
 
         await run_git_init(self.workspace_path, self.log_cb)
@@ -187,7 +187,6 @@ class ARCWorkflowManager:
         queue_state = self._load_or_create_processing_queue(requirement_tree)
         self._recover_interrupted_queue(queue_state)
         self._save_processing_queue(queue_state)
-        self._save_status_snapshot(queue_state["node_states"])
 
         await self.log_cb(
             "Compiler",
@@ -201,6 +200,7 @@ class ARCWorkflowManager:
 
             node_id = task["node_id"]
             phase = task["phase"]
+            requirement_data = get_requirement_by_id(node_id) or {}
 
             task["status"] = TASK_RUNNING
             queue_state["last_task_id"] = task["task_id"]
@@ -213,17 +213,16 @@ class ARCWorkflowManager:
                 task["status"] = TASK_COMPLETED
                 new_state = NODE_DESIGNED if phase == PHASE_DESIGN else NODE_PASSED
                 self._set_node_state(queue_state["node_states"], node_id, new_state)
+                self._save_processing_queue(queue_state)
+                await self._commit_phase_checkpoint(node_id, phase, requirement_data)
                 await self.log_cb("Compiler", f"{phase} completed for node {node_id}.", None, node_id)
             else:
                 task["status"] = TASK_FAILED
                 self._set_node_state(queue_state["node_states"], node_id, NODE_FAILED)
                 self._save_processing_queue(queue_state)
-                self._save_status_snapshot(queue_state["node_states"])
+                await self._commit_phase_checkpoint(node_id, f"{phase}-FAILED", requirement_data)
                 await self.log_cb("Compiler", f"{phase} failed for node {node_id}.", "error", node_id)
                 return self._build_compile_result(queue_state)
-
-            self._save_processing_queue(queue_state)
-            self._save_status_snapshot(queue_state["node_states"])
 
         return self._build_compile_result(queue_state)
 
@@ -247,11 +246,10 @@ class ARCWorkflowManager:
                 queue_state["node_states"].setdefault(node_id, NODE_UNSEEN)
             return queue_state
 
-        saved_states = self._load_status_snapshot(node_ids)
         queue_state = {
             "root_id": root_id,
             "tasks": expected_tasks,
-            "node_states": {node_id: saved_states.get(node_id, NODE_UNSEEN) for node_id in node_ids},
+            "node_states": {node_id: NODE_UNSEEN for node_id in node_ids},
             "last_task_id": None,
         }
         self._apply_saved_states_to_tasks(queue_state)
@@ -341,7 +339,6 @@ class ARCWorkflowManager:
             None,
             node_id,
         )
-        await self._commit_phase_checkpoint(node_id, PHASE_DESIGN, requirement_data)
         return True
 
     async def _run_implement_phase(self, node_id: str) -> bool:
@@ -356,7 +353,6 @@ class ARCWorkflowManager:
             None,
             node_id,
         )
-        await self._commit_phase_checkpoint(node_id, PHASE_IMPLEMENT, requirement_data)
         return True
 
     # ==================================================================================
@@ -386,16 +382,6 @@ class ARCWorkflowManager:
             "visit_order": completed_tasks,
             "states": dict(queue_state["node_states"]),
         }
-
-    def _load_status_snapshot(self, node_ids: list[str]) -> dict[str, str]:
-        saved = read_json_file(self.status_path) or {}
-        return {
-            node_id: saved.get(node_id, NODE_UNSEEN)
-            for node_id in node_ids
-        }
-
-    def _save_status_snapshot(self, node_states: dict[str, str]) -> None:
-        write_json_file(self.status_path, node_states)
 
     def _save_processing_queue(self, queue_state: dict[str, Any]) -> None:
         write_json_file(self.queue_path, queue_state)

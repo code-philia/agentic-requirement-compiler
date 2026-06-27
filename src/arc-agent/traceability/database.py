@@ -2,9 +2,9 @@ import sqlite3
 import json
 import os
 
-# Ensure database.db is stored under the traceability directory
+# Default traceability database path. Runtime can override it via set_db_path().
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-DB_PATH = os.path.join(BASE_DIR, 'database.db')
+DB_PATH = os.path.join(BASE_DIR, 'traceability.db')
 
 def set_db_path(path: str):
     """Set the database path dynamically."""

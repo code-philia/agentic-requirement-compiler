@@ -336,6 +336,9 @@ class DebugLogger:
 _spinner = Spinner()
 debug_logger: Optional[DebugLogger] = None
 
+ARC_GITIGNORE_START = "# ARC_MANAGED_START"
+ARC_GITIGNORE_END = "# ARC_MANAGED_END"
+
 _AGENT_COLORS = {
     "System": Fore.WHITE,
     "RequirementLoader": Fore.YELLOW,
@@ -377,7 +380,6 @@ def print_cli_banner():
         ]
     )
     print(banner)
-
 
 def print_cli_startup(project_path: str, requirement_path: str, app_type: str, clear_all: bool, log_path: str):
     from app_types import read_stack_summary
@@ -503,6 +505,44 @@ async def run_git_init(target_dir: str, log_cb: Callable[..., Awaitable[None]]):
             await log_cb("System", f"Git init/commit failed: {stderr.decode()}")
     except Exception as exc:
         await log_cb("System", f"Git init error: {str(exc)}")
+
+def ensure_arc_gitignore(project_path: str) -> str:
+    gitignore_path = os.path.join(project_path, ".gitignore")
+    managed_block = "\n".join(
+        [
+            ARC_GITIGNORE_START,
+            "!.arc/",
+            "!.arc/**",
+            ".arc/debug.log",
+            ARC_GITIGNORE_END,
+        ]
+    )
+
+    old_content = ""
+    if os.path.exists(gitignore_path):
+        with open(gitignore_path, "r", encoding="utf-8") as file:
+            old_content = file.read()
+
+    start = old_content.find(ARC_GITIGNORE_START)
+    end = old_content.find(ARC_GITIGNORE_END)
+    if start != -1 and end != -1 and end > start:
+        before = old_content[:start].rstrip()
+        after = old_content[end + len(ARC_GITIGNORE_END):].lstrip()
+        merged = ""
+        if before:
+            merged += before + "\n\n"
+        merged += managed_block
+        if after:
+            merged += "\n\n" + after
+        content = merged.strip() + "\n"
+    elif old_content.strip():
+        content = old_content.rstrip() + "\n\n" + managed_block + "\n"
+    else:
+        content = managed_block + "\n"
+
+    with open(gitignore_path, "w", encoding="utf-8") as file:
+        file.write(content)
+    return gitignore_path
 
 
 async def run_git_commit(target_dir: str, message: str, log_cb: Callable[..., Awaitable[None]]):
