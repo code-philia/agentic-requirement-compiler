@@ -2,9 +2,11 @@ import asyncio
 import json
 import os
 import re
+import inspect
 from typing import List, Dict, Any, Callable, Awaitable
 from openai import AsyncOpenAI
 from dotenv import load_dotenv
+import utils
 from .tools import TOOL_REGISTRY
 
 # Load environment variables from .env
@@ -69,32 +71,15 @@ class ARCAgent:
     def __init__(
         self, 
         agent_name: str, 
-        broadcast_cb: Callable[[dict], Awaitable[None]] = None
+        log_cb: Callable[[str, str, str | None, str | None], Awaitable[None] | None] = None
     ):
         self.agent_name = agent_name
         self.model = os.environ.get("MODEL", "GLM-5")
-        self.broadcast_cb = broadcast_cb
+        self.log_cb = log_cb
         self.client = AsyncOpenAI(
             api_key=os.environ.get("OPENAI_API_KEY"),
             base_url=os.environ.get("OPENAI_API_BASE_URL"),
         )
-        
-    async def _log(self, message: str, status: str = None, node_id: str = None):
-        if self.broadcast_cb:
-            payload = {
-                "type": "log", 
-                "agent": self.agent_name, 
-                "message": message
-            }
-            if status: payload["status"] = status
-            if node_id: payload["nodeId"] = node_id
-            await self.broadcast_cb(payload)
-        else:
-            # Default to console print if no callback provided
-            prefix = f"[{node_id}] " if node_id else ""
-            print(f"{prefix}[{self.agent_name}] {message}")
-            if status:
-                print(f"{prefix}[Status Update] {status}")
 
     def get_system_prompt(self) -> str:
         raise NotImplementedError
@@ -261,7 +246,7 @@ Output from {tool_name}:
                 last_err = e
                 if attempt >= MODEL_RETRY_COUNT + 1:
                     raise
-                await self._log(
+                await self.log_cb(
                     f"Model call failed (attempt {attempt}), retrying: {str(e)}"
                 )
                 await asyncio.sleep(min(2 * attempt, 5))
@@ -295,11 +280,11 @@ Output from {tool_name}:
                 chars_removed = self._dedup_messages(messages)
                 if chars_removed > 0:
                     total_chars = self._estimate_context_chars(messages)
-                    await self._log(f"[Dedup] Removed {chars_removed} chars of duplicate tool results. Context now: {total_chars}", node_id=node_id)
+                    await self.log_cb(f"[Dedup] Removed {chars_removed} chars of duplicate tool results. Context now: {total_chars}", node_id=node_id)
 
             # Level 2: Summarize — ask LLM for a summary (at 85% threshold)
             if total_chars > MAX_CONTEXT_CHARS * SUMMARIZE_THRESHOLD:
-                await self._log(f"Triggering Auto-Compact (Step {step}, Chars: {total_chars})...", node_id=node_id)
+                await self.log_cb(f"Triggering Auto-Compact (Step {step}, Chars: {total_chars})...", node_id=node_id)
 
                 # Extract list of files already read to preserve in summary
                 read_files = self._extract_read_files(messages)
@@ -325,7 +310,7 @@ Output from {tool_name}:
                     summary_content = summary_response.choices[0].message.content
 
                     if DEBUG_MODE:
-                        await self._log(f"[DEBUG] Auto-Compact Summary:\n{summary_content}", node_id=node_id)
+                        await self.log_cb(f"[DEBUG] Auto-Compact Summary:\n{summary_content}", node_id=node_id)
 
                     # Replace history with the summary to free up context
                     messages = [
@@ -335,12 +320,12 @@ Output from {tool_name}:
                         {"role": "user", "content": "Please continue with the next steps based on the summary above."}
                     ]
                 except Exception as e:
-                    await self._log(f"Auto-Compact failed: {str(e)}", node_id=node_id)
+                    await self.log_cb(f"Auto-Compact failed: {str(e)}", node_id=node_id)
 
             # 2. Microcompact: Fold old tool results
             self._microcompact_messages(messages)
 
-            await self._log(f"Thinking... (Step {step + 1}/{max_steps})", node_id=node_id)
+            await self.log_cb(f"Thinking... (Step {step + 1}/{max_steps})", node_id=node_id)
 
             api_kwargs = {
                 "model": self.model,
@@ -358,7 +343,7 @@ Output from {tool_name}:
                     display_msg = last_msg[:500] + f"\n... [input truncated, total {len(last_msg)} chars]"
                 else:
                     display_msg = last_msg
-                await self._log(f"[DEBUG] Input to model:\n{display_msg}", node_id=node_id)
+                await self.log_cb(f"[DEBUG] Input to model:\n{display_msg}", node_id=node_id)
 
             response = await self._create_chat_completion_with_retry(**api_kwargs)
             message = response.choices[0].message
@@ -366,14 +351,10 @@ Output from {tool_name}:
 
             if DEBUG_MODE:
                 reply_content = message.content or ""
-                await self._log(f"[DEBUG] Model reply:\n{reply_content}", node_id=node_id)
+                await self.log_cb(f"[DEBUG] Model reply:\n{reply_content}", node_id=node_id)
                 # Full LLM reply to debug log file (never truncated)
-                try:
-                    from run_compilation_cli import debug_logger
-                    if debug_logger:
-                        debug_logger.log("LLM_REPLY", reply_content)
-                except ImportError:
-                    pass
+                if utils.debug_logger:
+                    utils.debug_logger.log("LLM_REPLY", reply_content)
 
             if message.tool_calls:
                 any_cache_miss = False
@@ -392,7 +373,7 @@ Output from {tool_name}:
                         args_str = args_str[:500] + f"\n... [args truncated, total {len(args_str)} chars]"
                     elif len(args_str) > 1000:
                         args_str = args_str[:1000] + f"\n... [args truncated, total {len(args_str)} chars]"
-                    await self._log(f"Calling tool: `{tool_name}` with args: {args_str}", node_id=node_id)
+                    await self.log_cb(f"Calling tool: `{tool_name}` with args: {args_str}", node_id=node_id)
 
                     # Validate required args for mutating tools before dispatch
                     _missing = [
@@ -414,7 +395,7 @@ Output from {tool_name}:
                                 tool_result = tool_result_cache[cache_key]
                                 is_cache_hit = True
                                 if DEBUG_MODE:
-                                    await self._log(f"[DEBUG] Reusing cached tool result for `{tool_name}`", node_id=node_id)
+                                    await self.log_cb(f"[DEBUG] Reusing cached tool result for `{tool_name}`", node_id=node_id)
                             else:
                                 any_cache_miss = True
                                 tool_func = TOOL_REGISTRY[tool_name]["func"]
@@ -448,19 +429,15 @@ Output from {tool_name}:
                     if DEBUG_MODE:
                         # Log tool result: skip read_file content, truncate others
                         if tool_name == "read_file":
-                            await self._log(f"Tool `read_file` result: {len(tool_result_str)} chars (content not shown)", node_id=node_id)
+                            await self.log_cb(f"Tool `read_file` result: {len(tool_result_str)} chars (content not shown)", node_id=node_id)
                         else:
                             display_result = tool_result_str
                             if len(display_result) > 500:
                                 display_result = display_result[:500] + f"\n... [result truncated, total {len(tool_result_str)} chars]"
-                            await self._log(f"Tool `{tool_name}` result:\n{display_result}", node_id=node_id)
+                            await self.log_cb(f"Tool `{tool_name}` result:\n{display_result}", node_id=node_id)
                         # Full tool output to debug log file (never truncated)
-                        try:
-                            from run_compilation_cli import debug_logger
-                            if debug_logger:
-                                debug_logger.log(f"TOOL_RESULT[{tool_name}]", tool_result_str)
-                        except ImportError:
-                            pass
+                        if utils.debug_logger:
+                            utils.debug_logger.log(f"TOOL_RESULT[{tool_name}]", tool_result_str)
 
                     # Return the result back to the LLM
                     messages.append({
@@ -477,7 +454,7 @@ Output from {tool_name}:
                 else:
                     _consecutive_cache_only += 1
                     if _consecutive_cache_only >= 3:
-                        await self._log(
+                        await self.log_cb(
                             f"[WARN] {_consecutive_cache_only} consecutive turns with only cached reads — "
                             "forcing step advance to prevent infinite loop.", node_id=node_id
                         )
@@ -485,7 +462,7 @@ Output from {tool_name}:
                         _consecutive_cache_only = 0
                 continue
             else:
-                await self._log("Task completed.", node_id=node_id)
+                await self.log_cb("Task completed.", node_id=node_id)
                 return message.content, messages
 
         return "Error: Agent reached maximum reasoning steps without a final conclusion.", messages

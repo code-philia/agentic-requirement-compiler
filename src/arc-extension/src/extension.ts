@@ -48,7 +48,7 @@ export async function activate(context: vscode.ExtensionContext) {
 
     // Start Python Backend Process
     const backendDir = path.join(context.extensionPath, '..', 'arc-agent');
-    const pythonScript = path.join(backendDir, 'main.py');
+    const pythonScript = path.join(backendDir, 'server_app.py');
     
     const isWindows = os.platform() === 'win32';
     const pythonExecutable = isWindows 

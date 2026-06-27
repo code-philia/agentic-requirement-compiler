@@ -3,10 +3,10 @@ from typing import List, Dict, Any
 from .arc_agent import ARCAgent
 
 class InterfaceDesigner(ARCAgent):
-    def __init__(self, broadcast_cb=None):
+    def __init__(self, log_cb=None):
         super().__init__(
             agent_name="InterfaceDesigner",
-            broadcast_cb=broadcast_cb
+            log_cb=log_cb
         )
 
     def get_system_prompt(self) -> str:
