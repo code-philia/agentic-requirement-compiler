@@ -6,6 +6,21 @@ from .base import ARC_STACK_END, ARC_STACK_START, AppTypeHandler
 class WebAppType(AppTypeHandler):
     name = "web"
 
+    async def install_dependencies(self) -> None:
+        import os
+
+        from utils import run_npm_install
+
+        backend_path = os.path.join(self.workspace_path, "backend")
+        if os.path.exists(backend_path):
+            await self.log_cb("System", "Installing backend dependencies. This might take a moment...")
+            await run_npm_install(backend_path, self.log_cb)
+
+        frontend_path = os.path.join(self.workspace_path, "frontend")
+        if os.path.exists(frontend_path):
+            await self.log_cb("System", "Installing frontend dependencies. This might take a moment...")
+            await run_npm_install(frontend_path, self.log_cb)
+
     @classmethod
     def build_stack_block(cls) -> str:
         return (

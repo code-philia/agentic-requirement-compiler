@@ -317,12 +317,18 @@ class DebugLogger:
     def __init__(self, log_path: str):
         self._path = log_path
         self._lock = threading.Lock()
-        with open(self._path, "w", encoding="utf-8") as file:
-            file.write(f"=== ARC Debug Log | {time.strftime('%Y-%m-%d %H:%M:%S')} ===\n\n")
+        self._ensure_log_file(reset=True)
+
+    def _ensure_log_file(self, reset: bool = False):
+        os.makedirs(os.path.dirname(self._path), exist_ok=True)
+        if reset or not os.path.exists(self._path):
+            with open(self._path, "w", encoding="utf-8") as file:
+                file.write(f"=== ARC Debug Log | {time.strftime('%Y-%m-%d %H:%M:%S')} ===\n\n")
 
     def log(self, tag: str, content: str):
         timestamp = time.strftime("%H:%M:%S")
         with self._lock:
+            self._ensure_log_file()
             with open(self._path, "a", encoding="utf-8") as file:
                 file.write(f"[{timestamp}] [{tag}] {content}\n")
 
@@ -462,25 +468,8 @@ def format_cli_log(agent: str, message: str, status: str = None, node_id: str = 
 
 
 # ======================================================================================
-#                                   Commands
+#                                   Git commands
 # ======================================================================================
-
-async def run_npm_install(target_dir: str, log_cb: Callable[..., Awaitable[None]]):
-    try:
-        process = await asyncio.create_subprocess_shell(
-            "npm install",
-            cwd=target_dir,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        _, stderr = await process.communicate()
-        if process.returncode == 0:
-            await log_cb("System", f"NPM install success in {target_dir}")
-        else:
-            await log_cb("System", f"NPM install failed in {target_dir}: {stderr.decode()}")
-    except Exception as exc:
-        await log_cb("System", f"NPM install error: {str(exc)}")
-
 
 async def run_git_init(target_dir: str, log_cb: Callable[..., Awaitable[None]]):
     try:

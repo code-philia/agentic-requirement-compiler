@@ -88,11 +88,6 @@ class ARCWorkflowManager:
                 else:
                     os.remove(item_path)
 
-            if os.path.exists(self.status_path):
-                os.remove(self.status_path)
-            if os.path.exists(self.queue_path):
-                os.remove(self.queue_path)
-
             await self.log_cb("Compiler", "Workspace cleaned successfully.")
             return True
         except Exception as exc:
@@ -132,8 +127,6 @@ class ARCWorkflowManager:
         init_ok = await app_handler.initialize_workspace()
         if not init_ok:
             return False
-
-        await app_handler.install_dependencies()
 
         await self.log_cb("System", "Full-stack workspace initialized completely.")
         await self.log_cb("System", "Initializing Git repository...")
@@ -345,7 +338,7 @@ class ARCWorkflowManager:
         await self.log_cb(
             "InterfaceDesigner",
             f"[Placeholder] DESIGN phase for node {node_id}. Direct agent orchestration will be added here.",
-            "analyzing",
+            None,
             node_id,
         )
         await self._commit_phase_checkpoint(node_id, PHASE_DESIGN, requirement_data)

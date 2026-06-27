@@ -43,7 +43,12 @@ class AppTypeHandler(ABC):
         if not copied:
             return False
 
-        return await self.post_template_setup()
+        setup_ok = await self.post_template_setup()
+        if not setup_ok:
+            return False
+
+        await self.install_dependencies()
+        return True
 
     async def check_prerequisites(self) -> bool:
         from utils import check_prerequisites
@@ -75,17 +80,7 @@ class AppTypeHandler(ABC):
         return True
 
     async def install_dependencies(self) -> None:
-        from utils import run_npm_install
-
-        backend_path = os.path.join(self.workspace_path, "backend")
-        if os.path.exists(backend_path):
-            await self.log_cb("System", "Installing backend dependencies. This might take a moment...")
-            await run_npm_install(backend_path, self.log_cb)
-
-        frontend_path = os.path.join(self.workspace_path, "frontend")
-        if os.path.exists(frontend_path):
-            await self.log_cb("System", "Installing frontend dependencies. This might take a moment...")
-            await run_npm_install(frontend_path, self.log_cb)
+        return None
 
     @classmethod
     @abstractmethod
