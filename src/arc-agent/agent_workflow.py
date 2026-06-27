@@ -10,8 +10,10 @@ from app_types import create_app_type_handler, normalize_app_type
 from traceability import store_all_requirement
 from traceability.database import get_requirement_by_id, init_db, set_db_path, upsert_node_state
 from utils import (
+    build_commit_message,
     load_requirements,
     read_json_file,
+    run_git_commit,
     run_git_init,
     set_app_type,
     set_workspace_root,
@@ -346,6 +348,7 @@ class ARCWorkflowManager:
             "analyzing",
             node_id,
         )
+        await self._commit_phase_checkpoint(node_id, PHASE_DESIGN, requirement_data)
         return True
 
     async def _run_implement_phase(self, node_id: str) -> bool:
@@ -360,11 +363,17 @@ class ARCWorkflowManager:
             None,
             node_id,
         )
+        await self._commit_phase_checkpoint(node_id, PHASE_IMPLEMENT, requirement_data)
         return True
 
     # ==================================================================================
     #                              Result And State Persistence
     # ==================================================================================
+
+    async def _commit_phase_checkpoint(self, node_id: str, phase: str, requirement_data: dict[str, Any]) -> None:
+        commit_message = build_commit_message(node_id, phase, requirement_data)
+        await self.log_cb("Compiler", f"Running git checkpoint for {phase} on node {node_id}...", None, node_id)
+        await run_git_commit(self.workspace_path, commit_message, self.log_cb)
 
     def _set_node_state(self, node_states: dict[str, str], node_id: str, state: str) -> None:
         node_states[node_id] = state
