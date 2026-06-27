@@ -13,6 +13,12 @@ from .base import ARC_STACK_END, ARC_STACK_START, AppTypeHandler
 class AndroidAppType(AppTypeHandler):
     name = "android"
 
+    async def run_test_file(self, test_type: str, file_path: str) -> str:
+        from agents.tools.cli_tools import run_tests_impl
+
+        await self.log_cb("System", f"System test execution ({test_type}): {file_path}")
+        return await run_tests_impl(test_type=test_type, test_file_path=file_path)
+
     async def post_template_setup(self) -> bool:
         target_package = await self._extract_android_package_name_via_llm()
         if target_package:

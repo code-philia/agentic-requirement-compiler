@@ -82,6 +82,11 @@ class AppTypeHandler(ABC):
     async def install_dependencies(self) -> None:
         return None
 
+    @abstractmethod
+    async def run_test_file(self, test_type: str, file_path: str) -> str:
+        """Run one concrete test file through the system-side test executor."""
+        raise NotImplementedError
+
     @classmethod
     @abstractmethod
     def build_stack_block(cls) -> str:

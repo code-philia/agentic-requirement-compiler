@@ -1,9 +1,9 @@
 import asyncio
+import inspect
 import json
 import os
 import re
-import inspect
-from typing import List, Dict, Any, Callable, Awaitable
+from typing import Any, Awaitable, Callable, Dict, List
 from openai import AsyncOpenAI
 from dotenv import load_dotenv
 import utils
@@ -103,6 +103,25 @@ class ARCAgent:
         For example: ["read_file", "write_file"]
         """
         return []
+
+    async def _intercept_tool_call(
+        self,
+        tool_name: str,
+        tool_args: Dict[str, Any],
+        node_id: str | None = None,
+    ) -> tuple[bool, Any]:
+        """Allow subclasses to short-circuit a tool call with a synthetic result."""
+        return False, None
+
+    async def _get_stop_response_after_tool_call(
+        self,
+        tool_name: str,
+        tool_args: Dict[str, Any],
+        tool_result: str,
+        node_id: str | None = None,
+    ) -> str | None:
+        """Allow subclasses to end the current session after a specific tool result."""
+        return None
 
     def _estimate_context_chars(self, messages: List[Dict[str, Any]]) -> int:
         total = 0
@@ -265,7 +284,13 @@ Output from {tool_name}:
                 await asyncio.sleep(min(2 * attempt, 5))
         raise last_err
 
-    async def run_from_messages(self, messages: List[Dict[str, Any]], node_id: str = None, max_steps: int = 30, tools: List = None) -> tuple:
+    async def run_from_messages(
+        self,
+        messages: List[Dict[str, Any]],
+        node_id: str = None,
+        max_steps: int = 30,
+        tools: List = None,
+    ) -> tuple:
         """Continue an existing session from the given messages list.
         Returns (final_text, messages) so the caller can inspect/continue the session.
         """
@@ -406,35 +431,44 @@ Output from {tool_name}:
                         )
                         any_cache_miss = True
                     else:
-                        # Look up and execute the actual tool function from the registry
-                        cache_key = f"{tool_name}::{json.dumps(tool_args, ensure_ascii=False, sort_keys=True)}"
-                        is_cache_hit = False
-                        if tool_name in TOOL_REGISTRY and tool_name in allowed_tool_names:
-                            if tool_name in READONLY_CACHEABLE_TOOLS and cache_key in tool_result_cache:
-                                tool_result = tool_result_cache[cache_key]
-                                is_cache_hit = True
-                                if DEBUG_MODE:
-                                    await self._log(
-                                        f"[DEBUG] Reusing cached tool result for `{tool_name}`",
-                                        node_id=node_id,
-                                    )
+                        intercepted, intercepted_result = await self._intercept_tool_call(
+                            tool_name=tool_name,
+                            tool_args=tool_args,
+                            node_id=node_id,
+                        )
+                        if intercepted:
+                            any_cache_miss = True
+                            tool_result = intercepted_result
+                        else:
+                            # Look up and execute the actual tool function from the registry
+                            cache_key = f"{tool_name}::{json.dumps(tool_args, ensure_ascii=False, sort_keys=True)}"
+                            is_cache_hit = False
+                            if tool_name in TOOL_REGISTRY and tool_name in allowed_tool_names:
+                                if tool_name in READONLY_CACHEABLE_TOOLS and cache_key in tool_result_cache:
+                                    tool_result = tool_result_cache[cache_key]
+                                    is_cache_hit = True
+                                    if DEBUG_MODE:
+                                        await self._log(
+                                            f"[DEBUG] Reusing cached tool result for `{tool_name}`",
+                                            node_id=node_id,
+                                        )
+                                else:
+                                    any_cache_miss = True
+                                    tool_func = TOOL_REGISTRY[tool_name]["func"]
+                                    try:
+                                        tool_result = await tool_func(**tool_args)
+                                        if tool_name in READONLY_CACHEABLE_TOOLS:
+                                            tool_result_cache[cache_key] = str(tool_result)
+                                        elif tool_name in MUTATING_TOOLS:
+                                            # Evict stale cache entries for the affected path
+                                            affected = tool_args.get("path", "")
+                                            if affected:
+                                                _evict_mutated_path(tool_result_cache, affected)
+                                    except Exception as e:
+                                        tool_result = f"Tool execution error: {str(e)}"
                             else:
                                 any_cache_miss = True
-                                tool_func = TOOL_REGISTRY[tool_name]["func"]
-                                try:
-                                    tool_result = await tool_func(**tool_args)
-                                    if tool_name in READONLY_CACHEABLE_TOOLS:
-                                        tool_result_cache[cache_key] = str(tool_result)
-                                    elif tool_name in MUTATING_TOOLS:
-                                        # Evict stale cache entries for the affected path
-                                        affected = tool_args.get("path", "")
-                                        if affected:
-                                            _evict_mutated_path(tool_result_cache, affected)
-                                except Exception as e:
-                                    tool_result = f"Tool execution error: {str(e)}"
-                        else:
-                            any_cache_miss = True
-                            tool_result = f"Error: Tool '{tool_name}' not permitted or not found."
+                                tool_result = f"Error: Tool '{tool_name}' not permitted or not found."
 
                     # 3. Tool Output Budget: Summarize long error outputs, then truncate
                     tool_result_str = str(tool_result)
@@ -471,6 +505,16 @@ Output from {tool_name}:
                         "name": tool_name,
                         "content": tool_result_str
                     })
+
+                    stop_response = await self._get_stop_response_after_tool_call(
+                        tool_name=tool_name,
+                        tool_args=tool_args,
+                        tool_result=tool_result_str,
+                        node_id=node_id,
+                    )
+                    if stop_response is not None:
+                        await self._log("Agent session stopped by tool policy.", node_id=node_id)
+                        return stop_response, messages
 
                 # Advance step on real work; break infinite cached-read loops
                 if any_cache_miss:

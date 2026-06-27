@@ -74,6 +74,8 @@ class ARCWorkflowManager:
         self.test_driven_developer = TestDrivenDeveloper(log_cb)
         self.phase_runner = WorkflowPhaseRunner(
             workspace_path=self.workspace_path,
+            requirement_path=self.requirement_path,
+            app_type=self.app_type,
             arc_dir=self.arc_dir,
             interface_designer=self.interface_designer,
             test_generator=self.test_generator,
@@ -229,10 +231,16 @@ class ARCWorkflowManager:
             else:
                 task["status"] = TASK_FAILED
                 self._set_node_state(queue_state["node_states"], node_id, NODE_FAILED)
+                self._mark_remaining_node_tasks_failed(queue_state, node_id)
                 self._save_processing_queue(queue_state)
                 await self._commit_phase_checkpoint(node_id, f"{phase}-FAILED", requirement_data)
                 await self.log_cb("Compiler", f"{phase} failed for node {node_id}.", "error", node_id)
-                return self._build_compile_result(queue_state)
+                await self.log_cb(
+                    "Compiler",
+                    f"Node {node_id} marked as failed. Continuing with remaining tasks.",
+                    "error",
+                    node_id,
+                )
 
         return self._build_compile_result(queue_state)
 
@@ -254,6 +262,7 @@ class ARCWorkflowManager:
             queue_state.setdefault("node_states", {})
             for node_id in node_ids:
                 queue_state["node_states"].setdefault(node_id, NODE_UNSEEN)
+            self._apply_saved_states_to_tasks(queue_state)
             return queue_state
 
         queue_state = {
@@ -313,12 +322,12 @@ class ARCWorkflowManager:
                 task["status"] = TASK_COMPLETED
             elif node_state == NODE_DESIGNED and task["phase"] == PHASE_DESIGN:
                 task["status"] = TASK_COMPLETED
-            elif node_state == NODE_FAILED and task["phase"] == PHASE_DESIGN:
-                task["status"] = TASK_COMPLETED
+            elif node_state == NODE_FAILED:
+                task["status"] = TASK_FAILED
 
     def _recover_interrupted_queue(self, queue_state: dict[str, Any]) -> None:
         for task in queue_state["tasks"]:
-            if task["status"] in {TASK_RUNNING, TASK_FAILED}:
+            if task["status"] == TASK_RUNNING:
                 task["status"] = TASK_PENDING
 
     # ==================================================================================
@@ -330,6 +339,13 @@ class ARCWorkflowManager:
             if task["status"] == TASK_PENDING:
                 return task
         return None
+
+    def _mark_remaining_node_tasks_failed(self, queue_state: dict[str, Any], node_id: str) -> None:
+        for task in queue_state["tasks"]:
+            if task["node_id"] != node_id:
+                continue
+            if task["status"] in {TASK_PENDING, TASK_RUNNING}:
+                task["status"] = TASK_FAILED
 
     async def _run_task(self, task: dict[str, Any]) -> bool:
         node_id = task["node_id"]

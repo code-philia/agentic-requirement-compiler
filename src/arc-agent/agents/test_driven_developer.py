@@ -8,6 +8,10 @@ class TestDrivenDeveloper(ARCAgent):
             agent_name="TestDrivenDeveloper",
             log_cb=log_cb
         )
+        self._run_tests_budget: int | None = None
+        self._run_tests_usage: Dict[str, int] | None = None
+        self._stop_on_test_budget_exhausted = False
+        self._test_budget_exhausted = False
 
     def get_system_prompt(self) -> str:
         from utils import get_app_type, get_android_package
@@ -58,6 +62,84 @@ Once `run_tests` returns a 100% passing state (Exit Code: 0) for the target test
     def get_tool_names(self) -> List[str]:
         return ["read_file", "write_file", "edit_file", "delete_file", "list_directory", "glob", "grep",
                 "execute_command", "run_tests", "run_build", "search_interfaces_by_keyword", "search_interfaces_by_relation", "get_node_relations"]
+
+    async def _intercept_tool_call(
+        self,
+        tool_name: str,
+        tool_args: Dict[str, Any],
+        node_id: str | None = None,
+    ) -> tuple[bool, Any]:
+        if tool_name != "run_tests" or self._run_tests_budget is None:
+            return False, None
+
+        usage = self._run_tests_usage if self._run_tests_usage is not None else {}
+        used = usage.get("run_tests", 0)
+        if used >= self._run_tests_budget:
+            self._test_budget_exhausted = True
+            await self._log(
+                f"[BUDGET] `run_tests` budget exhausted at {used}/{self._run_tests_budget}.",
+                node_id=node_id,
+            )
+            return True, (
+                f"Tool budget exhausted for `run_tests` ({used}/{self._run_tests_budget}). "
+                "Stop calling this tool and summarize the current status."
+            )
+
+        used += 1
+        usage["run_tests"] = used
+        self._run_tests_usage = usage
+        await self._log(
+            f"[BUDGET] `run_tests` usage {used}/{self._run_tests_budget}.",
+            node_id=node_id,
+        )
+        return False, None
+
+    async def _get_stop_response_after_tool_call(
+        self,
+        tool_name: str,
+        tool_args: Dict[str, Any],
+        tool_result: str,
+        node_id: str | None = None,
+    ) -> str | None:
+        if (
+            tool_name == "run_tests"
+            and self._test_budget_exhausted
+            and self._stop_on_test_budget_exhausted
+        ):
+            return "BUDGET_EXHAUSTED"
+        return None
+
+    async def run_from_messages(
+        self,
+        messages: List[Dict[str, Any]],
+        node_id: str = None,
+        max_steps: int = 30,
+        tools: List = None,
+        run_tests_budget: int | None = None,
+        run_tests_usage: Dict[str, int] | None = None,
+        stop_on_test_budget_exhausted: bool = False,
+    ) -> tuple:
+        previous_budget = self._run_tests_budget
+        previous_usage = self._run_tests_usage
+        previous_stop = self._stop_on_test_budget_exhausted
+        previous_exhausted = self._test_budget_exhausted
+
+        self._run_tests_budget = run_tests_budget
+        self._run_tests_usage = run_tests_usage if run_tests_usage is not None else {}
+        self._stop_on_test_budget_exhausted = stop_on_test_budget_exhausted
+        self._test_budget_exhausted = False
+        try:
+            return await super().run_from_messages(
+                messages=messages,
+                node_id=node_id,
+                max_steps=max_steps,
+                tools=tools,
+            )
+        finally:
+            self._run_tests_budget = previous_budget
+            self._run_tests_usage = previous_usage
+            self._stop_on_test_budget_exhausted = previous_stop
+            self._test_budget_exhausted = previous_exhausted
 
     def build_initial_messages(self, node_id: str, test_files: List[str], test_type: str, req_desc: str, scenarios: list = None, dependency_context: str = "", current_interfaces: list = None, preloaded_source: str = None) -> tuple:
         """Build the [system, user] messages and tools list without calling run().

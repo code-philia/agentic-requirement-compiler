@@ -36,6 +36,12 @@ class WebAppType(AppTypeHandler):
             await self.log_cb("System", "Installing frontend dependencies. This might take a moment...")
             await run_npm_install(frontend_path, self.log_cb)
 
+    async def run_test_file(self, test_type: str, file_path: str) -> str:
+        from agents.tools.cli_tools import run_tests_impl
+
+        await self.log_cb("System", f"System test execution ({test_type}): {file_path}")
+        return await run_tests_impl(test_type=test_type, test_file_path=file_path)
+
     @classmethod
     def build_stack_block(cls) -> str:
         return (

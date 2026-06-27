@@ -68,6 +68,7 @@ def init_db(reset: bool = False):
         interface_ids TEXT,  -- JSON list of associated interface_ids
         type TEXT,           -- Unit, Integration, E2E
         file_path TEXT,
+        passed INTEGER,
         first_line TEXT,
         FOREIGN KEY(req_id) REFERENCES requirements(req_id)
     )
@@ -233,25 +234,63 @@ def insert_interface(interface_id: str, req_ids: list, type: str, content: str,
     conn.commit()
     conn.close()
 
-def insert_test(test_id: str, req_id: str, interface_ids: list, type: str, 
-                file_path: str, first_line: str):
+def insert_test(test_id: str, req_id: str, interface_ids: list, type: str,
+                file_path: str, first_line: str, passed: bool | None = None):
     """Insert or update a test record in the database."""
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     
     cursor.execute('''
     INSERT OR REPLACE INTO tests 
-    (test_id, req_id, interface_ids, type, file_path, first_line)
-    VALUES (?, ?, ?, ?, ?, ?)
+    (test_id, req_id, interface_ids, type, file_path, first_line, passed)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
     ''', (
         test_id,
         req_id,
         json.dumps(interface_ids) if interface_ids else '[]',
         type,
         file_path,
-        first_line
+        first_line,
+        None if passed is None else (1 if passed else 0),
     ))
     
+    conn.commit()
+    conn.close()
+
+
+def update_test_pass_status(test_id: str, passed: bool | None):
+    """Update final pass status for one test."""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute(
+        'UPDATE tests SET passed = ? WHERE test_id = ?',
+        (None if passed is None else (1 if passed else 0), test_id),
+    )
+    conn.commit()
+    conn.close()
+
+
+def update_test_pass_statuses(status_by_test_id: dict[str, bool | None]):
+    """Batch update final pass status for many tests."""
+    if not status_by_test_id:
+        return
+
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    for test_id, passed in status_by_test_id.items():
+        cursor.execute(
+            'UPDATE tests SET passed = ? WHERE test_id = ?',
+            (None if passed is None else (1 if passed else 0), test_id),
+        )
+    conn.commit()
+    conn.close()
+
+
+def reset_test_pass_statuses_for_req_id(req_id: str):
+    """Reset final pass status for all tests under one requirement."""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute('UPDATE tests SET passed = NULL WHERE req_id = ?', (req_id,))
     conn.commit()
     conn.close()
 
@@ -473,6 +512,8 @@ def get_tests_by_req_id(req_id: str):
             data['interface_ids'] = json.loads(data['interface_ids']) if data['interface_ids'] else []
         except json.JSONDecodeError:
             pass
+        if data.get('passed') is not None:
+            data['passed'] = bool(data['passed'])
         tests.append(data)
     return tests
 
@@ -492,6 +533,8 @@ def get_all_tests():
             data['interface_ids'] = json.loads(data['interface_ids']) if data.get('interface_ids') else []
         except json.JSONDecodeError:
             pass
+        if data.get('passed') is not None:
+            data['passed'] = bool(data['passed'])
         tests.append(data)
     return tests
 
