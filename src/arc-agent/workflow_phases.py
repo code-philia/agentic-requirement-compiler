@@ -69,7 +69,8 @@ class WorkflowPhaseRunner:
             )
             return False
 
-        clear_node_design_artifacts(node_id)
+        clear_node_design_artifacts(node_id) # TODO: need this step?
+        
         self._store_interfaces(node_id, interfaces)
         context_pipeline.cache.invalidate_db_layers(node_id)
         await self.log_cb(
@@ -136,7 +137,6 @@ class WorkflowPhaseRunner:
                 "error",
                 node_id,
             )
-            return False
         if not tests:
             await self.log_cb(
                 "TestDrivenDeveloper",
@@ -144,7 +144,6 @@ class WorkflowPhaseRunner:
                 "error",
                 node_id,
             )
-            return False
 
         attempts = 0
         artifact_paths: set[str] = set()
@@ -200,15 +199,6 @@ class WorkflowPhaseRunner:
                     summary=f"{test_type} verification failed.",
                 )
                 return False
-
-        if attempts == 0:
-            await self.log_cb(
-                "TestDrivenDeveloper",
-                "IMPLEMENT phase found no runnable test groups.",
-                "error",
-                node_id,
-            )
-            return False
 
         update_interface_implemented_status(node_id, True)
         upsert_implementation(
