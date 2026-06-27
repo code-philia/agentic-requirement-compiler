@@ -76,7 +76,7 @@ TOOL_REGISTRY = {
     },
     "run_tests": {
         "schema": run_tests_schema,
-        "func": run_tests_impl
+        "func": run_tests_signal_impl
     },
     "run_build": {
         "schema": run_build_schema,

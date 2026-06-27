@@ -10,14 +10,98 @@ from utils import set_android_package
 from .base import ARC_STACK_END, ARC_STACK_START, AppTypeHandler
 
 
+def _android_file_to_test_class(file_path: str) -> str:
+    parts = file_path.replace("\\", "/").split("/")
+    for index, part in enumerate(parts):
+        if part == "java" and index + 1 < len(parts):
+            class_parts = parts[index + 1:]
+            if class_parts:
+                class_parts[-1] = class_parts[-1].replace(".java", "").replace(".kt", "")
+            return ".".join(class_parts)
+    return file_path
+
+
+def _gradlew_cmd() -> str:
+    if os.name == "nt":
+        return "cmd /c gradlew.bat"
+    return "./gradlew"
+
+
+def _filter_android_gradle_output(output: str, error: str, exit_code: int) -> str:
+    raw = output + "\n" + error
+    filtered_lines = []
+    noise_patterns = [
+        "Transforming ", "Compiling XML table", "Compiling file ",
+        "Caching disabled", "is not up-to-date", "VCS Checkout Cache",
+        "dependencies-accessors", "cleaned up in", "removing files",
+        "Watched directory", "Input property ", "Value of input",
+        "Merging result: MERGED", "ADDED from", "android:supportsRtl",
+        "android:roundIcon", "android:allowBackup", "android:icon",
+        "android:label", "android:theme", "android:exported",
+        "android:name", "xmlns:android", "intent-filter#",
+        "action#", "category#", "See https://developer.android.com",
+        "Run with --stacktrace", "Run with --debug", "Run with --scan",
+        "Get more help at", "actionable tasks",
+    ]
+    keep_patterns = [
+        "PASSED", "FAILED", "SKIPPED", "BUILD ", "FAILURE:",
+        "What went wrong", "Execution failed", "Exception",
+        "Caused by", "error:", "Error:", "閿欒:",
+        "cannot find symbol", "package does not exist",
+        "Merging result: ERROR", "Manifest merger failed",
+        "Exit Code", "Test result", "tests,", "no tests found",
+        "Task :app:", "at ", "WARNING:",
+    ]
+
+    for line in raw.split("\n"):
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if any(pattern in line for pattern in keep_patterns):
+            filtered_lines.append(line)
+            continue
+        if any(pattern in line for pattern in noise_patterns):
+            continue
+        filtered_lines.append(line)
+
+    result = f"Exit Code: {exit_code}\n"
+    filtered = "\n".join(filtered_lines)
+    if len(filtered) > 30000:
+        result += filtered[:15000] + "\n...[OUTPUT TRUNCATED]...\n" + filtered[-15000:]
+    else:
+        result += filtered
+    return result
+
+
+async def _run_android_gradle_test(workspace_path: str, file_path: str) -> str:
+    command = f'{_gradlew_cmd()} testDebugUnitTest --info --tests "{_android_file_to_test_class(file_path)}"'
+    process = None
+    try:
+        process = await asyncio.create_subprocess_shell(
+            command,
+            cwd=workspace_path,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            env={**os.environ, "PYTHONIOENCODING": "utf-8", "JAVA_TOOL_OPTIONS": "-Dfile.encoding=UTF-8"},
+        )
+        stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=180.0)
+        output = stdout.decode("utf-8", errors="replace")
+        error = stderr.decode("utf-8", errors="replace")
+        return _filter_android_gradle_output(output, error, process.returncode)
+    except asyncio.TimeoutError:
+        if process:
+            process.kill()
+        return "Command timed out after 180.0 seconds."
+    except Exception as exc:
+        return f"Execution failed: {str(exc)}"
+
+
 class AndroidAppType(AppTypeHandler):
     name = "android"
 
     async def run_test_file(self, test_type: str, file_path: str) -> str:
-        from agents.tools.cli_tools import run_tests_impl
-
         await self.log_cb("System", f"System test execution ({test_type}): {file_path}")
-        return await run_tests_impl(test_type=test_type, test_file_path=file_path)
+        return await _run_android_gradle_test(self.workspace_path, file_path)
 
     async def post_template_setup(self) -> bool:
         target_package = await self._extract_android_package_name_via_llm()

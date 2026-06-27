@@ -6,6 +6,7 @@ from typing import Awaitable, Callable
 
 from .base import ARC_STACK_END, ARC_STACK_START, AppTypeHandler
 
+
 async def run_npm_install(target_dir: str, log_cb: Callable[..., Awaitable[None]]):
     try:
         process = await asyncio.create_subprocess_shell(
@@ -22,6 +23,37 @@ async def run_npm_install(target_dir: str, log_cb: Callable[..., Awaitable[None]
     except Exception as exc:
         await log_cb("System", f"NPM install error: {str(exc)}")
 
+
+async def _execute_web_test_command(command: str, cwd: str, timeout: float = 60.0) -> str:
+    process = None
+    try:
+        process = await asyncio.create_subprocess_shell(
+            command,
+            cwd=cwd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            env={**os.environ, "PYTHONIOENCODING": "utf-8", "JAVA_TOOL_OPTIONS": "-Dfile.encoding=UTF-8"},
+        )
+        stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=timeout)
+        output = stdout.decode("utf-8", errors="replace")
+        error = stderr.decode("utf-8", errors="replace")
+
+        result = f"Exit Code: {process.returncode}\n"
+        if output:
+            result += f"STDOUT:\n{output}\n"
+        if error:
+            result += f"STDERR:\n{error}\n"
+        if len(result) > 4000:
+            result = result[:2000] + "\n...[OUTPUT TRUNCATED]...\n" + result[-2000:]
+        return result
+    except asyncio.TimeoutError:
+        if process:
+            process.kill()
+        return f"Command timed out after {timeout} seconds."
+    except Exception as exc:
+        return f"Execution failed: {str(exc)}"
+
+
 class WebAppType(AppTypeHandler):
     name = "web"
 
@@ -37,10 +69,48 @@ class WebAppType(AppTypeHandler):
             await run_npm_install(frontend_path, self.log_cb)
 
     async def run_test_file(self, test_type: str, file_path: str) -> str:
-        from agents.tools.cli_tools import run_tests_impl
-
         await self.log_cb("System", f"System test execution ({test_type}): {file_path}")
-        return await run_tests_impl(test_type=test_type, test_file_path=file_path)
+        normalized_type = test_type.lower()
+        backend_path = os.path.join(self.workspace_path, "backend")
+        servers_process = None
+
+        if normalized_type == "e2e":
+            frontend_path = os.path.join(self.workspace_path, "frontend")
+            try:
+                backend_process = await asyncio.create_subprocess_shell(
+                    "npm run dev",
+                    cwd=backend_path,
+                    stdout=asyncio.subprocess.DEVNULL,
+                    stderr=asyncio.subprocess.DEVNULL,
+                )
+                frontend_process = await asyncio.create_subprocess_shell(
+                    "npm run dev",
+                    cwd=frontend_path,
+                    stdout=asyncio.subprocess.DEVNULL,
+                    stderr=asyncio.subprocess.DEVNULL,
+                )
+                servers_process = (backend_process, frontend_process)
+                await asyncio.sleep(5)
+            except Exception as exc:
+                return f"Failed to start servers for E2E testing: {str(exc)}"
+
+        if normalized_type in {"unit", "integration"}:
+            command = f"npx vitest run {file_path}" if file_path else "npx vitest run"
+        elif normalized_type == "e2e":
+            command = f"npx playwright test {file_path}" if file_path else "npx playwright test"
+        else:
+            return "Unknown test type. Must be 'unit', 'integration', or 'e2e'."
+
+        try:
+            return await _execute_web_test_command(command, cwd=backend_path)
+        finally:
+            if servers_process:
+                backend_process, frontend_process = servers_process
+                for process in (backend_process, frontend_process):
+                    try:
+                        process.terminate()
+                    except Exception:
+                        pass
 
     @classmethod
     def build_stack_block(cls) -> str:

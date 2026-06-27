@@ -1,5 +1,5 @@
 import json
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Awaitable, Callable
 from .arc_agent import ARCAgent
 
 class TestDrivenDeveloper(ARCAgent):
@@ -12,6 +12,7 @@ class TestDrivenDeveloper(ARCAgent):
         self._run_tests_usage: Dict[str, int] | None = None
         self._stop_on_test_budget_exhausted = False
         self._test_budget_exhausted = False
+        self._run_tests_executor: Callable[[], Awaitable[str]] | None = None
 
     def get_system_prompt(self) -> str:
         from utils import get_app_type, get_android_package
@@ -42,8 +43,9 @@ class TestDrivenDeveloper(ARCAgent):
 Your job is to implement the business logic for the provided interfaces until the corresponding tests pass.
 
 Execution protocol (strict):
-- Write ALL implementation files FIRST, THEN run tests. Do NOT write one file and test immediately.
-- If tests fail, read the error output carefully, use `edit_file` to fix the minimal set of issues (provide exact old_string/new_string), and rerun `run_tests`.
+- Write ALL implementation files FIRST, THEN request a test run. Do NOT write one file and test immediately.
+- The `run_tests` tool is only a signal. It takes NO arguments. When you call it, the system will execute the current target test batch and return the results in the tool output.
+- If tests fail, read the returned error output carefully, use `edit_file` to fix the minimal set of issues (provide exact old_string/new_string), and then call `run_tests` again.
 - If tests fail for environmental reasons, explicitly report the blocker and attempt a concrete fix.
 - Return exactly "IMPLEMENTED" only when target tests are truly passing.
 
@@ -52,8 +54,8 @@ Execution protocol (strict):
 1. Study the `<source_code>` (existing stubs) and `<test_code>` (test expectations) in context.
 2. For each interface of the current node, write the REAL implementation that satisfies its Outputs contract and makes the corresponding tests pass.
 3. Use `write_file` to write ALL implementation files in one batch.
-4. Call `run_tests` with the target test type to verify (Green phase).
-5. If tests fail, read the error output, fix the code, and rerun `run_tests`.
+4. Call `run_tests` with NO arguments to ask the system to execute the current target test batch.
+5. If tests fail, read the returned error output, fix the code, and call `run_tests` again.
 6. If you need a new npm package, use `execute_command` (e.g., `npm install cors`).
 
 Once `run_tests` returns a 100% passing state (Exit Code: 0) for the target tests, you MUST output exactly the word "IMPLEMENTED" in your final response to complete the task.
@@ -69,12 +71,12 @@ Once `run_tests` returns a 100% passing state (Exit Code: 0) for the target test
         tool_args: Dict[str, Any],
         node_id: str | None = None,
     ) -> tuple[bool, Any]:
-        if tool_name != "run_tests" or self._run_tests_budget is None:
+        if tool_name != "run_tests":
             return False, None
 
         usage = self._run_tests_usage if self._run_tests_usage is not None else {}
         used = usage.get("run_tests", 0)
-        if used >= self._run_tests_budget:
+        if self._run_tests_budget is not None and used >= self._run_tests_budget:
             self._test_budget_exhausted = True
             await self._log(
                 f"[BUDGET] `run_tests` budget exhausted at {used}/{self._run_tests_budget}.",
@@ -88,11 +90,28 @@ Once `run_tests` returns a 100% passing state (Exit Code: 0) for the target test
         used += 1
         usage["run_tests"] = used
         self._run_tests_usage = usage
+        if self._run_tests_budget is not None:
+            await self._log(
+                f"[BUDGET] `run_tests` usage {used}/{self._run_tests_budget}.",
+                node_id=node_id,
+            )
+        else:
+            await self._log(
+                f"[BUDGET] `run_tests` usage {used}.",
+                node_id=node_id,
+            )
+
+        if self._run_tests_executor is None:
+            return True, (
+                "System test runner is not configured for this TDD session. "
+                "Stop and report this execution blocker."
+            )
+
         await self._log(
-            f"[BUDGET] `run_tests` usage {used}/{self._run_tests_budget}.",
+            "System is executing the current target test batch after the run_tests signal.",
             node_id=node_id,
         )
-        return False, None
+        return True, await self._run_tests_executor()
 
     async def _get_stop_response_after_tool_call(
         self,
@@ -118,16 +137,19 @@ Once `run_tests` returns a 100% passing state (Exit Code: 0) for the target test
         run_tests_budget: int | None = None,
         run_tests_usage: Dict[str, int] | None = None,
         stop_on_test_budget_exhausted: bool = False,
+        run_tests_executor: Callable[[], Awaitable[str]] | None = None,
     ) -> tuple:
         previous_budget = self._run_tests_budget
         previous_usage = self._run_tests_usage
         previous_stop = self._stop_on_test_budget_exhausted
         previous_exhausted = self._test_budget_exhausted
+        previous_executor = self._run_tests_executor
 
         self._run_tests_budget = run_tests_budget
         self._run_tests_usage = run_tests_usage if run_tests_usage is not None else {}
         self._stop_on_test_budget_exhausted = stop_on_test_budget_exhausted
         self._test_budget_exhausted = False
+        self._run_tests_executor = run_tests_executor
         try:
             return await super().run_from_messages(
                 messages=messages,
@@ -140,6 +162,7 @@ Once `run_tests` returns a 100% passing state (Exit Code: 0) for the target test
             self._run_tests_usage = previous_usage
             self._stop_on_test_budget_exhausted = previous_stop
             self._test_budget_exhausted = previous_exhausted
+            self._run_tests_executor = previous_executor
 
     def build_initial_messages(self, node_id: str, test_files: List[str], test_type: str, req_desc: str, scenarios: list = None, dependency_context: str = "", current_interfaces: list = None, preloaded_source: str = None) -> tuple:
         """Build the [system, user] messages and tools list without calling run().
@@ -166,6 +189,7 @@ Once `run_tests` returns a 100% passing state (Exit Code: 0) for the target test
 
 **Implementation Strategy**:
 Implement the interfaces of the current node. Consider the node requirement content, each interface's responsibility, and its spec to decide what to implement. Make the target tests pass.
+The system will execute exactly this current test batch when you call `run_tests`.
 When all target tests pass, output "IMPLEMENTED".
 """
         system_content = self.get_system_prompt()
@@ -186,5 +210,10 @@ When all target tests pass, output "IMPLEMENTED".
             req_desc=req_desc, scenarios=scenarios, dependency_context=dependency_context,
             current_interfaces=current_interfaces, preloaded_source=preloaded_source
         )
-        result, _ = await self.run_from_messages(messages, node_id=node_id, max_steps=15, tools=tools)
+        result, _ = await self.run_from_messages(
+            messages,
+            node_id=node_id,
+            max_steps=15,
+            tools=tools,
+        )
         return result

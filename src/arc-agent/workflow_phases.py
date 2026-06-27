@@ -190,6 +190,11 @@ class WorkflowPhaseRunner:
                 run_tests_budget=DEFAULT_TDD_TEST_BUDGET,
                 run_tests_usage=run_tests_usage,
                 stop_on_test_budget_exhausted=True,
+                run_tests_executor=lambda node_id=node_id, test_type=test_type, test_files=list(test_files): self._run_test_batch_for_agent(
+                    node_id=node_id,
+                    test_type=test_type,
+                    test_files=test_files,
+                ),
             )
 
             total_model_test_runs += run_tests_usage.get("run_tests", 0)
@@ -419,6 +424,43 @@ class WorkflowPhaseRunner:
                 )
 
         return all_passed, status_by_test_id
+
+    async def _run_test_batch_for_agent(
+        self,
+        node_id: str,
+        test_type: str,
+        test_files: list[str],
+    ) -> str:
+        if not test_files:
+            return (
+                "Exit Code: 1\n"
+                "STDERR:\n"
+                f"No test files were configured for the current {test_type} batch of node {node_id}.\n"
+            )
+
+        outputs: list[str] = []
+        exit_codes: list[int] = []
+        for file_path in test_files:
+            await self.log_cb(
+                "Compiler",
+                f"System is executing current {test_type} batch file: {file_path}",
+                None,
+                node_id,
+            )
+            output = await self.app_handler.run_test_file(test_type, file_path)
+            parsed = parse_test_results(output)
+            exit_codes.append(int(parsed.get("exit_code", -1)))
+            outputs.append(f"=== Test File: {file_path} ===\n{output}")
+
+        batch_exit_code = 0 if exit_codes and all(code == 0 for code in exit_codes) else 1
+        header = [
+            f"Exit Code: {batch_exit_code}",
+            f"Batch Test Type: {test_type}",
+            "Batch Test Files:",
+        ]
+        header.extend(f"- {file_path}" for file_path in test_files)
+        header_text = "\n".join(header)
+        return f"{header_text}\n\n" + "\n\n".join(outputs)
 
     def _map_file_test_statuses(
         self,

@@ -342,14 +342,11 @@ run_tests_schema = {
     "type": "function",
     "function": {
         "name": "run_tests",
-        "description": "Run the test suite using the project's testing frameworks. Uses Vitest/Playwright for web projects and Gradle for Android projects. For Android, automatically filters by test type using package-based Gradle --tests pattern (e.g., com.example.app.unit.*, com.example.app.integration.*, com.example.app.e2e.*).",
+        "description": "Signal that the system should execute the current batch of target tests. This tool takes no arguments and does not execute tests directly.",
         "parameters": {
             "type": "object",
-            "properties": {
-                "test_type": {"type": "string", "enum": ["unit", "integration", "e2e"], "description": "Type of test to run."},
-                "test_file_path": {"type": "string", "description": "Optional specific test file to run."}
-            },
-            "required": ["test_type"]
+            "properties": {},
+            "required": []
         }
     }
 }
