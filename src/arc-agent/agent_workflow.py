@@ -6,10 +6,17 @@ from typing import Any, Awaitable, Callable
 from agents.interface_designer import InterfaceDesigner
 from agents.test_driven_developer import TestDrivenDeveloper
 from agents.test_generator import TestGenerator
-from project_bootstrap import ProjectBootstrapper
+from app_types import create_app_type_handler, normalize_app_type
 from traceability import store_all_requirement
-from traceability.database import get_requirement_by_id, upsert_node_state
-from utils import load_requirements, read_json_file, write_json_file
+from traceability.database import get_requirement_by_id, init_db, set_db_path, upsert_node_state
+from utils import (
+    load_requirements,
+    read_json_file,
+    run_git_init,
+    set_app_type,
+    set_workspace_root,
+    write_json_file,
+)
 
 from dotenv import load_dotenv
 load_dotenv()
@@ -51,7 +58,7 @@ class ARCWorkflowManager:
     ):
         self.workspace_path = workspace_path
         self.requirement_path = requirement_path
-        self.app_type = (app_type or "web").strip().lower()
+        self.app_type = normalize_app_type(app_type)
         self.log_cb = log_cb
 
         self.arc_dir = os.path.join(self.workspace_path, ".arc")
@@ -103,14 +110,71 @@ class ARCWorkflowManager:
             return None
 
     async def initialize_project(self):
-        bootstrapper = ProjectBootstrapper(
+        await self.log_cb("System", f"Initializing project environment in {self.workspace_path}...")
+
+        set_workspace_root(self.workspace_path)
+        set_app_type(self.app_type)
+
+        db_path = os.path.join(self.arc_dir, "database.db")
+        await self.log_cb("System", f"Initializing traceability database at {db_path}...")
+        set_db_path(db_path)
+        init_db()
+
+        app_handler = create_app_type_handler(
             workspace_path=self.workspace_path,
             requirement_path=self.requirement_path,
             app_type=self.app_type,
             interface_designer=self.interface_designer,
             log_cb=self.log_cb,
         )
-        return await bootstrapper.initialize_project()
+        init_ok = await app_handler.initialize_workspace()
+        if not init_ok:
+            return False
+
+        await app_handler.install_dependencies()
+
+        await self.log_cb("System", "Full-stack workspace initialized completely.")
+        await self.log_cb("System", "Initializing Git repository...")
+
+        await run_git_init(self.workspace_path, self.log_cb)
+        return True
+
+    async def start_compilation(self, clear_all: bool = False) -> dict[str, Any]:
+        await self.log_cb("Compiler", "ARC compilation started.")
+
+        if clear_all:
+            cleaned = await self.cleanup_workspace()
+            if not cleaned:
+                return {"ok": False, "failed_nodes": []}
+
+        requirement_tree = await self.load_requirement_tree()
+        if not requirement_tree:
+            return {"ok": False, "failed_nodes": []}
+
+        init_ok = await self.initialize_project()
+        if init_ok is False:
+            await self.log_cb("Compiler", "Project initialization failed.", "error")
+            return {"ok": False, "failed_nodes": []}
+
+        compile_result = await self.compile_requirement_tree(requirement_tree)
+
+        failed_nodes = compile_result.get("failed_nodes", [])
+        if failed_nodes:
+            await self.log_cb(
+                "Compiler",
+                f"Compilation finished with {len(failed_nodes)} failed node(s): {', '.join(failed_nodes)}",
+                "error",
+            )
+        else:
+            await self.log_cb("Compiler", "Compilation finished successfully.")
+
+        if self.app_type in {"android", "web"}:
+            from traceability.test_result_tracker import TestResultTracker
+
+            tracker = TestResultTracker(self.arc_dir)
+            await self.log_cb("Compiler", tracker.format_summary())
+
+        return compile_result
 
     # ==================================================================================
     #                              Compilation Entry

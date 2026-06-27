@@ -11,17 +11,45 @@ from typing import Awaitable, Callable, Optional, Dict, List, Any
 from colorama import Fore, Style, init as colorama_init
 from traceability.database import get_interfaces_by_req_id, get_requirement_by_id
 
-from app_context import (
-    get_abs_path,
-    get_android_package,
-    get_app_type,
-    set_android_package,
-    set_app_type,
-    set_workspace_root,
-)
-from prompts.stack import read_stack_summary
-
 colorama_init()
+
+# ======================================================================================
+#                                Runtime Context
+# ======================================================================================
+
+WORKSPACE_ROOT = os.getcwd()
+APP_TYPE = "web"
+ANDROID_PACKAGE = "com.example.template"
+
+
+def set_workspace_root(path: str) -> None:
+    global WORKSPACE_ROOT
+    WORKSPACE_ROOT = os.path.abspath(path)
+
+
+def get_abs_path(rel_path: str) -> str:
+    if os.path.isabs(rel_path):
+        return rel_path
+    return os.path.join(WORKSPACE_ROOT, rel_path)
+
+
+def set_app_type(app_type: str) -> None:
+    global APP_TYPE
+    APP_TYPE = (app_type or "web").strip().lower()
+
+
+def get_app_type() -> str:
+    return APP_TYPE
+
+
+def set_android_package(package_name: str) -> None:
+    global ANDROID_PACKAGE
+    ANDROID_PACKAGE = package_name.strip()
+
+
+def get_android_package() -> str:
+    return ANDROID_PACKAGE
+
 
 def read_json_file(path: str) -> dict[str, Any] | None:
     if not os.path.exists(path):
@@ -346,11 +374,13 @@ def print_cli_banner():
 
 
 def print_cli_startup(project_path: str, requirement_path: str, app_type: str, clear_all: bool, log_path: str):
+    from app_types import read_stack_summary
+
     print(f"  {Fore.WHITE}Debug Log {Style.RESET_ALL}  {log_path}")
     print(f"\n  {Fore.WHITE}Project   {Style.RESET_ALL}  {project_path}")
     print(f"  {Fore.WHITE}Require   {Style.RESET_ALL}  {requirement_path}")
     print(f"  {Fore.WHITE}App Type  {Style.RESET_ALL}  {Fore.CYAN}{app_type}{Style.RESET_ALL}")
-    print(f"  {Fore.WHITE}Stack     {Style.RESET_ALL}  {read_stack_summary(project_path)}")
+    print(f"  {Fore.WHITE}Stack     {Style.RESET_ALL}  {read_stack_summary(project_path, app_type)}")
     print(
         f"  {Fore.WHITE}Mode      {Style.RESET_ALL}  "
         f"{Fore.YELLOW}{'clear-and-recompile' if clear_all else 'start-compilation'}{Style.RESET_ALL}"
