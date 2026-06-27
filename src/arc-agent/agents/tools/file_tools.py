@@ -152,10 +152,20 @@ async def list_directory_impl(path: str, depth: int = 3) -> str:
                 output_lines.append(f"- {rel_prefix}[Error: {str(e)}]")
                 return
                 
-            _SKIP_DIRS = {".git", ".arc"}
+            _SKIP_DIRS = {
+                ".git", ".arc", ".gradle", "build", ".idea",
+                "node_modules", ".venv", "venv", "dist", "out", "coverage",
+                "__pycache__", "target", ".next", ".nuxt", ".cache", ".turbo",
+                ".parcel-cache", "tmp", "temp",
+            }
+            _SKIP_FILES = {
+                ".gitignore", ".DS_Store", "Thumbs.db", "package-lock.json",
+                "yarn.lock", "pnpm-lock.yaml", "composer.lock", "Gemfile.lock",
+                ".npmrc", ".yarnrc",
+            }
 
             for item in items:
-                if item in _SKIP_DIRS:
+                if item in _SKIP_DIRS or item in _SKIP_FILES:
                     continue
                 item_path = os.path.join(current_path, item)
                 item_rel_path = f"{rel_prefix}{item}"
