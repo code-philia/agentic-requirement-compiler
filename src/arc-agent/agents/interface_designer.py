@@ -16,17 +16,7 @@ class InterfaceDesigner(ARCAgent):
         pkg_compliance = ""
 
         if app_type == "android":
-            tech_stack = f"""
-### Strict Tech Stack Constraints:
-**Android:**
-- Language: Java 8
-- Build System: Gradle 8.4 + AGP 8.1.4
-- UI: XML Layout + AndroidX AppCompat + Material Components + ConstraintLayout
-- Database: Room (SQLite)
-- Source directories: app/src/main/java/, app/src/test/java/
-- Package: {android_pkg}
-- Interface decomposition: UI (Activity/Fragment) -> API (Repository/Service) -> FUNC (UseCase/ViewModel) -> DB (Room DAO/Entity)
-"""
+            android_pkg = get_android_package()
             pkg_compliance = f"""
 ### Package Compliance (CRITICAL for Android):
 - The application package is `{android_pkg}`. You MUST use this package for ALL generated code:
@@ -38,29 +28,15 @@ class InterfaceDesigner(ARCAgent):
 - If the requirement description mentions a different package name in resource-id patterns (e.g., `org.billthefarmer.editor:id/newFile`), use THAT package name instead of `{android_pkg}`. The resource-id package takes priority.
 """
         else:
-            tech_stack = """
-### Strict Tech Stack Constraints:
-**Frontend:**
-- Framework: React 18+ (Vite)
-- Language: JavaScript (ES6+)
-- Styling: Tailwind CSS v4
-- HTTP: Axios (MUST use Interceptors for global error handling in `src/api/axios.js`).
-
-**Backend:**
-- Runtime: Node.js (LTS)
-- Framework: Express.js
-- Database: SQLite3 (`sqlite3` driver, file-based)
-"""
             pkg_compliance = ""
 
         return f"""You are a Principal Software Architect.
 Your task is to analyze a raw software requirement and design its interfaces (UI -> API -> FUNC -> DB).
 
-For **non-leaf nodes**: design ONLY the shared DB layer (Room Entity/DAO). Do NOT design Repository/ViewModel/Fragment/Layout — those belong to child nodes.
+For **non-leaf nodes**: design the shared foundation and aggregation layer for child nodes. Focus on reusable infrastructure such as page shells, routing/entry points, shared state, common data contracts, shared services, and base storage/models. Keep the design modular so leaf nodes can extend it with concrete feature logic.
 
 For **leaf nodes**: design ALL layers with real logic (not just `throw UnsupportedOperationException`). Use actual DAO calls, return real data, wire up LiveData/queries.
 
-{tech_stack}
 {pkg_compliance}
 
 Design constraints (strict):
@@ -138,24 +114,21 @@ Implement real logic (not just `throw UnsupportedOperationException`). Use actua
 """
         else:
             scope_guidance = """
-### Node Scope: NON-LEAF NODE (Shared Infrastructure Only)
-This is a **non-leaf node** (it has children). Design **ONLY** the **shared DB layer**:
-- **DB layer ONLY**: Room Entity classes, Room DAO interfaces, AppDatabase registration
-- Do NOT design Repositories, ViewModels, Fragments, Adapters, or XML layouts — those belong to child nodes.
-
-**CRITICAL**: Do not design UI, API, or FUNC layer interfaces. Stop after the DB layer and output your IR JSON.
+### Node Scope: NON-LEAF NODE (Shared Foundation & Aggregation)
+This is a **non-leaf node** (it has children). Design the shared foundation and aggregation layer that child nodes will extend:
+- Page shells, routing/entry points, shared state, common data contracts, shared services, and base storage/models.
+- Also land concrete stub interface skeletons (signatures + placeholder returns) for these shared components so child nodes can import and refine them.
+- Keep the design modular; do NOT implement full feature logic — that belongs to leaf nodes.
 """
 
         user_prompt = f"""
 ### Auto-Prefetched Context for Node [{node_id}]
 {dynamic_ctx}
 
-### Current Target Requirement Node (ID: {node_id})
-{json.dumps(requirement_data, indent=2, ensure_ascii=False)}
-
 {scope_guidance}
 
 Perform the top-down decomposition for Node [{node_id}].
+Use the `<current_requirement>` block in the prefetched context as the authoritative current-node payload.
 Design the interface architecture and output the IR JSON mapping.
 Do NOT write any code files — this phase is ONLY for architecture design.
 """

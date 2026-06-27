@@ -81,15 +81,45 @@ class ContextPipeline:
                 return f"<global_context>\n{content}\n</global_context>"
         return "<global_context>\nNo global context file (.arc/metadata.md) found.\n</global_context>"
 
-    def _get_project_structure(self) -> str:
-        """Layer 1.5: Project directory tree (pre-fetched so LLM doesn't need list_directory)."""
-        from utils import get_abs_path, WORKSPACE_ROOT
+    def _get_project_structure(self, agent_type: str = "") -> str:
+        """Layer 1.5: Source tree under relevant src/ subtrees only (pre-fetched so LLM doesn't need list_directory)."""
+        from utils import get_abs_path
+        from utils import get_app_type
         import os as _os
 
         root = get_abs_path(".")
+
         max_depth = 4
         lines = []
-        skip_dirs = {".git", ".arc", ".gradle", "build", ".idea"}
+        skip_dirs = {
+            ".git", ".arc", ".gradle", "build", ".idea",
+            "node_modules", ".venv", "venv", "dist", "out", "coverage",
+            "__pycache__", "target",
+        }
+        src_roots = []
+        app_type = get_app_type()
+
+        def _collect_src_roots(path, depth):
+            if depth > max_depth:
+                return
+            try:
+                items = sorted(_os.listdir(path))
+            except (PermissionError, OSError):
+                return
+            for item in items:
+                if item in skip_dirs:
+                    continue
+                full = _os.path.join(path, item)
+                if not _os.path.isdir(full):
+                    continue
+                if item == "src":
+                    rel = _os.path.relpath(full, root).replace("\\", "/")
+                    if agent_type == "TestGenerator" and app_type == "web":
+                        if rel not in {"backend/src", "frontend/src"}:
+                            continue
+                    src_roots.append(full)
+                else:
+                    _collect_src_roots(full, depth + 1)
 
         def _traverse(path, depth, prefix=""):
             if depth > max_depth:
@@ -109,7 +139,15 @@ class ContextPipeline:
                 else:
                     lines.append(f"- {rel}")
 
-        _traverse(root, 1)
+        _collect_src_roots(root, 1)
+        if not src_roots:
+            return "<project_structure>\nNo src directories found.\n</project_structure>"
+
+        for src_root in sorted(src_roots):
+            rel_root = _os.path.relpath(src_root, root).replace("\\", "/")
+            lines.append(f"- {rel_root}/")
+            _traverse(src_root, 1, f"{rel_root}/")
+
         if not lines:
             return ""
         # Cap at 200 lines to avoid bloating context
@@ -322,17 +360,18 @@ class ContextPipeline:
 
         # 1.5 Inject Project Structure (cached per node, invalidated after writes)
         project_structure = self.cache.get_or_compute(
-            node_id, "project_structure", self._get_project_structure
+            node_id, f"project_structure::{agent_type}", lambda: self._get_project_structure(agent_type)
         )
         if project_structure:
             context_parts.append(project_structure)
 
         # 1.6 Inject All Existing Interfaces Summary (cached per node, invalidated after DB changes)
-        all_ifaces = self.cache.get_or_compute(
-            node_id, "existing_interfaces", self._get_all_interfaces_summary
-        )
-        if all_ifaces:
-            context_parts.append(all_ifaces)
+        if agent_type != "TestGenerator":
+            all_ifaces = self.cache.get_or_compute(
+                node_id, "existing_interfaces", self._get_all_interfaces_summary
+            )
+            if all_ifaces:
+                context_parts.append(all_ifaces)
 
         # 2. Current Node Data
         req_json = json.dumps(req_data, indent=2, ensure_ascii=False)
@@ -432,7 +471,7 @@ class ContextPipeline:
         This reduces per-step token cost since the user prompt is smaller.
         """
         full_context = self.build_agent_context(node_id, agent_type, preloaded_source)
-        static = self.get_static_context(node_id)
+        static = self.get_static_context(node_id, agent_type)
         # Remove the static portion from the full context to get the dynamic portion
         # The static layers appear at the start of full_context
         if static and static in full_context:
@@ -445,7 +484,7 @@ class ContextPipeline:
             static = ""
         return static, dynamic
 
-    def get_static_context(self, node_id: str) -> str:
+    def get_static_context(self, node_id: str, agent_type: str = "") -> str:
         """Return only the static context layers (for system prompt injection).
         These layers rarely change and can be moved to the system prompt
         to reduce per-step token cost.
@@ -462,12 +501,17 @@ class ContextPipeline:
         )
         global_ctx = self.cache.get_or_compute(node_id, "global_context", self._get_global_context)
         parts.append(global_ctx)
-        proj_struct = self.cache.get_or_compute(node_id, "project_structure", self._get_project_structure)
+        proj_struct = self.cache.get_or_compute(
+            node_id,
+            f"project_structure::{agent_type}",
+            lambda: self._get_project_structure(agent_type),
+        )
         if proj_struct:
             parts.append(proj_struct)
-        all_ifaces = self.cache.get_or_compute(node_id, "existing_interfaces", self._get_all_interfaces_summary)
-        if all_ifaces:
-            parts.append(all_ifaces)
+        if agent_type != "TestGenerator":
+            all_ifaces = self.cache.get_or_compute(node_id, "existing_interfaces", self._get_all_interfaces_summary)
+            if all_ifaces:
+                parts.append(all_ifaces)
         return "\n\n".join(parts)
 
     def build_incremental_context(self, node_id: str, modified_files: list = None) -> str:
@@ -501,7 +545,7 @@ class ContextPipeline:
     def prewarm(self, node_id: str):
         """Eagerly populate global cache layers so subsequent calls get cache hits."""
         self.cache.get_or_compute(node_id, "global_context", self._get_global_context)
-        self.cache.get_or_compute(node_id, "project_structure", self._get_project_structure)
+        self.cache.get_or_compute(node_id, "project_structure::", lambda: self._get_project_structure(""))
 
 # Singleton instance
 context_pipeline = ContextPipeline()

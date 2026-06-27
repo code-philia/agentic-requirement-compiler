@@ -112,19 +112,17 @@ public class FooIntegrationTest {{
 - Do NOT use `com.example.template` or any other package name.
 """
         else:
-            test_stack = """
-# Testing Stack (Web):
-- **Unit Tests**: Target the `FUNC` and `DB` interfaces. Mock external dependencies. Write tests based on interface descriptions and requirement content.
-- **Integration Tests**: Target the `API` interfaces. Test how they interact with `FUNC` modules. Write tests based on interface descriptions and requirement content.
-- **E2E Tests**: Target the overarching Requirement Node. You will be provided with UI scenarios. Generate Playwright E2E tests that cover these scenarios.
-"""
+            test_stack = ""
             pkg_compliance = ""
 
         return f"""You are a Principal Software Development Engineer in Test (SDET).
 Your task is to write comprehensive, executable test cases for a newly designed component following Test-Driven Development (TDD) principles.
+Generate tests bottom-up:
+- Start with Unit tests for specific FUNC/DB interfaces.
+- Then write Integration tests for interface boundaries and collaboration.
+- Finish with E2E tests for the current requirement node and its UI scenarios.
 
 Execution protocol (strict):
-- Source code is pre-injected in `<source_code>` — do NOT call `read_file` on source files already provided in context.
 - Write ALL test files FIRST using multiple `write_file` calls, THEN call `run_build` ONCE.
 - Do NOT interleave `read_file` and `write_file` — batch all writes together.
 - Keep tests deterministic. Do not add random sleeps or flaky waits.
@@ -138,13 +136,6 @@ Execution protocol (strict):
 1. **Analyze**: Review the tech stack, requirement description, and Interface IR.
 2. **Place tests**: Use `list_directory` to confirm the test directory structure, then `write_file` to create test files in the correct subdirectory for each type.
 3. **Verify compilation**: You MUST call `run_build` to check for syntax/compilation errors. Fix any errors and rerun.
-
-# Test Execution (handled by the system, NOT by you):
-The system executes tests in a 3-phase strategy after you finish generating them:
-- **Phase A**: Batch run all tests of each type (Unit → Integration → E2E) via `run_tests(test_type)`. The `--tests` filter automatically targets the correct sub-package.
-- **Phase B**: For any failing tests, retry individually with extra budget.
-- **Phase C**: For tests still failing, simplify the test (relax assertions, remove flaky checks) and retry.
-You do NOT need to call `run_tests` — just ensure tests compile via `run_build`.
 
 # Final Output Requirement:
 After writing all test files, you MUST output a single JSON array enclosed in a markdown block (` ```json ... ``` `).
@@ -191,27 +182,20 @@ Generate ALL test types in a single pass:
 3. **E2E Tests** for UI interfaces (use the scenarios above if provided)
 
 Write ALL test files using `write_file` calls FIRST, then call `run_build` ONCE to verify compilation.
-Do NOT call `read_file` on source files — they are already provided in the `<source_code>` context above.
 """
         else:
             test_instruction = f"""
 Please write the {test_type} test files using the `write_file` tool.
-Do NOT call `read_file` on source files — they are already provided in the `<source_code>` context above.
 """
 
         user_prompt = f"""
 ### Auto-Prefetched Context for Node [{node_id}]
 {dynamic_ctx}
 
-### Requirement Description for Node [{node_id}]
-{requirement_data.get("description", "")}
-
-### Interfaces to Test
-{json.dumps(interfaces_ir, indent=2, ensure_ascii=False)}
 {scenarios_context}
 
 {test_instruction}
-Ensure the tests correctly import the designed interfaces and cover the logic described in the requirement.
+Target the interfaces of the current node. Consider the node requirement content, each interface's responsibility, and its spec to decide what to test and how to assert.
 When finished, output the mapping JSON block so the system can register these tests in the traceability database.
 """
         system_content = self.get_system_prompt()
