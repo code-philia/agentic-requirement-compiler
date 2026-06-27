@@ -31,7 +31,7 @@ from traceability.database import (
     upsert_implementation
 )
 
-from utils import run_npm_install, run_git_init, set_workspace_root, set_app_type
+from utils import run_npm_install, run_git_init, run_git_commit, build_commit_message , set_workspace_root, set_app_type
 
 from dotenv import load_dotenv
 
@@ -1230,6 +1230,11 @@ Return a JSON object with "package_name" and "resource_ids" fields."""
                             await self._log("System", f"Failed to parse/register test mappings from TestGenerator: {str(e)}", node_id=node_id)
             else:
                 await self._log("System", "No tests generated.", node_id=node_id)
+        await run_git_commit(
+            self.workspace_path,
+            build_commit_message(node_id, "design", requirement_data),
+            self._log,
+        )
         return {
             "run_tdd": run_tdd,
             "stub_artifacts": stub_artifacts,
@@ -1551,6 +1556,11 @@ Return a JSON object with "package_name" and "resource_ids" fields."""
                     artifact_paths.append(fp)
             if build_ok:
                 await self._log("System", f"Final build verification PASSED for node {node_id}", node_id=node_id)
+                await run_git_commit(
+                    self.workspace_path,
+                    build_commit_message(node_id, "implement", requirement_data),
+                    self._log,
+                )
                 upsert_implementation(
                     req_id=node_id,
                     status="passed",

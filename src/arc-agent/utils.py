@@ -232,3 +232,12 @@ async def run_git_commit(target_dir: str, message: str, log_cb: Callable[[str], 
             
     except Exception as e:
         await log_cb("System", f"Git commit error: {str(e)}")
+        
+
+def build_commit_message(node_id: str, phase: str, requirement_data: dict) -> str:
+    """Build a short commit message: 'node_id name (phase)'."""
+    name = (requirement_data or {}).get("name", "") or ""
+    name = name.strip()
+    if name:
+        return f"{node_id} {name} ({phase})"
+    return f"{node_id} ({phase})"
