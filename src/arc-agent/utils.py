@@ -270,7 +270,7 @@ def extract_modified_files_from_messages(messages: list[dict[str, Any]]) -> list
                         args = json.loads(args_raw)
                     except Exception:
                         args = {}
-                    file_path = args.get("file_path", "")
+                    file_path = args.get("path", "") or args.get("file_path", "")
                     if file_path:
                         modified.add(file_path)
     return list(modified)

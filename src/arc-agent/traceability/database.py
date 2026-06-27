@@ -12,26 +12,27 @@ def set_db_path(path: str):
     DB_PATH = path
     os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
 
-def init_db():
-    """Initialize the database and create tables for Requirements, Interfaces, and Tests. 
-    Drops existing tables to ensure a clean state."""
+def init_db(reset: bool = False):
+    """Initialize the database and create tables for Requirements, Interfaces, and Tests.
+    When reset=False, preserve existing data to support resume.
+    """
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     
     # open foreign key support
     cursor.execute('PRAGMA foreign_keys = ON;')
     
-    # Drop existing tables if they exist to clear old data
-    cursor.execute('DROP TABLE IF EXISTS node_states')
-    cursor.execute('DROP TABLE IF EXISTS implementations')
-    cursor.execute('DROP TABLE IF EXISTS call_edges')
-    cursor.execute('DROP TABLE IF EXISTS tests')
-    cursor.execute('DROP TABLE IF EXISTS interfaces')
-    cursor.execute('DROP TABLE IF EXISTS requirements')
+    if reset:
+        cursor.execute('DROP TABLE IF EXISTS node_states')
+        cursor.execute('DROP TABLE IF EXISTS implementations')
+        cursor.execute('DROP TABLE IF EXISTS call_edges')
+        cursor.execute('DROP TABLE IF EXISTS tests')
+        cursor.execute('DROP TABLE IF EXISTS interfaces')
+        cursor.execute('DROP TABLE IF EXISTS requirements')
     
     # 1. Create the Requirements table
     cursor.execute('''
-    CREATE TABLE requirements (
+    CREATE TABLE IF NOT EXISTS requirements (
         req_id TEXT PRIMARY KEY,
         name TEXT,
         description TEXT,
@@ -45,7 +46,7 @@ def init_db():
     
     # 2. Create the Interfaces table
     cursor.execute('''
-    CREATE TABLE interfaces (
+    CREATE TABLE IF NOT EXISTS interfaces (
         interface_id TEXT PRIMARY KEY,
         req_ids TEXT,        -- JSON list of req_ids this interface belongs to
         type TEXT,           -- UI, API, FUNC, DB
@@ -61,7 +62,7 @@ def init_db():
 
     # 3. Create the Tests table
     cursor.execute('''
-    CREATE TABLE tests (
+    CREATE TABLE IF NOT EXISTS tests (
         test_id TEXT PRIMARY KEY,
         req_id TEXT,
         interface_ids TEXT,  -- JSON list of associated interface_ids
@@ -74,7 +75,7 @@ def init_db():
 
     # 4. Create the Call Edges table (explicit parent-child interface call graph)
     cursor.execute('''
-    CREATE TABLE call_edges (
+    CREATE TABLE IF NOT EXISTS call_edges (
         source_req_id TEXT,
         target_req_id TEXT,
         from_interface_id TEXT,
@@ -87,7 +88,7 @@ def init_db():
 
     # 5. Create the Implementations table (node-level implementation trace)
     cursor.execute('''
-    CREATE TABLE implementations (
+    CREATE TABLE IF NOT EXISTS implementations (
         req_id TEXT PRIMARY KEY,
         status TEXT,
         attempts INTEGER,
@@ -100,7 +101,7 @@ def init_db():
 
     # 6. Create node state table (state machine snapshots)
     cursor.execute('''
-    CREATE TABLE node_states (
+    CREATE TABLE IF NOT EXISTS node_states (
         req_id TEXT PRIMARY KEY,
         state TEXT,
         updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
@@ -419,6 +420,40 @@ def update_interface_req_ids(interface_id: str, new_req_id: str):
         conn.close()
         return True
     return False
+
+
+def clear_node_design_artifacts(req_id: str):
+    """Remove stale design/test artifacts for one node while preserving reused interfaces of other nodes."""
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+
+    search_term = f'%"{req_id}"%'
+    cursor.execute('SELECT interface_id, req_ids FROM interfaces WHERE req_ids LIKE ?', (search_term,))
+    rows = cursor.fetchall()
+
+    for row in rows:
+        interface_id = row['interface_id']
+        try:
+            req_ids = json.loads(row['req_ids']) if row['req_ids'] else []
+        except json.JSONDecodeError:
+            req_ids = []
+
+        remaining_req_ids = [value for value in req_ids if value != req_id]
+        if remaining_req_ids:
+            cursor.execute(
+                'UPDATE interfaces SET req_ids = ? WHERE interface_id = ?',
+                (json.dumps(remaining_req_ids), interface_id),
+            )
+        else:
+            cursor.execute('DELETE FROM interfaces WHERE interface_id = ?', (interface_id,))
+
+    cursor.execute('DELETE FROM tests WHERE req_id = ?', (req_id,))
+    cursor.execute('DELETE FROM call_edges WHERE source_req_id = ? OR target_req_id = ?', (req_id, req_id))
+    cursor.execute('DELETE FROM implementations WHERE req_id = ?', (req_id,))
+
+    conn.commit()
+    conn.close()
 
 def get_tests_by_req_id(req_id: str):
     """Retrieve all tests associated with a specific requirement ID."""

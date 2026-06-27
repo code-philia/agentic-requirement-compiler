@@ -3,9 +3,6 @@ import os
 import shutil
 from typing import Any, Awaitable, Callable
 
-from agents.interface_designer import InterfaceDesigner
-from agents.test_driven_developer import TestDrivenDeveloper
-from agents.test_generator import TestGenerator
 from app_types import create_app_type_handler, normalize_app_type
 from traceability import store_all_requirement
 from traceability.database import get_requirement_by_id, init_db, set_db_path, upsert_node_state
@@ -20,6 +17,11 @@ from utils import (
     set_workspace_root,
     write_json_file,
 )
+from workflow_phases import WorkflowPhaseRunner
+
+from agents.interface_designer import InterfaceDesigner
+from agents.test_driven_developer import TestDrivenDeveloper
+from agents.test_generator import TestGenerator
 
 from dotenv import load_dotenv
 load_dotenv()
@@ -70,6 +72,14 @@ class ARCWorkflowManager:
         self.interface_designer = InterfaceDesigner(log_cb)
         self.test_generator = TestGenerator(log_cb)
         self.test_driven_developer = TestDrivenDeveloper(log_cb)
+        self.phase_runner = WorkflowPhaseRunner(
+            workspace_path=self.workspace_path,
+            arc_dir=self.arc_dir,
+            interface_designer=self.interface_designer,
+            test_generator=self.test_generator,
+            test_driven_developer=self.test_driven_developer,
+            log_cb=self.log_cb,
+        )
 
     # ==================================================================================
     #                              Setup And Input Loading
@@ -333,13 +343,7 @@ class ARCWorkflowManager:
             await self.log_cb("System", f"Requirement node {node_id} not found in database.", "error", node_id)
             return False
 
-        await self.log_cb(
-            "InterfaceDesigner",
-            f"[Placeholder] DESIGN phase for node {node_id}. Direct agent orchestration will be added here.",
-            None,
-            node_id,
-        )
-        return True
+        return await self.phase_runner.run_design_phase(node_id, requirement_data)
 
     async def _run_implement_phase(self, node_id: str) -> bool:
         requirement_data = get_requirement_by_id(node_id)
@@ -347,13 +351,7 @@ class ARCWorkflowManager:
             await self.log_cb("System", f"Requirement node {node_id} not found in database.", "error", node_id)
             return False
 
-        await self.log_cb(
-            "TestDrivenDeveloper",
-            f"[Placeholder] IMPLEMENT phase for node {node_id}. Direct agent orchestration will be added here.",
-            None,
-            node_id,
-        )
-        return True
+        return await self.phase_runner.run_implement_phase(node_id, requirement_data)
 
     # ==================================================================================
     #                              Result And State Persistence
