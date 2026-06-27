@@ -81,6 +81,19 @@ class ARCAgent:
             base_url=os.environ.get("OPENAI_API_BASE_URL"),
         )
 
+    async def _log(
+        self,
+        message: str,
+        status: str | None = None,
+        node_id: str | None = None,
+        agent_name: str | None = None,
+    ) -> None:
+        if not self.log_cb:
+            return
+        result = self.log_cb(agent_name or self.agent_name, message, status, node_id)
+        if inspect.isawaitable(result):
+            await result
+
     def get_system_prompt(self) -> str:
         raise NotImplementedError
 
@@ -246,7 +259,7 @@ Output from {tool_name}:
                 last_err = e
                 if attempt >= MODEL_RETRY_COUNT + 1:
                     raise
-                await self.log_cb(
+                await self._log(
                     f"Model call failed (attempt {attempt}), retrying: {str(e)}"
                 )
                 await asyncio.sleep(min(2 * attempt, 5))
@@ -280,11 +293,17 @@ Output from {tool_name}:
                 chars_removed = self._dedup_messages(messages)
                 if chars_removed > 0:
                     total_chars = self._estimate_context_chars(messages)
-                    await self.log_cb(f"[Dedup] Removed {chars_removed} chars of duplicate tool results. Context now: {total_chars}", node_id=node_id)
+                    await self._log(
+                        f"[Dedup] Removed {chars_removed} chars of duplicate tool results. Context now: {total_chars}",
+                        node_id=node_id,
+                    )
 
             # Level 2: Summarize — ask LLM for a summary (at 85% threshold)
             if total_chars > MAX_CONTEXT_CHARS * SUMMARIZE_THRESHOLD:
-                await self.log_cb(f"Triggering Auto-Compact (Step {step}, Chars: {total_chars})...", node_id=node_id)
+                await self._log(
+                    f"Triggering Auto-Compact (Step {step}, Chars: {total_chars})...",
+                    node_id=node_id,
+                )
 
                 # Extract list of files already read to preserve in summary
                 read_files = self._extract_read_files(messages)
@@ -310,7 +329,7 @@ Output from {tool_name}:
                     summary_content = summary_response.choices[0].message.content
 
                     if DEBUG_MODE:
-                        await self.log_cb(f"[DEBUG] Auto-Compact Summary:\n{summary_content}", node_id=node_id)
+                        await self._log(f"[DEBUG] Auto-Compact Summary:\n{summary_content}", node_id=node_id)
 
                     # Replace history with the summary to free up context
                     messages = [
@@ -320,12 +339,12 @@ Output from {tool_name}:
                         {"role": "user", "content": "Please continue with the next steps based on the summary above."}
                     ]
                 except Exception as e:
-                    await self.log_cb(f"Auto-Compact failed: {str(e)}", node_id=node_id)
+                    await self._log(f"Auto-Compact failed: {str(e)}", node_id=node_id)
 
             # 2. Microcompact: Fold old tool results
             self._microcompact_messages(messages)
 
-            await self.log_cb(f"Thinking... (Step {step + 1}/{max_steps})", node_id=node_id)
+            await self._log(f"Thinking... (Step {step + 1}/{max_steps})", node_id=node_id)
 
             api_kwargs = {
                 "model": self.model,
@@ -343,7 +362,7 @@ Output from {tool_name}:
                     display_msg = last_msg[:500] + f"\n... [input truncated, total {len(last_msg)} chars]"
                 else:
                     display_msg = last_msg
-                await self.log_cb(f"[DEBUG] Input to model:\n{display_msg}", node_id=node_id)
+                await self._log(f"[DEBUG] Input to model:\n{display_msg}", node_id=node_id)
 
             response = await self._create_chat_completion_with_retry(**api_kwargs)
             message = response.choices[0].message
@@ -351,7 +370,7 @@ Output from {tool_name}:
 
             if DEBUG_MODE:
                 reply_content = message.content or ""
-                await self.log_cb(f"[DEBUG] Model reply:\n{reply_content}", node_id=node_id)
+                await self._log(f"[DEBUG] Model reply:\n{reply_content}", node_id=node_id)
                 # Full LLM reply to debug log file (never truncated)
                 if utils.debug_logger:
                     utils.debug_logger.log("LLM_REPLY", reply_content)
@@ -373,7 +392,7 @@ Output from {tool_name}:
                         args_str = args_str[:500] + f"\n... [args truncated, total {len(args_str)} chars]"
                     elif len(args_str) > 1000:
                         args_str = args_str[:1000] + f"\n... [args truncated, total {len(args_str)} chars]"
-                    await self.log_cb(f"Calling tool: `{tool_name}` with args: {args_str}", node_id=node_id)
+                    await self._log(f"Calling tool: `{tool_name}` with args: {args_str}", node_id=node_id)
 
                     # Validate required args for mutating tools before dispatch
                     _missing = [
@@ -395,7 +414,10 @@ Output from {tool_name}:
                                 tool_result = tool_result_cache[cache_key]
                                 is_cache_hit = True
                                 if DEBUG_MODE:
-                                    await self.log_cb(f"[DEBUG] Reusing cached tool result for `{tool_name}`", node_id=node_id)
+                                    await self._log(
+                                        f"[DEBUG] Reusing cached tool result for `{tool_name}`",
+                                        node_id=node_id,
+                                    )
                             else:
                                 any_cache_miss = True
                                 tool_func = TOOL_REGISTRY[tool_name]["func"]
@@ -429,12 +451,15 @@ Output from {tool_name}:
                     if DEBUG_MODE:
                         # Log tool result: skip read_file content, truncate others
                         if tool_name == "read_file":
-                            await self.log_cb(f"Tool `read_file` result: {len(tool_result_str)} chars (content not shown)", node_id=node_id)
+                            await self._log(
+                                f"Tool `read_file` result: {len(tool_result_str)} chars (content not shown)",
+                                node_id=node_id,
+                            )
                         else:
                             display_result = tool_result_str
                             if len(display_result) > 500:
                                 display_result = display_result[:500] + f"\n... [result truncated, total {len(tool_result_str)} chars]"
-                            await self.log_cb(f"Tool `{tool_name}` result:\n{display_result}", node_id=node_id)
+                            await self._log(f"Tool `{tool_name}` result:\n{display_result}", node_id=node_id)
                         # Full tool output to debug log file (never truncated)
                         if utils.debug_logger:
                             utils.debug_logger.log(f"TOOL_RESULT[{tool_name}]", tool_result_str)
@@ -454,7 +479,7 @@ Output from {tool_name}:
                 else:
                     _consecutive_cache_only += 1
                     if _consecutive_cache_only >= 3:
-                        await self.log_cb(
+                        await self._log(
                             f"[WARN] {_consecutive_cache_only} consecutive turns with only cached reads — "
                             "forcing step advance to prevent infinite loop.", node_id=node_id
                         )
@@ -462,7 +487,7 @@ Output from {tool_name}:
                         _consecutive_cache_only = 0
                 continue
             else:
-                await self.log_cb("Task completed.", node_id=node_id)
+                await self._log("Task completed.", node_id=node_id)
                 return message.content, messages
 
         return "Error: Agent reached maximum reasoning steps without a final conclusion.", messages
