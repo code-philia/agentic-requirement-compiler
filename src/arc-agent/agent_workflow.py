@@ -76,7 +76,6 @@ class ARCWorkflowManager:
             workspace_path=self.workspace_path,
             requirement_path=self.requirement_path,
             app_type=self.app_type,
-            arc_dir=self.arc_dir,
             interface_designer=self.interface_designer,
             test_generator=self.test_generator,
             test_driven_developer=self.test_driven_developer,
@@ -174,12 +173,6 @@ class ARCWorkflowManager:
             )
         else:
             await self.log_cb("Compiler", "Compilation finished successfully.")
-
-        if self.app_type in {"android", "web"}:
-            from traceability.test_result_tracker import TestResultTracker
-
-            tracker = TestResultTracker(self.arc_dir)
-            await self.log_cb("Compiler", tracker.format_summary())
 
         return compile_result
 

@@ -21,7 +21,6 @@ from traceability.database import (
     update_interface_req_ids,
     upsert_implementation,
 )
-from traceability.test_result_tracker import TestResultTracker
 from utils import extract_json_array_from_markdown, extract_modified_files_from_messages
 
 TEST_TYPE_ORDER = ["Unit", "Integration", "E2E"]
@@ -36,7 +35,6 @@ class WorkflowPhaseRunner:
         workspace_path: str,
         requirement_path: str,
         app_type: str,
-        arc_dir: str,
         interface_designer,
         test_generator,
         test_driven_developer,
@@ -45,7 +43,6 @@ class WorkflowPhaseRunner:
         self.workspace_path = workspace_path
         self.requirement_path = requirement_path
         self.app_type = app_type
-        self.arc_dir = arc_dir
         self.interface_designer = interface_designer
         self.test_generator = test_generator
         self.test_driven_developer = test_driven_developer
@@ -347,7 +344,6 @@ class WorkflowPhaseRunner:
         tests = get_tests_by_req_id(node_id)
         reset_test_pass_statuses_for_req_id(node_id)
 
-        tracker = TestResultTracker(self.arc_dir)
         status_by_test_id: dict[str, bool | None] = {}
         for test_type in TEST_TYPE_ORDER:
             typed_tests = [test for test in tests if str(test.get("type", "")).strip() == test_type]
@@ -359,7 +355,6 @@ class WorkflowPhaseRunner:
                 test_type=test_type,
                 tests=typed_tests,
                 persist=True,
-                tracker=tracker,
             )
             status_by_test_id.update(typed_statuses)
 
@@ -371,7 +366,6 @@ class WorkflowPhaseRunner:
         test_type: str,
         tests: list[dict[str, Any]],
         persist: bool,
-        tracker: TestResultTracker | None = None,
     ) -> tuple[bool, dict[str, bool | None]]:
         grouped_tests: dict[str, list[dict[str, Any]]] = defaultdict(list)
         for test in tests:
@@ -401,20 +395,6 @@ class WorkflowPhaseRunner:
 
             if persist:
                 update_test_pass_statuses(file_statuses)
-                if tracker:
-                    for test in file_tests:
-                        test_id = str(test.get("test_id", "")).strip()
-                        if not test_id:
-                            continue
-                        passed = file_statuses.get(test_id) is True
-                        tracker.record_test(
-                            node_id=node_id,
-                            test_type=test_type,
-                            test_id=test_id,
-                            file_path=file_path,
-                            status="direct_pass" if passed else "final_fail",
-                            attempts=1,
-                        )
 
             if file_passed:
                 await self.log_cb(
