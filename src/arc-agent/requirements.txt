@@ -1,6 +1,3 @@
-fastapi
-uvicorn
-websockets
 aiofiles
 openai
 requests
