@@ -1,16 +1,31 @@
 import re
+import os
+import asyncio
+
+from typing import Awaitable, Callable
 
 from .base import ARC_STACK_END, ARC_STACK_START, AppTypeHandler
 
+async def run_npm_install(target_dir: str, log_cb: Callable[..., Awaitable[None]]):
+    try:
+        process = await asyncio.create_subprocess_shell(
+            "npm install",
+            cwd=target_dir,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        _, stderr = await process.communicate()
+        if process.returncode == 0:
+            await log_cb("System", f"NPM install success in {target_dir}")
+        else:
+            await log_cb("System", f"NPM install failed in {target_dir}: {stderr.decode()}")
+    except Exception as exc:
+        await log_cb("System", f"NPM install error: {str(exc)}")
 
 class WebAppType(AppTypeHandler):
     name = "web"
 
     async def install_dependencies(self) -> None:
-        import os
-
-        from utils import run_npm_install
-
         backend_path = os.path.join(self.workspace_path, "backend")
         if os.path.exists(backend_path):
             await self.log_cb("System", "Installing backend dependencies. This might take a moment...")

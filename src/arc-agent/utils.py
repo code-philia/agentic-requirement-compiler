@@ -581,9 +581,10 @@ async def run_git_commit(target_dir: str, message: str, log_cb: Callable[..., Aw
 def build_commit_message(node_id: str, phase: str, requirement_data: dict) -> str:
     name = (requirement_data or {}).get("name", "") or ""
     name = name.strip()
+    lower_phase = phase.lower()
     if name:
-        return f"{node_id} {name} ({phase})"
-    return f"{node_id} ({phase})"
+        return f"{node_id} ({lower_phase}): {name}"
+    return f"{node_id} ({lower_phase})"
 
 
 # ======================================================================================
