@@ -3,11 +3,13 @@ import re
 import sys
 import time
 import yaml
+import json
 import asyncio
 import threading
 
-from typing import Awaitable, Callable, Optional, Dict, List
+from typing import Awaitable, Callable, Optional, Dict, List, Any
 from colorama import Fore, Style, init as colorama_init
+from traceability.database import get_interfaces_by_req_id, get_requirement_by_id
 
 from app_context import (
     get_abs_path,
@@ -20,6 +22,230 @@ from app_context import (
 from prompts.stack import read_stack_summary
 
 colorama_init()
+
+def read_json_file(path: str) -> dict[str, Any] | None:
+    if not os.path.exists(path):
+        return None
+    try:
+        with open(path, "r", encoding="utf-8") as file:
+            return json.load(file)
+    except Exception:
+        return None
+
+def write_json_file(path: str, data: dict[str, Any]) -> None:
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as file:
+        json.dump(data, file, indent=2, ensure_ascii=False)
+
+
+def extract_json_array_from_markdown(raw_output: str) -> list[dict[str, Any]] | None:
+    if not raw_output:
+        return None
+
+    fenced = re.search(r"```json\s*(.*?)\s*```", raw_output, re.DOTALL | re.IGNORECASE)
+    candidate = fenced.group(1) if fenced else raw_output
+    try:
+        data = json.loads(candidate)
+        if isinstance(data, list):
+            return data
+    except Exception:
+        pass
+
+    span = re.search(r"(\[\s*{[\s\S]*}\s*\])", raw_output)
+    if not span:
+        return None
+
+    try:
+        data = json.loads(span.group(1))
+        return data if isinstance(data, list) else None
+    except Exception:
+        return None
+
+
+def build_dependency_context(node_id: str) -> str:
+    req = get_requirement_by_id(node_id)
+    if not req:
+        return "No dependency information available."
+
+    deps = req.get("dependencies", [])
+    if not deps:
+        return "No dependencies for this node. This is a root/independent feature."
+
+    lines = [
+        "### Dependency Context (Previously Implemented Modules)",
+        (
+            "IMPORTANT: You MUST reuse and import the following existing interfaces if your "
+            "current feature relies on them, instead of reinventing them. If you reuse them, "
+            "set `reuse: true` in your JSON output."
+        ),
+        "",
+    ]
+
+    for dep_id in deps:
+        dep_req = get_requirement_by_id(dep_id)
+        if not dep_req:
+            continue
+
+        lines.append(f"#### Dependency Requirement Node: [{dep_id}]")
+        lines.append(f"Description: {dep_req.get('description', 'N/A')}")
+
+        dep_ifaces = get_interfaces_by_req_id(dep_id)
+        if dep_ifaces:
+            lines.append("Available Interfaces from this Dependency:")
+            for iface in dep_ifaces:
+                lines.append(f"  - ID: `{iface.get('interface_id')}` (Type: {iface.get('type')})")
+                if iface.get("file_path"):
+                    lines.append(f"    File Path: `{iface.get('file_path')}`")
+                if iface.get("first_line"):
+                    lines.append(f"    Signature: `{iface.get('first_line')}`")
+                try:
+                    content = json.loads(iface.get("content", "{}"))
+                except Exception:
+                    content = {}
+                if content.get("description"):
+                    lines.append(f"    Description: {content['description']}")
+                if content.get("inputs"):
+                    lines.append(f"    Inputs: {content['inputs']}")
+                if content.get("outputs"):
+                    lines.append(f"    Outputs: {content['outputs']}")
+                if content.get("callers"):
+                    lines.append(f"    Callers: {content['callers']}")
+                if content.get("callees"):
+                    lines.append(f"    Callees: {content['callees']}")
+        lines.append("")
+
+    return "\n".join(lines)
+
+
+async def check_prerequisites(
+    app_type: str,
+    log_cb: Callable[[str, str], Awaitable[None]],
+) -> bool:
+    if app_type == "android":
+        try:
+            process = await asyncio.create_subprocess_shell(
+                "java -version",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=10.0)
+            version_output = stderr.decode() if stderr else stdout.decode()
+            if process.returncode != 0:
+                await log_cb(
+                    "System",
+                    "Prerequisite check FAILED: Java is not installed or not on PATH. Android builds require JDK 17+.",
+                )
+                return False
+            first_line = version_output.strip().split("\n")[0] if version_output.strip() else "unknown"
+            await log_cb("System", f"Prerequisite check passed: Java found ({first_line})")
+        except Exception as exc:
+            await log_cb(
+                "System",
+                f"Prerequisite check FAILED: Could not verify Java installation: {str(exc)}",
+            )
+            return False
+
+        sdk_root = os.environ.get("ANDROID_SDK_ROOT") or os.environ.get("ANDROID_HOME")
+        if sdk_root and os.path.isdir(sdk_root):
+            await log_cb("System", f"Prerequisite check passed: Android SDK found at {sdk_root}")
+        else:
+            default_paths = [
+                "D:/Android/Sdk",
+                os.path.expanduser("~/AppData/Local/Android/Sdk"),
+                os.path.expanduser("~/Android/Sdk"),
+                "/usr/local/android-sdk",
+                os.path.expanduser("~/Library/Android/sdk"),
+            ]
+            found = False
+            for path in default_paths:
+                if os.path.isdir(path):
+                    sdk_root = path
+                    os.environ["ANDROID_SDK_ROOT"] = path
+                    await log_cb(
+                        "System",
+                        f"Prerequisite check passed: Android SDK found at {path} (auto-detected)",
+                    )
+                    found = True
+                    break
+            if not found:
+                await log_cb(
+                    "System",
+                    "Prerequisite check FAILED: Android SDK not found. Set ANDROID_SDK_ROOT environment variable or install Android Studio.",
+                )
+                return False
+
+        sdkmanager_path = os.path.join(sdk_root, "cmdline-tools", "latest", "bin", "sdkmanager")
+        if os.name == "nt":
+            sdkmanager_path += ".bat"
+        if os.path.exists(sdkmanager_path):
+            await log_cb("System", "Auto-accepting Android SDK licenses...")
+            try:
+                accept_process = await asyncio.create_subprocess_shell(
+                    f'yes | "{sdkmanager_path}" --licenses',
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+                await asyncio.wait_for(accept_process.communicate(), timeout=30)
+                await log_cb("System", "Android SDK licenses accepted.")
+            except Exception as exc:
+                await log_cb("System", f"SDK license acceptance skipped (non-fatal): {str(exc)}")
+        else:
+            await log_cb("System", "sdkmanager not found at expected path; skipping license acceptance.")
+        return True
+
+    if app_type == "web":
+        try:
+            process = await asyncio.create_subprocess_shell(
+                "node --version",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=10.0)
+            if process.returncode == 0:
+                version = stdout.decode().strip()
+                await log_cb("System", f"Prerequisite check passed: Node.js found ({version})")
+                return True
+            await log_cb(
+                "System",
+                "Prerequisite check FAILED: Node.js is not installed or not on PATH. Web builds require Node.js LTS.",
+            )
+            return False
+        except Exception as exc:
+            await log_cb(
+                "System",
+                f"Prerequisite check FAILED: Could not verify Node.js installation: {str(exc)}",
+            )
+            return False
+
+    return True
+
+
+def extract_modified_files_from_messages(messages: list[dict[str, Any]]) -> list[str]:
+    modified = set()
+    for msg in messages:
+        if msg.get("role") == "assistant" and msg.get("tool_calls"):
+            for tool_call in msg["tool_calls"]:
+                func = (
+                    tool_call.get("function", {})
+                    if isinstance(tool_call, dict)
+                    else (tool_call.function if hasattr(tool_call, "function") else {})
+                )
+                if func.get("name") == "write_file" or (
+                    hasattr(func, "name") and func.name == "write_file"
+                ):
+                    try:
+                        args_raw = (
+                            func.get("arguments", "{}")
+                            if isinstance(func, dict)
+                            else (func.arguments if hasattr(func, "arguments") else "{}")
+                        )
+                        args = json.loads(args_raw)
+                    except Exception:
+                        args = {}
+                    file_path = args.get("file_path", "")
+                    if file_path:
+                        modified.add(file_path)
+    return list(modified)
 
 # ======================================================================================
 #                                   CLI Logging

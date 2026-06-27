@@ -1,6 +1,15 @@
+import asyncio
+import base64
 import json
+import mimetypes
+import os
+import re
 from typing import List, Dict, Any
+
+import requests
+
 from .arc_agent import ARCAgent
+from traceability.database import update_requirement_visuals
 
 class InterfaceDesigner(ARCAgent):
     def __init__(self, log_cb=None):
@@ -8,6 +17,136 @@ class InterfaceDesigner(ARCAgent):
             agent_name="InterfaceDesigner",
             log_cb=log_cb
         )
+
+    @staticmethod
+    def build_visual_analysis_prompt() -> str:
+        return """
+**CRITICAL ROLE:** You are a "Headless" Frontend Reverse-Engineer.
+**SCENARIO:** You must describe this UI screenshot to a blind developer who CANNOT see the image. They must reconstruct this page pixel-perfectly and content-perfectly using only your text description.
+
+**CORE DIRECTIVES:**
+1. **FULL OCR TRANSCRIPTION:** You MUST transcribe ALL visible text content exactly as it appears. Do not summarize text.
+2. **STRICT DOM HIERARCHY:** Describe the layout as a tree structure (Parent -> Child -> Sibling).
+3. **PRECISE VISUAL SPECS:** Specify Geometry (px), Layout (Flex/Grid), Style (Hex colors), and Typography.
+
+**OUTPUT FORMAT (Strict Markdown Tree):**
+
+### 1. Global Design Tokens
+* **Colors:** Define Primary, Secondary, Backgrounds (Estimate Hex).
+* **Font:** Suggest font stack.
+
+### 2. Page Structure & Content (Iterate from Top to Bottom)
+
+#### [A] [Section Name] (e.g., Header, Sidebar, Card)
+* **Container:** Dimensions, background color, layout properties.
+* **Child Element 1:** [Type: Navigation/List]
+    * **Layout:** Flex-row, gap 20px.
+    * **Items (Transcription Examples):**
+        * If English: "Home", "Products", "Contact Us" (Bold, Black).
+        * If Chinese: "Shouye", "Chanpin Zhongxin", "Lianxi Women" (Regular, Gray).
+* **Child Element 2:** [Type: Form Component]
+    * **Container Style:** Border, shadow, padding.
+    * **Internal Layout:** Vertical stack.
+    * **Content (Transcription Examples):**
+        * **Label:** "Username" OR "Yonghu Ming" (Exact text).
+        * **Input Placeholder:** "Enter your email..." OR "Qingshuru Youxiang Dizhi..." (Exact text).
+        * **Button:** "Submit" OR "Liji Tijiao" (White text on Blue bg).
+* **Child Element 3:** [Type: Banner/Hero]
+    * **Headline:** "Build Faster" OR "Jisu Goujian" (Font size ~32px, Bold).
+    * **Sub-text:** "Start your journey today." OR "Kaiqi Ninde Shuzihua Zhilu." (Gray, ~16px).
+
+**Action:** Start the blind transcription. Ensure every visible CN/EN character is recorded in your description.
+"""
+
+    async def parse_and_store_visual_elements(
+        self,
+        workspace_path: str,
+        requirement_data: dict[str, Any],
+    ) -> None:
+        description = requirement_data.get("description", "")
+        req_id = requirement_data.get("req_id") or requirement_data.get("id", "")
+        if not description or not req_id:
+            if self.log_cb:
+                await self.log_cb("System", "Invalid requirement data", "error", req_id or None)
+            return
+
+        matches = re.findall(r"!\[image\]\(([^)]+)\)", description)
+        if not matches:
+            if self.log_cb:
+                await self.log_cb("System", "No image found in the description.", "info", req_id)
+            return
+
+        visual_references = []
+        for image_path in matches:
+            normalized_path = os.path.normpath(image_path)
+            if normalized_path.startswith(os.sep):
+                normalized_path = normalized_path.lstrip(os.sep)
+
+            full_path = os.path.abspath(os.path.join(workspace_path, normalized_path))
+            if not os.path.exists(full_path):
+                if self.log_cb:
+                    await self.log_cb("System", f"Image not found: {full_path}", "warning", req_id)
+                continue
+
+            try:
+                mime_type, _ = mimetypes.guess_type(full_path)
+                if not mime_type:
+                    mime_type = "image/png"
+
+                with open(full_path, "rb") as image_file:
+                    base64_image = base64.b64encode(image_file.read()).decode("utf-8")
+
+                if self.log_cb:
+                    await self.log_cb("System", f"Analyzing visual element: {image_path}", None, req_id)
+
+                response = await asyncio.to_thread(
+                    requests.post,
+                    os.environ.get("VISUAL_OPENAI_API_BASE_URL", os.environ.get("OPENAI_API_BASE_URL", "")),
+                    headers={
+                        "Content-Type": "application/json",
+                        "Authorization": f"Bearer {os.environ.get('VISUAL_OPENAI_API_KEY')}",
+                    },
+                    data=json.dumps(
+                        {
+                            "model": os.environ.get("VISUAL_MODEL", os.environ.get("MODEL", "")),
+                            "messages": [
+                                {
+                                    "role": "user",
+                                    "content": [
+                                        {"type": "text", "text": self.build_visual_analysis_prompt()},
+                                        {
+                                            "type": "image_url",
+                                            "image_url": {
+                                                "url": f"data:{mime_type};base64,{base64_image}",
+                                            },
+                                        },
+                                    ],
+                                }
+                            ],
+                        }
+                    ),
+                    verify=False,
+                )
+
+                if response.status_code != 200:
+                    raise Exception(f"ModelArts API Error {response.status_code}: {response.text}")
+
+                response_data = response.json()
+                analysis = response_data["choices"][0]["message"]["content"]
+                visual_references.append({"image_path": image_path, "analysis": analysis})
+            except Exception as exc:
+                if self.log_cb:
+                    await self.log_cb("System", f"Failed to analyze image {image_path}: {exc}", "error", req_id)
+
+        if visual_references:
+            update_requirement_visuals(req_id, visual_references)
+            if self.log_cb:
+                await self.log_cb(
+                    "System",
+                    f"Stored {len(visual_references)} visual references for {req_id}",
+                    None,
+                    req_id,
+                )
 
     def get_system_prompt(self) -> str:
         from utils import get_app_type, get_android_package
