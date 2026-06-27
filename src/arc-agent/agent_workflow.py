@@ -3,61 +3,69 @@ import os
 import shutil
 from typing import Any, Awaitable, Callable
 
-from agents.context_pipeline import context_pipeline
 from agents.interface_designer import InterfaceDesigner
 from agents.test_driven_developer import TestDrivenDeveloper
 from agents.test_generator import TestGenerator
-from compiler_state import CompileContext, NodeState
 from project_bootstrap import ProjectBootstrapper
-from prompts.stack import update_node_status
-from utils import load_requirements
 from traceability import store_all_requirement
-from traceability.database import (
-    get_interfaces_by_req_id,
-    get_requirement_by_id,
-    insert_call_edge,
-    upsert_node_state,
-)
-from workflow_implementation import WorkflowImplementationService
-from workflow_preparation import WorkflowPreparationService
+from traceability.database import get_requirement_by_id, upsert_node_state
+from utils import load_requirements, read_json_file, write_json_file
 
 from dotenv import load_dotenv
 load_dotenv()
 
-DEBUG_MODE = int(os.environ.get("ARC_DEBUG", "1"))
+# ======================================================================================
+#                              Workflow Queue Constants
+# ======================================================================================
 
+QUEUE_FILENAME = "processing_queue.json"
+STATUS_FILENAME = "status.json"
+
+PHASE_DESIGN = "DESIGN"
+PHASE_IMPLEMENT = "IMPLEMENT"
+
+TASK_PENDING = "PENDING"
+TASK_RUNNING = "RUNNING"
+TASK_COMPLETED = "COMPLETED"
+TASK_FAILED = "FAILED"
+
+NODE_UNSEEN = "UNSEEN"
+NODE_DESIGNED = "DESIGNED"
+NODE_PASSED = "PASSED"
+NODE_FAILED = "FAILED"
+
+
+# ======================================================================================
+#                              Workflow Manager
+# ======================================================================================
 
 class ARCWorkflowManager:
-    """Manage node-level workflow orchestration for the ARC compiler."""
+    """Manage the end-to-end compilation queue for the ARC compiler."""
 
     def __init__(
         self,
         workspace_path: str,
         requirement_path: str = "",
         app_type: str = "web",
-        log_cb: Callable[[str, str, str | None, str | None], Awaitable[None] | None] = None,
+        log_cb: Callable[[str, str, str | None, str | None], Awaitable[None] | None] | None = None,
     ):
         self.workspace_path = workspace_path
         self.requirement_path = requirement_path
         self.app_type = (app_type or "web").strip().lower()
         self.log_cb = log_cb
-        self.compile_context = CompileContext()
 
+        self.arc_dir = os.path.join(self.workspace_path, ".arc")
+        self.queue_path = os.path.join(self.arc_dir, QUEUE_FILENAME)
+        self.status_path = os.path.join(self.arc_dir, STATUS_FILENAME)
+
+        # Keep agent instances here so compile steps can directly orchestrate them later.
         self.interface_designer = InterfaceDesigner(log_cb)
         self.test_generator = TestGenerator(log_cb)
         self.test_driven_developer = TestDrivenDeveloper(log_cb)
 
-        self.preparation_service = WorkflowPreparationService(
-            workspace_path=self.workspace_path,
-            interface_designer=self.interface_designer,
-            test_generator=self.test_generator,
-            log_cb=self.log_cb,
-        )
-        self.implementation_service = WorkflowImplementationService(
-            workspace_path=self.workspace_path,
-            test_driven_developer=self.test_driven_developer,
-            log_cb=self.log_cb,
-        )
+    # ==================================================================================
+    #                              Setup And Input Loading
+    # ==================================================================================
 
     async def cleanup_workspace(self) -> bool:
         await self.log_cb("Compiler", "Clear-and-recompile requested. Cleaning workspace...")
@@ -71,9 +79,10 @@ class ARCWorkflowManager:
                 else:
                     os.remove(item_path)
 
-            status_file = os.path.join(self.workspace_path, ".arc", "status.json")
-            if os.path.exists(status_file):
-                os.remove(status_file)
+            if os.path.exists(self.status_path):
+                os.remove(self.status_path)
+            if os.path.exists(self.queue_path):
+                os.remove(self.queue_path)
 
             await self.log_cb("Compiler", "Workspace cleaned successfully.")
             return True
@@ -103,65 +112,9 @@ class ARCWorkflowManager:
         )
         return await bootstrapper.initialize_project()
 
-    async def prepare_node(self, node_id: str) -> dict:
-        requirement_data = get_requirement_by_id(node_id)
-        if not requirement_data:
-            await self.log_cb("System", f"Error: Requirement node {node_id} not found in database.", node_id=node_id)
-            return {"ok": False, "node_id": node_id}
-
-        context_pipeline.prewarm(node_id)
-
-        children_ids = requirement_data.get("children_ids", [])
-        is_leaf = not children_ids
-        if is_leaf:
-            await self.log_cb("System", f"Node {node_id} is a leaf node. Entering top-down synthesis.", node_id=node_id)
-        else:
-            await self.log_cb(
-                "System",
-                f"Node {node_id} is a non-leaf node (children: {children_ids}). Entering top-down synthesis.",
-                node_id=node_id,
-            )
-
-        try:
-            prepared = await self.preparation_service.run(
-                node_id=node_id,
-                requirement_data=requirement_data,
-                is_leaf=is_leaf,
-            )
-            prepared["ok"] = True
-            prepared["node_id"] = node_id
-            return prepared
-        except Exception as exc:
-            await self.log_cb("System", f"Top-down synthesis failed due to an error: {str(exc)}", node_id=node_id)
-            return {"ok": False, "node_id": node_id}
-
-    async def implement_node(self, node_id: str, prepared: dict) -> bool:
-        if not prepared or not prepared.get("ok", False):
-            await self.log_cb(
-                "System",
-                f"Skipping bottom-up implementation for node {node_id} due to failed preparation.",
-                node_id=node_id,
-            )
-            return False
-
-        requirement_data = prepared.get("requirement_data", {}) or {}
-        stub_artifacts = prepared.get("stub_artifacts", "")
-
-        try:
-            return await self.implementation_service.run(
-                node_id=node_id,
-                requirement_data=requirement_data,
-                stub_artifacts=stub_artifacts,
-            )
-        except Exception as exc:
-            await self.log_cb("System", f"Bottom-up implementation failed due to an error: {str(exc)}", node_id=node_id)
-            return False
-
-    async def process_node(self, node_id: str) -> bool:
-        prepared = await self.prepare_node(node_id)
-        if not prepared.get("ok", False):
-            return False
-        return await self.implement_node(node_id, prepared)
+    # ==================================================================================
+    #                              Compilation Entry
+    # ==================================================================================
 
     async def compile_requirement_tree(self, requirement_tree: dict[str, Any]) -> dict[str, Any]:
         root_id = requirement_tree.get("id") if isinstance(requirement_tree, dict) else None
@@ -169,134 +122,214 @@ class ARCWorkflowManager:
             await self.log_cb("Compiler", "Requirement root node id is missing.", "error")
             return {"ok": False, "failed_nodes": []}
 
-        await self.log_cb("Compiler", "Persisting requirement tree and preparing DFS compilation...")
+        await self.log_cb("Compiler", "Persisting requirement tree and preparing processing queue...")
         store_all_requirement(requirement_tree)
-        self.compile_context = CompileContext()
 
-        await self.log_cb("Compiler", f"Starting workflow compilation from root node: {root_id}")
-        all_ok = await self._compile_node(root_id, set())
+        queue_state = self._load_or_create_processing_queue(requirement_tree)
+        self._recover_interrupted_queue(queue_state)
+        self._save_processing_queue(queue_state)
+        self._save_status_snapshot(queue_state["node_states"])
+
+        await self.log_cb(
+            "Compiler",
+            f"Loaded processing queue with {len(queue_state['tasks'])} task(s) for root node {root_id}.",
+        )
+
+        while True:
+            task = self._next_runnable_task(queue_state)
+            if task is None:
+                break
+
+            node_id = task["node_id"]
+            phase = task["phase"]
+
+            task["status"] = TASK_RUNNING
+            queue_state["last_task_id"] = task["task_id"]
+            self._save_processing_queue(queue_state)
+
+            await self.log_cb("Compiler", f"Running {phase} for node {node_id}...", None, node_id)
+            task_ok = await self._run_task(task)
+
+            if task_ok:
+                task["status"] = TASK_COMPLETED
+                new_state = NODE_DESIGNED if phase == PHASE_DESIGN else NODE_PASSED
+                self._set_node_state(queue_state["node_states"], node_id, new_state)
+                await self.log_cb("Compiler", f"{phase} completed for node {node_id}.", None, node_id)
+            else:
+                task["status"] = TASK_FAILED
+                self._set_node_state(queue_state["node_states"], node_id, NODE_FAILED)
+                self._save_processing_queue(queue_state)
+                self._save_status_snapshot(queue_state["node_states"])
+                await self.log_cb("Compiler", f"{phase} failed for node {node_id}.", "error", node_id)
+                return self._build_compile_result(queue_state)
+
+            self._save_processing_queue(queue_state)
+            self._save_status_snapshot(queue_state["node_states"])
+
+        return self._build_compile_result(queue_state)
+
+    # ==================================================================================
+    #                              Queue Construction And Recovery
+    # ==================================================================================
+
+    def _load_or_create_processing_queue(self, requirement_tree: dict[str, Any]) -> dict[str, Any]:
+        os.makedirs(self.arc_dir, exist_ok=True)
+
+        root_id = str(requirement_tree.get("id", ""))
+        expected_tasks = self._build_processing_tasks(requirement_tree)
+        expected_task_ids = [task["task_id"] for task in expected_tasks]
+        node_ids = self._collect_node_ids(expected_tasks)
+
+        existing_queue = read_json_file(self.queue_path)
+        if self._is_compatible_queue(existing_queue, root_id, expected_task_ids):
+            queue_state = existing_queue
+            queue_state.setdefault("node_states", {})
+            for node_id in node_ids:
+                queue_state["node_states"].setdefault(node_id, NODE_UNSEEN)
+            return queue_state
+
+        saved_states = self._load_status_snapshot(node_ids)
+        queue_state = {
+            "root_id": root_id,
+            "tasks": expected_tasks,
+            "node_states": {node_id: saved_states.get(node_id, NODE_UNSEEN) for node_id in node_ids},
+            "last_task_id": None,
+        }
+        self._apply_saved_states_to_tasks(queue_state)
+        return queue_state
+
+    def _build_processing_tasks(self, root_node: dict[str, Any]) -> list[dict[str, Any]]:
+        tasks: list[dict[str, Any]] = []
+
+        def walk(node: dict[str, Any]) -> None:
+            node_id = str(node.get("id", "")).strip()
+            if not node_id:
+                return
+
+            tasks.append(self._make_task(node_id, PHASE_DESIGN, len(tasks)))
+            for child in node.get("children", []) or []:
+                walk(child)
+            tasks.append(self._make_task(node_id, PHASE_IMPLEMENT, len(tasks)))
+
+        walk(root_node)
+        return tasks
+
+    def _make_task(self, node_id: str, phase: str, order: int) -> dict[str, Any]:
         return {
-            "ok": all_ok and not self.compile_context.failed_nodes,
-            "failed_nodes": sorted(self.compile_context.failed_nodes),
-            "visit_order": list(self.compile_context.visit_order),
-            "states": {k: v.value for k, v in self.compile_context.node_states.items()},
+            "task_id": f"{node_id}:{phase}",
+            "node_id": node_id,
+            "phase": phase,
+            "order": order,
+            "status": TASK_PENDING,
         }
 
-    async def _emit_state(self, node_id: str, state: NodeState) -> None:
-        self.compile_context.set_state(node_id, state)
-        upsert_node_state(node_id, state.value)
+    def _collect_node_ids(self, tasks: list[dict[str, Any]]) -> list[str]:
+        seen: list[str] = []
+        for task in tasks:
+            node_id = task["node_id"]
+            if node_id not in seen:
+                seen.append(node_id)
+        return seen
 
-        if state == NodeState.WORKING:
-            update_node_status(self.workspace_path, node_id, "analyzing")
-        elif state == NodeState.DONE:
-            update_node_status(self.workspace_path, node_id, "completed")
-        elif state == NodeState.FAILED:
-            update_node_status(self.workspace_path, node_id, "error")
-            await self.log_cb("Compiler", f"Node {node_id} failed.", "error", node_id)
-
-    async def _record_parent_child_call_edges(self, parent_node_id: str, child_node_id: str) -> int:
-        try:
-            parent_interfaces = get_interfaces_by_req_id(parent_node_id)
-            child_interfaces = get_interfaces_by_req_id(child_node_id)
-            edge_count = 0
-            for parent_iface in parent_interfaces:
-                parent_interface_id = parent_iface.get("interface_id")
-                if not parent_interface_id:
-                    continue
-                for child_iface in child_interfaces:
-                    child_interface_id = child_iface.get("interface_id")
-                    if not child_interface_id:
-                        continue
-                    insert_call_edge(
-                        source_req_id=parent_node_id,
-                        target_req_id=child_node_id,
-                        from_interface_id=parent_interface_id,
-                        to_interface_id=child_interface_id,
-                        edge_type="dfs_parent_child",
-                    )
-                    edge_count += 1
-
-            if edge_count > 0:
-                await self.log_cb(
-                    "System",
-                    f"Recorded {edge_count} call edge(s) from node {parent_node_id} to child {child_node_id}.",
-                    None,
-                    parent_node_id,
-                )
-            return edge_count
-        except Exception as exc:
-            await self.log_cb(
-                "System",
-                f"Failed to record call edges for parent {parent_node_id} -> child {child_node_id}: {str(exc)}",
-                None,
-                parent_node_id,
-            )
-            return 0
-
-    def _extract_children_ids(self, requirement_data: dict[str, Any] | None) -> list[str]:
-        if not requirement_data:
-            return []
-
-        children_ids = requirement_data.get("children_ids", [])
-        if isinstance(children_ids, list):
-            return [str(child_id) for child_id in children_ids if child_id]
-
-        children = requirement_data.get("children", [])
-        if isinstance(children, list):
-            result = []
-            for child in children:
-                if isinstance(child, dict) and child.get("id"):
-                    result.append(str(child["id"]))
-            return result
-        return []
-
-    async def _compile_node(self, node_id: str, active_path: set[str]) -> bool:
-        state = self.compile_context.get_state(node_id)
-        if state == NodeState.DONE:
-            return True
-        if state == NodeState.FAILED:
+    def _is_compatible_queue(self, queue_state: dict[str, Any] | None, root_id: str, expected_task_ids: list[str]) -> bool:
+        if not queue_state:
             return False
-        if state == NodeState.WORKING or node_id in active_path:
-            await self._emit_state(node_id, NodeState.FAILED)
+        if queue_state.get("root_id") != root_id:
             return False
+        existing_task_ids = [task.get("task_id") for task in queue_state.get("tasks", [])]
+        return existing_task_ids == expected_task_ids
 
-        await self._emit_state(node_id, NodeState.WORKING)
-        self.compile_context.visit_order.append(node_id)
+    def _apply_saved_states_to_tasks(self, queue_state: dict[str, Any]) -> None:
+        for task in queue_state["tasks"]:
+            node_state = queue_state["node_states"].get(task["node_id"], NODE_UNSEEN)
+            if node_state == NODE_PASSED:
+                task["status"] = TASK_COMPLETED
+            elif node_state == NODE_DESIGNED and task["phase"] == PHASE_DESIGN:
+                task["status"] = TASK_COMPLETED
+            elif node_state == NODE_FAILED and task["phase"] == PHASE_DESIGN:
+                task["status"] = TASK_COMPLETED
 
+    def _recover_interrupted_queue(self, queue_state: dict[str, Any]) -> None:
+        for task in queue_state["tasks"]:
+            if task["status"] in {TASK_RUNNING, TASK_FAILED}:
+                task["status"] = TASK_PENDING
+
+    # ==================================================================================
+    #                              Task Scheduling And Execution
+    # ==================================================================================
+
+    def _next_runnable_task(self, queue_state: dict[str, Any]) -> dict[str, Any] | None:
+        for task in queue_state["tasks"]:
+            if task["status"] == TASK_PENDING:
+                return task
+        return None
+
+    async def _run_task(self, task: dict[str, Any]) -> bool:
+        node_id = task["node_id"]
+        if task["phase"] == PHASE_DESIGN:
+            return await self._run_design_phase(node_id)
+        return await self._run_implement_phase(node_id)
+
+    async def _run_design_phase(self, node_id: str) -> bool:
         requirement_data = get_requirement_by_id(node_id)
-        if requirement_data is None:
-            await self._emit_state(node_id, NodeState.FAILED)
+        if not requirement_data:
+            await self.log_cb("System", f"Requirement node {node_id} not found in database.", "error", node_id)
             return False
 
-        prepared_payload: dict[str, Any] | None = None
-        try:
-            prepared_payload = await self.prepare_node(node_id)
-            node_ok = bool(prepared_payload and prepared_payload.get("ok", False))
-        except Exception:
-            node_ok = False
+        await self.log_cb(
+            "InterfaceDesigner",
+            f"[Placeholder] DESIGN phase for node {node_id}. Direct agent orchestration will be added here.",
+            "analyzing",
+            node_id,
+        )
+        return True
 
-        children_ok = True
-        next_path = set(active_path)
-        next_path.add(node_id)
-        for child_id in self._extract_children_ids(requirement_data):
-            child_ok = await self._compile_node(child_id, next_path)
-            if child_ok:
-                await self._record_parent_child_call_edges(node_id, child_id)
-            children_ok = children_ok and child_ok
+    async def _run_implement_phase(self, node_id: str) -> bool:
+        requirement_data = get_requirement_by_id(node_id)
+        if not requirement_data:
+            await self.log_cb("System", f"Requirement node {node_id} not found in database.", "error", node_id)
+            return False
 
-        if node_ok and children_ok:
-            try:
-                implement_ok = bool(await self.implement_node(node_id, prepared_payload or {}))
-            except Exception:
-                implement_ok = False
-        else:
-            implement_ok = False
+        await self.log_cb(
+            "TestDrivenDeveloper",
+            f"[Placeholder] IMPLEMENT phase for node {node_id}. Direct agent orchestration will be added here.",
+            None,
+            node_id,
+        )
+        return True
 
-        final_ok = node_ok and children_ok and implement_ok
-        await self._emit_state(node_id, NodeState.DONE if final_ok else NodeState.FAILED)
-        return final_ok
+    # ==================================================================================
+    #                              Result And State Persistence
+    # ==================================================================================
 
+    def _set_node_state(self, node_states: dict[str, str], node_id: str, state: str) -> None:
+        node_states[node_id] = state
+        upsert_node_state(node_id, state)
 
-async def run_agent_workflow(manager: ARCWorkflowManager, node_id: str, requirement_data: dict):
-    _ = requirement_data
-    return await manager.process_node(node_id)
+    def _build_compile_result(self, queue_state: dict[str, Any]) -> dict[str, Any]:
+        failed_nodes = sorted(
+            node_id for node_id, state in queue_state["node_states"].items() if state == NODE_FAILED
+        )
+        completed_tasks = [
+            task["task_id"] for task in queue_state["tasks"] if task["status"] == TASK_COMPLETED
+        ]
+        all_completed = all(task["status"] == TASK_COMPLETED for task in queue_state["tasks"])
+        return {
+            "ok": all_completed and not failed_nodes,
+            "failed_nodes": failed_nodes,
+            "visit_order": completed_tasks,
+            "states": dict(queue_state["node_states"]),
+        }
+
+    def _load_status_snapshot(self, node_ids: list[str]) -> dict[str, str]:
+        saved = read_json_file(self.status_path) or {}
+        return {
+            node_id: saved.get(node_id, NODE_UNSEEN)
+            for node_id in node_ids
+        }
+
+    def _save_status_snapshot(self, node_states: dict[str, str]) -> None:
+        write_json_file(self.status_path, node_states)
+
+    def _save_processing_queue(self, queue_state: dict[str, Any]) -> None:
+        write_json_file(self.queue_path, queue_state)
