@@ -1,200 +1,51 @@
+import argparse
 import asyncio
-import json
-import os
-import yaml
-from typing import List, Dict, Set
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-import uvicorn
 
-from utils import *
-from agent_workflow import ARCWorkflowManager
-from traceability import store_all_requirement, get_traceability_data
-from traceability.database import get_requirement_by_id, upsert_node_state
-from compiler_driver import ARCCompilerDriver
-from compiler_state import NodeState
+from utils import print_cli_banner, run_cli_compilation
 
-app = FastAPI(title="ARC Multi-Agent Backend")
 
-class ConnectionManager:
-    def __init__(self):
-        self.active_connections: List[WebSocket] = []
-
-    async def connect(self, websocket: WebSocket):
-        await websocket.accept()
-        self.active_connections.append(websocket)
-
-    def disconnect(self, websocket: WebSocket):
-        self.active_connections.remove(websocket)
-
-    async def broadcast(self, message: dict):
-        for connection in self.active_connections:
-            try:
-                await connection.send_text(json.dumps(message))
-            except Exception:
-                pass
-
-manager = ConnectionManager()
-
-"""
-Compilation Workflow:
-1. Load and Parse Requirements
-2. Build DAG
-3. Process Nodes in Topological Order
-"""
-async def run_compilation(project_path: str, requirement_path: str, clear_all: bool = False, app_type: str = "web"):
-    """full compilation workflow based on the requirement DAG"""
-    
-    await manager.broadcast({"type": "clear-logs"})
-    await manager.broadcast({"type": "log", "agent": "System", "message": "ARC compilation system started..."})
-    await asyncio.sleep(1)
-
-    if clear_all:
-        await manager.broadcast({"type": "log", "agent": "System", "message": "Clear and re-compile requested. Cleaning workspace..."})
-        try:
-            import shutil
-            # Delete everything in project_path EXCEPT the 'requirements' folder
-            for item in os.listdir(project_path):
-                if item == "requirements":
-                    continue
-                item_path = os.path.join(project_path, item)
-                if os.path.isdir(item_path):
-                    shutil.rmtree(item_path, ignore_errors=True)
-                else:
-                    os.remove(item_path)
-            
-            # Delete status.json inside requirements folder
-            status_file = os.path.join(project_path, ".arc", "status.json")
-            if os.path.exists(status_file):
-                os.remove(status_file)
-                
-            await manager.broadcast({"type": "log", "agent": "System", "message": "Workspace cleaned successfully."})
-        except Exception as e:
-            await manager.broadcast({"type": "error-event", "agent": "System", "message": f"Failed to clean workspace: {str(e)}"})
-            return
-
-    # 1. Load and Parse Requirements
-    await manager.broadcast({"type": "log", "agent": "RequirementLoader", "message": f"Reading requirements file: {requirement_path}"})
-    try:
-        data = load_requirements(requirement_path)
-        if not data:
-            await manager.broadcast({"type": "error-event", "agent": "System", "message": "Failed to read requirements file or file is empty."})
-            return
-    except Exception as e:
-        await manager.broadcast({"type": "error-event", "agent": "System", "message": f"Error while reading requirements file: {str(e)}"})
-        return
-
-    # 2. Initialize Project Environment & Database
-    workflow_manager = ARCWorkflowManager(
-        workspace_path=project_path,
-        requirement_path=requirement_path,
-        app_type=app_type,
-        broadcast_cb=manager.broadcast
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Run ARC agent workflow directly from terminal (no websocket UI needed)."
     )
-    await workflow_manager.initialize_project()
-
-    # 3. Build DAG & Store Requirements
-    await manager.broadcast({"type": "log", "agent": "DependencyManager", "message": "Building requirement dependency DAG..."})
-    await asyncio.sleep(1)
-    
-    # Store requirements into the initialized database
-    store_all_requirement(data)
-
-    root_id = data.get("id") if isinstance(data, dict) else None
-    if not root_id:
-        await manager.broadcast({"type": "error-event", "agent": "System", "message": "Requirement root node id is missing."})
-        return
-
-    await manager.broadcast({
-        "type": "log",
-        "agent": "DependencyManager",
-        "message": f"Processing roots (recursive DFS driver): {root_id}"
-    })
-    await asyncio.sleep(1)
-
-    async def on_state_change(node_id: str, state: NodeState):
-        upsert_node_state(node_id, state.value)
-        if state == NodeState.WORKING:
-            update_node_status(workflow_manager.workspace_path, node_id, "analyzing")
-            await manager.broadcast({"type": "node_update", "nodeId": node_id, "status": "analyzing"})
-        elif state == NodeState.DONE:
-            update_node_status(workflow_manager.workspace_path, node_id, "completed")
-            await manager.broadcast({"type": "node_update", "nodeId": node_id, "status": "completed"})
-        elif state == NodeState.FAILED:
-            update_node_status(workflow_manager.workspace_path, node_id, "error")
-            await manager.broadcast({"type": "node_update", "nodeId": node_id, "status": "error"})
-            await manager.broadcast({"type": "error-event", "agent": "System", "message": f"Node {node_id} failed."})
-
-    driver = ARCCompilerDriver(
-        workflow_manager=workflow_manager,
-        roots=[root_id],
-        requirement_getter=get_requirement_by_id,
-        on_state_change=on_state_change
+    parser.add_argument(
+        "project_path",
+        nargs="?",
+        required=True,
+        help="Target project root path (contains requirements/ and .arc/). If omitted, will prompt interactively.",
     )
-    compile_result = await driver.compile_all()
-    failed_nodes = compile_result.get("failed_nodes", [])
+    parser.add_argument(
+        "--requirement-path",
+        help="Requirement yaml path. Absolute path, or relative to project path.",
+    )
+    parser.add_argument(
+        "--clear-all",
+        action="store_true",
+        help="Clear project workspace and recompile (same semantics as 'Clear and Restart Compilation').",
+    )
+    parser.add_argument(
+        "--app-type",
+        choices=["web", "android"],
+        default="web",
+        help="Application type for stack metadata writing (default: web).",
+    )
+    return parser.parse_args()
 
-    if failed_nodes:
-        await manager.broadcast({"type": "log", "agent": "System", "message": f"Completed with {len(failed_nodes)} failed node(s): {', '.join(failed_nodes)}. Check build logs for details."})
-    else:
-        await manager.broadcast({"type": "log", "agent": "System", "message": "All requirements processed successfully. Project compiled!"})
 
-    # 5. Print Test Results Summary
-    if app_type == "android" or app_type == "web":
-        from traceability.test_result_tracker import TestResultTracker
-        arc_dir = os.path.join(project_path, ".arc")
-        tracker = TestResultTracker(arc_dir)
-        summary = tracker.format_summary()
-        await manager.broadcast({"type": "log", "agent": "System", "message": summary})
+def main() -> None:
+    args = parse_args()
 
-from traceability.database import set_db_path
+    print_cli_banner()
+    
+    asyncio.run(
+        run_cli_compilation(
+            project_path=args.project_path,
+            requirement_path=args.requirement_path,
+            clear_all=args.clear_all,
+            app_type=args.app_type,
+        )
+    )
 
-@app.websocket("/ws/compiler")
-async def websocket_endpoint(websocket: WebSocket):
-    await manager.connect(websocket)
-    try:
-        while True:
-            data = await websocket.receive_text()
-            message = json.loads(data)
-            
-            if message.get("command") == "start":
-                project_path = message.get("projectPath")
-                requirement_path = message.get("requirementPath")
-                app_type = message.get("appType", "web")
-                if project_path and requirement_path:
-                    # Run compilation in background task to not block websocket loop
-                    asyncio.create_task(run_compilation(project_path, requirement_path, clear_all=False, app_type=app_type))
-
-            elif message.get("command") == "restart":
-                project_path = message.get("projectPath")
-                requirement_path = message.get("requirementPath")
-                app_type = message.get("appType", "web")
-                if project_path and requirement_path:
-                    asyncio.create_task(run_compilation(project_path, requirement_path, clear_all=True, app_type=app_type))
-            
-            elif message.get("command") == "traceabilityData":
-                node_id = message.get("nodeId")
-                keyword = message.get("keyword", "")
-                project_path = message.get("projectPath")
-                
-                print(project_path)
-                
-                if project_path:
-                     db_path = os.path.join(project_path, '.arc', 'database.db')
-                     set_db_path(db_path)
-                
-                if node_id:
-                    result = get_traceability_data(node_id, keyword=keyword)
-                else:
-                    result = get_traceability_data("", keyword=keyword)
-                await websocket.send_text(json.dumps({
-                    "type": "traceabilityData", 
-                    "nodeId": node_id, 
-                    "data": result
-                }))
-
-    except WebSocketDisconnect:
-        manager.disconnect(websocket)
 
 if __name__ == "__main__":
-    print("ARC Backend listening on ws://127.0.0.1:8000/ws/compiler")
-    uvicorn.run(app, host="127.0.0.1", port=8000)
+    main()
