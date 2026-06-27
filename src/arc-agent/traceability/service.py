@@ -82,6 +82,7 @@ def store_all_requirement(node: dict, parent_id: str = ""):
 
     # Extract current node data
     req_id = node.get('id', 'UNKNOWN_ID')
+    name = node.get('name', '')
     description = node.get('description', '')
     visual_reference = node.get('visual_reference', [])
     scenarios = node.get('scenarios', [])
@@ -99,6 +100,7 @@ def store_all_requirement(node: dict, parent_id: str = ""):
     # Even the ROOT node can be stored as the starting point of the whole tree
     insert_requirement(
         req_id=req_id,
+        name=name,
         description=description,
         visual_reference=visual_reference,
         scenarios=scenarios,

@@ -33,6 +33,7 @@ def init_db():
     cursor.execute('''
     CREATE TABLE requirements (
         req_id TEXT PRIMARY KEY,
+        name TEXT,
         description TEXT,
         visual_reference TEXT,
         scenarios TEXT,
@@ -160,7 +161,7 @@ def get_all_requirements():
 """
 Requirement Record
 """
-def insert_requirement(req_id: str, description: str, visual_reference: list,
+def insert_requirement(req_id: str, name: str, description: str, visual_reference: list,
                        scenarios: list, parent_id: str, children_ids: list, dependencies: list):
     """Insert or update a single requirement record in the database."""
     conn = sqlite3.connect(DB_PATH)
@@ -168,10 +169,11 @@ def insert_requirement(req_id: str, description: str, visual_reference: list,
     
     cursor.execute('''
     INSERT OR REPLACE INTO requirements 
-    (req_id, description, visual_reference, scenarios, parent_id, children_ids, dependencies)
-    VALUES (?, ?, ?, ?, ?, ?, ?)
+    (req_id, name, description, visual_reference, scenarios, parent_id, children_ids, dependencies)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     ''', (
         req_id, 
+        name or "",
         description or "", 
         json.dumps(visual_reference) if visual_reference else '[]',
         json.dumps(scenarios) if scenarios else '[]',
