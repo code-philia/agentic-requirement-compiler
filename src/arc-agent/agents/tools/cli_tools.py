@@ -1,7 +1,7 @@
 import asyncio
 import os
 
-from utils import get_abs_path, get_app_type
+from utils import build_web_runtime_env, get_abs_path, get_app_type
 
 
 async def execute_command_impl(command: str, cwd: str = ".", timeout: float = 30.0) -> str:
@@ -11,12 +11,20 @@ async def execute_command_impl(command: str, cwd: str = ".", timeout: float = 30
     process = None
 
     try:
+        env = {
+            **os.environ,
+            "PYTHONIOENCODING": "utf-8",
+            "JAVA_TOOL_OPTIONS": "-Dfile.encoding=UTF-8",
+        }
+        if get_app_type() == "web":
+            env.update(build_web_runtime_env())
+
         process = await asyncio.create_subprocess_shell(
             command,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             cwd=abs_cwd,
-            env={**os.environ, "PYTHONIOENCODING": "utf-8", "JAVA_TOOL_OPTIONS": "-Dfile.encoding=UTF-8"},
+            env=env,
         )
         stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=timeout)
 

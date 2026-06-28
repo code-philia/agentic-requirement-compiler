@@ -10,7 +10,7 @@ class TestGenerator(ARCAgent):
         )
 
     def get_system_prompt(self) -> str:
-        from utils import get_app_type, get_android_package
+        from utils import get_app_type, get_android_package, get_web_base_url, get_web_port
         app_type = get_app_type()
 
         if app_type == "android":
@@ -63,6 +63,8 @@ Use JUnit 4 + Robolectric when the test needs Android framework behavior, Contex
 - Do not use `com.example.template` or any other package name.
 """
         else:
+            web_port = get_web_port()
+            web_base_url = get_web_base_url()
             test_stack = """
 # Testing Stack (Web):
 
@@ -84,6 +86,15 @@ Use JUnit 4 + Robolectric when the test needs Android framework behavior, Contex
 - Playwright E2E must use Playwright APIs such as `test`, `expect`, and `page`.
 - Do not rely on copying `node_modules`, patching package internals, or inventing compatibility shims to make generated tests run.
 - Treat runner/framework mismatches as test-generation bugs to fix in the test files themselves.
+"""
+            test_stack += f"""
+
+## Runtime And Port Rules (MANDATORY)
+- The web app uses ONE backend port only: `{web_port}`.
+- The Express backend serves the built frontend dist on the same origin.
+- E2E tests must target `{web_base_url}`.
+- Prefer `process.env.PLAYWRIGHT_BASE_URL` when authoring Playwright navigation code, with `{web_base_url}` as the expected value.
+- Do not assume or hardcode a separate frontend dev-server port such as `5173` or `5174`.
 """
             pkg_compliance = ""
 

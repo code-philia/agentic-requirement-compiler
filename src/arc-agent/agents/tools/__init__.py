@@ -4,13 +4,14 @@ from .search_tools import *
 from .cli_tools import *
 
 from .tool_schema import *
-from utils import set_workspace_root, set_app_type
+from utils import set_workspace_root, set_app_type, set_web_port
 
 # Export set_workspace_root for initializing the tools context
 __all__ = [
     "TOOL_REGISTRY",
     "set_workspace_root",
-    "set_app_type"
+    "set_app_type",
+    "set_web_port",
 ]
 
 TOOL_REGISTRY = {

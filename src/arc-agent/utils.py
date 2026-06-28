@@ -20,6 +20,7 @@ colorama_init()
 WORKSPACE_ROOT = os.getcwd()
 APP_TYPE = "web"
 ANDROID_PACKAGE = "com.example.template"
+WEB_PORT = 3301
 
 
 def set_workspace_root(path: str) -> None:
@@ -40,6 +41,30 @@ def set_app_type(app_type: str) -> None:
 
 def get_app_type() -> str:
     return APP_TYPE
+
+
+def set_web_port(port: int) -> None:
+    global WEB_PORT
+    WEB_PORT = int(port)
+
+
+def get_web_port() -> int:
+    return WEB_PORT
+
+
+def get_web_base_url(host: str = "127.0.0.1") -> str:
+    return f"http://{host}:{get_web_port()}"
+
+
+def build_web_runtime_env(host: str = "127.0.0.1") -> dict[str, str]:
+    port = str(get_web_port())
+    base_url = get_web_base_url(host)
+    return {
+        "PORT": port,
+        "ARC_WEB_PORT": port,
+        "ARC_WEB_BASE_URL": base_url,
+        "PLAYWRIGHT_BASE_URL": base_url,
+    }
 
 
 def set_android_package(package_name: str) -> None:
@@ -381,13 +406,22 @@ def print_cli_banner():
     )
     print(banner)
 
-def print_cli_startup(project_path: str, requirement_path: str, app_type: str, clear_all: bool, log_path: str):
+def print_cli_startup(
+    project_path: str,
+    requirement_path: str,
+    app_type: str,
+    clear_all: bool,
+    log_path: str,
+    web_port: int | None = None,
+):
     from app_types import read_stack_summary
 
     print(f"  {Fore.WHITE}Debug Log {Style.RESET_ALL}  {log_path}")
     print(f"\n  {Fore.WHITE}Project   {Style.RESET_ALL}  {project_path}")
     print(f"  {Fore.WHITE}Require   {Style.RESET_ALL}  {requirement_path}")
     print(f"  {Fore.WHITE}App Type  {Style.RESET_ALL}  {Fore.CYAN}{app_type}{Style.RESET_ALL}")
+    if app_type == "web" and web_port is not None:
+        print(f"  {Fore.WHITE}Web Port  {Style.RESET_ALL}  {web_port}")
     print(f"  {Fore.WHITE}Stack     {Style.RESET_ALL}  {read_stack_summary(project_path, app_type)}")
     print(
         f"  {Fore.WHITE}Mode      {Style.RESET_ALL}  "

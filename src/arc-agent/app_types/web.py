@@ -5,6 +5,7 @@ import asyncio
 from typing import Awaitable, Callable
 
 from .base import ARC_STACK_END, ARC_STACK_START, AppTypeHandler
+from utils import build_web_runtime_env, get_web_base_url, get_web_port
 
 
 async def run_npm_install(target_dir: str, log_cb: Callable[..., Awaitable[None]]):
@@ -32,7 +33,12 @@ async def _execute_web_test_command(command: str, cwd: str, timeout: float = 60.
             cwd=cwd,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
-            env={**os.environ, "PYTHONIOENCODING": "utf-8", "JAVA_TOOL_OPTIONS": "-Dfile.encoding=UTF-8"},
+            env={
+                **os.environ,
+                "PYTHONIOENCODING": "utf-8",
+                "JAVA_TOOL_OPTIONS": "-Dfile.encoding=UTF-8",
+                **build_web_runtime_env(),
+            },
         )
         stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=timeout)
         output = stdout.decode("utf-8", errors="replace")
@@ -52,6 +58,17 @@ async def _execute_web_test_command(command: str, cwd: str, timeout: float = 60.
         return f"Command timed out after {timeout} seconds."
     except Exception as exc:
         return f"Execution failed: {str(exc)}"
+
+
+def _extract_exit_code(command_output: str) -> int | None:
+    for line in (command_output or "").splitlines():
+        stripped = line.strip()
+        if stripped.startswith("Exit Code:"):
+            try:
+                return int(stripped.split("Exit Code:", 1)[1].strip())
+            except ValueError:
+                return None
+    return None
 
 
 def _normalize_backend_test_path(file_path: str) -> str:
@@ -88,6 +105,8 @@ def _resolve_web_test_target(file_path: str, workspace_path: str) -> tuple[str, 
 def _build_web_test_execution(test_type: str, file_path: str, workspace_path: str) -> dict[str, str]:
     normalized_type = (test_type or "").strip().lower()
     working_directory, resolved_file_path = _resolve_web_test_target(file_path, workspace_path)
+    web_port = str(get_web_port())
+    base_url = get_web_base_url()
 
     if normalized_type in {"unit", "integration"}:
         runner = "Vitest"
@@ -106,6 +125,8 @@ def _build_web_test_execution(test_type: str, file_path: str, workspace_path: st
         "working_directory": working_directory,
         "requested_test_file": file_path or "",
         "resolved_test_file": resolved_file_path,
+        "web_port": web_port,
+        "base_url": base_url,
     }
 
 
@@ -117,13 +138,74 @@ def _prepend_test_execution_header(execution: dict[str, str], test_result: str) 
             f"Working Directory: {execution['working_directory']}",
             f"Requested Test File: {execution['requested_test_file']}",
             f"Resolved Test File: {execution['resolved_test_file']}",
+            f"Web Port: {execution['web_port']}",
+            f"Base URL: {execution['base_url']}",
         ]
     )
     return f"{header}\n{test_result}"
 
 
+async def _wait_for_tcp_server(host: str, port: int, timeout: float = 20.0) -> bool:
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+
+    while loop.time() < deadline:
+        try:
+            reader, writer = await asyncio.open_connection(host, port)
+            writer.close()
+            await writer.wait_closed()
+            return True
+        except OSError:
+            await asyncio.sleep(0.5)
+
+    return False
+
+
+async def _terminate_process(process: asyncio.subprocess.Process | None) -> None:
+    if process is None or process.returncode is not None:
+        return
+
+    try:
+        process.terminate()
+        await asyncio.wait_for(process.wait(), timeout=5.0)
+    except Exception:
+        try:
+            process.kill()
+            await process.wait()
+        except Exception:
+            pass
+
+
 class WebAppType(AppTypeHandler):
     name = "web"
+
+    async def post_template_setup(self) -> bool:
+        replacements = {
+            "__ARC_WEB_PORT__": str(get_web_port()),
+        }
+        target_files = [
+            os.path.join(self.workspace_path, "backend", "src", "index.js"),
+            os.path.join(self.workspace_path, "frontend", "vite.config.js"),
+        ]
+
+        try:
+            for file_path in target_files:
+                if not os.path.exists(file_path):
+                    continue
+                with open(file_path, "r", encoding="utf-8") as file:
+                    content = file.read()
+                for old_value, new_value in replacements.items():
+                    content = content.replace(old_value, new_value)
+                with open(file_path, "w", encoding="utf-8") as file:
+                    file.write(content)
+            await self.log_cb(
+                "System",
+                f"Configured web template for single-port backend hosting on port {get_web_port()}.",
+            )
+            return True
+        except Exception as exc:
+            await self.log_cb("System", f"Failed to configure web template: {str(exc)}")
+            return False
 
     async def install_dependencies(self) -> None:
         backend_path = os.path.join(self.workspace_path, "backend")
@@ -148,58 +230,85 @@ class WebAppType(AppTypeHandler):
 
         if normalized_type == "e2e":
             frontend_path = os.path.join(self.workspace_path, "frontend")
+            frontend_build_output = await _execute_web_test_command(
+                "npm run build",
+                cwd=frontend_path,
+                timeout=120.0,
+            )
+            if _extract_exit_code(frontend_build_output) != 0:
+                return _prepend_test_execution_header(
+                    execution,
+                    "Frontend build failed before E2E startup.\n\n"
+                    f"=== Frontend Build ===\n{frontend_build_output}",
+                )
+
             try:
                 backend_process = await asyncio.create_subprocess_shell(
-                    "npm run dev",
+                    "npm run start",
                     cwd=backend_path,
                     stdout=asyncio.subprocess.DEVNULL,
                     stderr=asyncio.subprocess.DEVNULL,
+                    env={
+                        **os.environ,
+                        **build_web_runtime_env(),
+                    },
                 )
-                frontend_process = await asyncio.create_subprocess_shell(
-                    "npm run dev",
-                    cwd=frontend_path,
-                    stdout=asyncio.subprocess.DEVNULL,
-                    stderr=asyncio.subprocess.DEVNULL,
-                )
-                servers_process = (backend_process, frontend_process)
-                await asyncio.sleep(5)
+                servers_process = (backend_process,)
+                server_ready = await _wait_for_tcp_server("127.0.0.1", get_web_port(), timeout=20.0)
+                if not server_ready:
+                    await _terminate_process(backend_process)
+                    return _prepend_test_execution_header(
+                        execution,
+                        "Failed to start backend server for E2E testing within 20 seconds.\n\n"
+                        f"=== Frontend Build ===\n{frontend_build_output}",
+                    )
             except Exception as exc:
+                if servers_process:
+                    for process in servers_process:
+                        await _terminate_process(process)
                 return f"Failed to start servers for E2E testing: {str(exc)}"
 
         try:
             result = await _execute_web_test_command(execution["command"], cwd=execution["working_directory"])
+            if normalized_type == "e2e":
+                result = f"=== Frontend Build ===\n{frontend_build_output}\n\n{result}"
             return _prepend_test_execution_header(execution, result)
         finally:
             if servers_process:
-                backend_process, frontend_process = servers_process
-                for process in (backend_process, frontend_process):
-                    try:
-                        process.terminate()
-                    except Exception:
-                        pass
+                for process in servers_process:
+                    await _terminate_process(process)
 
     @classmethod
     def build_stack_block(cls) -> str:
+        web_port = get_web_port()
+        base_url = get_web_base_url()
         return (
             f"{ARC_STACK_START}\n"
             "### Main Stack\n"
             "- backend: nodejs\n"
             "- frontend: react\n"
             "- database: sqlite\n"
+            f"- web_port: {web_port}\n"
+            "\n"
+            "### Runtime And Hosting\n"
+            f"* **Single Web Port**: {web_port}\n"
+            f"* **Base URL Under Test**: {base_url}\n"
+            "* **Hosting Model**: Build the Vite frontend and let the Express backend serve `frontend/dist` on the same origin.\n"
+            "* **Deployment Rule**: Do not rely on a separate frontend dev server for deployment or E2E.\n"
             "\n"
             "### Frontend\n"
             "* **Framework**: React 18+ (Vite)\n"
             "* **Language**: JavaScript (ES6+)\n"
             "* **Styling**: Tailwind CSS v4\n"
             "* **HTTP**: Axios (Must use Interceptors for global error handling)\n"
-            "* **Testing**: None in frontend directory. (Verified via E2E in backend).\n"
+            "* **Testing**: Vitest for frontend unit/integration tests in `frontend/src/...`.\n"
             "\n"
             "### Backend\n"
             "* **Runtime**: Node.js (LTS)\n"
             "* **Framework**: Express.js\n"
             "* **Database**: SQLite3 (`sqlite3` driver, file-based)\n"
             "* **Testing**:\n"
-            "  * Vitest: Used for Unit and Integration testing.\n"
+            "  * Vitest: Used for backend Unit and Integration testing.\n"
             "  * Supertest: Used with Vitest for API route testing.\n"
             "  * Playwright: Used for End-to-End (E2E) testing, located in `backend/test-e2e`.\n"
             f"{ARC_STACK_END}"
@@ -207,15 +316,17 @@ class WebAppType(AppTypeHandler):
 
     @classmethod
     def default_stack_summary(cls) -> str:
-        return "backend=nodejs, frontend=react, database=sqlite"
+        return f"backend=nodejs, frontend=react, database=sqlite, web_port={get_web_port()}"
 
     @classmethod
     def parse_stack_summary(cls, metadata_content: str) -> str:
         backend = re.search(r"-\s*backend:\s*(.+)", metadata_content, re.IGNORECASE)
         frontend = re.search(r"-\s*frontend:\s*(.+)", metadata_content, re.IGNORECASE)
         database = re.search(r"-\s*database:\s*(.+)", metadata_content, re.IGNORECASE)
+        web_port = re.search(r"-\s*web_port:\s*(.+)", metadata_content, re.IGNORECASE)
         return (
             f"backend={backend.group(1).strip() if backend else 'N/A'}, "
             f"frontend={frontend.group(1).strip() if frontend else 'N/A'}, "
-            f"database={database.group(1).strip() if database else 'N/A'}"
+            f"database={database.group(1).strip() if database else 'N/A'}, "
+            f"web_port={web_port.group(1).strip() if web_port else get_web_port()}"
         )

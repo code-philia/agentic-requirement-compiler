@@ -17,7 +17,7 @@ class TestDrivenDeveloper(ARCAgent):
         self._has_called_run_tests_in_session = False
 
     def get_system_prompt(self) -> str:
-        from utils import get_app_type, get_android_package
+        from utils import get_app_type, get_android_package, get_web_base_url, get_web_port
         app_type = get_app_type()
         # Keep a safe default so web mode does not crash when formatting shared prompt sections.
         android_pkg = "com.example.app"
@@ -39,7 +39,13 @@ class TestDrivenDeveloper(ARCAgent):
 - If the requirement description mentions a different package name in resource-id patterns, use THAT package name instead.
 """
         else:
-            pkg_compliance = ""
+            pkg_compliance = (
+                "### Web Runtime And Port (CRITICAL):\n"
+                f"- The single backend web port is `{get_web_port()}`.\n"
+                f"- The backend serves the built frontend dist at `{get_web_base_url()}`.\n"
+                "- Do not assume a separate frontend dev-server port such as `5173` or `5174` for deployment or E2E.\n"
+                "- When fixing Playwright E2E tests, use `process.env.PLAYWRIGHT_BASE_URL` or the configured single-port base URL.\n"
+            )
 
         return f"""You are an Elite Full-Stack Developer strictly following Test-Driven Development (TDD).
 Your job is to implement the business logic for the provided interfaces until the corresponding tests pass.

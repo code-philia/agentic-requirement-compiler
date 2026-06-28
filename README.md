@@ -112,6 +112,9 @@ source .venv/bin/activate
 # Basic usage: compile a web project
 python main.py /path/to/target/project --app-type web
 
+# Compile a web project on a specific single backend port
+python main.py /path/to/target/project --app-type web --web-port 3301
+
 # Compile an Android project
 python main.py /path/to/target/project --app-type android
 
@@ -128,6 +131,7 @@ python main.py /path/to/target/project --app-type web --clear-all
 | `--requirement-path` | Path to requirements YAML. Can be absolute, or relative to `project_path` |
 | `--clear-all` | Clear project workspace and recompile |
 | `--app-type` | `web` or `android` (default: `web`) |
+| `--web-port` | Web only. Single backend port used to start the website; the backend serves the built frontend on this same port (default: `3301`) |
 
 ## Target Project Directory Format
 

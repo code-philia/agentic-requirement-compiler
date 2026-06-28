@@ -5,7 +5,7 @@ from dataclasses import dataclass
 
 from agent_workflow import ARCWorkflowManager
 from app_types import normalize_app_type, upsert_metadata
-from utils import detect_requirement_path
+from utils import detect_requirement_path, set_web_port
 from utils import cli_log, init_debug_logger, print_cli_banner, print_cli_startup, stop_cli_spinner
 
 
@@ -15,6 +15,7 @@ class CompilationConfig:
     requirement_path: str
     clear_all: bool = False
     app_type: str = "web"
+    web_port: int = 3301
 
 
 def parse_args() -> argparse.Namespace:
@@ -35,6 +36,12 @@ def parse_args() -> argparse.Namespace:
         default="web",
         help="Application type for stack metadata writing.",
     )
+    parser.add_argument(
+        "--web-port",
+        type=int,
+        default=3301,
+        help="Single backend port for web apps. The backend serves the built frontend on this port.",
+    )
     return parser.parse_args()
 
 
@@ -48,12 +55,18 @@ def prepare_config(args: argparse.Namespace) -> CompilationConfig:
     if not os.path.exists(normalized_requirement_path):
         raise FileNotFoundError(f"Requirement file does not exist: {normalized_requirement_path}")
 
+    web_port = int(args.web_port)
+    if web_port < 1 or web_port > 65535:
+        raise ValueError(f"Web port must be between 1 and 65535, got: {web_port}")
+
+    set_web_port(web_port)
     upsert_metadata(normalized_project_path, normalized_app_type)
     return CompilationConfig(
         project_path=normalized_project_path,
         requirement_path=normalized_requirement_path,
         clear_all=args.clear_all,
         app_type=normalized_app_type,
+        web_port=web_port,
     )
 
 
@@ -68,6 +81,7 @@ async def run() -> None:
         app_type=config.app_type,
         clear_all=config.clear_all,
         log_path=log_path,
+        web_port=config.web_port,
     )
 
     try:
@@ -75,6 +89,7 @@ async def run() -> None:
             workspace_path=config.project_path,
             requirement_path=config.requirement_path,
             app_type=config.app_type,
+            web_port=config.web_port,
             log_cb=cli_log,
         )
         await workflow_manager.start_compilation(clear_all=config.clear_all)

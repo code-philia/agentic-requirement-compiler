@@ -2,6 +2,8 @@ import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
 
+const backendPort = Number(process.env.ARC_WEB_PORT || '__ARC_WEB_PORT__')
+
 // https://vite.dev/config/
 export default defineConfig({
   plugins: [
@@ -9,9 +11,8 @@ export default defineConfig({
     tailwindcss(),
   ],
   server: {
-    port: 5174,
     proxy: {
-      '/api': 'http://localhost:3001'
+      '/api': `http://127.0.0.1:${backendPort}`
     }
   }
 })

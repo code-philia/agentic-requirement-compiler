@@ -15,6 +15,7 @@ from utils import (
     run_git_commit,
     run_git_init,
     set_app_type,
+    set_web_port,
     set_workspace_root,
     write_json_file,
 )
@@ -59,15 +60,19 @@ class ARCWorkflowManager:
         workspace_path: str,
         requirement_path: str = "",
         app_type: str = "web",
+        web_port: int = 3301,
         log_cb: Callable[[str, str, str | None, str | None], Awaitable[None] | None] | None = None,
     ):
         self.workspace_path = workspace_path
         self.requirement_path = requirement_path
         self.app_type = normalize_app_type(app_type)
+        self.web_port = int(web_port)
         self.log_cb = log_cb
 
         self.arc_dir = os.path.join(self.workspace_path, ".arc")
         self.queue_path = os.path.join(self.arc_dir, QUEUE_FILENAME)
+
+        set_web_port(self.web_port)
 
         # Keep agent instances here so compile steps can directly orchestrate them later.
         self.interface_designer = InterfaceDesigner(log_cb)
@@ -122,6 +127,7 @@ class ARCWorkflowManager:
 
         set_workspace_root(self.workspace_path)
         set_app_type(self.app_type)
+        set_web_port(self.web_port)
 
         db_path = resolve_traceability_db_path(os.path.join(self.arc_dir, "traceability.db"))
         await self.log_cb("System", f"Initializing traceability database at {db_path}...")
