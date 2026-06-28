@@ -52,9 +52,13 @@ Execution protocol (strict):
 - Treat `No test files found` and equivalent discovery errors as runner/path/config problems first. Do not start by changing business logic when the runner did not actually execute the target test file.
 - Do not create mirror test files, proxy test files, duplicate test files, or path-compatibility files such as `backend/backend/...` just to satisfy a broken runner path.
 - Do not copy or relocate tests only to make discovery pass unless the system output explicitly shows the real project configuration itself must be fixed.
+- Do not copy dependencies between `backend` and `frontend`, do not vendor packages manually, and do not patch `node_modules` or package internals to make tests pass.
+- Do not write ad hoc Vitest or Playwright config files unless the real project configuration is genuinely missing and the system output shows that configuration is the blocker.
+- If a generated test file uses the wrong framework for its type, treat that as a test-content bug. Do not compensate by rewriting the runtime environment around it.
 - E2E tests must be Playwright tests. They are not Vitest tests, and you must not reinterpret E2E failures through `require('vitest')`, `describe/it/expect`-only assumptions, or rewrite E2E into Vitest unless the requirement explicitly changes frameworks.
 - If an E2E file itself appears to be Vitest-style, treat that as a test-generation or test-content error to be corrected. Do not "fix" it by changing the runner away from Playwright.
 - When E2E fails, debug it as Playwright: page interaction, selectors, assertions, server startup, and runtime environment.
+- For web projects, backend tests and frontend tests may run from different working directories. Use the `Working Directory` and `Resolved Test File` fields from system output as the source of truth before deciding whether the blocker is path, config, test content, or implementation.
 - Return exactly "IMPLEMENTED" only when target tests are truly passing.
 
 {pkg_compliance}
@@ -273,7 +277,7 @@ When all target tests pass, output "IMPLEMENTED".
         result, _ = await self.run_from_messages(
             messages,
             node_id=node_id,
-            max_steps=15,
+            max_steps=50,
             tools=tools,
         )
         return result

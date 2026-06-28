@@ -67,15 +67,35 @@ def _normalize_backend_test_path(file_path: str) -> str:
     return normalized
 
 
-def _build_web_test_execution(test_type: str, file_path: str, backend_path: str) -> dict[str, str]:
+def _resolve_web_test_target(file_path: str, workspace_path: str) -> tuple[str, str]:
+    normalized = (file_path or "").strip().replace("\\", "/")
+    backend_path = os.path.join(workspace_path, "backend")
+    frontend_path = os.path.join(workspace_path, "frontend")
+
+    if not normalized:
+        return backend_path, ""
+    if os.path.isabs(file_path):
+        return backend_path, normalized
+
+    normalized = normalized.lstrip("./")
+    if normalized.startswith("backend/"):
+        return backend_path, normalized[len("backend/"):]
+    if normalized.startswith("frontend/"):
+        return frontend_path, normalized[len("frontend/"):]
+    return backend_path, normalized
+
+
+def _build_web_test_execution(test_type: str, file_path: str, workspace_path: str) -> dict[str, str]:
     normalized_type = (test_type or "").strip().lower()
-    resolved_file_path = _normalize_backend_test_path(file_path)
+    working_directory, resolved_file_path = _resolve_web_test_target(file_path, workspace_path)
 
     if normalized_type in {"unit", "integration"}:
         runner = "Vitest"
         command = f"npx vitest run {resolved_file_path}" if resolved_file_path else "npx vitest run"
     elif normalized_type == "e2e":
         runner = "Playwright"
+        working_directory = os.path.join(workspace_path, "backend")
+        resolved_file_path = _normalize_backend_test_path(file_path)
         command = f"npx playwright test {resolved_file_path}" if resolved_file_path else "npx playwright test"
     else:
         raise ValueError("Unknown test type. Must be 'unit', 'integration', or 'e2e'.")
@@ -83,7 +103,7 @@ def _build_web_test_execution(test_type: str, file_path: str, backend_path: str)
     return {
         "runner": runner,
         "command": command,
-        "working_directory": backend_path,
+        "working_directory": working_directory,
         "requested_test_file": file_path or "",
         "resolved_test_file": resolved_file_path,
     }
@@ -121,7 +141,7 @@ class WebAppType(AppTypeHandler):
         normalized_type = test_type.lower()
         backend_path = os.path.join(self.workspace_path, "backend")
         try:
-            execution = _build_web_test_execution(test_type, file_path, backend_path)
+            execution = _build_web_test_execution(test_type, file_path, self.workspace_path)
         except ValueError as exc:
             return str(exc)
         servers_process = None
@@ -147,7 +167,7 @@ class WebAppType(AppTypeHandler):
                 return f"Failed to start servers for E2E testing: {str(exc)}"
 
         try:
-            result = await _execute_web_test_command(execution["command"], cwd=backend_path)
+            result = await _execute_web_test_command(execution["command"], cwd=execution["working_directory"])
             return _prepend_test_execution_header(execution, result)
         finally:
             if servers_process:

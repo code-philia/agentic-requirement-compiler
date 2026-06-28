@@ -23,100 +23,73 @@ class TestGenerator(ARCAgent):
 Tests are organized into sub-packages by type. Each type has its own directory and package:
 ```
 app/src/test/java/{pkg_dir}/
-  unit/                    ← Unit tests
+  unit/
     *Test.java             package {android_pkg}.unit;
-  integration/             ← Integration tests
+  integration/
     *IntegrationTest.java  package {android_pkg}.integration;
-  e2e/                     ← E2E tests
+  e2e/
     *E2ETest.java          package {android_pkg}.e2e;
 ```
 Gradle filters by package prefix: `--tests "{android_pkg}.unit.*"`, `--tests "{android_pkg}.integration.*"`, `--tests "{android_pkg}.e2e.*"`
 
-## ⚠️ STRICTLY JVM-ONLY — No Instrumentation, No Emulator
-ALL tests run on the JVM via `./gradlew testDebugUnitTest`. There is NO device, NO emulator.
+## JVM-ONLY
+ALL tests run on the JVM via `./gradlew testDebugUnitTest`. There is NO device and NO emulator.
 
-**NEVER import or use:**
-- `androidx.test.core.app.ApplicationProvider` — requires instrumentation
-- `androidx.test.core.app.ActivityScenario` — requires instrumentation
-- `@RunWith(AndroidJUnit4.class)` — requires instrumentation
-- `androidx.test.espresso.*` — requires a device
-- `InstrumentationRegistry` — requires instrumentation
-- NEVER write to `app/src/androidTest/`
-- NEVER modify `app/build.gradle` — all required dependencies are already declared
+## Forbidden Android Test APIs
+- Do not use `ApplicationProvider`
+- Do not use `ActivityScenario`
+- Do not use `AndroidJUnit4`
+- Do not use Espresso
+- Do not use `InstrumentationRegistry`
+- Do not write to `app/src/androidTest/`
+- Do not modify `app/build.gradle`
 
-## Runner selection — CRITICAL
-There are two valid runners. Choose based on whether the test touches Android framework types:
+## Runner Selection
+Use JUnit 5 for pure JVM tests with mocked collaborators.
+Use JUnit 4 + Robolectric when the test needs Android framework behavior, Context, Activity, Room, or AndroidViewModel.
 
-**JUnit 5 (no `@RunWith`)** — for pure-JVM unit tests where ALL Android dependencies are mocked:
-```java
-@ExtendWith(InstantTaskExecutorExtension.class)   // only needed for LiveData
-class FooViewModelTest {{
-    private FooRepository mockRepo = mock(FooRepository.class);
-    private FooViewModel vm;
-    @BeforeEach void setUp() {{ vm = new FooViewModel(mockRepo); }}
-}}
-```
-- Use `@Test`, `@BeforeEach`/`@AfterEach`, `@DisplayName` (JUnit5 annotations)
-- `InstantTaskExecutorExtension` is already in your test package — import `{android_pkg}.unit.InstantTaskExecutorExtension`
-- **NEVER use `InstantTaskExecutorRule`** (that is a JUnit4 `@Rule`)
-- Unit tests MUST mock ALL collaborators (Repository, Service, etc.) with Mockito — do NOT construct real Room databases or open real I/O in unit tests
-
-**JUnit 4 + `@RunWith(RobolectricTestRunner.class)`** — for any test that needs a real Android Context, Activity, Room database, or `AndroidViewModel`:
-```java
-@RunWith(RobolectricTestRunner.class)
-@Config(sdk = 31, application = TestCounterApp.class)
-public class FooIntegrationTest {{
-    @Before public void setUp() {{
-        Context ctx = RuntimeEnvironment.getApplication();
-        db = Room.inMemoryDatabaseBuilder(ctx, AppDatabase.class).allowMainThreadQueries().build();
-    }}
-    @After public void tearDown() {{ db.close(); }}
-    @Test public void someTest() {{ ... }}
-}}
-```
-- Use `@Test`, `@Before`/`@After` (JUnit4 annotations)
-- Use `RuntimeEnvironment.getApplication()` for Context — NOT `ApplicationProvider`
-- `@Config(application = TestCounterApp.class)` swaps the DB for in-memory; required for E2E tests
-
-**AndroidViewModel rule:** `AndroidViewModel` needs an `Application` instance. Always test it with JUnit4 + `@RunWith(RobolectricTestRunner.class)` so Robolectric provides a real Application, OR refactor to plain `ViewModel` + inject a mock dependency. Never call `new Application()` manually.
-
-## Unit Tests (JUnit5, pure-JVM)
-- Place in `app/src/test/java/{pkg_dir}/unit/` with `package {android_pkg}.unit;`
-- Mock ALL Android dependencies. Target `FUNC` interfaces and ViewModels whose deps are mockable.
-
-## Integration Tests (JUnit4 + Robolectric)
-- Place in `app/src/test/java/{pkg_dir}/integration/` with `package {android_pkg}.integration;`
-- `@RunWith(RobolectricTestRunner.class)` + `@Config(sdk = 31)`. Target `DB` and `API` interfaces.
-- Build Room in-memory DB: `Room.inMemoryDatabaseBuilder(RuntimeEnvironment.getApplication(), AppDatabase.class).allowMainThreadQueries().build()`
-- Use `MockWebServer` for HTTP; always close in `@After`
-
-## E2E Tests (JUnit4 + Robolectric)
-- Place in `app/src/test/java/{pkg_dir}/e2e/` with `package {android_pkg}.e2e;`
-- `@RunWith(RobolectricTestRunner.class)` + `@Config(sdk = 31, application = TestCounterApp.class)`
-- Launch: `ActivityController<MyActivity> ctrl = Robolectric.buildActivity(MyActivity.class); MyActivity activity = ctrl.create().start().resume().get();`
-- Interact: `activity.findViewById(R.id.someId).performClick()` / `((TextView) ...).getText()`
-- Destroy in `@After`: `ctrl.pause().stop().destroy()`
-
-## Test file naming: `*Test.java` for unit, `*IntegrationTest.java` for integration, `*E2ETest.java` for E2E
+## Test Placement
+- Unit tests: `app/src/test/java/{pkg_dir}/unit/`
+- Integration tests: `app/src/test/java/{pkg_dir}/integration/`
+- E2E tests: `app/src/test/java/{pkg_dir}/e2e/`
 """
             pkg_compliance = f"""
-### Package Compliance (CRITICAL for Android):
-- The application package is `{android_pkg}`.
-- **Main source code**: `package {android_pkg};` — files in `app/src/main/java/{pkg_dir}/`
-- **Test code MUST use sub-packages matching the directory**:
-  - Unit: `package {android_pkg}.unit;` → `app/src/test/java/{pkg_dir}/unit/`
-  - Integration: `package {android_pkg}.integration;` → `app/src/test/java/{pkg_dir}/integration/`
-  - E2E: `package {android_pkg}.e2e;` → `app/src/test/java/{pkg_dir}/e2e/`
-- Import classes under test with `import {android_pkg}.xxx;` (from the main package)
-- The package declaration MUST match the directory — Java compilation fails otherwise.
-- Do NOT use `com.example.template` or any other package name.
+### Package Compliance (CRITICAL for Android)
+- Main source code uses `package {android_pkg};`
+- Unit tests use `package {android_pkg}.unit;`
+- Integration tests use `package {android_pkg}.integration;`
+- E2E tests use `package {android_pkg}.e2e;`
+- The package declaration must match the directory.
+- Do not use `com.example.template` or any other package name.
 """
         else:
-            test_stack = ""
+            test_stack = """
+# Testing Stack (Web):
+
+## Test Framework Boundaries (MANDATORY)
+- Unit and Integration tests use Vitest.
+- E2E tests use Playwright.
+- Never mix Vitest and Playwright APIs in the same file.
+
+## Web Test Placement Rules (MANDATORY)
+- Backend Vitest tests must live under `backend/tests/...`
+- Frontend Vitest tests must live under `frontend/src/...`
+- Frontend hook/component tests that use React Testing Library belong to frontend Vitest.
+- E2E tests must target browser behavior with Playwright and must not be authored as frontend Vitest files.
+
+## Web Test Content Rules (MANDATORY)
+- For Vitest, generate ESM test files using `import { describe, it, expect, vi } from 'vitest'`.
+- Do not generate CommonJS Vitest imports such as `require('vitest')`.
+- Do not generate E2E files that import `vitest`, `@testing-library/react`, `@testing-library/user-event`, or React hook testing helpers.
+- Playwright E2E must use Playwright APIs such as `test`, `expect`, and `page`.
+- Do not rely on copying `node_modules`, patching package internals, or inventing compatibility shims to make generated tests run.
+- Treat runner/framework mismatches as test-generation bugs to fix in the test files themselves.
+"""
             pkg_compliance = ""
 
         return f"""You are a Principal Software Development Engineer in Test (SDET).
 Your task is to write comprehensive, executable test cases for a newly designed component following Test-Driven Development (TDD) principles.
+
 Generate tests bottom-up:
 - Start with Unit tests for specific FUNC/DB interfaces.
 - Then write Integration tests for interface boundaries and collaboration.
@@ -124,21 +97,24 @@ Generate tests bottom-up:
 
 Execution protocol (strict):
 - Write ALL test files FIRST using multiple `write_file` calls, THEN call `run_build` ONCE.
-- Do NOT interleave `read_file` and `write_file` — batch all writes together.
+- Do NOT interleave `read_file` and `write_file` while authoring tests.
 - Keep tests deterministic. Do not add random sleeps or flaky waits.
 - For each generated test, ensure `test_id`, `type`, `file_path`, and `first_line` exactly match the real file content.
-- If build or syntax fails, fix tests immediately using `edit_file` (provide exact old_string/new_string) and rerun `run_build`.
+- If build or syntax fails, fix tests immediately using `edit_file` and rerun `run_build`.
+- If build or syntax fails because of framework mismatch, wrong directory placement, or wrong module system, rewrite the test file itself. Do not expect a later runtime patch to save it.
 
 {pkg_compliance}
 {test_stack}
 
-# Workflow:
-1. **Analyze**: Review the tech stack, requirement description, and Interface IR.
-2. **Place tests**: Use `list_directory` to confirm the test directory structure, then `write_file` to create test files in the correct subdirectory for each type.
-3. **Verify compilation**: You MUST call `run_build` to check for syntax/compilation errors. Fix any errors and rerun.
+# Workflow
+1. Analyze the tech stack, requirement description, and Interface IR.
+2. Use `list_directory` if needed to confirm target test directories.
+3. Write all required test files.
+4. Call `run_build` to catch syntax or compilation problems.
+5. Fix test-generation mistakes immediately, especially framework, directory, and module-system mismatches.
 
-# Final Output Requirement:
-After writing all test files, you MUST output a single JSON array enclosed in a markdown block (` ```json ... ``` `).
+# Final Output Requirement
+After writing all test files, output a single JSON array enclosed in a markdown block (` ```json ... ``` `).
 This JSON maps the generated tests to the requirement and interfaces.
 Schema for each object:
 {{
@@ -146,8 +122,8 @@ Schema for each object:
   "req_id": "The ID of the requirement node being tested",
   "interface_ids": ["List of interface_ids that this test specifically covers"],
   "type": "Must be exactly one of: Unit, Integration, E2E",
-  "file_path": "Relative path to the written test file (e.g., app/src/test/java/com/example/app/unit/FooTest.java)",
-  "first_line": "The exact first line of the test definition (e.g., 'void testAddition()')"
+  "file_path": "Relative path to the written test file",
+  "first_line": "The exact first line of the test definition"
 }}
 """
 
@@ -177,11 +153,12 @@ Schema for each object:
         if test_type == "All":
             test_instruction = """
 Generate ALL test types in a single pass:
-1. **Unit Tests** for DB and FUNC interfaces
-2. **Integration Tests** for API interfaces
-3. **E2E Tests** for UI interfaces (use the scenarios above if provided)
+1. Unit tests for DB and FUNC interfaces
+2. Integration tests for API interfaces
+3. E2E tests for UI interfaces
 
 Write ALL test files using `write_file` calls FIRST, then call `run_build` ONCE to verify compilation.
+For web projects, ensure the generated Unit, Integration, and E2E files already match the correct framework and directory rules in one pass.
 """
         else:
             test_instruction = f"""
