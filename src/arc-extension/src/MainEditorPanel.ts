@@ -36,7 +36,7 @@ export class MainEditorPanel {
       column || vscode.ViewColumn.One,
       {
         enableScripts: true,
-        localResourceRoots: [vscode.Uri.joinPath(extensionUri, "webview-dist")],
+        localResourceRoots: [vscode.Uri.joinPath(extensionUri, "web-dist")],
         retainContextWhenHidden: true, // Keep state when switching tabs
       }
     );
@@ -242,8 +242,8 @@ export class MainEditorPanel {
 
   private async _loadHtml() {
     const webview = this._panel.webview;
-    const webviewDistPath = vscode.Uri.joinPath(this._extensionUri, 'webview-dist');
-    const indexHtmlPath = vscode.Uri.joinPath(webviewDistPath, 'index.html');
+    const webDistPath = vscode.Uri.joinPath(this._extensionUri, 'web-dist');
+    const indexHtmlPath = vscode.Uri.joinPath(webDistPath, 'index.html');
     
     let htmlContent = '';
     try {
@@ -254,7 +254,7 @@ export class MainEditorPanel {
         return;
     }
 
-    const webviewUri = webview.asWebviewUri(webviewDistPath);
+    const webviewUri = webview.asWebviewUri(webDistPath);
     
     // Replace relative paths with webview URIs
     htmlContent = htmlContent

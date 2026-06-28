@@ -65,10 +65,11 @@
     }
   },
   "scripts": {
-    "vscode:prepublish": "npm run compile",
+    "build:web": "npm --prefix ./web run build",
+    "vscode:prepublish": "npm run build:web && npm run compile",
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./",
-    "pretest": "npm run compile && npm run lint",
+    "pretest": "npm run build:web && npm run compile && npm run lint",
     "lint": "eslint src",
     "test": "vscode-test"
   },

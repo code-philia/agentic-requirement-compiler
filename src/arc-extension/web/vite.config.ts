@@ -6,7 +6,7 @@ export default defineConfig({
   plugins: [react()],
   base: './', // Use relative paths for assets
   build: {
-    outDir: 'dist',
+    outDir: '../web-dist',
     rollupOptions: {
       output: {
         entryFileNames: 'assets/[name].js',

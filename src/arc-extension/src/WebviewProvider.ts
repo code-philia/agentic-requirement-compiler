@@ -220,8 +220,8 @@ export class WebviewProvider implements vscode.WebviewViewProvider {
       `;
     }
 
-    const webviewDistPath = vscode.Uri.joinPath(this._extensionUri, 'webview-dist');
-    const indexHtmlPath = vscode.Uri.joinPath(webviewDistPath, 'index.html');
+    const webDistPath = vscode.Uri.joinPath(this._extensionUri, 'web-dist');
+    const indexHtmlPath = vscode.Uri.joinPath(webDistPath, 'index.html');
     
     let htmlContent = '';
     try {
@@ -231,7 +231,7 @@ export class WebviewProvider implements vscode.WebviewViewProvider {
         return `<h3>Error loading webview</h3><p>${err}</p><p>Path: ${indexHtmlPath.toString()}</p>`;
     }
 
-    const webviewUri = webview.asWebviewUri(webviewDistPath);
+    const webviewUri = webview.asWebviewUri(webDistPath);
     
     // Replace relative paths with webview URIs
     htmlContent = htmlContent
