@@ -5,3 +5,5 @@ python-dotenv
 pyyaml
 pydantic
 colorama
+click
+jsonschema

@@ -2,3 +2,6 @@
 __pycache__
 *.db
 .env
+
+arc_agent.egg-info
+build
