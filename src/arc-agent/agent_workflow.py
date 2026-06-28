@@ -26,7 +26,8 @@ from agents.test_driven_developer import TestDrivenDeveloper
 from agents.test_generator import TestGenerator
 
 from dotenv import load_dotenv
-load_dotenv()
+_ENV_FILE = os.path.abspath(os.path.join(os.path.dirname(__file__), ".env"))
+load_dotenv(dotenv_path=_ENV_FILE, override=False)
 
 # ======================================================================================
 #                              Workflow Queue Constants

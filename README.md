@@ -63,21 +63,44 @@ uv pip install -r requirements.txt
 
 ## Configuration
 
-Create a `.env` file in `src/arc-agent/`:
+ARC reads configuration in this order:
+
+1. `src/arc-agent/.env` if the file exists
+2. existing system / shell environment variables if `.env` is missing or a variable is not defined there
+
+Create a `.env` file in `src/arc-agent/` if you want file-based configuration:
 
 ```bash
 # Required: LLM API credentials (OpenAI-compatible)
 OPENAI_API_KEY=your-api-key-here
-OPENAI_API_BASE_URL=https://api.openai.com/v1
+OPENAI_BASE_URL=https://api.openai.com/v1
 MODEL=your-model-here
 
-# Optional: Visual model for image analysis
-VISUAL_OPENAI_API_KEY=your-api-key-here
-VISUAL_OPENAI_API_BASE_URL=https://api.openai.com/v1
+# Optional: Visual model for image analysis (If not set, defaults to the same config as above)
+VISUAL_API_KEY=your-api-key-here
+VISUAL_BASE_URL=https://api.openai.com/v1
 VISUAL_MODEL=your-vision-model-here
 
 # Optional: Debug mode (1 = enabled, logs to .arc/debug.log)
 ARC_DEBUG=1
+```
+
+If you do not want a `.env` file, you can export the variables in the shell before running ARC.
+
+PowerShell:
+
+```powershell
+$env:OPENAI_API_KEY="your-api-key-here"
+$env:OPENAI_BASE_URL="https://api.openai.com/v1"
+$env:MODEL="your-model-here"
+```
+
+Bash:
+
+```bash
+export OPENAI_API_KEY="your-api-key-here"
+export OPENAI_BASE_URL="https://api.openai.com/v1"
+export MODEL="your-model-here"
 ```
 
 ### Android SDK Setup

@@ -61,13 +61,13 @@ class InterfaceDesigner(ARCAgent):
 
     @staticmethod
     def resolve_visual_api_key() -> str:
-        return os.environ.get("VISUAL_OPENAI_API_KEY") or os.environ.get("OPENAI_API_KEY", "")
+        return os.environ.get("VISUAL_API_KEY") or os.environ.get("OPENAI_API_KEY", "")
 
     @staticmethod
     def resolve_visual_api_url() -> str:
         raw_url = (
-            os.environ.get("VISUAL_OPENAI_API_BASE_URL")
-            or os.environ.get("OPENAI_API_BASE_URL", "")
+            os.environ.get("VISUAL_BASE_URL")
+            or os.environ.get("OPENAI_BASE_URL", "")
         ).strip()
         if not raw_url:
             return ""

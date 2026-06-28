@@ -9,8 +9,10 @@ from dotenv import load_dotenv
 import utils
 from .tools import TOOL_REGISTRY
 
-# Load environment variables from .env
-load_dotenv()
+# Load environment variables from src/arc-agent/.env if present.
+# Missing .env is allowed; the process environment remains the fallback source.
+_ENV_FILE = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".env"))
+load_dotenv(dotenv_path=_ENV_FILE, override=False)
 
 # Global Debug Flag
 DEBUG_MODE = int(os.environ.get("ARC_DEBUG", "1"))
@@ -78,7 +80,7 @@ class ARCAgent:
         self.log_cb = log_cb
         self.client = AsyncOpenAI(
             api_key=os.environ.get("OPENAI_API_KEY"),
-            base_url=os.environ.get("OPENAI_API_BASE_URL"),
+            base_url=os.environ.get("OPENAI_BASE_URL"),
         )
 
     async def _log(
