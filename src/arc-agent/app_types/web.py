@@ -54,6 +54,54 @@ async def _execute_web_test_command(command: str, cwd: str, timeout: float = 60.
         return f"Execution failed: {str(exc)}"
 
 
+def _normalize_backend_test_path(file_path: str) -> str:
+    normalized = (file_path or "").strip().replace("\\", "/")
+    if not normalized:
+        return ""
+    if os.path.isabs(file_path):
+        return normalized
+
+    normalized = normalized.lstrip("./")
+    if normalized.startswith("backend/"):
+        normalized = normalized[len("backend/"):]
+    return normalized
+
+
+def _build_web_test_execution(test_type: str, file_path: str, backend_path: str) -> dict[str, str]:
+    normalized_type = (test_type or "").strip().lower()
+    resolved_file_path = _normalize_backend_test_path(file_path)
+
+    if normalized_type in {"unit", "integration"}:
+        runner = "Vitest"
+        command = f"npx vitest run {resolved_file_path}" if resolved_file_path else "npx vitest run"
+    elif normalized_type == "e2e":
+        runner = "Playwright"
+        command = f"npx playwright test {resolved_file_path}" if resolved_file_path else "npx playwright test"
+    else:
+        raise ValueError("Unknown test type. Must be 'unit', 'integration', or 'e2e'.")
+
+    return {
+        "runner": runner,
+        "command": command,
+        "working_directory": backend_path,
+        "requested_test_file": file_path or "",
+        "resolved_test_file": resolved_file_path,
+    }
+
+
+def _prepend_test_execution_header(execution: dict[str, str], test_result: str) -> str:
+    header = "\n".join(
+        [
+            f"Runner: {execution['runner']}",
+            f"Command: {execution['command']}",
+            f"Working Directory: {execution['working_directory']}",
+            f"Requested Test File: {execution['requested_test_file']}",
+            f"Resolved Test File: {execution['resolved_test_file']}",
+        ]
+    )
+    return f"{header}\n{test_result}"
+
+
 class WebAppType(AppTypeHandler):
     name = "web"
 
@@ -72,6 +120,10 @@ class WebAppType(AppTypeHandler):
         await self.log_cb("System", f"System test execution ({test_type}): {file_path}")
         normalized_type = test_type.lower()
         backend_path = os.path.join(self.workspace_path, "backend")
+        try:
+            execution = _build_web_test_execution(test_type, file_path, backend_path)
+        except ValueError as exc:
+            return str(exc)
         servers_process = None
 
         if normalized_type == "e2e":
@@ -94,15 +146,9 @@ class WebAppType(AppTypeHandler):
             except Exception as exc:
                 return f"Failed to start servers for E2E testing: {str(exc)}"
 
-        if normalized_type in {"unit", "integration"}:
-            command = f"npx vitest run {file_path}" if file_path else "npx vitest run"
-        elif normalized_type == "e2e":
-            command = f"npx playwright test {file_path}" if file_path else "npx playwright test"
-        else:
-            return "Unknown test type. Must be 'unit', 'integration', or 'e2e'."
-
         try:
-            return await _execute_web_test_command(command, cwd=backend_path)
+            result = await _execute_web_test_command(execution["command"], cwd=backend_path)
+            return _prepend_test_execution_header(execution, result)
         finally:
             if servers_process:
                 backend_process, frontend_process = servers_process

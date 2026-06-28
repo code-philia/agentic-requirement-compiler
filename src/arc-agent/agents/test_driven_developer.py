@@ -13,6 +13,7 @@ class TestDrivenDeveloper(ARCAgent):
         self._stop_on_test_budget_exhausted = False
         self._test_budget_exhausted = False
         self._run_tests_executor: Callable[[], Awaitable[str]] | None = None
+        self._last_run_tests_exit_code: int | None = None
 
     def get_system_prompt(self) -> str:
         from utils import get_app_type, get_android_package
@@ -47,6 +48,12 @@ Execution protocol (strict):
 - The `run_tests` tool is only a signal. It takes NO arguments. When you call it, the system will execute the current target test batch and return the results in the tool output.
 - If tests fail, read the returned error output carefully, use `edit_file` to fix the minimal set of issues (provide exact old_string/new_string), and then call `run_tests` again.
 - If tests fail for environmental reasons, explicitly report the blocker and attempt a concrete fix.
+- Treat `No test files found` and equivalent discovery errors as runner/path/config problems first. Do not start by changing business logic when the runner did not actually execute the target test file.
+- Do not create mirror test files, proxy test files, duplicate test files, or path-compatibility files such as `backend/backend/...` just to satisfy a broken runner path.
+- Do not copy or relocate tests only to make discovery pass unless the system output explicitly shows the real project configuration itself must be fixed.
+- E2E tests must be Playwright tests. They are not Vitest tests, and you must not reinterpret E2E failures through `require('vitest')`, `describe/it/expect`-only assumptions, or rewrite E2E into Vitest unless the requirement explicitly changes frameworks.
+- If an E2E file itself appears to be Vitest-style, treat that as a test-generation or test-content error to be corrected. Do not "fix" it by changing the runner away from Playwright.
+- When E2E fails, debug it as Playwright: page interaction, selectors, assertions, server startup, and runtime environment.
 - Return exactly "IMPLEMENTED" only when target tests are truly passing.
 
 {pkg_compliance}
@@ -111,7 +118,9 @@ Once `run_tests` returns a 100% passing state (Exit Code: 0) for the target test
             "System is executing the current target test batch after the run_tests signal.",
             node_id=node_id,
         )
-        return True, await self._run_tests_executor()
+        result = await self._run_tests_executor()
+        self._last_run_tests_exit_code = self._extract_exit_code(result)
+        return True, result
 
     async def _get_stop_response_after_tool_call(
         self,
@@ -127,6 +136,27 @@ Once `run_tests` returns a 100% passing state (Exit Code: 0) for the target test
         ):
             return "BUDGET_EXHAUSTED"
         return None
+
+    async def _get_stop_response_before_final(
+        self,
+        final_response: str,
+        node_id: str | None = None,
+    ) -> str | None:
+        if "IMPLEMENTED" not in (final_response or "").upper():
+            return None
+        if self._last_run_tests_exit_code == 0:
+            return None
+
+        await self._log(
+            "Rejected premature IMPLEMENTED because the most recent run_tests result was not passing.",
+            status="error",
+            node_id=node_id,
+        )
+        return (
+            "The latest run_tests result did not pass with Exit Code: 0, so you cannot declare IMPLEMENTED yet.\n"
+            "Read the most recent test output, fix the real issue, and call run_tests again.\n"
+            "Do not fabricate compatibility test files or move tests just to satisfy discovery."
+        )
 
     async def run_from_messages(
         self,
@@ -144,12 +174,14 @@ Once `run_tests` returns a 100% passing state (Exit Code: 0) for the target test
         previous_stop = self._stop_on_test_budget_exhausted
         previous_exhausted = self._test_budget_exhausted
         previous_executor = self._run_tests_executor
+        previous_last_exit_code = self._last_run_tests_exit_code
 
         self._run_tests_budget = run_tests_budget
         self._run_tests_usage = run_tests_usage if run_tests_usage is not None else {}
         self._stop_on_test_budget_exhausted = stop_on_test_budget_exhausted
         self._test_budget_exhausted = False
         self._run_tests_executor = run_tests_executor
+        self._last_run_tests_exit_code = None
         try:
             return await super().run_from_messages(
                 messages=messages,
@@ -163,6 +195,7 @@ Once `run_tests` returns a 100% passing state (Exit Code: 0) for the target test
             self._stop_on_test_budget_exhausted = previous_stop
             self._test_budget_exhausted = previous_exhausted
             self._run_tests_executor = previous_executor
+            self._last_run_tests_exit_code = previous_last_exit_code
 
     def build_initial_messages(self, node_id: str, test_files: List[str], test_type: str, req_desc: str, scenarios: list = None, dependency_context: str = "", current_interfaces: list = None, preloaded_source: str = None) -> tuple:
         """Build the [system, user] messages and tools list without calling run().
@@ -217,3 +250,16 @@ When all target tests pass, output "IMPLEMENTED".
             tools=tools,
         )
         return result
+
+    @staticmethod
+    def _extract_exit_code(tool_result: str) -> int | None:
+        if not isinstance(tool_result, str):
+            return None
+        for line in tool_result.splitlines():
+            stripped = line.strip()
+            if stripped.startswith("Exit Code:"):
+                try:
+                    return int(stripped.split("Exit Code:", 1)[1].strip())
+                except ValueError:
+                    return None
+        return None

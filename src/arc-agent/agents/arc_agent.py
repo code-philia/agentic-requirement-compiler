@@ -123,6 +123,14 @@ class ARCAgent:
         """Allow subclasses to end the current session after a specific tool result."""
         return None
 
+    async def _get_stop_response_before_final(
+        self,
+        final_response: str,
+        node_id: str | None = None,
+    ) -> str | None:
+        """Allow subclasses to reject or replace a final assistant response before the session ends."""
+        return None
+
     def _estimate_context_chars(self, messages: List[Dict[str, Any]]) -> int:
         total = 0
         for m in messages:
@@ -531,6 +539,14 @@ Output from {tool_name}:
                         _consecutive_cache_only = 0
                 continue
             else:
+                stop_response = await self._get_stop_response_before_final(
+                    final_response=message.content or "",
+                    node_id=node_id,
+                )
+                if stop_response is not None:
+                    messages.append({"role": "user", "content": stop_response})
+                    step += 1
+                    continue
                 await self._log("Task completed.", node_id=node_id)
                 return message.content, messages
 
