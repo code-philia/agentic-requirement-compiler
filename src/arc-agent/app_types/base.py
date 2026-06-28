@@ -9,10 +9,16 @@ ARC_STACK_START = "<!-- ARC_TECH_STACK_START -->"
 ARC_STACK_END = "<!-- ARC_TECH_STACK_END -->"
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-PROJECT_ROOT = os.path.abspath(os.path.join(BASE_DIR, "..", "..", ".."))
-TEMPLATES_ROOT = os.path.join(PROJECT_ROOT, "templates")
+PACKAGE_TEMPLATES_ROOT = os.path.abspath(os.path.join(BASE_DIR, "..", "templates"))
 
 LogCallback = Callable[[str, str, str | None, str | None], Awaitable[None]]
+
+
+def _resolve_templates_root() -> str:
+    env_root = os.environ.get("ARC_AGENT_TEMPLATES_ROOT", "").strip()
+    if env_root:
+        return env_root
+    return PACKAGE_TEMPLATES_ROOT
 
 
 class AppTypeHandler(ABC):
@@ -32,7 +38,7 @@ class AppTypeHandler(ABC):
 
     @classmethod
     def template_dir(cls) -> str:
-        return os.path.join(TEMPLATES_ROOT, cls.name)
+        return os.path.join(_resolve_templates_root(), cls.name)
 
     async def initialize_workspace(self) -> bool:
         prereqs_ok = await self.check_prerequisites()

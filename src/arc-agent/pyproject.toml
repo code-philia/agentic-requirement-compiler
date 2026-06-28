@@ -28,8 +28,12 @@ py-modules = [
   "utils",
   "workflow_phases",
 ]
+include-package-data = true
 
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["agents", "agents.*", "app_types", "app_types.*", "traceability", "traceability.*"]
 namespaces = true
+
+[tool.setuptools.package-data]
+"*" = ["templates/**/*"]
