@@ -24,7 +24,7 @@ from traceability.database import (
 from utils import extract_json_array_from_markdown, extract_modified_files_from_messages
 
 TEST_TYPE_ORDER = ["Unit", "Integration", "E2E"]
-DEFAULT_TDD_TEST_BUDGET = 5
+DEFAULT_TDD_TEST_BUDGET = 10
 
 
 class WorkflowPhaseRunner:
@@ -185,7 +185,7 @@ class WorkflowPhaseRunner:
             implement_output, implement_messages = await self.test_driven_developer.run_from_messages(
                 messages=messages,
                 node_id=node_id,
-                max_steps=25,
+                max_steps=50,
                 tools=tools,
                 run_tests_budget=DEFAULT_TDD_TEST_BUDGET,
                 run_tests_usage=run_tests_usage,
