@@ -5,6 +5,7 @@ import mimetypes
 import os
 import re
 from typing import List, Dict, Any
+from urllib.parse import urlparse
 
 import requests
 
@@ -58,6 +59,31 @@ class InterfaceDesigner(ARCAgent):
 **Action:** Start the blind transcription. Ensure every visible CN/EN character is recorded in your description.
 """
 
+    @staticmethod
+    def resolve_visual_api_key() -> str:
+        return os.environ.get("VISUAL_OPENAI_API_KEY") or os.environ.get("OPENAI_API_KEY", "")
+
+    @staticmethod
+    def resolve_visual_api_url() -> str:
+        raw_url = (
+            os.environ.get("VISUAL_OPENAI_API_BASE_URL")
+            or os.environ.get("OPENAI_API_BASE_URL", "")
+        ).strip()
+        if not raw_url:
+            return ""
+
+        parsed = urlparse(raw_url)
+        normalized_path = parsed.path.rstrip("/")
+        if normalized_path.endswith("/chat/completions"):
+            return raw_url.rstrip("/")
+
+        if not normalized_path:
+            normalized_path = "/chat/completions"
+        else:
+            normalized_path = f"{normalized_path}/chat/completions"
+
+        return parsed._replace(path=normalized_path).geturl()
+
     async def parse_and_store_visual_elements(
         self,
         workspace_path: str,
@@ -99,12 +125,19 @@ class InterfaceDesigner(ARCAgent):
                 if self.log_cb:
                     await self.log_cb("System", f"Analyzing visual element: {image_path}", None, req_id)
 
+                visual_api_url = self.resolve_visual_api_url()
+                visual_api_key = self.resolve_visual_api_key()
+                if not visual_api_url:
+                    raise Exception("Visual API base URL is not configured.")
+                if not visual_api_key:
+                    raise Exception("Visual API key is not configured.")
+
                 response = await asyncio.to_thread(
                     requests.post,
-                    os.environ.get("VISUAL_OPENAI_API_BASE_URL", os.environ.get("OPENAI_API_BASE_URL", "")),
+                    visual_api_url,
                     headers={
                         "Content-Type": "application/json",
-                        "Authorization": f"Bearer {os.environ.get('VISUAL_OPENAI_API_KEY')}",
+                        "Authorization": f"Bearer {visual_api_key}",
                     },
                     data=json.dumps(
                         {
