@@ -9,8 +9,6 @@ from .database import (
     get_all_tests,
     get_call_edges_by_req_id,
     get_all_call_edges,
-    get_implementation_by_req_id,
-    get_all_implementations,
     get_node_state,
     get_all_node_states,
 )
@@ -40,8 +38,6 @@ def get_traceability_data(req_id: str = "", keyword: str = ""):
         interfaces = get_interfaces_by_req_id(req_id)
         tests = get_tests_by_req_id(req_id)
         call_edges = get_call_edges_by_req_id(req_id)
-        impl = get_implementation_by_req_id(req_id)
-        implementations = [impl] if impl else []
         state = get_node_state(req_id)
         node_states = [state] if state else []
     else:
@@ -49,7 +45,6 @@ def get_traceability_data(req_id: str = "", keyword: str = ""):
         interfaces = get_all_interfaces()
         tests = get_all_tests()
         call_edges = get_all_call_edges()
-        implementations = get_all_implementations()
         node_states = get_all_node_states()
 
     if keyword:
@@ -57,7 +52,6 @@ def get_traceability_data(req_id: str = "", keyword: str = ""):
         interfaces = [i for i in interfaces if _contains_keyword(i, keyword)]
         tests = [t for t in tests if _contains_keyword(t, keyword)]
         call_edges = [e for e in call_edges if _contains_keyword(e, keyword)]
-        implementations = [i for i in implementations if _contains_keyword(i, keyword)]
         node_states = [s for s in node_states if _contains_keyword(s, keyword)]
     
     return {
@@ -65,7 +59,6 @@ def get_traceability_data(req_id: str = "", keyword: str = ""):
         "interfaces": interfaces,
         "tests": tests,
         "call_edges": call_edges,
-        "implementations": implementations,
         "node_states": node_states,
         "filters": {
             "req_id": req_id or "",

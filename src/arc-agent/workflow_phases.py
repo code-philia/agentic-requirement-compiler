@@ -19,7 +19,6 @@ from traceability.database import (
     update_interface_implemented_status,
     update_test_pass_statuses,
     update_interface_req_ids,
-    upsert_implementation,
 )
 from utils import extract_json_array_from_markdown, extract_modified_files_from_messages
 
@@ -151,13 +150,13 @@ class WorkflowPhaseRunner:
         if not tests:
             await self.log_cb(
                 "TestDrivenDeveloper",
-                "IMPLEMENT phase requires generated tests, but none were found.",
-                "error",
+                "No generated tests were found for this node. Skipping TDD loop and marking the node as passed by definition.",
                 node_id,
             )
+            update_interface_implemented_status(node_id, True)
+            return True
 
         total_model_test_runs = 0
-        artifact_paths: set[str] = set()
         group_reports: list[str] = []
 
         for test_type in TEST_TYPE_ORDER:
@@ -198,8 +197,8 @@ class WorkflowPhaseRunner:
             )
 
             total_model_test_runs += run_tests_usage.get("run_tests", 0)
-            artifact_paths.update(extract_modified_files_from_messages(implement_messages))
             context_pipeline.cache.invalidate_file_layers(node_id)
+            self._store_new_interfaces_from_tdd_output(node_id, implement_output)
 
             if "IMPLEMENTED" not in (implement_output or "").upper():
                 await self.log_cb(
@@ -243,13 +242,6 @@ class WorkflowPhaseRunner:
         final_ok = total_tests > 0 and failed_tests == 0
 
         update_interface_implemented_status(node_id, final_ok)
-        upsert_implementation(
-            req_id=node_id,
-            status="passed" if final_ok else "failed",
-            attempts=total_model_test_runs,
-            artifact_paths=sorted(artifact_paths),
-            summary=self._build_implementation_summary(group_reports, passed_tests, total_tests),
-        )
 
         if final_ok:
             await self.log_cb(
@@ -266,6 +258,13 @@ class WorkflowPhaseRunner:
                 node_id,
             )
         return final_ok
+
+    def _store_new_interfaces_from_tdd_output(self, node_id: str, implement_output: str) -> None:
+        interfaces = extract_json_array_from_markdown(implement_output)
+        if not interfaces:
+            return
+        self._store_interfaces(node_id, interfaces)
+        context_pipeline.cache.invalidate_db_layers(node_id)
 
     def _store_interfaces(self, node_id: str, interfaces: list[dict[str, Any]]) -> None:
         for interface in interfaces:

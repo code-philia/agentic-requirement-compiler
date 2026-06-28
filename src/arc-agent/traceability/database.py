@@ -24,7 +24,6 @@ def init_db(reset: bool = False):
     
     if reset:
         cursor.execute('DROP TABLE IF EXISTS node_states')
-        cursor.execute('DROP TABLE IF EXISTS implementations')
         cursor.execute('DROP TABLE IF EXISTS call_edges')
         cursor.execute('DROP TABLE IF EXISTS tests')
         cursor.execute('DROP TABLE IF EXISTS interfaces')
@@ -87,20 +86,7 @@ def init_db(reset: bool = False):
     )
     ''')
 
-    # 5. Create the Implementations table (node-level implementation trace)
-    cursor.execute('''
-    CREATE TABLE IF NOT EXISTS implementations (
-        req_id TEXT PRIMARY KEY,
-        status TEXT,
-        attempts INTEGER,
-        artifact_paths TEXT,
-        summary TEXT,
-        updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
-        FOREIGN KEY(req_id) REFERENCES requirements(req_id)
-    )
-    ''')
-
-    # 6. Create node state table (state machine snapshots)
+    # 5. Create node state table (state machine snapshots)
     cursor.execute('''
     CREATE TABLE IF NOT EXISTS node_states (
         req_id TEXT PRIMARY KEY,
@@ -489,8 +475,6 @@ def clear_node_design_artifacts(req_id: str):
 
     cursor.execute('DELETE FROM tests WHERE req_id = ?', (req_id,))
     cursor.execute('DELETE FROM call_edges WHERE source_req_id = ? OR target_req_id = ?', (req_id, req_id))
-    cursor.execute('DELETE FROM implementations WHERE req_id = ?', (req_id,))
-
     conn.commit()
     conn.close()
 
@@ -580,72 +564,6 @@ def get_all_call_edges():
     rows = cursor.fetchall()
     conn.close()
     return [dict(row) for row in rows]
-
-
-"""
-Implementation Record
-"""
-def upsert_implementation(req_id: str, status: str, attempts: int = 1,
-                          artifact_paths: list | None = None, summary: str = ""):
-    """Insert or update one implementation trace record."""
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-    cursor.execute('''
-    INSERT INTO implementations (req_id, status, attempts, artifact_paths, summary, updated_at)
-    VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-    ON CONFLICT(req_id) DO UPDATE SET
-        status=excluded.status,
-        attempts=excluded.attempts,
-        artifact_paths=excluded.artifact_paths,
-        summary=excluded.summary,
-        updated_at=CURRENT_TIMESTAMP
-    ''', (
-        req_id,
-        status,
-        attempts,
-        json.dumps(artifact_paths) if artifact_paths else '[]',
-        summary or ""
-    ))
-    conn.commit()
-    conn.close()
-
-
-def get_implementation_by_req_id(req_id: str):
-    """Retrieve implementation trace record for one requirement."""
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    cursor = conn.cursor()
-    cursor.execute('SELECT * FROM implementations WHERE req_id = ?', (req_id,))
-    row = cursor.fetchone()
-    conn.close()
-    if not row:
-        return None
-    data = dict(row)
-    try:
-        data['artifact_paths'] = json.loads(data['artifact_paths']) if data.get('artifact_paths') else []
-    except json.JSONDecodeError:
-        data['artifact_paths'] = []
-    return data
-
-
-def get_all_implementations():
-    """Retrieve all implementation trace records."""
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    cursor = conn.cursor()
-    cursor.execute('SELECT * FROM implementations ORDER BY req_id')
-    rows = cursor.fetchall()
-    conn.close()
-
-    implementations = []
-    for row in rows:
-        data = dict(row)
-        try:
-            data['artifact_paths'] = json.loads(data['artifact_paths']) if data.get('artifact_paths') else []
-        except json.JSONDecodeError:
-            data['artifact_paths'] = []
-        implementations.append(data)
-    return implementations
 
 
 """

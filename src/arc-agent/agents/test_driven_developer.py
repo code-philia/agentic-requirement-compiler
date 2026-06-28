@@ -59,6 +59,8 @@ Execution protocol (strict):
 - If an E2E file itself appears to be Vitest-style, treat that as a test-generation or test-content error to be corrected. Do not "fix" it by changing the runner away from Playwright.
 - When E2E fails, debug it as Playwright: page interaction, selectors, assertions, server startup, and runtime environment.
 - For web projects, backend tests and frontend tests may run from different working directories. Use the `Working Directory` and `Resolved Test File` fields from system output as the source of truth before deciding whether the blocker is path, config, test content, or implementation.
+- The current node already has a concrete interface list. Implement those interfaces first and keep them aligned with their declared file path, signature, callers, callees, inputs, and outputs.
+- If you discover that passing tests requires a genuinely new interface that was not in the original node IR, you may add it. In that case, include a JSON array in a markdown `json` block in your final response describing only the newly added interfaces using the same schema as interface design. Do not emit this JSON for ordinary code edits.
 - Return exactly "IMPLEMENTED" only when target tests are truly passing.
 
 {pkg_compliance}
@@ -243,10 +245,33 @@ Once `run_tests` returns a 100% passing state (Exit Code: 0) for the target test
         if test_type == "E2E" and scenarios:
             scenarios_context = f"\n### Target UI Scenarios\n{json.dumps(scenarios, indent=2, ensure_ascii=False)}"
 
+        interfaces_context = ""
+        if current_interfaces:
+            interface_lines = []
+            for interface in current_interfaces:
+                if not isinstance(interface, dict):
+                    continue
+                interface_lines.append(
+                    json.dumps(
+                        {
+                            "interface_id": interface.get("interface_id", ""),
+                            "type": interface.get("type", ""),
+                            "file_path": interface.get("file_path", ""),
+                            "first_line": interface.get("first_line", ""),
+                            "implemented": interface.get("implemented", False),
+                            "content": interface.get("content", ""),
+                        },
+                        ensure_ascii=False,
+                    )
+                )
+            if interface_lines:
+                interfaces_context = "\n### Current Node Interfaces\n" + "\n".join(interface_lines)
+
         user_prompt = f"""
 ### Auto-Prefetched Context for Node [{node_id}]
 {dynamic_ctx}
 {scenarios_context}
+{interfaces_context}
 
 ### Target Test Files
 {json.dumps(test_files, indent=2)}
