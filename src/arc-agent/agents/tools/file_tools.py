@@ -51,15 +51,22 @@ async def read_file_impl(path: str, offset: int = None, limit: int = None) -> st
     
 _PROTECTED_PATHS = {"app/build.gradle", "build.gradle", "settings.gradle", "gradle.properties", "gradlew", "gradlew.bat"}
 
+def _is_protected_write_path(path: str) -> bool:
+    norm = path.replace("\\", "/").lstrip("./")
+    if "/node_modules/" in f"/{norm}" or norm.startswith("node_modules/"):
+        return True
+    if norm in _PROTECTED_PATHS or norm.endswith("/build.gradle") and "src" not in norm:
+        return True
+    return False
+
 async def write_file_impl(path: str, content: str) -> str:
     """Write to a file, automatically creating directories if they do not exist"""
     # Protect build files — test/TDD agents must not edit them
-    norm = path.replace("\\", "/").lstrip("./")
-    if norm in _PROTECTED_PATHS or norm.endswith("/build.gradle") and "src" not in norm:
+    if _is_protected_write_path(path):
         return (
             f"Error: writing to `{path}` is not allowed. "
-            "All required build dependencies are pre-declared in the template. "
-            "Fix your import path instead of modifying the build file."
+            "Do not modify dependencies, generated package contents, or protected build files. "
+            "Fix project code, test code, or runner configuration instead."
         )
     abs_path = get_abs_path(path)
     try:
@@ -83,6 +90,12 @@ async def edit_file_impl(path: str, old_string: str, new_string: str, replace_al
     Returns:
         Success message or error description
     """
+    if _is_protected_write_path(path):
+        return (
+            f"Error: editing `{path}` is not allowed. "
+            "Do not modify dependencies, generated package contents, or protected build files. "
+            "Fix project code, test code, or runner configuration instead."
+        )
     abs_path = get_abs_path(path)
     try:
         if not os.path.exists(abs_path):
