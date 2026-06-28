@@ -19,7 +19,6 @@ Unlike standard code generators, ARC focuses on **Traceability**. It maintains a
 - [Configuration](#configuration)
 - [Usage](#usage)
   - [CLI Mode (Recommended)](#cli-mode-recommended)
-  - [WebSocket Mode](#websocket-mode)
 - [Target Project Directory Format](#target-project-directory-format)
 - [Requirements YAML Format](#requirements-yaml-format)
 - [Contributing](#contributing)
@@ -27,8 +26,8 @@ Unlike standard code generators, ARC focuses on **Traceability**. It maintains a
 
 ## Key Features
 
-- **Multi-Agent Pipeline**: InterfaceDesigner → TestGenerator → TestDrivenDeveloper, with local build verification at each stage
-- **Traceability Database**: SQLite-backed tracking from requirement → interface → test → code
+- **Multi-Agent Pipeline**: InterfaceDesigner -> TestGenerator -> TestDrivenDeveloper, with local build verification at each stage
+- **Traceability Database**: SQLite-backed tracking from requirement -> interface -> test -> code
 - **TDD Workflow**: Tests generated first, then code iteratively implemented until tests pass
 - **DAG-Aware**: Non-leaf nodes design shared DB infrastructure; leaf nodes implement full UI/API/FUNC layers
 - **Auto-Compact**: Context window managed automatically to prevent overflow during long agent runs
@@ -57,9 +56,9 @@ cd Agentic-Requirement-Compiler
 # 2. Navigate to the agent source
 cd src/arc-agent
 
-# 3. Create virtual environment and install dependencies with uv
+# 3. Create virtual environment and install dependencies
 uv venv
-uv pip install -e .
+uv pip install -r requirements.txt
 ```
 
 ## Configuration
@@ -99,7 +98,7 @@ export ANDROID_SDK_ROOT=/path/to/android/sdk
 
 ### CLI Mode (Recommended)
 
-Run ARC directly from the terminal without a WebSocket UI:
+Run ARC from `src/arc-agent/main.py`:
 
 ```bash
 cd src/arc-agent
@@ -110,17 +109,15 @@ cd src/arc-agent
 # Linux/Mac:
 source .venv/bin/activate
 
-# Basic usage: generate an Android project
-python run_compilation_cli.py /path/to/target/project --app-type android
+# Basic usage: compile a web project
+python main.py /path/to/target/project --app-type web
 
-# Generate a web project
-python run_compilation_cli.py /path/to/target/project --app-type web
+# Compile an Android project
+python main.py /path/to/target/project --app-type android
 
 # Clear existing workspace and recompile
-python run_compilation_cli.py /path/to/target/project --app-type android --clear-all
+python main.py /path/to/target/project --app-type web --clear-all
 
-# Specify a custom requirements file path
-python run_compilation_cli.py /path/to/target/project --app-type android --requirement-path /path/to/requirements.yaml
 ```
 
 **CLI flags:**
@@ -128,42 +125,27 @@ python run_compilation_cli.py /path/to/target/project --app-type android --requi
 | Flag | Description |
 |------|-------------|
 | `project_path` | Target project root directory (positional, required) |
-| `--requirement-path` | Path to requirements YAML (absolute, or relative to project) |
-| `--clear-all` | Clear workspace and recompile from scratch |
+| `--requirement-path` | Path to requirements YAML. Can be absolute, or relative to `project_path` |
+| `--clear-all` | Clear project workspace and recompile |
 | `--app-type` | `web` or `android` (default: `web`) |
-
-**What happens during CLI execution:**
-
-1. Prerequisites check (Java, Android SDK for android; Node.js for web)
-2. Template files copied to target directory
-3. `local.properties` written (Android SDK path, for android projects)
-4. Requirements DAG parsed from YAML
-5. For each node (top-down DFS order):
-   - **Non-leaf nodes**: InterfaceDesigner designs shared DB layer only (Entity/DAO)
-   - **Leaf nodes**: Full pipeline — InterfaceDesigner → TestGenerator → TDD loop
-   - Local build verification after each agent stage
-6. Debug log written to `<target>/.arc/debug.log` (if `ARC_DEBUG=1`)
 
 ## Target Project Directory Format
 
-The target project directory must contain a `requirements/` folder with a `requirements.yaml` file:
+The target project directory is an existing directory passed as `project_path`.
 
-```
+At minimum, ARC expects a requirements file in one of these locations:
+
+- `<project_path>/requirements/requirements.yaml`
+- `<project_path>/requirements/requirents.yaml`
+- or a custom path supplied via `--requirement-path`
+
+Minimal input layout:
+
+```text
 my-project/
-├── requirements/
-│   └── requirements.yaml    # Required: ARC input file
-├── .arc/                     # Auto-created by ARC
-│   ├── database.db           # Traceability database
-│   ├── metadata.md           # Tech stack metadata
-│   └── debug.log             # Debug log (if ARC_DEBUG=1)
-├── app/                      # Auto-created from template
-│   ├── src/main/
-│   ├── src/test/
-│   └── build.gradle
-└── ...
+|-- requirements/
+|   `-- requirements.yaml
 ```
-
-If the `requirements.yaml` is at a non-standard path, use `--requirement-path` to specify it explicitly.
 
 ## Requirements YAML Format
 
@@ -213,9 +195,6 @@ children:
 | `scenarios` | List of test scenarios with steps |
 | `children` | Sub-requirements (forms a DAG) |
 
-**Node types:**
-- **Non-leaf** (has `children`): ARC designs only shared DB infrastructure (Room Entity/DAO)
-- **Leaf** (no `children`): ARC implements the full stack (UI → API → FUNC → DB)
 
 ## Contributing
 
