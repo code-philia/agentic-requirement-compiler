@@ -7,6 +7,27 @@ import aiofiles
 from utils import get_abs_path
 import traceability.database as db_module
 
+_SKIP_DIRS = {
+    ".git", ".arc", ".gradle", "build", ".idea",
+    "node_modules", ".venv", "venv", "dist", "out", "coverage",
+    "__pycache__", "target", ".next", ".nuxt", ".cache", ".turbo",
+    ".parcel-cache", "tmp", "temp",
+}
+_SKIP_FILES = {
+    ".gitignore", ".DS_Store", "Thumbs.db", "package-lock.json",
+    "yarn.lock", "pnpm-lock.yaml", "composer.lock", "Gemfile.lock",
+    ".npmrc", ".yarnrc",
+}
+
+
+def _should_skip_path(file_path: str, root_dir: str) -> bool:
+    rel_path = os.path.relpath(file_path, root_dir)
+    parts = rel_path.replace("\\", "/").split("/")
+    if any(part in _SKIP_DIRS for part in parts[:-1]):
+        return True
+    return parts[-1] in _SKIP_FILES
+
+
 async def glob_impl(pattern: str, path: str = None) -> str:
     """
     Fast file pattern matching using glob patterns.
@@ -31,8 +52,11 @@ async def glob_impl(pattern: str, path: str = None) -> str:
         full_pattern = os.path.join(search_dir, pattern)
         matches = glob_module.glob(full_pattern, recursive=True)
 
-        # Filter out directories, keep only files
-        files = [f for f in matches if os.path.isfile(f)]
+        # Filter out directories plus skipped build/dependency files
+        files = [
+            match for match in matches
+            if os.path.isfile(match) and not _should_skip_path(match, search_dir)
+        ]
 
         # Sort by modification time (newest first)
         files.sort(key=lambda x: os.path.getmtime(x), reverse=True)
@@ -130,12 +154,14 @@ async def grep_impl(
         else:
             files_to_search = []
             for root, dirs, files in os.walk(search_dir):
-                # Skip VCS directories
-                dirs[:] = [d for d in dirs if d not in ['.git', '.svn', '.hg', '.arc', 'node_modules', '__pycache__', '.venv', 'venv']]
+                dirs[:] = [directory for directory in dirs if directory not in _SKIP_DIRS]
 
                 for file in files:
+                    file_path = os.path.join(root, file)
+                    if file in _SKIP_FILES or _should_skip_path(file_path, search_dir):
+                        continue
                     if any(file.endswith(ext) for ext in file_extensions):
-                        files_to_search.append(os.path.join(root, file))
+                        files_to_search.append(file_path)
 
         # Search files
         for file_path in files_to_search:

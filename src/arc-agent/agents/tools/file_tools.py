@@ -1,6 +1,7 @@
 import os
 import aiofiles
 from utils import get_abs_path
+from .search_tools import _SKIP_DIRS, _SKIP_FILES
 
 async def read_file_impl(path: str, offset: int = None, limit: int = None) -> str:
     """
@@ -152,18 +153,6 @@ async def list_directory_impl(path: str, depth: int = 3) -> str:
                 output_lines.append(f"- {rel_prefix}[Error: {str(e)}]")
                 return
                 
-            _SKIP_DIRS = {
-                ".git", ".arc", ".gradle", "build", ".idea",
-                "node_modules", ".venv", "venv", "dist", "out", "coverage",
-                "__pycache__", "target", ".next", ".nuxt", ".cache", ".turbo",
-                ".parcel-cache", "tmp", "temp",
-            }
-            _SKIP_FILES = {
-                ".gitignore", ".DS_Store", "Thumbs.db", "package-lock.json",
-                "yarn.lock", "pnpm-lock.yaml", "composer.lock", "Gemfile.lock",
-                ".npmrc", ".yarnrc",
-            }
-
             for item in items:
                 if item in _SKIP_DIRS or item in _SKIP_FILES:
                     continue
