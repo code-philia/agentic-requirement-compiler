@@ -2,9 +2,11 @@ import sqlite3
 import json
 import os
 
+from arcbench_compat import emit_traceability_event, resolve_traceability_db_path
+
 # Default traceability database path. Runtime can override it via set_db_path().
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-DB_PATH = os.path.join(BASE_DIR, 'traceability.db')
+DB_PATH = resolve_traceability_db_path(os.path.join(BASE_DIR, 'traceability.db'))
 
 def set_db_path(path: str):
     """Set the database path dynamically."""
@@ -219,6 +221,18 @@ def insert_interface(interface_id: str, req_ids: list, type: str, content: str,
     
     conn.commit()
     conn.close()
+    emit_traceability_event({
+        "type": "interface_upsert",
+        "interface_id": interface_id,
+        "req_ids": req_ids or [],
+        "interface_type": type,
+        "content": content,
+        "file_path": file_path or None,
+        "first_line": first_line or None,
+        "implemented": bool(implemented),
+        "callers": callers or [],
+        "callees": callees or [],
+    })
 
 def insert_test(test_id: str, req_id: str, interface_ids: list, type: str,
                 file_path: str, first_line: str, passed: bool | None = None):
@@ -242,6 +256,15 @@ def insert_test(test_id: str, req_id: str, interface_ids: list, type: str,
     
     conn.commit()
     conn.close()
+    emit_traceability_event({
+        "type": "test_upsert",
+        "test_id": test_id,
+        "req_id": req_id,
+        "scenario_id": None,
+        "test_type": type,
+        "file_path": file_path or None,
+        "first_line": first_line or None,
+    })
 
 
 def update_test_pass_status(test_id: str, passed: bool | None):
@@ -314,13 +337,23 @@ def update_test_implemented_status(test_ids: list, implemented: bool = True):
         
     conn.commit()
     conn.close()
+    for interface_id in sorted(target_interface_ids):
+        emit_traceability_event({
+            "type": "interface_status",
+            "interface_id": interface_id,
+            "implemented": bool(implemented),
+            "message": None,
+        })
 
 def update_interface_implemented_status(req_id: str, implemented: bool = True):
     """Update implemented status for all interfaces associated with a requirement."""
     conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
     cursor = conn.cursor()
 
     search_term = f'%"{req_id}"%'
+    cursor.execute('SELECT interface_id FROM interfaces WHERE req_ids LIKE ?', (search_term,))
+    rows = cursor.fetchall()
     cursor.execute('''
     UPDATE interfaces
     SET implemented = ?
@@ -329,6 +362,13 @@ def update_interface_implemented_status(req_id: str, implemented: bool = True):
 
     conn.commit()
     conn.close()
+    for row in rows:
+        emit_traceability_event({
+            "type": "interface_status",
+            "interface_id": row["interface_id"],
+            "implemented": bool(implemented),
+            "message": None,
+        })
 
 def update_interface_implemented(interface_id: str, implemented: bool = True):
     """Update implemented status for a single interface by its ID."""
@@ -341,6 +381,12 @@ def update_interface_implemented(interface_id: str, implemented: bool = True):
     ''', (1 if implemented else 0, interface_id))
     conn.commit()
     conn.close()
+    emit_traceability_event({
+        "type": "interface_status",
+        "interface_id": interface_id,
+        "implemented": bool(implemented),
+        "message": None,
+    })
 
 def update_interface_file_info(interface_id: str, file_path: str, first_line: str):
     """Update file path and first line information for an existing interface."""

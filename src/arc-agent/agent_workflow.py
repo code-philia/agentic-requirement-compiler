@@ -3,6 +3,7 @@ import os
 import shutil
 from typing import Any, Awaitable, Callable
 
+from arcbench_compat import emit_requirement_state, resolve_traceability_db_path
 from app_types import create_app_type_handler, normalize_app_type
 from traceability import store_all_requirement
 from traceability.database import get_requirement_by_id, init_db, set_db_path, upsert_node_state
@@ -122,7 +123,7 @@ class ARCWorkflowManager:
         set_workspace_root(self.workspace_path)
         set_app_type(self.app_type)
 
-        db_path = os.path.join(self.arc_dir, "traceability.db")
+        db_path = resolve_traceability_db_path(os.path.join(self.arc_dir, "traceability.db"))
         await self.log_cb("System", f"Initializing traceability database at {db_path}...")
         set_db_path(db_path)
         init_db()
@@ -219,6 +220,11 @@ class ARCWorkflowManager:
                 new_state = NODE_DESIGNED if phase == PHASE_DESIGN else NODE_PASSED
                 self._set_node_state(queue_state["node_states"], node_id, new_state)
                 self._save_processing_queue(queue_state)
+                if phase == PHASE_DESIGN:
+                    emit_requirement_state(node_id, "design", "completed")
+                else:
+                    emit_requirement_state(node_id, "implement", "completed")
+                    emit_requirement_state(node_id, "test", "passed")
                 await self._commit_phase_checkpoint(node_id, phase, requirement_data)
                 await self.log_cb("Compiler", f"{phase} completed for node {node_id}.", None, node_id)
             else:
@@ -226,6 +232,8 @@ class ARCWorkflowManager:
                 self._set_node_state(queue_state["node_states"], node_id, NODE_FAILED)
                 self._mark_remaining_node_tasks_failed(queue_state, node_id)
                 self._save_processing_queue(queue_state)
+                if phase == PHASE_IMPLEMENT:
+                    emit_requirement_state(node_id, "test", "failed")
                 await self._commit_phase_checkpoint(node_id, f"{phase}-FAILED", requirement_data)
                 await self.log_cb("Compiler", f"{phase} failed for node {node_id}.", "error", node_id)
                 await self.log_cb(

@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "arc-agent"
+version = "0.1.0"
+description = "Agentic Requirement Compiler CLI agent"
+requires-python = ">=3.11"
+dependencies = [
+  "aiofiles",
+  "openai",
+  "requests",
+  "python-dotenv",
+  "pyyaml",
+  "pydantic",
+]
+
+[project.scripts]
+arc-agent = "arc_agent_cli:main"
+
+[tool.setuptools]
+py-modules = [
+  "agent_workflow",
+  "arc_agent_cli",
+  "arcbench_compat",
+  "main",
+  "utils",
+  "workflow_phases",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["agents", "agents.*", "app_types", "app_types.*", "traceability", "traceability.*"]
+namespaces = true
