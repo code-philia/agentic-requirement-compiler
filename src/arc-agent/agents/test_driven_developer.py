@@ -14,6 +14,7 @@ class TestDrivenDeveloper(ARCAgent):
         self._test_budget_exhausted = False
         self._run_tests_executor: Callable[[], Awaitable[str]] | None = None
         self._last_run_tests_exit_code: int | None = None
+        self._has_called_run_tests_in_session = False
 
     def get_system_prompt(self) -> str:
         from utils import get_app_type, get_android_package
@@ -119,6 +120,7 @@ Once `run_tests` returns a 100% passing state (Exit Code: 0) for the target test
             node_id=node_id,
         )
         result = await self._run_tests_executor()
+        self._has_called_run_tests_in_session = True
         self._last_run_tests_exit_code = self._extract_exit_code(result)
         return True, result
 
@@ -142,6 +144,28 @@ Once `run_tests` returns a 100% passing state (Exit Code: 0) for the target test
         final_response: str,
         node_id: str | None = None,
     ) -> str | None:
+        if (
+            self._has_called_run_tests_in_session
+            and self._last_run_tests_exit_code is not None
+            and self._last_run_tests_exit_code != 0
+        ):
+            await self._log(
+                "Rejected premature session completion because the most recent run_tests result was failing.",
+                status="error",
+                node_id=node_id,
+            )
+            if "IMPLEMENTED" in (final_response or "").upper():
+                return (
+                    "The latest run_tests result did not pass with Exit Code: 0, so you cannot declare IMPLEMENTED yet.\n"
+                    "Read the most recent test output, fix the real issue, and call run_tests again.\n"
+                    "Do not fabricate compatibility test files or move tests just to satisfy discovery."
+                )
+            return (
+                "The latest run_tests result is still failing, so you cannot end this TDD session yet.\n"
+                "Use the returned test output to make the minimal code or test fix that is actually required, then call run_tests again.\n"
+                "Do not stop at analysis only."
+            )
+
         if "IMPLEMENTED" not in (final_response or "").upper():
             return None
         if self._last_run_tests_exit_code == 0:
@@ -175,6 +199,7 @@ Once `run_tests` returns a 100% passing state (Exit Code: 0) for the target test
         previous_exhausted = self._test_budget_exhausted
         previous_executor = self._run_tests_executor
         previous_last_exit_code = self._last_run_tests_exit_code
+        previous_has_called_run_tests = self._has_called_run_tests_in_session
 
         self._run_tests_budget = run_tests_budget
         self._run_tests_usage = run_tests_usage if run_tests_usage is not None else {}
@@ -182,6 +207,7 @@ Once `run_tests` returns a 100% passing state (Exit Code: 0) for the target test
         self._test_budget_exhausted = False
         self._run_tests_executor = run_tests_executor
         self._last_run_tests_exit_code = None
+        self._has_called_run_tests_in_session = False
         try:
             return await super().run_from_messages(
                 messages=messages,
@@ -196,6 +222,7 @@ Once `run_tests` returns a 100% passing state (Exit Code: 0) for the target test
             self._test_budget_exhausted = previous_exhausted
             self._run_tests_executor = previous_executor
             self._last_run_tests_exit_code = previous_last_exit_code
+            self._has_called_run_tests_in_session = previous_has_called_run_tests
 
     def build_initial_messages(self, node_id: str, test_files: List[str], test_type: str, req_desc: str, scenarios: list = None, dependency_context: str = "", current_interfaces: list = None, preloaded_source: str = None) -> tuple:
         """Build the [system, user] messages and tools list without calling run().
