@@ -7,7 +7,6 @@ from typing import Awaitable, Callable
 from .base import ARC_STACK_END, ARC_STACK_START, AppTypeHandler
 from utils import build_web_runtime_env, get_web_base_url, get_web_port
 
-
 async def run_npm_install(target_dir: str, log_cb: Callable[..., Awaitable[None]]):
     try:
         process = await asyncio.create_subprocess_shell(
@@ -169,6 +168,12 @@ def _build_web_group_execution(test_type: str, file_paths: list[str], workspace_
             "frontend_working_directory": os.path.join(workspace_path, "frontend"),
             "backend_targets": backend_targets,
             "frontend_targets": frontend_targets,
+            "backend_requested_files": [
+                file_path for file_path in requested_files if _resolve_web_test_target(file_path, workspace_path)[0] == os.path.join(workspace_path, "backend")
+            ],
+            "frontend_requested_files": [
+                file_path for file_path in requested_files if _resolve_web_test_target(file_path, workspace_path)[0] == os.path.join(workspace_path, "frontend")
+            ],
             "web_port": str(get_web_port()),
             "base_url": get_web_base_url(),
         }
@@ -181,6 +186,10 @@ def _build_web_group_execution(test_type: str, file_paths: list[str], workspace_
             "requested_test_files": requested_files,
             "working_directory": os.path.join(workspace_path, "backend"),
             "resolved_targets": resolved_targets,
+            "requested_resolved_pairs": [
+                {"requested_file": file_path, "resolved_target": _normalize_backend_test_path(file_path)}
+                for file_path in requested_files
+            ],
             "web_port": str(get_web_port()),
             "base_url": get_web_base_url(),
         }
@@ -413,7 +422,10 @@ class WebAppType(AppTypeHandler):
                     cwd=execution["backend_working_directory"],
                 )
                 sections.append(f"=== Backend Vitest Batch ===\n{backend_result}")
-                exit_codes.append(_extract_exit_code(backend_result) or 1)
+                backend_exit_code = _extract_exit_code(backend_result)
+                if backend_exit_code is None:
+                    backend_exit_code = 1
+                exit_codes.append(backend_exit_code)
 
             if execution.get("frontend_targets"):
                 frontend_command = "npx vitest run " + " ".join(execution["frontend_targets"])
@@ -422,7 +434,10 @@ class WebAppType(AppTypeHandler):
                     cwd=execution["frontend_working_directory"],
                 )
                 sections.append(f"=== Frontend Vitest Batch ===\n{frontend_result}")
-                exit_codes.append(_extract_exit_code(frontend_result) or 1)
+                frontend_exit_code = _extract_exit_code(frontend_result)
+                if frontend_exit_code is None:
+                    frontend_exit_code = 1
+                exit_codes.append(frontend_exit_code)
 
             if not sections:
                 return _prepend_group_execution_header(
@@ -477,7 +492,13 @@ class WebAppType(AppTypeHandler):
                 cwd=execution["working_directory"],
                 timeout=120.0,
             )
-            body = f"=== Frontend Build ===\n{frontend_build_output}\n\n{playwright_result}"
+            playwright_exit_code = _extract_exit_code(playwright_result)
+            if playwright_exit_code is None:
+                playwright_exit_code = 1
+            body = (
+                f"Exit Code: {playwright_exit_code}\n\n"
+                f"{playwright_result}"
+            )
             return _prepend_group_execution_header(execution, body)
         except Exception as exc:
             return f"Failed to start grouped E2E execution: {str(exc)}"

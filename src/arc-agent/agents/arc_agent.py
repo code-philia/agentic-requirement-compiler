@@ -491,8 +491,8 @@ Output from {tool_name}:
                     # 3. Tool Output Budget: Summarize long error outputs, then truncate
                     tool_result_str = str(tool_result)
 
-                    # For run_build / run_tests with errors, summarize via a quick LLM call
-                    if tool_name in ("run_build", "run_tests") and len(tool_result_str) > 3000:
+                    # Summarize very long build/test outputs; otherwise keep raw output intact.
+                    if tool_name in ("run_build", "run_tests") and len(tool_result_str) > MAX_TOOL_OUTPUT_LENGTH:
                         exit_code_match = re.search(r'Exit Code:\s*(\d+)', tool_result_str)
                         if exit_code_match and exit_code_match.group(1) != "0":
                             tool_result_str = await self._summarize_tool_error(tool_name, tool_result_str)

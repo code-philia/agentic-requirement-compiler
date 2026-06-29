@@ -1,6 +1,6 @@
 import json
+import os
 import re
-from collections import defaultdict
 from typing import Any, Awaitable, Callable
 
 import utils
@@ -15,7 +15,6 @@ from traceability.database import (
     insert_call_edge,
     insert_interface,
     insert_test,
-    reset_test_pass_statuses_for_req_id,
     update_interface_implemented_status,
     update_test_pass_statuses,
     update_interface_req_ids,
@@ -223,8 +222,6 @@ class WorkflowPhaseRunner:
             update_interface_implemented_status(node_id, True)
             return True
 
-        total_model_test_runs = 0
-        group_reports: list[str] = []
         previous_group_handoff_summary = ""
         previous_group_modified_files: list[str] = []
 
@@ -267,7 +264,6 @@ class WorkflowPhaseRunner:
                 ),
             )
 
-            total_model_test_runs += run_tests_usage.get("run_tests", 0)
             context_pipeline.cache.invalidate_file_layers(node_id)
             self._store_new_interfaces_from_tdd_output(node_id, implement_output)
             latest_run_tests_result = self.test_driven_developer.get_last_run_tests_result()
@@ -281,33 +277,26 @@ class WorkflowPhaseRunner:
                     node_id,
                 )
 
-            latest_exit_code = None
             if latest_run_tests_result:
-                latest_exit_code = parse_test_results(latest_run_tests_result).get("exit_code")
-
-            if latest_run_tests_result and latest_exit_code == 0:
                 group_passed, group_statuses = self._map_statuses_from_batch_output(
                     tests=typed_tests,
                     batch_output=latest_run_tests_result,
                 )
+            else:
+                group_passed = False
+                group_statuses = {
+                    str(test.get("test_id", "")).strip(): False
+                    for test in typed_tests
+                    if str(test.get("test_id", "")).strip()
+                }
                 await self.log_cb(
                     "Compiler",
-                    f"Reused the latest passing run_tests result for interim {test_type} verification.",
-                    None,
+                    f"{test_type} group ended without any run_tests result. Marking the current batch as not passed.",
+                    "error",
                     node_id,
                 )
-            else:
-                group_passed, group_statuses = await self._execute_tests_for_records(
-                    node_id=node_id,
-                    test_type=test_type,
-                    tests=typed_tests,
-                    persist=False,
-                )
-            passed_count = sum(1 for value in group_statuses.values() if value is True)
-            total_count = len(group_statuses)
-            group_reports.append(
-                f"{test_type}: {passed_count}/{total_count} passed after model used run_tests {run_tests_usage.get('run_tests', 0)}/{DEFAULT_TDD_TEST_BUDGET} times"
-            )
+
+            update_test_pass_statuses(group_statuses)
             previous_group_handoff_summary = self._build_group_handoff_summary(
                 node_id=node_id,
                 test_type=test_type,
@@ -320,40 +309,26 @@ class WorkflowPhaseRunner:
             if group_passed:
                 await self.log_cb(
                     "Compiler",
-                    f"{test_type} group passed during interim verification.",
+                    f"{test_type} group passed from the latest run_tests result.",
                     None,
                     node_id,
                 )
             else:
                 await self.log_cb(
                     "Compiler",
-                    f"{test_type} group still has failing tests after budgeted TDD loop.",
+                    f"{test_type} group did not pass from the latest run_tests result.",
                     "error",
                     node_id,
                 )
 
-        final_statuses = await self._finalize_test_results(node_id, TEST_TYPE_ORDER)
-        total_tests = len(final_statuses)
-        passed_tests = sum(1 for value in final_statuses.values() if value is True)
-        failed_tests = sum(1 for value in final_statuses.values() if value is False)
-        final_ok = total_tests > 0 and failed_tests == 0
+        final_statuses = {
+            str(test.get("test_id", "")).strip(): test.get("passed")
+            for test in get_tests_by_req_id(node_id)
+            if str(test.get("test_id", "")).strip()
+        }
+        final_ok = bool(final_statuses) and all(value is True for value in final_statuses.values())
 
         update_interface_implemented_status(node_id, final_ok)
-
-        if final_ok:
-            await self.log_cb(
-                "TestDrivenDeveloper",
-                f"Final system test sweep passed: {passed_tests}/{total_tests}.",
-                None,
-                node_id,
-            )
-        else:
-            await self.log_cb(
-                "TestDrivenDeveloper",
-                f"Final system test sweep failed: {passed_tests}/{total_tests} passed, {failed_tests} failed.",
-                "error",
-                node_id,
-            )
         return final_ok
 
     async def _run_non_leaf_build_verification(self, node_id: str) -> str:
@@ -482,30 +457,6 @@ class WorkflowPhaseRunner:
                         edge_type="cross_req",
                     )
 
-    async def _finalize_test_results(
-        self,
-        node_id: str,
-        test_type_order: list[str],
-    ) -> dict[str, bool | None]:
-        tests = get_tests_by_req_id(node_id)
-        reset_test_pass_statuses_for_req_id(node_id)
-
-        status_by_test_id: dict[str, bool | None] = {}
-        for test_type in test_type_order:
-            typed_tests = [test for test in tests if str(test.get("type", "")).strip() == test_type]
-            if not typed_tests:
-                continue
-
-            _, typed_statuses = await self._execute_tests_for_records(
-                node_id=node_id,
-                test_type=test_type,
-                tests=typed_tests,
-                persist=True,
-            )
-            status_by_test_id.update(typed_statuses)
-
-        return status_by_test_id
-
     def _canonicalize_test_id(
         self,
         node_id: str,
@@ -526,23 +477,14 @@ class WorkflowPhaseRunner:
         group_statuses: dict[str, bool | None],
         latest_run_tests_result: str | None,
     ) -> str:
-        stable_interfaces = []
-        for interface in get_interfaces_by_req_id(node_id):
-            if interface.get("implemented"):
-                stable_interfaces.append(str(interface.get("interface_id", "")).strip())
-
         passed_tests = sorted(test_id for test_id, status in group_statuses.items() if status is True)
         failed_tests = sorted(test_id for test_id, status in group_statuses.items() if status is not True)
         summary_lines = [
             f"- Previous group: {test_type}",
             f"- Modified files: {', '.join(sorted(modified_files)) if modified_files else 'none'}",
-            f"- Stable interfaces: {', '.join(stable_interfaces[:12]) if stable_interfaces else 'none'}",
             f"- Tests passed in previous group: {', '.join(passed_tests[:12]) if passed_tests else 'none'}",
             f"- Remaining failing tests from previous group: {', '.join(failed_tests[:12]) if failed_tests else 'none'}",
         ]
-        exit_code = parse_test_results(latest_run_tests_result or "").get("exit_code") if latest_run_tests_result else None
-        if exit_code is not None:
-            summary_lines.append(f"- Previous run_tests exit code: {exit_code}")
         return "\n".join(summary_lines)
 
     def _build_non_leaf_convergence_summary(self, node_id: str, requirement_data: dict[str, Any]) -> str:
@@ -552,6 +494,7 @@ class WorkflowPhaseRunner:
 
         lines = [
             "- This parent node should converge child capabilities into one coherent subsystem.",
+            "- Use concrete child outputs as assembly inputs: implemented interfaces, landed files, passed tests, and remaining failures.",
         ]
         for child_id in child_ids:
             child_interfaces = get_interfaces_by_req_id(child_id)
@@ -560,6 +503,13 @@ class WorkflowPhaseRunner:
                 str(interface.get("interface_id", "")).strip()
                 for interface in child_interfaces
                 if interface.get("implemented")
+            )
+            child_files = sorted(
+                {
+                    str(interface.get("file_path", "")).strip()
+                    for interface in child_interfaces
+                    if str(interface.get("file_path", "")).strip()
+                }
             )
             passed_tests = sorted(
                 str(test.get("test_id", "")).strip()
@@ -572,6 +522,7 @@ class WorkflowPhaseRunner:
                 if test.get("passed") is False
             )
             lines.append(f"- Child `{child_id}` implemented interfaces: {', '.join(implemented[:10]) if implemented else 'none'}")
+            lines.append(f"- Child `{child_id}` landed files: {', '.join(child_files[:10]) if child_files else 'none'}")
             lines.append(f"- Child `{child_id}` passed tests: {', '.join(passed_tests[:10]) if passed_tests else 'none'}")
             if failed_tests:
                 lines.append(f"- Child `{child_id}` remaining failed tests: {', '.join(failed_tests[:10])}")
@@ -582,85 +533,25 @@ class WorkflowPhaseRunner:
         tests: list[dict[str, Any]],
         batch_output: str,
     ) -> tuple[bool, dict[str, bool | None]]:
-        grouped_tests: dict[str, list[dict[str, Any]]] = defaultdict(list)
+        grouped_tests: dict[str, list[dict[str, Any]]] = {}
         for test in tests:
             file_path = str(test.get("file_path", "")).strip()
             if file_path:
-                grouped_tests[file_path].append(test)
+                grouped_tests.setdefault(file_path, []).append(test)
 
         parsed_result = parse_test_results(batch_output)
         batch_passed = parsed_result.get("exit_code") == 0
+        file_batch_statuses = self._extract_file_batch_statuses(parsed_result)
         status_by_test_id: dict[str, bool | None] = {}
         all_passed = True
 
-        for file_tests in grouped_tests.values():
-            file_statuses = self._map_file_test_statuses(file_tests, parsed_result, batch_passed)
+        for file_path, file_tests in grouped_tests.items():
+            normalized_file_path = file_path.replace("\\", "/")
+            file_passed = file_batch_statuses.get(normalized_file_path, batch_passed)
+            file_statuses = self._map_file_test_statuses(file_tests, parsed_result, file_passed)
             status_by_test_id.update(file_statuses)
             if not all(value is True for value in file_statuses.values()):
                 all_passed = False
-
-        return all_passed, status_by_test_id
-
-    async def _execute_tests_for_records(
-        self,
-        node_id: str,
-        test_type: str,
-        tests: list[dict[str, Any]],
-        persist: bool,
-    ) -> tuple[bool, dict[str, bool | None]]:
-        grouped_tests: dict[str, list[dict[str, Any]]] = defaultdict(list)
-        for test in tests:
-            file_path = str(test.get("file_path", "")).strip()
-            if file_path:
-                grouped_tests[file_path].append(test)
-
-        if not grouped_tests:
-            await self.log_cb(
-                "Compiler",
-                f"No concrete {test_type} test files were found for execution.",
-                "error",
-                node_id,
-            )
-            return False, {}
-
-        all_passed = True
-        status_by_test_id: dict[str, bool | None] = {}
-        phase_label = "final" if persist else "interim"
-        grouped_file_paths = list(grouped_tests.keys())
-
-        output = await self.app_handler.run_test_group(test_type, grouped_file_paths)
-        result = parse_test_results(output)
-        batch_passed = result.get("exit_code") == 0
-
-        for file_path, file_tests in grouped_tests.items():
-            file_statuses = self._map_file_test_statuses(file_tests, result, batch_passed)
-            status_by_test_id.update(file_statuses)
-
-            if persist:
-                update_test_pass_statuses(file_statuses)
-
-            file_passed = all(value is True for value in file_statuses.values()) if file_statuses else batch_passed
-            if file_passed:
-                await self.log_cb(
-                    "Compiler",
-                    f"{phase_label.capitalize()} {test_type} execution passed for {file_path}.",
-                    None,
-                    node_id,
-                )
-                continue
-
-            all_passed = False
-            await self.log_cb(
-                "Compiler",
-                f"{phase_label.capitalize()} {test_type} execution failed for {file_path}.",
-                "error",
-                node_id,
-            )
-            if utils.debug_logger:
-                utils.debug_logger.log(
-                    f"{phase_label.upper()}_TESTS[{node_id}:{test_type}:{file_path}]",
-                    output,
-                )
 
         return all_passed, status_by_test_id
 
@@ -695,49 +586,25 @@ class WorkflowPhaseRunner:
         raw_output: str,
     ) -> str:
         parsed = parse_test_results(raw_output)
-        exit_code = int(parsed.get("exit_code", -1))
-        typed_tests = [
-            test
-            for test in get_tests_by_req_id(node_id)
-            if str(test.get("type", "")).strip() == test_type
-            and str(test.get("file_path", "")).strip() in set(test_files)
-        ]
+        lines: list[str] = []
 
-        grouped_tests: dict[str, list[dict[str, Any]]] = defaultdict(list)
-        for test in typed_tests:
-            file_path = str(test.get("file_path", "")).strip()
-            if file_path:
-                grouped_tests[file_path].append(test)
-
-        file_summaries: list[tuple[str, bool]] = []
+        grouped_sub_batches = self._group_sub_batches_by_requested_file(parsed)
         for file_path in test_files:
-            file_tests = grouped_tests.get(file_path, [])
-            file_statuses = self._map_file_test_statuses(file_tests, parsed, exit_code == 0)
-            file_passed = bool(file_statuses) and all(value is True for value in file_statuses.values())
-            if not file_tests:
-                file_passed = exit_code == 0
-            file_summaries.append((file_path, file_passed))
+            normalized_file_path = file_path.replace("\\", "/")
+            sub_batch = grouped_sub_batches.get(normalized_file_path)
+            lines.append(f"Test File: {file_path}")
+            lines.append("Test Results:")
+            if not sub_batch:
+                lines.append(raw_output.rstrip())
+                lines.append("")
+                continue
+            lines.append(str(sub_batch.get("raw_output", "")).rstrip())
+            lines.append("")
 
-        passed_files = [file_path for file_path, passed in file_summaries if passed]
-        failed_files = [file_path for file_path, passed in file_summaries if not passed]
-        passed_tests = parsed.get("passed", [])
-        failed_tests = parsed.get("failed", [])
+        if not grouped_sub_batches:
+            return raw_output
 
-        summary_lines = [
-            f"Exit Code: {exit_code}",
-            f"Batch Test Type: {test_type}",
-            "Batch Summary:",
-            f"- Files: {len(passed_files)}/{len(test_files)} passed",
-            f"- Tests: {len(passed_tests)} passed, {len(failed_tests)} failed",
-        ]
-        if failed_files:
-            summary_lines.append("Failed Files:")
-            summary_lines.extend(f"- {file_path}" for file_path in failed_files)
-        if failed_tests:
-            summary_lines.append("Failed Tests:")
-            summary_lines.extend(f"- {test_name}" for test_name in failed_tests[:12])
-
-        return "\n".join(summary_lines) + "\n\nRaw Command Output:\n" + raw_output
+        return "\n".join(lines).rstrip()
 
     def _map_file_test_statuses(
         self,
@@ -745,60 +612,43 @@ class WorkflowPhaseRunner:
         parsed_result: dict[str, Any],
         file_passed: bool,
     ) -> dict[str, bool | None]:
-        if file_passed:
-            return {
-                str(test.get("test_id", "")).strip(): True
-                for test in file_tests
-                if str(test.get("test_id", "")).strip()
-            }
+        return {
+            str(test.get("test_id", "")).strip(): file_passed
+            for test in file_tests
+            if str(test.get("test_id", "")).strip()
+        }
 
-        normalized_passed = [self._normalize_test_text(item) for item in parsed_result.get("passed", [])]
-        normalized_failed = [self._normalize_test_text(item) for item in parsed_result.get("failed", [])]
-
-        status_by_test_id: dict[str, bool | None] = {}
-        for test in file_tests:
-            test_id = str(test.get("test_id", "")).strip()
-            if not test_id:
+    @staticmethod
+    def _extract_file_batch_statuses(parsed_result: dict[str, Any]) -> dict[str, bool]:
+        status_by_file: dict[str, bool] = {}
+        for sub_batch in parsed_result.get("sub_batches", []) or []:
+            if not isinstance(sub_batch, dict):
                 continue
-
-            identifier = self._extract_test_identifier(test)
-            normalized_identifier = self._normalize_test_text(identifier)
-            if normalized_identifier:
-                if any(normalized_identifier in item for item in normalized_passed):
-                    status_by_test_id[test_id] = True
-                    continue
-                if any(normalized_identifier in item for item in normalized_failed):
-                    status_by_test_id[test_id] = False
-                    continue
-
-            status_by_test_id[test_id] = False
-        return status_by_test_id
+            sub_batch_passed = int(sub_batch.get("exit_code", 1)) == 0
+            for file_path in sub_batch.get("requested_files", []) or []:
+                normalized = str(file_path or "").strip().replace("\\", "/")
+                if normalized:
+                    status_by_file[normalized] = sub_batch_passed
+        return status_by_file
 
     @staticmethod
-    def _extract_test_identifier(test: dict[str, Any]) -> str:
-        first_line = str(test.get("first_line", "")).strip()
-        if not first_line:
-            return str(test.get("test_id", "")).strip()
-
-        quoted = re.search(r'["\']([^"\']+)["\']', first_line)
-        if quoted:
-            return quoted.group(1)
-
-        method = re.search(r'([A-Za-z_][A-Za-z0-9_]*)\s*\(', first_line)
-        if method:
-            return method.group(1)
-
-        return first_line
-
-    @staticmethod
-    def _normalize_test_text(value: str) -> str:
-        return re.sub(r'[^a-z0-9]+', '', (value or '').lower())
-
-    @staticmethod
-    def _build_implementation_summary(group_reports: list[str], passed_tests: int, total_tests: int) -> str:
-        summary_parts = list(group_reports)
-        summary_parts.append(f"Final system sweep: {passed_tests}/{total_tests} tests passed.")
-        return " | ".join(summary_parts)
+    def _group_sub_batches_by_requested_file(parsed_result: dict[str, Any]) -> dict[str, dict[str, Any]]:
+        grouped: dict[str, dict[str, Any]] = {}
+        for sub_batch in parsed_result.get("sub_batches", []) or []:
+            if not isinstance(sub_batch, dict):
+                continue
+            for file_path in sub_batch.get("requested_files", []) or []:
+                normalized = str(file_path or "").strip().replace("\\", "/")
+                if normalized:
+                    grouped[normalized] = sub_batch
+            if not sub_batch.get("requested_files"):
+                raw_output = str(sub_batch.get("raw_output", "")).strip()
+                match = re.search(r"Requested Test File:\s*(.+)", raw_output)
+                if match:
+                    normalized = match.group(1).strip().replace("\\", "/")
+                    if normalized:
+                        grouped[normalized] = sub_batch
+        return grouped
 
     @staticmethod
     def _collect_test_files(tests: list[dict[str, Any]]) -> list[str]:
