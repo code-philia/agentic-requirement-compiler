@@ -2,6 +2,7 @@ import asyncio
 import os
 import shutil
 from abc import ABC, abstractmethod
+from importlib import resources
 from typing import Awaitable, Callable
 
 
@@ -9,7 +10,7 @@ ARC_STACK_START = "<!-- ARC_TECH_STACK_START -->"
 ARC_STACK_END = "<!-- ARC_TECH_STACK_END -->"
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-PACKAGE_TEMPLATES_ROOT = os.path.abspath(os.path.join(BASE_DIR, "..", "templates"))
+PACKAGE_TEMPLATES_PACKAGE = "templates"
 
 LogCallback = Callable[[str, str, str | None, str | None], Awaitable[None]]
 
@@ -18,7 +19,7 @@ def _resolve_templates_root() -> str:
     env_root = os.environ.get("ARC_AGENT_TEMPLATES_ROOT", "").strip()
     if env_root:
         return env_root
-    return PACKAGE_TEMPLATES_ROOT
+    return str(resources.files(PACKAGE_TEMPLATES_PACKAGE))
 
 
 class AppTypeHandler(ABC):
