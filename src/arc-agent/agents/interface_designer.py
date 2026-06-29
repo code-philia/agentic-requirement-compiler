@@ -205,7 +205,7 @@ class InterfaceDesigner(ARCAgent):
         return f"""You are a Principal Software Architect.
 Your task is to analyze a raw software requirement and design its interfaces (UI -> API -> FUNC -> DB).
 
-For **non-leaf nodes**: design the shared foundation and aggregation layer for child nodes. Focus on reusable infrastructure such as page shells, routing/entry points, shared state, common data contracts, shared services, and base storage/models. Keep the design modular so leaf nodes can extend it with concrete feature logic.
+For **non-leaf nodes**: design the shared foundation, aggregation, and system-convergence layer for child nodes. Focus on reusable infrastructure plus the interfaces that connect child capabilities into one coherent system: page shells, routing/entry points, shared state, common data contracts, shared services, orchestration boundaries, integration facades, and base storage/models. Keep the design modular so leaf nodes can extend it with concrete feature logic, while the non-leaf node ensures the whole subsystem is connected and consistent.
 
 For **leaf nodes**: design ALL layers with real logic (not just `throw UnsupportedOperationException`). Use actual DAO calls, return real data, wire up LiveData/queries.
 
@@ -286,10 +286,13 @@ Implement real logic (not just `throw UnsupportedOperationException`). Use actua
 """
         else:
             scope_guidance = """
-### Node Scope: NON-LEAF NODE (Shared Foundation & Aggregation)
-This is a **non-leaf node** (it has children). Design the shared foundation and aggregation layer that child nodes will extend:
-- Page shells, routing/entry points, shared state, common data contracts, shared services, and base storage/models.
+### Node Scope: NON-LEAF NODE (Shared Foundation, Aggregation & System Convergence)
+This is a **non-leaf node** (it has children). Design the shared foundation, aggregation, and system-convergence layer that child nodes will extend and plug into:
+- Page shells, routing/entry points, shared state, common data contracts, shared services, orchestration boundaries, integration facades, and base storage/models.
+- The key responsibility is to connect child-node capabilities into one consistent subsystem: define how child features are mounted, coordinated, and exposed through stable parent-level interfaces.
+- Prefer interfaces that guarantee system connectivity and consistency: composition roots, parent-level facades, cross-child coordination flows, shared session/state contracts, navigation entry points, and aggregation APIs.
 - Also land concrete stub interface skeletons (signatures + placeholder returns) for these shared components so child nodes can import and refine them.
+- Do NOT duplicate child business logic in the parent. The parent should assemble, constrain, and expose child capabilities as one coherent system.
 - Keep the design modular; do NOT implement full feature logic — that belongs to leaf nodes.
 """
 
