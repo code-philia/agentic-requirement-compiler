@@ -7,3 +7,4 @@ pydantic
 colorama
 click
 jsonschema
+httpx[socks]
