@@ -60,7 +60,7 @@ def _is_protected_write_path(path: str) -> bool:
     return False
 
 async def write_file_impl(path: str, content: str) -> str:
-    """Write to a file, automatically creating directories if they do not exist"""
+    """Write to a file, automatically creating directories if they do not exist."""
     # Protect build files — test/TDD agents must not edit them
     if _is_protected_write_path(path):
         return (

@@ -21,6 +21,7 @@ class InterfaceDesigner(ARCAgent):
             log_cb=log_cb
         )
         self._non_leaf_existing_write_guard = False
+        self._non_leaf_no_write_guard = False
 
     async def _intercept_tool_call(
         self,
@@ -260,7 +261,7 @@ class InterfaceDesigner(ARCAgent):
         return f"""You are a Principal Software Architect.
 Your task is to analyze a raw software requirement and design its interfaces (UI -> API -> FUNC -> DB).
 
-For **non-leaf nodes**: design the shared foundation, aggregation, and system-convergence layer for child nodes. Focus on reusable infrastructure plus the interfaces that connect child capabilities into one coherent system: page shells, routing/entry points, shared state, common data contracts, shared services, orchestration boundaries, integration facades, and base storage/models. Keep the design modular so leaf nodes can extend it with concrete feature logic, while the non-leaf node ensures the whole subsystem is connected and consistent.
+For **non-leaf nodes**: design only the top-level module shell and system-convergence layer for child nodes. Focus on the smallest parent-level interface set that connects child capabilities into one coherent system: page shells, routing/entry points, frontend interface framework, shared state/providers, common data contracts, and thin integration facades. Prefer top-level module design over implementation-heavy service/DAO design. If the requirement includes reference images or is clearly page-centric, bias strongly toward frontend shell, layout, container structure, navigation, and entrypoint design.
 
 For **leaf nodes**: design ALL layers with real logic (not just `throw UnsupportedOperationException`). Use actual DAO calls, return real data, wire up LiveData/queries.
 
@@ -272,6 +273,11 @@ Design constraints (strict):
 - Keep contracts backward-compatible when reusing interfaces; use optional params for extensions.
 - Do not invent dependency interfaces if they already exist in traceability search results.
 - **UI Resource-ID Compliance**: If the requirement description or scenarios specify exact `resource-id` values (e.g., `org.billthefarmer.editor:id/newFile`), you MUST use those exact IDs when designing UI interfaces. The `android:id` in XML layouts and `findViewById(R.id.xxx)` in Java must match the resource-id suffix specified in the scenarios. This is critical for automated testing to find the UI elements.
+- For non-leaf nodes, default to as few interfaces as possible. Only design parent-level interfaces whose absence would block child-node connectivity.
+- For non-leaf nodes, do NOT invent parent-owned DAO/config/service layers just to hold placeholder data or platform metadata unless the requirement explicitly asks for them.
+- For non-leaf nodes, prefer reusing or minimally extending existing entrypoints and shared shells over creating new backend/platform modules.
+- For non-leaf nodes, prefer frontend interface framework interfaces before backend expansion: app shells, route containers, layout frames, navigation scaffolds, shared providers, and top-level section/component skeletons.
+- If the requirement contains visual references or obviously describes a page/container module, prefer frontend shell interfaces first and avoid speculative backend expansion.
 
 # Workflow:
 1. **Analyze and Design (Top-Down)**:
@@ -320,6 +326,14 @@ Each object in the array must follow this exact schema:
             "find_interface_impacts", "get_node_relations"
         ]
 
+    def _get_non_leaf_audit_tool_names(self) -> List[str]:
+        return [
+            "read_file", "write_file", "edit_file", "delete_file",
+            "list_directory", "glob", "grep", "run_build",
+            "search_interfaces_by_keyword", "search_interfaces_by_relation",
+            "find_interface_impacts", "get_node_relations"
+        ]
+
     async def design_ir(self, node_id: str, requirement_data: dict, is_leaf: bool = True) -> tuple:
         """Phase 1: Design interfaces and output IR JSON. No code writing.
         Returns (ir_output, messages) so the session can be continued by implement_stubs_from_session().
@@ -343,12 +357,18 @@ Implement real logic (not just `throw UnsupportedOperationException`). Use actua
             scope_guidance = """
 ### Node Scope: NON-LEAF NODE (Shared Foundation, Aggregation & System Convergence)
 This is a **non-leaf node** (it has children). Design the shared foundation, aggregation, and system-convergence layer that child nodes will extend and plug into:
-- Page shells, routing/entry points, shared state, common data contracts, shared services, orchestration boundaries, integration facades, and base storage/models.
+- Design the parent as a top-level module shell, not as a feature implementation node.
+- Prefer page shells, routing/entry points, frontend interface framework, shared state/providers, shared contracts, composition roots, and thin integration facades.
+- Frontend interface framework includes top-level page/layout shells, route containers, shared navigation, app entry composition, section skeleton components, and parent-owned UI composition boundaries.
 - The key responsibility is to connect child-node capabilities into one consistent subsystem: define how child features are mounted, coordinated, and exposed through stable parent-level interfaces.
-- Prefer interfaces that guarantee system connectivity and consistency: composition roots, parent-level facades, cross-child coordination flows, shared session/state contracts, navigation entry points, and aggregation APIs.
-- Also land concrete stub interface skeletons (signatures + placeholder returns) for these shared components so child nodes can import and refine them.
+- If the requirement is page-centric or has reference images, bias toward frontend shell/layout/container/navigation design for the parent module.
+- Prefer interfaces that guarantee system connectivity and consistency: composition roots, parent-level facades, cross-child coordination flows, shared session/state contracts, navigation entry points, and top-level page containers.
+- Reuse existing entry files, routes, and shared shells whenever possible. Extend them minimally instead of designing new parent-owned subsystems.
+- Avoid DB-layer and backend service-layer interfaces unless they are strictly necessary as thin cross-child integration contracts.
+- Avoid parent-owned implementation layers such as DAO, repository, service, bootstrap, registry, health, or platform-management modules unless they are explicitly required by the requirement itself.
 - Do NOT duplicate child business logic in the parent. The parent should assemble, constrain, and expose child capabilities as one coherent system.
-- Keep the design modular; do NOT implement full feature logic — that belongs to leaf nodes.
+- Keep the design modular and small; do NOT implement full feature logic — that belongs to leaf nodes.
+- A good non-leaf design usually has only a small number of parent interfaces. Do not inflate the parent with speculative infrastructure.
 """
 
         user_prompt = f"""
@@ -496,14 +516,16 @@ When all files are written and compilation passes, output "IMPLEMENTED".
 
 This is a non-leaf convergence task.
 Do only the minimal parent-level assembly needed to connect child capabilities into one coherent subsystem.
+- First prefer a no-op outcome: if the current parent shell is already connected and builds successfully, make no code changes.
 - Treat the provided child convergence summary as the source of truth for what child nodes already implemented and verified.
+- Do NOT create new parent-layer implementation files in this phase.
 - Prefer editing existing parent-level shells, facades, routing, shared state, and composition points.
-- If a target file already exists, read it first and use `edit_file` for minimal changes. Do not replace existing shared files with `write_file`.
+- If a target file already exists, read it first and use `edit_file` for minimal changes.
 - Base your work on concrete child outputs: their implemented interfaces, landed files, and current pass/fail state.
 - Do NOT re-implement child business logic in the parent.
 - Do NOT create broad new feature code unless required for system connectivity.
 - If a child still has failing tests, avoid masking that failure in the parent. Only add the minimum parent wiring that remains valid.
-- Write all required parent-level changes first, then call `run_build` once.
+- If repair is required, edit only the smallest set of existing shared files, then call `run_build` once.
 - When the parent-level convergence is complete and the build passes, output exactly `IMPLEMENTED`.
 """
         system_content = self.get_system_prompt()
@@ -515,9 +537,76 @@ Do only the minimal parent-level assembly needed to connect child capabilities i
         ]
         tools = [TOOL_REGISTRY[n]["schema"] for n in self._get_implement_tool_names() if n in TOOL_REGISTRY]
         previous_guard = self._non_leaf_existing_write_guard
+        previous_no_write_guard = self._non_leaf_no_write_guard
         self._non_leaf_existing_write_guard = True
+        self._non_leaf_no_write_guard = True
         try:
             result, messages = await self.run_from_messages(messages, node_id=node_id, max_steps=20, tools=tools)
         finally:
             self._non_leaf_existing_write_guard = previous_guard
+            self._non_leaf_no_write_guard = previous_no_write_guard
+        return result, messages
+
+    async def audit_non_leaf_connectivity(
+        self,
+        node_id: str,
+        interfaces: List[Dict[str, Any]],
+        convergence_summary: str,
+        preloaded_source: str = None,
+    ) -> tuple[str, list]:
+        """Run a read-only audit to decide whether parent-level convergence needs any code changes."""
+        from .context_pipeline import context_pipeline
+        from .tools import TOOL_REGISTRY
+
+        static_ctx, dynamic_ctx = context_pipeline.build_agent_context_split(
+            node_id=node_id,
+            agent_type=self.agent_name,
+            preloaded_source=preloaded_source,
+        )
+
+        iface_summaries = []
+        for iface in interfaces:
+            iface_summaries.append(
+                f"- [{iface.get('interface_id')}] Type: {iface.get('type')} "
+                f"File: `{iface.get('file_path', 'TBD')}` "
+                f"Name: {iface.get('name', '')} "
+                f"Desc: {iface.get('description', '')}"
+            )
+
+        user_prompt = f"""
+### Auto-Prefetched Context for Node [{node_id}]
+{dynamic_ctx}
+
+### Convergence Summary
+{convergence_summary}
+
+### Parent Interfaces To Audit ({len(interfaces)} total)
+{chr(10).join(iface_summaries)}
+
+### Full Interface Definitions
+```json
+{json.dumps(interfaces, indent=2, ensure_ascii=False)}
+```
+
+This is a read-only non-leaf connectivity audit.
+Your job is to inspect the current parent shell and child outputs, then decide whether parent-level code changes are actually necessary.
+- Read the relevant existing shared shell files, routes, app entrypoints, providers, facades, and composition roots.
+- Verify whether the child capabilities are already mounted and connected coherently.
+- Prefer a no-op result when the subsystem is already connected.
+- Do NOT write or edit files in this audit.
+- Do NOT invent new parent-layer implementation files.
+
+Output exactly one of:
+- `NO_CHANGES_NEEDED`
+- `CHANGES_REQUIRED`
+"""
+        system_content = self.get_system_prompt()
+        if static_ctx:
+            system_content = f"{system_content}\n\n{static_ctx}"
+        messages = [
+            {"role": "system", "content": system_content},
+            {"role": "user", "content": user_prompt},
+        ]
+        tools = [TOOL_REGISTRY[n]["schema"] for n in self._get_non_leaf_audit_tool_names() if n in TOOL_REGISTRY]
+        result, messages = await self.run_from_messages(messages, node_id=node_id, max_steps=12, tools=tools)
         return result, messages

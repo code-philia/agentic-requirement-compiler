@@ -177,6 +177,28 @@ class WorkflowPhaseRunner:
                     node_id,
                 )
             convergence_summary = self._build_non_leaf_convergence_summary(node_id, requirement_data)
+            audit_output, audit_messages = await self.interface_designer.audit_non_leaf_connectivity(
+                node_id=node_id,
+                interfaces=interfaces,
+                convergence_summary=convergence_summary,
+            )
+            audit_modified_files = extract_modified_files_from_messages(audit_messages)
+            if audit_modified_files:
+                context_pipeline.cache.invalidate_file_layers(node_id)
+            audit_says_no_changes = "NO_CHANGES_NEEDED" in (audit_output or "").upper()
+
+            precheck_output = await self._run_non_leaf_build_verification(node_id)
+            precheck_exit_code = parse_test_results(precheck_output).get("exit_code")
+            if audit_says_no_changes and precheck_exit_code == 0:
+                await self.log_cb(
+                    "Compiler",
+                    "Non-leaf IMPLEMENT audit confirmed the parent shell is already connected. Skipping convergence edits.",
+                    None,
+                    node_id,
+                )
+                update_interface_implemented_status(node_id, True)
+                return True
+
             convergence_output, convergence_messages = await self.interface_designer.converge_non_leaf(
                 node_id=node_id,
                 interfaces=interfaces,
@@ -188,6 +210,13 @@ class WorkflowPhaseRunner:
                 await self.log_cb(
                     "Compiler",
                     f"Non-leaf convergence modified files: {', '.join(sorted(modified_files))}",
+                    None,
+                    node_id,
+                )
+            else:
+                await self.log_cb(
+                    "Compiler",
+                    "Non-leaf convergence completed without code changes.",
                     None,
                     node_id,
                 )
