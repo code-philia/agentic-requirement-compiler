@@ -3,12 +3,21 @@ import os
 
 from utils import build_web_runtime_env, get_abs_path, get_app_type
 
+DEFAULT_EXECUTE_COMMAND_TIMEOUT = 30.0
+MAX_EXECUTE_COMMAND_TIMEOUT = 45.0
+
 
 async def execute_command_impl(command: str, cwd: str = ".", timeout: float = 30.0) -> str:
     """Run a shell command in the project directory."""
 
     abs_cwd = get_abs_path(cwd)
     process = None
+    requested_timeout = timeout
+    try:
+        timeout = float(timeout)
+    except (TypeError, ValueError):
+        timeout = DEFAULT_EXECUTE_COMMAND_TIMEOUT
+    timeout = max(1.0, min(timeout, MAX_EXECUTE_COMMAND_TIMEOUT))
 
     try:
         env = {
@@ -36,6 +45,11 @@ async def execute_command_impl(command: str, cwd: str = ".", timeout: float = 30
             result += f"STDOUT:\n{output}\n"
         if error:
             result += f"STDERR:\n{error}\n"
+        if timeout != requested_timeout:
+            result += (
+                f"NOTE: Requested timeout {requested_timeout} seconds was capped to "
+                f"{timeout} seconds by the tool runtime.\n"
+            )
 
         if len(result) > 4000:
             result = result[:2000] + "\n...[OUTPUT TRUNCATED]...\n" + result[-2000:]

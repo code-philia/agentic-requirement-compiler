@@ -326,12 +326,16 @@ execute_command_schema = {
     "type": "function",
     "function": {
         "name": "execute_command",
-        "description": "Execute a shell command in the project directory.",
+        "description": "Execute a shell command in the project directory. Use short timeouts for bounded checks such as installs, builds, or targeted test runs. Do not request long-running foreground commands.",
         "parameters": {
             "type": "object",
             "properties": {
                 "command": {"type": "string", "description": "The bash command to run."},
-                "cwd": {"type": "string", "description": "Working directory. Default is '.'"}
+                "cwd": {"type": "string", "description": "Working directory. Default is '.'"},
+                "timeout": {
+                    "type": "number",
+                    "description": "Optional timeout in seconds. Prefer short values such as 10-30. Values above 45 seconds are capped by the tool runtime."
+                }
             },
             "required": ["command"]
         }
