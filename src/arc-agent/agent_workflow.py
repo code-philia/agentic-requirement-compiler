@@ -153,7 +153,21 @@ class ARCWorkflowManager:
         await run_git_init(self.workspace_path, self.log_cb)
         return True
 
-    async def start_compilation(self, clear_all: bool = False) -> dict[str, Any]:
+    async def prepare_resume_context(self) -> None:
+        set_workspace_root(self.workspace_path)
+        set_app_type(self.app_type)
+        set_web_port(self.web_port)
+
+        db_path = resolve_traceability_db_path(os.path.join(self.arc_dir, "traceability.db"))
+        await self.log_cb("System", f"Reusing existing traceability database at {db_path}...")
+        set_db_path(db_path)
+        init_db()
+
+    async def start_compilation(
+        self,
+        clear_all: bool = False,
+        resume_from_queue: bool = False,
+    ) -> dict[str, Any]:
         await self.log_cb("Compiler", "ARC compilation started.")
 
         if clear_all:
@@ -165,10 +179,17 @@ class ARCWorkflowManager:
         if not requirement_tree:
             return {"ok": False, "failed_nodes": []}
 
-        init_ok = await self.initialize_project()
-        if init_ok is False:
-            await self.log_cb("Compiler", "Project initialization failed.", "error")
-            return {"ok": False, "failed_nodes": []}
+        if resume_from_queue:
+            await self.log_cb(
+                "Compiler",
+                f"Existing processing queue detected at {self.queue_path}. Resuming without project initialization.",
+            )
+            await self.prepare_resume_context()
+        else:
+            init_ok = await self.initialize_project()
+            if init_ok is False:
+                await self.log_cb("Compiler", "Project initialization failed.", "error")
+                return {"ok": False, "failed_nodes": []}
 
         compile_result = await self.compile_requirement_tree(requirement_tree)
 

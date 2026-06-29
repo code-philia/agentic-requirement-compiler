@@ -76,7 +76,7 @@ class ARCAgent:
         log_cb: Callable[[str, str, str | None, str | None], Awaitable[None] | None] = None
     ):
         self.agent_name = agent_name
-        self.model = os.environ.get("MODEL", "GLM-5")
+        self.model = os.environ.get("MODEL", "gpt-5.4")
         self.log_cb = log_cb
         self.client = AsyncOpenAI(
             api_key=os.environ.get("OPENAI_API_KEY"),

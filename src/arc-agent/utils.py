@@ -339,10 +339,10 @@ class Spinner:
 
 
 class DebugLogger:
-    def __init__(self, log_path: str):
+    def __init__(self, log_path: str, reset_existing: bool = True):
         self._path = log_path
         self._lock = threading.Lock()
-        self._ensure_log_file(reset=True)
+        self._ensure_log_file(reset=reset_existing)
 
     def _ensure_log_file(self, reset: bool = False):
         os.makedirs(os.path.dirname(self._path), exist_ok=True)
@@ -382,12 +382,12 @@ _STATUS_COLORS = {
 }
 
 
-def init_debug_logger(project_path: str) -> str:
+def init_debug_logger(project_path: str, reset_existing: bool = True) -> str:
     global debug_logger
     arc_dir = os.path.join(project_path, ".arc")
     os.makedirs(arc_dir, exist_ok=True)
     log_path = os.path.join(arc_dir, "debug.log")
-    debug_logger = DebugLogger(log_path)
+    debug_logger = DebugLogger(log_path, reset_existing=reset_existing)
     return log_path
 
 
@@ -413,6 +413,7 @@ def print_cli_startup(
     clear_all: bool,
     log_path: str,
     web_port: int | None = None,
+    resume_from_queue: bool = False,
 ):
     from app_types import read_stack_summary
 
@@ -423,9 +424,10 @@ def print_cli_startup(
     if app_type == "web" and web_port is not None:
         print(f"  {Fore.WHITE}Web Port  {Style.RESET_ALL}  {web_port}")
     print(f"  {Fore.WHITE}Stack     {Style.RESET_ALL}  {read_stack_summary(project_path, app_type)}")
+    mode_label = "resume-compilation" if resume_from_queue else ("clear-and-recompile" if clear_all else "start-compilation")
     print(
         f"  {Fore.WHITE}Mode      {Style.RESET_ALL}  "
-        f"{Fore.YELLOW}{'clear-and-recompile' if clear_all else 'start-compilation'}{Style.RESET_ALL}"
+        f"{Fore.YELLOW}{mode_label}{Style.RESET_ALL}"
     )
     print(f"  {Fore.WHITE}{'-' * 45}{Style.RESET_ALL}\n")
 

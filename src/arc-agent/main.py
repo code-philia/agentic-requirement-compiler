@@ -16,6 +16,7 @@ class CompilationConfig:
     clear_all: bool = False
     app_type: str = "web"
     web_port: int = 3301
+    resume_from_queue: bool = False
 
 
 def parse_args() -> argparse.Namespace:
@@ -60,13 +61,17 @@ def prepare_config(args: argparse.Namespace) -> CompilationConfig:
         raise ValueError(f"Web port must be between 1 and 65535, got: {web_port}")
 
     set_web_port(web_port)
-    upsert_metadata(normalized_project_path, normalized_app_type)
+    queue_path = os.path.join(normalized_project_path, ".arc", "processing_queue.json")
+    resume_from_queue = (not args.clear_all) and os.path.exists(queue_path)
+    if not resume_from_queue:
+        upsert_metadata(normalized_project_path, normalized_app_type)
     return CompilationConfig(
         project_path=normalized_project_path,
         requirement_path=normalized_requirement_path,
         clear_all=args.clear_all,
         app_type=normalized_app_type,
         web_port=web_port,
+        resume_from_queue=resume_from_queue,
     )
 
 
@@ -74,7 +79,7 @@ async def run() -> None:
     config = prepare_config(parse_args())
 
     print_cli_banner()
-    log_path = init_debug_logger(config.project_path)
+    log_path = init_debug_logger(config.project_path, reset_existing=not config.resume_from_queue)
     print_cli_startup(
         project_path=config.project_path,
         requirement_path=config.requirement_path,
@@ -82,6 +87,7 @@ async def run() -> None:
         clear_all=config.clear_all,
         log_path=log_path,
         web_port=config.web_port,
+        resume_from_queue=config.resume_from_queue,
     )
 
     try:
@@ -92,7 +98,10 @@ async def run() -> None:
             web_port=config.web_port,
             log_cb=cli_log,
         )
-        await workflow_manager.start_compilation(clear_all=config.clear_all)
+        await workflow_manager.start_compilation(
+            clear_all=config.clear_all,
+            resume_from_queue=config.resume_from_queue,
+        )
     finally:
         stop_cli_spinner()
 
