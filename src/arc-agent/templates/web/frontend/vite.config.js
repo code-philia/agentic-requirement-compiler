@@ -10,6 +10,11 @@ export default defineConfig({
     react(),
     tailwindcss(),
   ],
+  test: {
+    environment: 'jsdom',
+    globals: true,
+    setupFiles: './src/test/setup.js',
+  },
   server: {
     proxy: {
       '/api': `http://127.0.0.1:${backendPort}`
