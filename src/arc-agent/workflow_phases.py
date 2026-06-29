@@ -177,13 +177,41 @@ class WorkflowPhaseRunner:
                     "warning",
                     node_id,
                 )
-            update_interface_implemented_status(node_id, True)
+            convergence_summary = self._build_non_leaf_convergence_summary(node_id, requirement_data)
+            convergence_output, convergence_messages = await self.interface_designer.converge_non_leaf(
+                node_id=node_id,
+                interfaces=interfaces,
+                convergence_summary=convergence_summary,
+            )
+            modified_files = extract_modified_files_from_messages(convergence_messages)
+            if modified_files:
+                context_pipeline.cache.invalidate_file_layers(node_id)
+                await self.log_cb(
+                    "Compiler",
+                    f"Non-leaf convergence modified files: {', '.join(sorted(modified_files))}",
+                    None,
+                    node_id,
+                )
+            build_output = await self._run_non_leaf_build_verification(node_id)
+            build_exit_code = parse_test_results(build_output).get("exit_code")
+            if build_exit_code != 0:
+                await self.log_cb(
+                    "Compiler",
+                    "Non-leaf convergence build verification failed.",
+                    "error",
+                    node_id,
+                )
+                if utils.debug_logger:
+                    utils.debug_logger.log(f"NON_LEAF_BUILD[{node_id}]", build_output)
+                update_interface_implemented_status(node_id, False)
+                return False
             await self.log_cb(
                 "Compiler",
-                "Non-leaf IMPLEMENT completed with lightweight convergence only. No TDD or final sweep executed.",
+                "Non-leaf IMPLEMENT completed with lightweight convergence only. Parent-level assembly and build verification passed.",
                 None,
                 node_id,
             )
+            update_interface_implemented_status(node_id, True)
             return True
 
         if not tests:
@@ -197,6 +225,8 @@ class WorkflowPhaseRunner:
 
         total_model_test_runs = 0
         group_reports: list[str] = []
+        previous_group_handoff_summary = ""
+        previous_group_modified_files: list[str] = []
 
         for test_type in TEST_TYPE_ORDER:
             typed_tests = [test for test in tests if str(test.get("type", "")).strip() == test_type]
@@ -219,6 +249,8 @@ class WorkflowPhaseRunner:
                 req_desc=requirement_data.get("description", ""),
                 scenarios=requirement_data.get("scenarios", []),
                 current_interfaces=interfaces,
+                preloaded_source=context_pipeline.build_incremental_context(node_id, previous_group_modified_files) if previous_group_modified_files else None,
+                handoff_summary=previous_group_handoff_summary,
             )
             implement_output, implement_messages = await self.test_driven_developer.run_from_messages(
                 messages=messages,
@@ -239,6 +271,7 @@ class WorkflowPhaseRunner:
             context_pipeline.cache.invalidate_file_layers(node_id)
             self._store_new_interfaces_from_tdd_output(node_id, implement_output)
             latest_run_tests_result = self.test_driven_developer.get_last_run_tests_result()
+            modified_files = extract_modified_files_from_messages(implement_messages)
 
             if "IMPLEMENTED" not in (implement_output or "").upper():
                 await self.log_cb(
@@ -275,6 +308,14 @@ class WorkflowPhaseRunner:
             group_reports.append(
                 f"{test_type}: {passed_count}/{total_count} passed after model used run_tests {run_tests_usage.get('run_tests', 0)}/{DEFAULT_TDD_TEST_BUDGET} times"
             )
+            previous_group_handoff_summary = self._build_group_handoff_summary(
+                node_id=node_id,
+                test_type=test_type,
+                modified_files=modified_files,
+                group_statuses=group_statuses,
+                latest_run_tests_result=latest_run_tests_result,
+            )
+            previous_group_modified_files = modified_files
 
             if group_passed:
                 await self.log_cb(
@@ -314,6 +355,17 @@ class WorkflowPhaseRunner:
                 node_id,
             )
         return final_ok
+
+    async def _run_non_leaf_build_verification(self, node_id: str) -> str:
+        from agents.tools.cli_tools import run_build_impl
+
+        await self.log_cb(
+            "Compiler",
+            "Running non-leaf convergence build verification...",
+            None,
+            node_id,
+        )
+        return await run_build_impl()
 
     def _store_new_interfaces_from_tdd_output(self, node_id: str, implement_output: str) -> None:
         interfaces = extract_json_array_from_markdown(implement_output)
@@ -465,6 +517,65 @@ class WorkflowPhaseRunner:
         sanitized_type = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(test_type or "").strip()) or "TEST"
         sanitized_raw = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(raw_test_id or "").strip()) or "TEST"
         return f"{sanitized_node_id}::{sanitized_type}::{sequence:03d}::{sanitized_raw}"
+
+    def _build_group_handoff_summary(
+        self,
+        node_id: str,
+        test_type: str,
+        modified_files: list[str],
+        group_statuses: dict[str, bool | None],
+        latest_run_tests_result: str | None,
+    ) -> str:
+        stable_interfaces = []
+        for interface in get_interfaces_by_req_id(node_id):
+            if interface.get("implemented"):
+                stable_interfaces.append(str(interface.get("interface_id", "")).strip())
+
+        passed_tests = sorted(test_id for test_id, status in group_statuses.items() if status is True)
+        failed_tests = sorted(test_id for test_id, status in group_statuses.items() if status is not True)
+        summary_lines = [
+            f"- Previous group: {test_type}",
+            f"- Modified files: {', '.join(sorted(modified_files)) if modified_files else 'none'}",
+            f"- Stable interfaces: {', '.join(stable_interfaces[:12]) if stable_interfaces else 'none'}",
+            f"- Tests passed in previous group: {', '.join(passed_tests[:12]) if passed_tests else 'none'}",
+            f"- Remaining failing tests from previous group: {', '.join(failed_tests[:12]) if failed_tests else 'none'}",
+        ]
+        exit_code = parse_test_results(latest_run_tests_result or "").get("exit_code") if latest_run_tests_result else None
+        if exit_code is not None:
+            summary_lines.append(f"- Previous run_tests exit code: {exit_code}")
+        return "\n".join(summary_lines)
+
+    def _build_non_leaf_convergence_summary(self, node_id: str, requirement_data: dict[str, Any]) -> str:
+        child_ids = [str(child_id).strip() for child_id in (requirement_data.get("children_ids") or []) if str(child_id).strip()]
+        if not child_ids:
+            return "- No child nodes were found."
+
+        lines = [
+            "- This parent node should converge child capabilities into one coherent subsystem.",
+        ]
+        for child_id in child_ids:
+            child_interfaces = get_interfaces_by_req_id(child_id)
+            child_tests = get_tests_by_req_id(child_id)
+            implemented = sorted(
+                str(interface.get("interface_id", "")).strip()
+                for interface in child_interfaces
+                if interface.get("implemented")
+            )
+            passed_tests = sorted(
+                str(test.get("test_id", "")).strip()
+                for test in child_tests
+                if test.get("passed") is True
+            )
+            failed_tests = sorted(
+                str(test.get("test_id", "")).strip()
+                for test in child_tests
+                if test.get("passed") is False
+            )
+            lines.append(f"- Child `{child_id}` implemented interfaces: {', '.join(implemented[:10]) if implemented else 'none'}")
+            lines.append(f"- Child `{child_id}` passed tests: {', '.join(passed_tests[:10]) if passed_tests else 'none'}")
+            if failed_tests:
+                lines.append(f"- Child `{child_id}` remaining failed tests: {', '.join(failed_tests[:10])}")
+        return "\n".join(lines)
 
     def _map_statuses_from_batch_output(
         self,

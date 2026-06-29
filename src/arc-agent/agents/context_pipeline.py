@@ -268,13 +268,32 @@ class ContextPipeline:
             return ""
         return "<source_code>\n" + "\n\n".join(lines) + "\n</source_code>"
 
-    def _get_test_code_for_node(self, node_id: str, max_files: int = 8,
-                                 max_chars_per_file: int = 2000, total_budget: int = 12000) -> str:
+    def _get_test_code_for_node(
+        self,
+        node_id: str,
+        max_files: int = 8,
+        max_chars_per_file: int = 2000,
+        total_budget: int = 12000,
+        target_test_files: list[str] | None = None,
+    ) -> str:
         """Pre-read test files for a node so TDD agent doesn't need read_file calls."""
         from utils import get_abs_path
         tests = get_tests_by_req_id(node_id)
         if not tests:
             return ""
+
+        normalized_targets = {
+            str(path or "").strip().replace("\\", "/")
+            for path in (target_test_files or [])
+            if str(path or "").strip()
+        }
+        if normalized_targets:
+            tests = [
+                test for test in tests
+                if str(test.get("file_path", "")).strip().replace("\\", "/") in normalized_targets
+            ]
+            if not tests:
+                return ""
 
         lines = []
         total = 0
@@ -332,7 +351,13 @@ class ContextPipeline:
             pass
         return res
 
-    def build_agent_context(self, node_id: str, agent_type: str, preloaded_source: str = None) -> str:
+    def build_agent_context(
+        self,
+        node_id: str,
+        agent_type: str,
+        preloaded_source: str = None,
+        target_test_files: list[str] | None = None,
+    ) -> str:
         """
         Layer 2: Local/Task Context.
         Prefetches the exact data needed for the current node based on the agent's role.
@@ -425,16 +450,48 @@ class ContextPipeline:
                 )
                 if source_code:
                     context_parts.append(source_code)
-            test_code = self.cache.get_or_compute(
-                node_id, "test_code",
-                lambda: self._get_test_code_for_node(
-                    node_id, max_files=10, max_chars_per_file=3000, total_budget=15000
+            if target_test_files:
+                normalized_targets = sorted(
+                    {
+                        str(path or "").strip().replace("\\", "/")
+                        for path in target_test_files
+                        if str(path or "").strip()
+                    }
                 )
-            )
+                test_cache_key = f"test_code::{json.dumps(normalized_targets, ensure_ascii=False)}"
+                test_code = self.cache.get_or_compute(
+                    node_id,
+                    test_cache_key,
+                    lambda: self._get_test_code_for_node(
+                        node_id,
+                        max_files=10,
+                        max_chars_per_file=3000,
+                        total_budget=15000,
+                        target_test_files=normalized_targets,
+                    ),
+                )
+            else:
+                test_code = self.cache.get_or_compute(
+                    node_id, "test_code",
+                    lambda: self._get_test_code_for_node(
+                        node_id, max_files=10, max_chars_per_file=3000, total_budget=15000
+                    )
+                )
             if test_code:
                 context_parts.append(test_code)
             # TDD also needs to know about existing tests (metadata)
-            tests = get_tests_by_req_id(node_id)[:self.max_tests]
+            tests = get_tests_by_req_id(node_id)
+            if target_test_files:
+                normalized_targets = {
+                    str(path or "").strip().replace("\\", "/")
+                    for path in target_test_files
+                    if str(path or "").strip()
+                }
+                tests = [
+                    test for test in tests
+                    if str(test.get("file_path", "")).strip().replace("\\", "/") in normalized_targets
+                ]
+            tests = tests[:self.max_tests]
             if tests:
                 tests_str = ""
                 for t in tests:
@@ -464,13 +521,24 @@ class ContextPipeline:
 
         return "\n\n".join(context_parts)
 
-    def build_agent_context_split(self, node_id: str, agent_type: str, preloaded_source: str = None) -> tuple:
+    def build_agent_context_split(
+        self,
+        node_id: str,
+        agent_type: str,
+        preloaded_source: str = None,
+        target_test_files: list[str] | None = None,
+    ) -> tuple:
         """Split context into (static_context, dynamic_context).
         Static context goes into the system prompt (sent once, rarely changes).
         Dynamic context goes into the user prompt (changes per phase/iteration).
         This reduces per-step token cost since the user prompt is smaller.
         """
-        full_context = self.build_agent_context(node_id, agent_type, preloaded_source)
+        full_context = self.build_agent_context(
+            node_id,
+            agent_type,
+            preloaded_source,
+            target_test_files=target_test_files,
+        )
         static = self.get_static_context(node_id, agent_type)
         # Remove the static portion from the full context to get the dynamic portion
         # The static layers appear at the start of full_context

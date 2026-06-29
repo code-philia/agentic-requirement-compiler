@@ -435,3 +435,63 @@ When all files are written and compilation passes, output "IMPLEMENTED".
         messages.append({"role": "user", "content": impl_prompt})
         result, messages = await self.run_from_messages(messages, node_id=node_id, max_steps=20, tools=impl_tools)
         return result, messages
+
+    async def converge_non_leaf(
+        self,
+        node_id: str,
+        interfaces: List[Dict[str, Any]],
+        convergence_summary: str,
+        preloaded_source: str = None,
+    ) -> tuple:
+        """Run a lightweight non-leaf convergence session to assemble child capabilities."""
+        from .context_pipeline import context_pipeline
+        from .tools import TOOL_REGISTRY
+
+        static_ctx, dynamic_ctx = context_pipeline.build_agent_context_split(
+            node_id=node_id,
+            agent_type=self.agent_name,
+            preloaded_source=preloaded_source,
+        )
+
+        iface_summaries = []
+        for iface in interfaces:
+            iface_summaries.append(
+                f"- [{iface.get('interface_id')}] Type: {iface.get('type')} "
+                f"File: `{iface.get('file_path', 'TBD')}` "
+                f"Name: {iface.get('name', '')} "
+                f"Desc: {iface.get('description', '')}"
+            )
+
+        user_prompt = f"""
+### Auto-Prefetched Context for Node [{node_id}]
+{dynamic_ctx}
+
+### Convergence Summary
+{convergence_summary}
+
+### Parent Interfaces To Converge ({len(interfaces)} total)
+{chr(10).join(iface_summaries)}
+
+### Full Interface Definitions
+```json
+{json.dumps(interfaces, indent=2, ensure_ascii=False)}
+```
+
+This is a non-leaf convergence task.
+Do only the minimal parent-level assembly needed to connect child capabilities into one coherent subsystem.
+- Prefer editing existing parent-level shells, facades, routing, shared state, and composition points.
+- Do NOT re-implement child business logic in the parent.
+- Do NOT create broad new feature code unless required for system connectivity.
+- Write all required parent-level changes first, then call `run_build` once.
+- When the parent-level convergence is complete and the build passes, output exactly `IMPLEMENTED`.
+"""
+        system_content = self.get_system_prompt()
+        if static_ctx:
+            system_content = f"{system_content}\n\n{static_ctx}"
+        messages = [
+            {"role": "system", "content": system_content},
+            {"role": "user", "content": user_prompt},
+        ]
+        tools = [TOOL_REGISTRY[n]["schema"] for n in self._get_implement_tool_names() if n in TOOL_REGISTRY]
+        result, messages = await self.run_from_messages(messages, node_id=node_id, max_steps=20, tools=tools)
+        return result, messages

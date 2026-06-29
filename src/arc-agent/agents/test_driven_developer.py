@@ -252,7 +252,18 @@ Once `run_tests` returns a 100% passing state (Exit Code: 0) for the target test
     def get_last_run_tests_result(self) -> str | None:
         return self._last_completed_run_tests_result
 
-    def build_initial_messages(self, node_id: str, test_files: List[str], test_type: str, req_desc: str, scenarios: list = None, dependency_context: str = "", current_interfaces: list = None, preloaded_source: str = None) -> tuple:
+    def build_initial_messages(
+        self,
+        node_id: str,
+        test_files: List[str],
+        test_type: str,
+        req_desc: str,
+        scenarios: list = None,
+        dependency_context: str = "",
+        current_interfaces: list = None,
+        preloaded_source: str = None,
+        handoff_summary: str = "",
+    ) -> tuple:
         """Build the [system, user] messages and tools list without calling run().
         Returns (messages, tools) so the caller can use run_from_messages() or continue a session.
         """
@@ -260,7 +271,10 @@ Once `run_tests` returns a 100% passing state (Exit Code: 0) for the target test
 
         # 1. Use the new Context Pipeline to build layered context for the TDD Agent
         static_ctx, dynamic_ctx = context_pipeline.build_agent_context_split(
-            node_id=node_id, agent_type=self.agent_name, preloaded_source=preloaded_source
+            node_id=node_id,
+            agent_type=self.agent_name,
+            preloaded_source=preloaded_source,
+            target_test_files=test_files,
         )
 
         scenarios_context = ""
@@ -289,11 +303,16 @@ Once `run_tests` returns a 100% passing state (Exit Code: 0) for the target test
             if interface_lines:
                 interfaces_context = "\n### Current Node Interfaces\n" + "\n".join(interface_lines)
 
+        handoff_context = ""
+        if handoff_summary:
+            handoff_context = f"\n### Stage Handoff Summary\n{handoff_summary}\n"
+
         user_prompt = f"""
 ### Auto-Prefetched Context for Node [{node_id}]
 {dynamic_ctx}
 {scenarios_context}
 {interfaces_context}
+{handoff_context}
 
 ### Target Test Files
 {json.dumps(test_files, indent=2)}
@@ -314,12 +333,13 @@ When all target tests pass, output "IMPLEMENTED".
         tools = [TOOL_REGISTRY[n]["schema"] for n in self.get_tool_names() if n in TOOL_REGISTRY]
         return messages, tools
 
-    async def implement(self, node_id: str, test_files: List[str], test_type: str, req_desc: str, scenarios: list = None, dependency_context: str = "", current_interfaces: list = None, preloaded_source: str = None) -> str:
+    async def implement(self, node_id: str, test_files: List[str], test_type: str, req_desc: str, scenarios: list = None, dependency_context: str = "", current_interfaces: list = None, preloaded_source: str = None, handoff_summary: str = "") -> str:
         """Backwards-compatible: build initial messages then run a new session."""
         messages, tools = self.build_initial_messages(
             node_id=node_id, test_files=test_files, test_type=test_type,
             req_desc=req_desc, scenarios=scenarios, dependency_context=dependency_context,
-            current_interfaces=current_interfaces, preloaded_source=preloaded_source
+            current_interfaces=current_interfaces, preloaded_source=preloaded_source,
+            handoff_summary=handoff_summary,
         )
         result, _ = await self.run_from_messages(
             messages,
