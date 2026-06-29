@@ -90,6 +90,15 @@ class WorkflowPhaseRunner:
             node_id,
         )
 
+        if not is_leaf:
+            await self.log_cb(
+                "TestGenerator",
+                "Skipping test generation for non-leaf node. DESIGN keeps only shared interface and aggregation artifacts.",
+                None,
+                node_id,
+            )
+            return True
+
         await self.log_cb(
             "TestGenerator",
             "Generating tests from the designed interfaces...",
@@ -101,6 +110,7 @@ class WorkflowPhaseRunner:
             requirement_data=requirement_data,
             interfaces_ir=interfaces,
             test_type="All",
+            is_leaf=is_leaf,
         )
         test_output, test_messages = await self.test_generator.run_from_messages(
             messages=messages,
@@ -119,7 +129,7 @@ class WorkflowPhaseRunner:
             return False
 
         try:
-            self._store_tests(node_id, tests)
+            self._store_tests(node_id, tests, is_leaf=is_leaf)
         except ValueError as exc:
             await self.log_cb(
                 "TestGenerator",
@@ -147,6 +157,7 @@ class WorkflowPhaseRunner:
         return True
 
     async def run_implement_phase(self, node_id: str, requirement_data: dict[str, Any]) -> bool:
+        is_leaf = not bool(requirement_data.get("children_ids"))
         interfaces = get_interfaces_by_req_id(node_id)
         tests = get_tests_by_req_id(node_id)
         if not interfaces:
@@ -156,6 +167,25 @@ class WorkflowPhaseRunner:
                 "error",
                 node_id,
             )
+            return False
+
+        if not is_leaf:
+            if tests:
+                await self.log_cb(
+                    "Compiler",
+                    f"Ignoring {len(tests)} stored test record(s) for non-leaf node {node_id}. Non-leaf IMPLEMENT performs only lightweight convergence.",
+                    "warning",
+                    node_id,
+                )
+            update_interface_implemented_status(node_id, True)
+            await self.log_cb(
+                "Compiler",
+                "Non-leaf IMPLEMENT completed with lightweight convergence only. No TDD or final sweep executed.",
+                None,
+                node_id,
+            )
+            return True
+
         if not tests:
             await self.log_cb(
                 "TestDrivenDeveloper",
@@ -261,7 +291,7 @@ class WorkflowPhaseRunner:
                     node_id,
                 )
 
-        final_statuses = await self._finalize_test_results(node_id)
+        final_statuses = await self._finalize_test_results(node_id, TEST_TYPE_ORDER)
         total_tests = len(final_statuses)
         passed_tests = sum(1 for value in final_statuses.values() if value is True)
         failed_tests = sum(1 for value in final_statuses.values() if value is False)
@@ -322,22 +352,44 @@ class WorkflowPhaseRunner:
 
             self._register_interface_edges(node_id, interface_id, interface)
 
-    def _store_tests(self, node_id: str, tests: list[dict[str, Any]]) -> None:
+    def _store_tests(self, node_id: str, tests: list[dict[str, Any]], is_leaf: bool) -> None:
+        generated_ids: set[str] = set()
+        sequence = 0
+
         for test in tests:
             if not isinstance(test, dict):
                 continue
 
-            test_id = str(test.get("test_id", "")).strip()
-            if not test_id:
+            raw_test_id = str(test.get("test_id", "")).strip()
+            if not raw_test_id:
                 continue
 
             test_type = str(test.get("type", "")).strip()
             file_path = str(test.get("file_path", "")).strip()
+            if not is_leaf:
+                raise ValueError(
+                    f"Generated test `{raw_test_id}` is invalid for non-leaf node `{node_id}`. "
+                    "Non-leaf nodes should not register tests; they only keep shared interface and aggregation artifacts."
+                )
             validation_error = self.app_handler.validate_test_path(test_type, file_path)
             if validation_error:
                 raise ValueError(
-                    f"Generated test `{test_id}` has an invalid path. {validation_error}"
+                    f"Generated test `{raw_test_id}` has an invalid path. {validation_error}"
                 )
+
+            sequence += 1
+            test_id = self._canonicalize_test_id(
+                node_id=node_id,
+                test_type=test_type,
+                raw_test_id=raw_test_id,
+                sequence=sequence,
+            )
+            if test_id in generated_ids:
+                raise ValueError(
+                    f"Generated duplicate canonical test id `{test_id}` for node `{node_id}`. "
+                    "Each stored test must be globally unique."
+                )
+            generated_ids.add(test_id)
 
             insert_test(
                 test_id=test_id,
@@ -378,12 +430,16 @@ class WorkflowPhaseRunner:
                         edge_type="cross_req",
                     )
 
-    async def _finalize_test_results(self, node_id: str) -> dict[str, bool | None]:
+    async def _finalize_test_results(
+        self,
+        node_id: str,
+        test_type_order: list[str],
+    ) -> dict[str, bool | None]:
         tests = get_tests_by_req_id(node_id)
         reset_test_pass_statuses_for_req_id(node_id)
 
         status_by_test_id: dict[str, bool | None] = {}
-        for test_type in TEST_TYPE_ORDER:
+        for test_type in test_type_order:
             typed_tests = [test for test in tests if str(test.get("type", "")).strip() == test_type]
             if not typed_tests:
                 continue
@@ -397,6 +453,18 @@ class WorkflowPhaseRunner:
             status_by_test_id.update(typed_statuses)
 
         return status_by_test_id
+
+    def _canonicalize_test_id(
+        self,
+        node_id: str,
+        test_type: str,
+        raw_test_id: str,
+        sequence: int,
+    ) -> str:
+        sanitized_node_id = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(node_id or "").strip()) or "NODE"
+        sanitized_type = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(test_type or "").strip()) or "TEST"
+        sanitized_raw = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(raw_test_id or "").strip()) or "TEST"
+        return f"{sanitized_node_id}::{sanitized_type}::{sequence:03d}::{sanitized_raw}"
 
     def _map_statuses_from_batch_output(
         self,

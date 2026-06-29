@@ -239,6 +239,14 @@ def insert_test(test_id: str, req_id: str, interface_ids: list, type: str,
     """Insert or update a test record in the database."""
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
+
+    cursor.execute('SELECT req_id FROM tests WHERE test_id = ?', (test_id,))
+    existing = cursor.fetchone()
+    if existing and existing[0] != req_id:
+        conn.close()
+        raise ValueError(
+            f"Test id collision detected for `{test_id}`: existing req_id=`{existing[0]}`, new req_id=`{req_id}`."
+        )
     
     cursor.execute('''
     INSERT OR REPLACE INTO tests 

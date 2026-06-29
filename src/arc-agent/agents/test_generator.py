@@ -149,7 +149,15 @@ Schema for each object:
             "run_build", "search_interfaces_by_keyword", "search_interfaces_by_relation", "get_node_relations"
         ]
 
-    def build_initial_messages(self, node_id: str, requirement_data: Dict[str, Any], interfaces_ir: list, test_type: str = "Unit", preloaded_source: str = None) -> tuple:
+    def build_initial_messages(
+        self,
+        node_id: str,
+        requirement_data: Dict[str, Any],
+        interfaces_ir: list,
+        test_type: str = "Unit",
+        preloaded_source: str = None,
+        is_leaf: bool = True,
+    ) -> tuple:
         """Build the [system, user] messages and tools list without calling run().
         Returns (messages, tools) so the caller can use run_from_messages() or continue a session.
         """
@@ -166,7 +174,7 @@ Schema for each object:
                 f"{json.dumps(requirement_data.get('scenarios'), indent=2, ensure_ascii=False)}\n"
             )
 
-        if test_type == "All":
+        if test_type == "All" and is_leaf:
             test_instruction = """
 Generate ALL test types in a single pass:
 1. Unit tests for DB and FUNC interfaces
@@ -175,6 +183,12 @@ Generate ALL test types in a single pass:
 
 Write ALL test files using `write_file` calls FIRST, then call `run_build` ONCE to verify compilation.
 For web projects, ensure the generated Unit, Integration, and E2E files already match the correct framework and directory rules in one pass.
+"""
+        elif test_type == "All":
+            test_instruction = """
+This is a non-leaf node. Do NOT generate test files.
+Non-leaf nodes keep only shared interface, routing, aggregation, and foundation design artifacts.
+Return an empty JSON array: `[]`.
 """
         else:
             test_instruction = f"""
