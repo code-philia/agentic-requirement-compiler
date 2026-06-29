@@ -389,17 +389,20 @@ class WorkflowPhaseRunner:
         all_passed = True
         status_by_test_id: dict[str, bool | None] = {}
         phase_label = "final" if persist else "interim"
+        grouped_file_paths = list(grouped_tests.keys())
+
+        output = await self.app_handler.run_test_group(test_type, grouped_file_paths)
+        result = parse_test_results(output)
+        batch_passed = result.get("exit_code") == 0
 
         for file_path, file_tests in grouped_tests.items():
-            output = await self.app_handler.run_test_file(test_type, file_path)
-            result = parse_test_results(output)
-            file_passed = result.get("exit_code") == 0
-            file_statuses = self._map_file_test_statuses(file_tests, result, file_passed)
+            file_statuses = self._map_file_test_statuses(file_tests, result, batch_passed)
             status_by_test_id.update(file_statuses)
 
             if persist:
                 update_test_pass_statuses(file_statuses)
 
+            file_passed = all(value is True for value in file_statuses.values()) if file_statuses else batch_passed
             if file_passed:
                 await self.log_cb(
                     "Compiler",
@@ -437,8 +440,6 @@ class WorkflowPhaseRunner:
                 f"No test files were configured for the current {test_type} batch of node {node_id}.\n"
             )
 
-        outputs: list[str] = []
-        exit_codes: list[int] = []
         for file_path in test_files:
             await self.log_cb(
                 "Compiler",
@@ -446,20 +447,60 @@ class WorkflowPhaseRunner:
                 None,
                 node_id,
             )
-            output = await self.app_handler.run_test_file(test_type, file_path)
-            parsed = parse_test_results(output)
-            exit_codes.append(int(parsed.get("exit_code", -1)))
-            outputs.append(f"=== Test File: {file_path} ===\n{output}")
+        raw_output = await self.app_handler.run_test_group(test_type, test_files)
+        return self._prepend_agent_batch_summary(node_id, test_type, test_files, raw_output)
 
-        batch_exit_code = 0 if exit_codes and all(code == 0 for code in exit_codes) else 1
-        header = [
-            f"Exit Code: {batch_exit_code}",
-            f"Batch Test Type: {test_type}",
-            "Batch Test Files:",
+    def _prepend_agent_batch_summary(
+        self,
+        node_id: str,
+        test_type: str,
+        test_files: list[str],
+        raw_output: str,
+    ) -> str:
+        parsed = parse_test_results(raw_output)
+        exit_code = int(parsed.get("exit_code", -1))
+        typed_tests = [
+            test
+            for test in get_tests_by_req_id(node_id)
+            if str(test.get("type", "")).strip() == test_type
+            and str(test.get("file_path", "")).strip() in set(test_files)
         ]
-        header.extend(f"- {file_path}" for file_path in test_files)
-        header_text = "\n".join(header)
-        return f"{header_text}\n\n" + "\n\n".join(outputs)
+
+        grouped_tests: dict[str, list[dict[str, Any]]] = defaultdict(list)
+        for test in typed_tests:
+            file_path = str(test.get("file_path", "")).strip()
+            if file_path:
+                grouped_tests[file_path].append(test)
+
+        file_summaries: list[tuple[str, bool]] = []
+        for file_path in test_files:
+            file_tests = grouped_tests.get(file_path, [])
+            file_statuses = self._map_file_test_statuses(file_tests, parsed, exit_code == 0)
+            file_passed = bool(file_statuses) and all(value is True for value in file_statuses.values())
+            if not file_tests:
+                file_passed = exit_code == 0
+            file_summaries.append((file_path, file_passed))
+
+        passed_files = [file_path for file_path, passed in file_summaries if passed]
+        failed_files = [file_path for file_path, passed in file_summaries if not passed]
+        passed_tests = parsed.get("passed", [])
+        failed_tests = parsed.get("failed", [])
+
+        summary_lines = [
+            f"Exit Code: {exit_code}",
+            f"Batch Test Type: {test_type}",
+            "Batch Summary:",
+            f"- Files: {len(passed_files)}/{len(test_files)} passed",
+            f"- Tests: {len(passed_tests)} passed, {len(failed_tests)} failed",
+        ]
+        if failed_files:
+            summary_lines.append("Failed Files:")
+            summary_lines.extend(f"- {file_path}" for file_path in failed_files)
+        if failed_tests:
+            summary_lines.append("Failed Tests:")
+            summary_lines.extend(f"- {test_name}" for test_name in failed_tests[:12])
+
+        return "\n".join(summary_lines) + "\n\nRaw Command Output:\n" + raw_output
 
     def _map_file_test_statuses(
         self,

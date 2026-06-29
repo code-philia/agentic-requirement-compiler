@@ -60,6 +60,17 @@ async def _execute_web_test_command(command: str, cwd: str, timeout: float = 60.
         return f"Execution failed: {str(exc)}"
 
 
+def _format_test_result(stdout: str, stderr: str, exit_code: int) -> str:
+    result = f"Exit Code: {exit_code}\n"
+    if stdout:
+        result += f"STDOUT:\n{stdout}\n"
+    if stderr:
+        result += f"STDERR:\n{stderr}\n"
+    if len(result) > 4000:
+        result = result[:2000] + "\n...[OUTPUT TRUNCATED]...\n" + result[-2000:]
+    return result
+
+
 def _extract_exit_code(command_output: str) -> int | None:
     for line in (command_output or "").splitlines():
         stripped = line.strip()
@@ -130,6 +141,48 @@ def _build_web_test_execution(test_type: str, file_path: str, workspace_path: st
     }
 
 
+def _build_web_group_execution(test_type: str, file_paths: list[str], workspace_path: str) -> dict[str, str]:
+    normalized_type = (test_type or "").strip().lower()
+    requested_files = [str(path or "").strip() for path in file_paths if str(path or "").strip()]
+
+    if normalized_type in {"unit", "integration"}:
+        backend_targets: list[str] = []
+        frontend_targets: list[str] = []
+        for file_path in requested_files:
+            working_directory, resolved_file_path = _resolve_web_test_target(file_path, workspace_path)
+            normalized_resolved = resolved_file_path.replace("\\", "/")
+            if working_directory == os.path.join(workspace_path, "frontend"):
+                frontend_targets.append(normalized_resolved)
+            else:
+                backend_targets.append(normalized_resolved)
+
+        return {
+            "runner": "Vitest",
+            "test_type": test_type,
+            "requested_test_files": requested_files,
+            "backend_working_directory": os.path.join(workspace_path, "backend"),
+            "frontend_working_directory": os.path.join(workspace_path, "frontend"),
+            "backend_targets": backend_targets,
+            "frontend_targets": frontend_targets,
+            "web_port": str(get_web_port()),
+            "base_url": get_web_base_url(),
+        }
+
+    if normalized_type == "e2e":
+        resolved_targets = [_normalize_backend_test_path(file_path) for file_path in requested_files]
+        return {
+            "runner": "Playwright",
+            "test_type": test_type,
+            "requested_test_files": requested_files,
+            "working_directory": os.path.join(workspace_path, "backend"),
+            "resolved_targets": resolved_targets,
+            "web_port": str(get_web_port()),
+            "base_url": get_web_base_url(),
+        }
+
+    raise ValueError("Unknown test type. Must be 'unit', 'integration', or 'e2e'.")
+
+
 def _prepend_test_execution_header(execution: dict[str, str], test_result: str) -> str:
     header = "\n".join(
         [
@@ -143,6 +196,33 @@ def _prepend_test_execution_header(execution: dict[str, str], test_result: str) 
         ]
     )
     return f"{header}\n{test_result}"
+
+
+def _prepend_group_execution_header(execution: dict[str, str], test_result: str) -> str:
+    lines = [
+        f"Runner: {execution['runner']}",
+        f"Batch Test Type: {execution['test_type']}",
+        f"Web Port: {execution['web_port']}",
+        f"Base URL: {execution['base_url']}",
+        "Requested Test Files:",
+    ]
+    lines.extend(f"- {file_path}" for file_path in execution.get("requested_test_files", []))
+
+    if execution["runner"] == "Vitest":
+        lines.append(f"Backend Working Directory: {execution['backend_working_directory']}")
+        lines.append(f"Frontend Working Directory: {execution['frontend_working_directory']}")
+        if execution.get("backend_targets"):
+            lines.append("Backend Targets:")
+            lines.extend(f"- {file_path}" for file_path in execution["backend_targets"])
+        if execution.get("frontend_targets"):
+            lines.append("Frontend Targets:")
+            lines.extend(f"- {file_path}" for file_path in execution["frontend_targets"])
+    else:
+        lines.append(f"Working Directory: {execution['working_directory']}")
+        lines.append("Resolved Targets:")
+        lines.extend(f"- {file_path}" for file_path in execution.get("resolved_targets", []))
+
+    return f"{chr(10).join(lines)}\n\n{test_result}"
 
 
 async def _wait_for_tcp_server(host: str, port: int, timeout: float = 20.0) -> bool:
@@ -185,6 +265,7 @@ class WebAppType(AppTypeHandler):
         }
         target_files = [
             os.path.join(self.workspace_path, "backend", "src", "index.js"),
+            os.path.join(self.workspace_path, "backend", "playwright.config.js"),
             os.path.join(self.workspace_path, "frontend", "vite.config.js"),
         ]
 
@@ -278,6 +359,105 @@ class WebAppType(AppTypeHandler):
                 for process in servers_process:
                     await _terminate_process(process)
 
+    async def run_test_group(self, test_type: str, file_paths: list[str]) -> str:
+        normalized_type = (test_type or "").strip().lower()
+        if not file_paths:
+            return (
+                "Exit Code: 1\n"
+                "STDERR:\n"
+                f"No test files were configured for the current {test_type} batch.\n"
+            )
+
+        for file_path in file_paths:
+            await self.log_cb("System", f"System test execution ({test_type}): {file_path}")
+
+        try:
+            execution = _build_web_group_execution(test_type, file_paths, self.workspace_path)
+        except ValueError as exc:
+            return str(exc)
+
+        if normalized_type in {"unit", "integration"}:
+            sections: list[str] = []
+            exit_codes: list[int] = []
+
+            if execution.get("backend_targets"):
+                backend_command = "npx vitest run " + " ".join(execution["backend_targets"])
+                backend_result = await _execute_web_test_command(
+                    backend_command,
+                    cwd=execution["backend_working_directory"],
+                )
+                sections.append(f"=== Backend Vitest Batch ===\n{backend_result}")
+                exit_codes.append(_extract_exit_code(backend_result) or 1)
+
+            if execution.get("frontend_targets"):
+                frontend_command = "npx vitest run " + " ".join(execution["frontend_targets"])
+                frontend_result = await _execute_web_test_command(
+                    frontend_command,
+                    cwd=execution["frontend_working_directory"],
+                )
+                sections.append(f"=== Frontend Vitest Batch ===\n{frontend_result}")
+                exit_codes.append(_extract_exit_code(frontend_result) or 1)
+
+            if not sections:
+                return _prepend_group_execution_header(
+                    execution,
+                    "Exit Code: 1\nSTDERR:\nNo resolvable Vitest targets were found for this batch.\n",
+                )
+
+            batch_exit_code = 0 if exit_codes and all(code == 0 for code in exit_codes) else 1
+            body = f"Exit Code: {batch_exit_code}\n\n" + "\n\n".join(sections)
+            return _prepend_group_execution_header(execution, body)
+
+        backend_path = os.path.join(self.workspace_path, "backend")
+        frontend_path = os.path.join(self.workspace_path, "frontend")
+        frontend_build_output = await _execute_web_test_command(
+            "npm run build",
+            cwd=frontend_path,
+            timeout=120.0,
+        )
+        if _extract_exit_code(frontend_build_output) != 0:
+            return _prepend_group_execution_header(
+                execution,
+                "Frontend build failed before E2E startup.\n\n"
+                f"=== Frontend Build ===\n{frontend_build_output}",
+            )
+
+        backend_process = None
+        try:
+            backend_process = await asyncio.create_subprocess_shell(
+                "npm run start",
+                cwd=backend_path,
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL,
+                env={
+                    **os.environ,
+                    **build_web_runtime_env(),
+                },
+            )
+            server_ready = await _wait_for_tcp_server("127.0.0.1", get_web_port(), timeout=20.0)
+            if not server_ready:
+                await _terminate_process(backend_process)
+                return _prepend_group_execution_header(
+                    execution,
+                    "Failed to start backend server for E2E testing within 20 seconds.\n\n"
+                    f"=== Frontend Build ===\n{frontend_build_output}",
+                )
+
+            playwright_command = "npx playwright test"
+            if execution.get("resolved_targets"):
+                playwright_command += " " + " ".join(execution["resolved_targets"])
+            playwright_result = await _execute_web_test_command(
+                playwright_command,
+                cwd=execution["working_directory"],
+                timeout=120.0,
+            )
+            body = f"=== Frontend Build ===\n{frontend_build_output}\n\n{playwright_result}"
+            return _prepend_group_execution_header(execution, body)
+        except Exception as exc:
+            return f"Failed to start grouped E2E execution: {str(exc)}"
+        finally:
+            await _terminate_process(backend_process)
+
     @classmethod
     def build_stack_block(cls) -> str:
         web_port = get_web_port()
@@ -302,6 +482,7 @@ class WebAppType(AppTypeHandler):
             "* **Styling**: Tailwind CSS v4\n"
             "* **HTTP**: Axios (Must use Interceptors for global error handling)\n"
             "* **Testing**: Vitest for frontend unit/integration tests in `frontend/src/...`.\n"
+            "* **Frontend Test Infrastructure**: `vitest` + `jsdom` + `@testing-library/react` + `@testing-library/jest-dom` + `@testing-library/user-event` are preinstalled and configured through `frontend/vite.config.js` and `frontend/src/test/setup.js`.\n"
             "\n"
             "### Backend\n"
             "* **Runtime**: Node.js (LTS)\n"
@@ -310,7 +491,7 @@ class WebAppType(AppTypeHandler):
             "* **Testing**:\n"
             "  * Vitest: Used for backend Unit and Integration testing.\n"
             "  * Supertest: Used with Vitest for API route testing.\n"
-            "  * Playwright: Used for End-to-End (E2E) testing, located in `backend/test-e2e`.\n"
+            "  * Playwright: Used for End-to-End (E2E) testing, located in `backend/test-e2e`, configured by `backend/playwright.config.js`, and expected to use `process.env.PLAYWRIGHT_BASE_URL`.\n"
             f"{ARC_STACK_END}"
         )
 

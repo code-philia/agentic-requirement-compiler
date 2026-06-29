@@ -103,6 +103,15 @@ class AndroidAppType(AppTypeHandler):
         await self.log_cb("System", f"System test execution ({test_type}): {file_path}")
         return await _run_android_gradle_test(self.workspace_path, file_path)
 
+    async def run_test_group(self, test_type: str, file_paths: list[str]) -> str:
+        if not file_paths:
+            return (
+                "Exit Code: 1\n"
+                "STDERR:\n"
+                f"No test files were configured for the current {test_type} batch.\n"
+            )
+        return await super().run_test_group(test_type, file_paths)
+
     async def post_template_setup(self) -> bool:
         target_package = await self._extract_android_package_name_via_llm()
         if target_package:

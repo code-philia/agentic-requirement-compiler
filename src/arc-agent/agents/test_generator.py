@@ -95,6 +95,7 @@ Use JUnit 4 + Robolectric when the test needs Android framework behavior, Contex
 - E2E tests must target `{web_base_url}`.
 - Prefer `process.env.PLAYWRIGHT_BASE_URL` when authoring Playwright navigation code, with `{web_base_url}` as the expected value.
 - Do not assume or hardcode a separate frontend dev-server port such as `5173` or `5174`.
+
 """
             pkg_compliance = ""
 
