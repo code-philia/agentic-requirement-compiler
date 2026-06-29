@@ -363,6 +363,8 @@ debug_logger: Optional[DebugLogger] = None
 
 ARC_GITIGNORE_START = "# ARC_MANAGED_START"
 ARC_GITIGNORE_END = "# ARC_MANAGED_END"
+DEFAULT_GIT_USER_NAME = "ARC Agent"
+DEFAULT_GIT_USER_EMAIL = "arc-agent@local.invalid"
 
 _AGENT_COLORS = {
     "System": Fore.WHITE,
@@ -380,6 +382,67 @@ _STATUS_COLORS = {
     "completed": Fore.GREEN,
     "error": Fore.RED,
 }
+
+
+def _get_git_identity() -> tuple[str, str]:
+    user_name = (
+        os.environ.get("ARC_GIT_USER_NAME")
+        or os.environ.get("GIT_AUTHOR_NAME")
+        or os.environ.get("GIT_COMMITTER_NAME")
+        or DEFAULT_GIT_USER_NAME
+    ).strip()
+    user_email = (
+        os.environ.get("ARC_GIT_USER_EMAIL")
+        or os.environ.get("GIT_AUTHOR_EMAIL")
+        or os.environ.get("GIT_COMMITTER_EMAIL")
+        or DEFAULT_GIT_USER_EMAIL
+    ).strip()
+    return user_name, user_email
+
+
+def _build_git_env() -> dict[str, str]:
+    env = os.environ.copy()
+    user_name, user_email = _get_git_identity()
+    env["GIT_AUTHOR_NAME"] = user_name
+    env["GIT_AUTHOR_EMAIL"] = user_email
+    env["GIT_COMMITTER_NAME"] = user_name
+    env["GIT_COMMITTER_EMAIL"] = user_email
+    return env
+
+
+async def _run_git_command(
+    args: list[str],
+    cwd: str,
+    env: dict[str, str] | None = None,
+) -> tuple[int, str, str]:
+    process = await asyncio.create_subprocess_exec(
+        *args,
+        cwd=cwd,
+        env=env,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    stdout, stderr = await process.communicate()
+    return process.returncode, stdout.decode(), stderr.decode()
+
+
+async def _configure_git_identity(target_dir: str) -> tuple[bool, str]:
+    user_name, user_email = _get_git_identity()
+    code, _, stderr = await _run_git_command(
+        ["git", "config", "user.name", user_name],
+        cwd=target_dir,
+    )
+    if code != 0:
+        return False, stderr
+
+    code, _, stderr = await _run_git_command(
+        ["git", "config", "user.email", user_email],
+        cwd=target_dir,
+    )
+    if code != 0:
+        return False, stderr
+
+    return True, f"{user_name} <{user_email}>"
 
 
 def init_debug_logger(project_path: str, reset_existing: bool = True) -> str:
@@ -511,34 +574,35 @@ def format_cli_log(agent: str, message: str, status: str = None, node_id: str = 
 
 async def run_git_init(target_dir: str, log_cb: Callable[..., Awaitable[None]]):
     try:
-        process = await asyncio.create_subprocess_shell(
-            "git init",
-            cwd=target_dir,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        await process.communicate()
+        git_env = _build_git_env()
 
-        process = await asyncio.create_subprocess_shell(
-            "git add .",
-            cwd=target_dir,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        await process.communicate()
+        code, _, stderr = await _run_git_command(["git", "init"], cwd=target_dir, env=git_env)
+        if code != 0:
+            await log_cb("System", f"Git init failed: {stderr}")
+            return
 
-        process = await asyncio.create_subprocess_shell(
-            'git commit -m "init"',
-            cwd=target_dir,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        _, stderr = await process.communicate()
+        configured, identity_message = await _configure_git_identity(target_dir)
+        if not configured:
+            await log_cb("System", f"Git identity configuration failed: {identity_message}")
+            return
 
-        if process.returncode == 0:
+        await log_cb("System", f"Using git identity: {identity_message}")
+
+        code, _, stderr = await _run_git_command(["git", "add", "."], cwd=target_dir, env=git_env)
+        if code != 0:
+            await log_cb("System", f"Git add failed during init: {stderr}")
+            return
+
+        code, _, stderr = await _run_git_command(
+            ["git", "commit", "-m", "init"],
+            cwd=target_dir,
+            env=git_env,
+        )
+
+        if code == 0:
             await log_cb("System", f"Git initialized and committed 'init' in {target_dir}")
         else:
-            await log_cb("System", f"Git init/commit failed: {stderr.decode()}")
+            await log_cb("System", f"Git init/commit failed: {stderr}")
     except Exception as exc:
         await log_cb("System", f"Git init error: {str(exc)}")
 
@@ -583,29 +647,23 @@ def ensure_arc_gitignore(project_path: str) -> str:
 
 async def run_git_commit(target_dir: str, message: str, log_cb: Callable[..., Awaitable[None]]):
     try:
-        process = await asyncio.create_subprocess_shell(
-            "git add .",
-            cwd=target_dir,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        await process.communicate()
+        git_env = _build_git_env()
 
-        safe_message = message.replace('"', '\\"')
-        process = await asyncio.create_subprocess_shell(
-            f'git commit -m "{safe_message}"',
-            cwd=target_dir,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        stdout, stderr = await process.communicate()
+        code, _, stderr = await _run_git_command(["git", "add", "."], cwd=target_dir, env=git_env)
+        if code != 0:
+            await log_cb("System", f"Git add failed: {stderr}")
+            return
 
-        if process.returncode == 0:
+        code, stdout_text, stderr_text = await _run_git_command(
+            ["git", "commit", "-m", message],
+            cwd=target_dir,
+            env=git_env,
+        )
+
+        if code == 0:
             await log_cb("System", f"Git commit success: '{message}'")
             return
 
-        stderr_text = stderr.decode()
-        stdout_text = stdout.decode()
         if "nothing to commit" in stdout_text or "nothing to commit" in stderr_text:
             await log_cb("System", "Git commit skipped (nothing to commit).")
         else:
