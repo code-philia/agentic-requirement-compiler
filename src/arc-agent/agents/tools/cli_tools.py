@@ -1,5 +1,6 @@
 import asyncio
 import os
+import re
 
 from utils import build_web_runtime_env, get_abs_path, get_app_type
 
@@ -162,7 +163,7 @@ def parse_test_results(test_output: str) -> dict:
     """Parse test output to identify individual test pass/fail."""
 
     app_type = get_app_type()
-    result = {"passed": [], "failed": [], "exit_code": -1}
+    result = {"passed": [], "failed": [], "exit_code": -1, "sub_batches": []}
 
     for line in test_output.split("\n"):
         if "Exit Code:" in line:
@@ -170,6 +171,74 @@ def parse_test_results(test_output: str) -> dict:
                 result["exit_code"] = int(line.split("Exit Code:")[1].strip())
             except (ValueError, IndexError):
                 pass
+            break
+
+    test_file_sections = re.findall(
+        r"Test File:\s*(.+?)\r?\nTest Results:\r?\n(.*?)(?=\r?\nTest File: |\Z)",
+        test_output or "",
+        re.DOTALL,
+    )
+    if test_file_sections:
+        for file_path, raw_section in test_file_sections:
+            normalized_file_path = file_path.strip().replace("\\", "/")
+            sub_exit_code = -1
+            for line in raw_section.splitlines():
+                stripped = line.strip()
+                if stripped.startswith("Exit Code:"):
+                    try:
+                        sub_exit_code = int(stripped.split("Exit Code:", 1)[1].strip())
+                    except ValueError:
+                        sub_exit_code = -1
+                    break
+            result["sub_batches"].append(
+                {
+                    "requested_files": [normalized_file_path],
+                    "exit_code": sub_exit_code,
+                    "raw_output": raw_section.strip(),
+                }
+            )
+    else:
+        requested_files = [
+            line.split("-", 1)[1].strip().replace("\\", "/")
+            for line in (test_output or "").splitlines()
+            if line.startswith("- ")
+        ]
+        backend_match = re.search(
+            r"=== Backend Vitest Batch ===\r?\n(.*?)(?=\r?\n=== Frontend Vitest Batch ===|\Z)",
+            test_output or "",
+            re.DOTALL,
+        )
+        frontend_match = re.search(
+            r"=== Frontend Vitest Batch ===\r?\n(.*?)(?=\Z)",
+            test_output or "",
+            re.DOTALL,
+        )
+        if backend_match or frontend_match:
+            for scope, match in (("backend", backend_match), ("frontend", frontend_match)):
+                if not match:
+                    continue
+                raw_section = match.group(1).strip()
+                sub_exit_code = -1
+                for line in raw_section.splitlines():
+                    stripped = line.strip()
+                    if stripped.startswith("Exit Code:"):
+                        try:
+                            sub_exit_code = int(stripped.split("Exit Code:", 1)[1].strip())
+                        except ValueError:
+                            sub_exit_code = -1
+                        break
+                scope_files = [
+                    file_path for file_path in requested_files
+                    if (scope == "backend" and file_path.startswith("backend/"))
+                    or (scope == "frontend" and file_path.startswith("frontend/"))
+                ]
+                result["sub_batches"].append(
+                    {
+                        "requested_files": scope_files,
+                        "exit_code": sub_exit_code,
+                        "raw_output": raw_section,
+                    }
+                )
 
     if app_type == "android":
         for line in test_output.split("\n"):

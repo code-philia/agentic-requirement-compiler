@@ -121,7 +121,7 @@ glob_schema = {
     "type": "function",
     "function": {
         "name": "glob",
-        "description": "Fast file pattern matching tool. Supports glob patterns like \"**/*.js\" or \"src/**/*.ts\". Returns matching file paths sorted by modification time. Use this when you need to find files by name patterns.",
+        "description": "Fast file pattern matching tool. Use only for targeted searches after checking the prefetched project structure. Always narrow to a known subtree such as backend/, frontend/, src/, or app/. Do not probe node_modules, build outputs, caches, or broad workspace-root patterns.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -143,7 +143,7 @@ grep_schema = {
     "type": "function",
     "function": {
         "name": "grep",
-        "description": "A powerful search tool for finding regex patterns in file contents. Supports full regex syntax, multiple output modes, and filtering. ALWAYS use this tool for content search - NEVER use grep/rg as shell commands.",
+        "description": "A powerful content search tool for targeted regex lookups. Use it only when the prefetched context is insufficient, and always narrow the search path or glob to a relevant subtree. Do not search node_modules, build outputs, caches, or the entire workspace root without constraints. NEVER use grep/rg as shell commands.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -326,7 +326,7 @@ execute_command_schema = {
     "type": "function",
     "function": {
         "name": "execute_command",
-        "description": "Execute a shell command in the project directory. Use short timeouts for bounded checks such as installs, builds, or targeted test runs. Do not request long-running foreground commands.",
+        "description": "Execute a shell command only when necessary for external actions or bounded diagnostics, such as npm install, package scripts, or a narrow runtime check. Prefer read_file, grep, glob, and run_tests first. Keep commands short, portable, and scoped to the correct working directory. Do not inspect node_modules or rely on shell-specific scripting tricks.",
         "parameters": {
             "type": "object",
             "properties": {

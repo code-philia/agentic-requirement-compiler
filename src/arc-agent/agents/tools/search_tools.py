@@ -28,6 +28,61 @@ def _should_skip_path(file_path: str, root_dir: str) -> bool:
     return parts[-1] in _SKIP_FILES
 
 
+def _normalize_rel_text(value: str) -> str:
+    return str(value or "").strip().replace("\\", "/").lower()
+
+
+def _mentions_skipped_area(value: str) -> bool:
+    normalized = _normalize_rel_text(value)
+    return any(
+        normalized == skip_dir
+        or normalized.startswith(f"{skip_dir}/")
+        or f"/{skip_dir}/" in normalized
+        for skip_dir in _SKIP_DIRS
+    )
+
+
+def _is_broad_root_glob(pattern: str, path: str | None) -> bool:
+    normalized_pattern = _normalize_rel_text(pattern)
+    normalized_path = _normalize_rel_text(path or ".")
+    if normalized_path not in {"", ".", "./"}:
+        return False
+    broad_patterns = {
+        "**/*.js", "**/*.jsx", "**/*.ts", "**/*.tsx", "**/*.json",
+        "**/*.py", "**/*.java", "**/*.md", "**/package.json",
+        "**/vite.config.*", "**/vitest.config.*", "**/playwright.config.*",
+    }
+    return normalized_pattern in broad_patterns
+
+
+def _reject_low_value_search(path: str | None, pattern: str, glob: str | None = None) -> str | None:
+    normalized_path = _normalize_rel_text(path or ".")
+    normalized_pattern = _normalize_rel_text(pattern)
+    normalized_glob = _normalize_rel_text(glob or "")
+
+    if _mentions_skipped_area(normalized_path):
+        return (
+            "Rejected search inside low-value generated/dependency directories. "
+            "Do not explore node_modules, build outputs, caches, or virtual environments."
+        )
+    if _mentions_skipped_area(normalized_pattern) or _mentions_skipped_area(normalized_glob):
+        return (
+            "Rejected search pattern targeting low-value generated/dependency directories. "
+            "Do not explore node_modules, build outputs, caches, or virtual environments."
+        )
+    if _is_broad_root_glob(normalized_pattern, normalized_path):
+        return (
+            "Rejected broad workspace-root glob. "
+            "Use the existing <project_structure> context first and narrow the search to a known subtree such as backend/, frontend/, src/, or app/."
+        )
+    if normalized_path in {"", ".", "./"} and not normalized_glob:
+        return (
+            "Rejected unconstrained workspace-root content search. "
+            "Narrow the path to a relevant subtree or provide a restrictive glob."
+        )
+    return None
+
+
 async def glob_impl(pattern: str, path: str = None) -> str:
     """
     Fast file pattern matching using glob patterns.
@@ -40,6 +95,10 @@ async def glob_impl(pattern: str, path: str = None) -> str:
         Newline-separated list of matching file paths (max 100 files)
     """
     try:
+        rejection = _reject_low_value_search(path, pattern)
+        if rejection:
+            return rejection
+
         search_dir = get_abs_path(path) if path else get_abs_path(".")
 
         if not os.path.exists(search_dir):
@@ -121,6 +180,10 @@ async def grep_impl(
         Search results formatted according to output_mode
     """
     try:
+        rejection = _reject_low_value_search(path, pattern, glob)
+        if rejection:
+            return rejection
+
         search_dir = get_abs_path(path) if path else get_abs_path(".")
 
         if not os.path.exists(search_dir):
