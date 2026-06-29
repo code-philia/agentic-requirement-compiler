@@ -78,6 +78,8 @@ Use JUnit 4 + Robolectric when the test needs Android framework behavior, Contex
 - Frontend Vitest tests must live under `frontend/src/...`
 - Frontend hook/component tests that use React Testing Library belong to frontend Vitest.
 - E2E tests must target browser behavior with Playwright and must not be authored as frontend Vitest files.
+- Playwright E2E spec files must be written under `backend/test-e2e/...`.
+- Do not place Playwright spec files under `frontend/src/...`, project-root `e2e/...`, or any other directory outside `backend/test-e2e/...`.
 
 ## Web Test Content Rules (MANDATORY)
 - For Vitest, generate ESM test files using `import { describe, it, expect, vi } from 'vitest'`.
@@ -114,6 +116,8 @@ Execution protocol (strict):
 - For each generated test, ensure `test_id`, `type`, `file_path`, and `first_line` exactly match the real file content.
 - If build or syntax fails, fix tests immediately using `edit_file` and rerun `run_build`.
 - If build or syntax fails because of framework mismatch, wrong directory placement, or wrong module system, rewrite the test file itself. Do not expect a later runtime patch to save it.
+- Use the provided `<project_structure>` as the default source of truth for file and directory locations.
+- Avoid exploratory `glob` or `list_directory` calls unless the required location is still unclear after reading `<project_structure>`.
 
 {pkg_compliance}
 {test_stack}

@@ -95,6 +95,11 @@ def _normalize_backend_test_path(file_path: str) -> str:
     return normalized
 
 
+def _is_valid_web_e2e_test_path(file_path: str) -> bool:
+    normalized = (file_path or "").strip().replace("\\", "/").lstrip("./")
+    return normalized.startswith("backend/test-e2e/") and normalized.endswith((".spec.js", ".spec.jsx", ".spec.ts", ".spec.tsx"))
+
+
 def _resolve_web_test_target(file_path: str, workspace_path: str) -> tuple[str, str]:
     normalized = (file_path or "").strip().replace("\\", "/")
     backend_path = os.path.join(workspace_path, "backend")
@@ -259,6 +264,15 @@ async def _terminate_process(process: asyncio.subprocess.Process | None) -> None
 class WebAppType(AppTypeHandler):
     name = "web"
 
+    def validate_test_path(self, test_type: str, file_path: str) -> str | None:
+        normalized_type = (test_type or "").strip().lower()
+        if normalized_type == "e2e" and not _is_valid_web_e2e_test_path(file_path):
+            return (
+                "Web E2E tests must live under `backend/test-e2e/...` and use a Playwright spec filename. "
+                f"Received: {file_path}"
+            )
+        return None
+
     async def post_template_setup(self) -> bool:
         replacements = {
             "__ARC_WEB_PORT__": str(get_web_port()),
@@ -302,6 +316,10 @@ class WebAppType(AppTypeHandler):
     async def run_test_file(self, test_type: str, file_path: str) -> str:
         await self.log_cb("System", f"System test execution ({test_type}): {file_path}")
         normalized_type = test_type.lower()
+        if normalized_type == "e2e":
+            validation_error = self.validate_test_path(test_type, file_path)
+            if validation_error:
+                return f"Exit Code: 1\nSTDERR:\n{validation_error}\n"
         backend_path = os.path.join(self.workspace_path, "backend")
         try:
             execution = _build_web_test_execution(test_type, file_path, self.workspace_path)
@@ -370,6 +388,14 @@ class WebAppType(AppTypeHandler):
 
         for file_path in file_paths:
             await self.log_cb("System", f"System test execution ({test_type}): {file_path}")
+
+        if normalized_type == "e2e":
+            invalid_paths = [file_path for file_path in file_paths if self.validate_test_path(test_type, file_path)]
+            if invalid_paths:
+                error_lines = ["Exit Code: 1", "STDERR:"]
+                for file_path in invalid_paths:
+                    error_lines.append(self.validate_test_path(test_type, file_path) or "")
+                return "\n".join(error_lines) + "\n"
 
         try:
             execution = _build_web_group_execution(test_type, file_paths, self.workspace_path)

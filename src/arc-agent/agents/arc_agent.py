@@ -3,6 +3,7 @@ import inspect
 import json
 import os
 import re
+from collections import defaultdict
 from typing import Any, Awaitable, Callable, Dict, List
 from openai import AsyncOpenAI
 from dotenv import load_dotenv
@@ -45,6 +46,8 @@ _REQUIRED_TOOL_ARGS: Dict[str, list] = {
     "delete_file":   ["path"],
 }
 
+NODE_TOOL_RESULT_CACHE: dict[str, dict[str, str]] = defaultdict(dict)
+
 def _evict_mutated_path(cache: dict, affected_path: str) -> None:
     """Remove stale read_file / list_directory cache entries after a file is mutated."""
     stale = []
@@ -65,6 +68,10 @@ def _evict_mutated_path(cache: dict, affected_path: str) -> None:
                 pass
     for k in stale:
         del cache[k]
+
+
+def _normalize_cache_node_id(node_id: str | None) -> str:
+    return str(node_id or "__GLOBAL__")
 
 class ARCAgent:
     """
@@ -316,7 +323,8 @@ Output from {tool_name}:
                 elif hasattr(t, 'function') and hasattr(t.function, 'name'):
                     allowed_tool_names.add(t.function.name)
 
-        tool_result_cache: Dict[str, str] = {}
+        cache_node_id = _normalize_cache_node_id(node_id)
+        tool_result_cache = NODE_TOOL_RESULT_CACHE[cache_node_id]
         step = 0
         _consecutive_cache_only = 0
         while step < max_steps:

@@ -78,7 +78,10 @@ async def glob_impl(pattern: str, path: str = None) -> str:
                 relative_files.append(f)
 
         if not relative_files:
-            return "No files found"
+            return (
+                "No files found\n"
+                "Hint: Prefer the existing <project_structure> context and only probe directories that are already known to exist."
+            )
 
         result = "\n".join(relative_files)
         if truncated:

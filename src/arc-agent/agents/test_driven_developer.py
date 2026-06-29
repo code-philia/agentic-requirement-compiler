@@ -14,6 +14,8 @@ class TestDrivenDeveloper(ARCAgent):
         self._test_budget_exhausted = False
         self._run_tests_executor: Callable[[], Awaitable[str]] | None = None
         self._last_run_tests_exit_code: int | None = None
+        self._last_run_tests_result: str | None = None
+        self._last_completed_run_tests_result: str | None = None
         self._has_called_run_tests_in_session = False
 
     def get_system_prompt(self) -> str:
@@ -64,8 +66,10 @@ Execution protocol (strict):
 - E2E tests must be Playwright tests. They are not Vitest tests, and you must not reinterpret E2E failures through `require('vitest')`, `describe/it/expect`-only assumptions, or rewrite E2E into Vitest unless the requirement explicitly changes frameworks.
 - If an E2E file itself appears to be Vitest-style, treat that as a test-generation or test-content error to be corrected. Do not "fix" it by changing the runner away from Playwright.
 - When E2E fails, debug it as Playwright: page interaction, selectors, assertions, server startup, and runtime environment.
+- For web projects, Playwright E2E spec files belong under `backend/test-e2e/...`. Do not move them to `frontend/src/...` or root-level `e2e/...`.
 - For web projects, backend tests and frontend tests may run from different working directories. Use the `Working Directory` and `Resolved Test File` fields from system output as the source of truth before deciding whether the blocker is path, config, test content, or implementation.
 - The current node already has a concrete interface list. Implement those interfaces first and keep them aligned with their declared file path, signature, callers, callees, inputs, and outputs.
+- Use the provided `<project_structure>` as the default source of truth for file and directory locations. Do not start by probing guessed sibling directories.
 - If you discover that passing tests requires a genuinely new interface that was not in the original node IR, you may add it. In that case, include a JSON array in a markdown `json` block in your final response describing only the newly added interfaces using the same schema as interface design. Do not emit this JSON for ordinary code edits.
 - Return exactly "IMPLEMENTED" only when target tests are truly passing.
 
@@ -133,6 +137,8 @@ Once `run_tests` returns a 100% passing state (Exit Code: 0) for the target test
         )
         result = await self._run_tests_executor()
         self._has_called_run_tests_in_session = True
+        self._last_run_tests_result = result
+        self._last_completed_run_tests_result = result
         self._last_run_tests_exit_code = self._extract_exit_code(result)
         return True, result
 
@@ -211,6 +217,8 @@ Once `run_tests` returns a 100% passing state (Exit Code: 0) for the target test
         previous_exhausted = self._test_budget_exhausted
         previous_executor = self._run_tests_executor
         previous_last_exit_code = self._last_run_tests_exit_code
+        previous_last_result = self._last_run_tests_result
+        previous_last_completed_result = self._last_completed_run_tests_result
         previous_has_called_run_tests = self._has_called_run_tests_in_session
 
         self._run_tests_budget = run_tests_budget
@@ -219,6 +227,8 @@ Once `run_tests` returns a 100% passing state (Exit Code: 0) for the target test
         self._test_budget_exhausted = False
         self._run_tests_executor = run_tests_executor
         self._last_run_tests_exit_code = None
+        self._last_run_tests_result = None
+        self._last_completed_run_tests_result = None
         self._has_called_run_tests_in_session = False
         try:
             return await super().run_from_messages(
@@ -228,13 +238,19 @@ Once `run_tests` returns a 100% passing state (Exit Code: 0) for the target test
                 tools=tools,
             )
         finally:
+            latest_completed_result = self._last_completed_run_tests_result
             self._run_tests_budget = previous_budget
             self._run_tests_usage = previous_usage
             self._stop_on_test_budget_exhausted = previous_stop
             self._test_budget_exhausted = previous_exhausted
             self._run_tests_executor = previous_executor
             self._last_run_tests_exit_code = previous_last_exit_code
+            self._last_run_tests_result = previous_last_result
+            self._last_completed_run_tests_result = latest_completed_result or previous_last_completed_result
             self._has_called_run_tests_in_session = previous_has_called_run_tests
+
+    def get_last_run_tests_result(self) -> str | None:
+        return self._last_completed_run_tests_result
 
     def build_initial_messages(self, node_id: str, test_files: List[str], test_type: str, req_desc: str, scenarios: list = None, dependency_context: str = "", current_interfaces: list = None, preloaded_source: str = None) -> tuple:
         """Build the [system, user] messages and tools list without calling run().

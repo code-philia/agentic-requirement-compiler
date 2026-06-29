@@ -132,6 +132,10 @@ class AppTypeHandler(ABC):
         header.extend(f"- {file_path}" for file_path in file_paths)
         return f"{chr(10).join(header)}\n\n" + "\n\n".join(outputs)
 
+    def validate_test_path(self, test_type: str, file_path: str) -> str | None:
+        """Return an error message when a generated test path is invalid."""
+        return None
+
     @classmethod
     @abstractmethod
     def build_stack_block(cls) -> str:

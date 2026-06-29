@@ -118,7 +118,16 @@ class WorkflowPhaseRunner:
             )
             return False
 
-        self._store_tests(node_id, tests)
+        try:
+            self._store_tests(node_id, tests)
+        except ValueError as exc:
+            await self.log_cb(
+                "TestGenerator",
+                str(exc),
+                "error",
+                node_id,
+            )
+            return False
         context_pipeline.cache.invalidate_file_layers(node_id)
 
         modified_test_files = extract_modified_files_from_messages(test_messages)
@@ -199,6 +208,7 @@ class WorkflowPhaseRunner:
             total_model_test_runs += run_tests_usage.get("run_tests", 0)
             context_pipeline.cache.invalidate_file_layers(node_id)
             self._store_new_interfaces_from_tdd_output(node_id, implement_output)
+            latest_run_tests_result = self.test_driven_developer.get_last_run_tests_result()
 
             if "IMPLEMENTED" not in (implement_output or "").upper():
                 await self.log_cb(
@@ -208,12 +218,28 @@ class WorkflowPhaseRunner:
                     node_id,
                 )
 
-            group_passed, group_statuses = await self._execute_tests_for_records(
-                node_id=node_id,
-                test_type=test_type,
-                tests=typed_tests,
-                persist=False,
-            )
+            latest_exit_code = None
+            if latest_run_tests_result:
+                latest_exit_code = parse_test_results(latest_run_tests_result).get("exit_code")
+
+            if latest_run_tests_result and latest_exit_code == 0:
+                group_passed, group_statuses = self._map_statuses_from_batch_output(
+                    tests=typed_tests,
+                    batch_output=latest_run_tests_result,
+                )
+                await self.log_cb(
+                    "Compiler",
+                    f"Reused the latest passing run_tests result for interim {test_type} verification.",
+                    None,
+                    node_id,
+                )
+            else:
+                group_passed, group_statuses = await self._execute_tests_for_records(
+                    node_id=node_id,
+                    test_type=test_type,
+                    tests=typed_tests,
+                    persist=False,
+                )
             passed_count = sum(1 for value in group_statuses.values() if value is True)
             total_count = len(group_statuses)
             group_reports.append(
@@ -305,12 +331,20 @@ class WorkflowPhaseRunner:
             if not test_id:
                 continue
 
+            test_type = str(test.get("type", "")).strip()
+            file_path = str(test.get("file_path", "")).strip()
+            validation_error = self.app_handler.validate_test_path(test_type, file_path)
+            if validation_error:
+                raise ValueError(
+                    f"Generated test `{test_id}` has an invalid path. {validation_error}"
+                )
+
             insert_test(
                 test_id=test_id,
                 req_id=node_id,
                 interface_ids=self._normalize_string_list(test.get("interface_ids")),
-                type=str(test.get("type", "")).strip(),
-                file_path=str(test.get("file_path", "")).strip(),
+                type=test_type,
+                file_path=file_path,
                 first_line=str(test.get("first_line", "")).strip(),
                 passed=None,
             )
@@ -363,6 +397,30 @@ class WorkflowPhaseRunner:
             status_by_test_id.update(typed_statuses)
 
         return status_by_test_id
+
+    def _map_statuses_from_batch_output(
+        self,
+        tests: list[dict[str, Any]],
+        batch_output: str,
+    ) -> tuple[bool, dict[str, bool | None]]:
+        grouped_tests: dict[str, list[dict[str, Any]]] = defaultdict(list)
+        for test in tests:
+            file_path = str(test.get("file_path", "")).strip()
+            if file_path:
+                grouped_tests[file_path].append(test)
+
+        parsed_result = parse_test_results(batch_output)
+        batch_passed = parsed_result.get("exit_code") == 0
+        status_by_test_id: dict[str, bool | None] = {}
+        all_passed = True
+
+        for file_tests in grouped_tests.values():
+            file_statuses = self._map_file_test_statuses(file_tests, parsed_result, batch_passed)
+            status_by_test_id.update(file_statuses)
+            if not all(value is True for value in file_statuses.values()):
+                all_passed = False
+
+        return all_passed, status_by_test_id
 
     async def _execute_tests_for_records(
         self,

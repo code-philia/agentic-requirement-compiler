@@ -147,7 +147,10 @@ async def list_directory_impl(path: str, depth: int = 3) -> str:
     abs_path = get_abs_path(path)
     try:
         if not os.path.exists(abs_path):
-            return f"Error: Directory not found at {path}"
+            return (
+                f"Error: Directory not found at {path}\n"
+                "Hint: Prefer the existing <project_structure> context before probing guessed sibling directories."
+            )
         if not os.path.isdir(abs_path):
             return f"Error: {path} is not a directory"
         
