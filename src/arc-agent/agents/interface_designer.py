@@ -1,5 +1,6 @@
 import asyncio
 import base64
+import hashlib
 import json
 import mimetypes
 import os
@@ -11,6 +12,7 @@ import requests
 
 from .arc_agent import ARCAgent
 from traceability.database import update_requirement_visuals
+from utils import read_json_file, write_json_file
 
 class InterfaceDesigner(ARCAgent):
     def __init__(self, log_cb=None):
@@ -60,6 +62,24 @@ class InterfaceDesigner(ARCAgent):
 """
 
     @staticmethod
+    def _visual_cache_path(workspace_path: str) -> str:
+        return os.path.join(workspace_path, ".arc", "visual_analysis_cache.json")
+
+    @classmethod
+    def _load_visual_cache(cls, workspace_path: str) -> dict[str, Any]:
+        return read_json_file(cls._visual_cache_path(workspace_path)) or {}
+
+    @classmethod
+    def _save_visual_cache(cls, workspace_path: str, cache: dict[str, Any]) -> None:
+        write_json_file(cls._visual_cache_path(workspace_path), cache)
+
+    @staticmethod
+    def _build_visual_cache_key(full_path: str) -> str:
+        stat = os.stat(full_path)
+        raw_key = f"{os.path.abspath(full_path)}::{int(stat.st_mtime_ns)}::{stat.st_size}"
+        return hashlib.sha256(raw_key.encode("utf-8")).hexdigest()
+
+    @staticmethod
     def resolve_visual_api_key() -> str:
         return os.environ.get("VISUAL_API_KEY") or os.environ.get("OPENAI_API_KEY", "")
 
@@ -102,6 +122,8 @@ class InterfaceDesigner(ARCAgent):
                 await self.log_cb("System", "No image found in the description.", "info", req_id)
             return
 
+        visual_cache = self._load_visual_cache(workspace_path)
+        cache_updated = False
         visual_references = []
         for image_path in matches:
             normalized_path = os.path.normpath(image_path)
@@ -115,6 +137,14 @@ class InterfaceDesigner(ARCAgent):
                 continue
 
             try:
+                cache_key = self._build_visual_cache_key(full_path)
+                cached_entry = visual_cache.get(cache_key)
+                if cached_entry and cached_entry.get("analysis"):
+                    visual_references.append({"image_path": image_path, "analysis": cached_entry["analysis"]})
+                    if self.log_cb:
+                        await self.log_cb("System", f"Reusing cached visual analysis: {image_path}", None, req_id)
+                    continue
+
                 mime_type, _ = mimetypes.guess_type(full_path)
                 if not mime_type:
                     mime_type = "image/png"
@@ -166,10 +196,19 @@ class InterfaceDesigner(ARCAgent):
 
                 response_data = response.json()
                 analysis = response_data["choices"][0]["message"]["content"]
+                visual_cache[cache_key] = {
+                    "image_path": image_path,
+                    "full_path": os.path.abspath(full_path),
+                    "analysis": analysis,
+                }
+                cache_updated = True
                 visual_references.append({"image_path": image_path, "analysis": analysis})
             except Exception as exc:
                 if self.log_cb:
                     await self.log_cb("System", f"Failed to analyze image {image_path}: {exc}", "error", req_id)
+
+        if cache_updated:
+            self._save_visual_cache(workspace_path, visual_cache)
 
         if visual_references:
             update_requirement_visuals(req_id, visual_references)
