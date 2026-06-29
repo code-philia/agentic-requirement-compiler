@@ -20,6 +20,22 @@ class InterfaceDesigner(ARCAgent):
             agent_name="InterfaceDesigner",
             log_cb=log_cb
         )
+        self._non_leaf_existing_write_guard = False
+
+    async def _intercept_tool_call(
+        self,
+        tool_name: str,
+        tool_args: Dict[str, Any],
+        node_id: str | None = None,
+    ) -> tuple[bool, Any]:
+        if self._non_leaf_existing_write_guard and tool_name == "write_file":
+            path = str(tool_args.get("path", "")).strip()
+            if path and os.path.exists(path):
+                return True, (
+                    f"Error: `{path}` already exists. In non-leaf convergence, do not overwrite existing shared files "
+                    "with `write_file`. Read the file and use `edit_file` for a minimal targeted change instead."
+                )
+        return await super()._intercept_tool_call(tool_name, tool_args, node_id)
 
     @staticmethod
     def build_visual_analysis_prompt() -> str:
@@ -424,9 +440,10 @@ After writing all files, call `run_build` to verify compilation. Fix any errors.
 {json.dumps(interfaces, indent=2, ensure_ascii=False)}
 ```
 
-Write ALL stub code files using `write_file` calls FIRST, then call `run_build` ONCE to verify compilation.
-Do NOT call `read_file` on source files — you already have the context from the previous design phase.
-Do NOT interleave `read_file` and `write_file` — batch all writes together.
+Before writing code, confirm whether each target file already exists.
+- For a new file, use `write_file`.
+- For an existing file, read it first and then use `edit_file` for the minimal compatible change.
+Batch new-file creation together when possible, then call `run_build` ONCE to verify compilation.
 Ensure all imports, class hierarchies, and method signatures match the interface definitions above.
 Fix any build errors found using `edit_file` (provide exact old_string/new_string for precise replacements).
 When all files are written and compilation passes, output "IMPLEMENTED".
@@ -479,9 +496,13 @@ When all files are written and compilation passes, output "IMPLEMENTED".
 
 This is a non-leaf convergence task.
 Do only the minimal parent-level assembly needed to connect child capabilities into one coherent subsystem.
+- Treat the provided child convergence summary as the source of truth for what child nodes already implemented and verified.
 - Prefer editing existing parent-level shells, facades, routing, shared state, and composition points.
+- If a target file already exists, read it first and use `edit_file` for minimal changes. Do not replace existing shared files with `write_file`.
+- Base your work on concrete child outputs: their implemented interfaces, landed files, and current pass/fail state.
 - Do NOT re-implement child business logic in the parent.
 - Do NOT create broad new feature code unless required for system connectivity.
+- If a child still has failing tests, avoid masking that failure in the parent. Only add the minimum parent wiring that remains valid.
 - Write all required parent-level changes first, then call `run_build` once.
 - When the parent-level convergence is complete and the build passes, output exactly `IMPLEMENTED`.
 """
@@ -493,5 +514,10 @@ Do only the minimal parent-level assembly needed to connect child capabilities i
             {"role": "user", "content": user_prompt},
         ]
         tools = [TOOL_REGISTRY[n]["schema"] for n in self._get_implement_tool_names() if n in TOOL_REGISTRY]
-        result, messages = await self.run_from_messages(messages, node_id=node_id, max_steps=20, tools=tools)
+        previous_guard = self._non_leaf_existing_write_guard
+        self._non_leaf_existing_write_guard = True
+        try:
+            result, messages = await self.run_from_messages(messages, node_id=node_id, max_steps=20, tools=tools)
+        finally:
+            self._non_leaf_existing_write_guard = previous_guard
         return result, messages

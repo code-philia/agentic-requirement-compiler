@@ -118,6 +118,8 @@ Execution protocol (strict):
 - If build or syntax fails because of framework mismatch, wrong directory placement, or wrong module system, rewrite the test file itself. Do not expect a later runtime patch to save it.
 - Use the provided `<project_structure>` as the default source of truth for file and directory locations.
 - Avoid exploratory `glob` or `list_directory` calls unless the required location is still unclear after reading `<project_structure>`.
+- If you use `glob` or `grep`, keep them narrow and inside known source subtrees. Do not explore `node_modules`, build outputs, caches, or unconstrained workspace-root patterns.
+- Use `execute_command` only when you must run a package script or install dependencies. Do not use it as a substitute for normal code/context inspection.
 
 {pkg_compliance}
 {test_stack}

@@ -1,4 +1,5 @@
 import json
+import re
 from typing import List, Dict, Any, Awaitable, Callable
 from .arc_agent import ARCAgent
 
@@ -57,6 +58,7 @@ Execution protocol (strict):
 - The `run_tests` tool is only a signal. It takes NO arguments. When you call it, the system will execute the current target test batch and return the results in the tool output.
 - If tests fail, read the returned error output carefully, use `edit_file` to fix the minimal set of issues (provide exact old_string/new_string), and then call `run_tests` again.
 - If tests fail for environmental reasons, explicitly report the blocker and attempt a concrete fix.
+- The current TDD session is scoped to one test group only. Do not read or reason about unrelated test groups unless the current failure explicitly depends on them.
 - Treat `No test files found` and equivalent discovery errors as runner/path/config problems first. Do not start by changing business logic when the runner did not actually execute the target test file.
 - Do not create mirror test files, proxy test files, duplicate test files, or path-compatibility files such as `backend/backend/...` just to satisfy a broken runner path.
 - Do not copy or relocate tests only to make discovery pass unless the system output explicitly shows the real project configuration itself must be fixed.
@@ -70,6 +72,9 @@ Execution protocol (strict):
 - For web projects, backend tests and frontend tests may run from different working directories. Use the `Working Directory` and `Resolved Test File` fields from system output as the source of truth before deciding whether the blocker is path, config, test content, or implementation.
 - The current node already has a concrete interface list. Implement those interfaces first and keep them aligned with their declared file path, signature, callers, callees, inputs, and outputs.
 - Use the provided `<project_structure>` as the default source of truth for file and directory locations. Do not start by probing guessed sibling directories.
+- Prefer the pre-fetched context first. Avoid full-repo rescans, repeated `list_directory`, or unrelated `read_file` calls unless they are directly needed for the current failing batch.
+- Use `glob` and `grep` only for narrow follow-up checks inside known source subtrees. Do not explore `node_modules`, build outputs, caches, or unconstrained workspace-root patterns.
+- Use `execute_command` only when necessary for external actions or bounded diagnostics, such as `npm install`, a package script, or a short runtime check in the correct working directory.
 - If you discover that passing tests requires a genuinely new interface that was not in the original node IR, you may add it. In that case, include a JSON array in a markdown `json` block in your final response describing only the newly added interfaces using the same schema as interface design. Do not emit this JSON for ordinary code edits.
 - Return exactly "IMPLEMENTED" only when target tests are truly passing.
 
@@ -80,7 +85,7 @@ Execution protocol (strict):
 3. Use `write_file` to write ALL implementation files in one batch.
 4. Call `run_tests` with NO arguments to ask the system to execute the current target test batch.
 5. If tests fail, read the returned error output, fix the code, and call `run_tests` again.
-6. If you need a new npm package, use `execute_command` (e.g., `npm install cors`).
+6. If you need a new npm package or a bounded external diagnostic, use `execute_command` sparingly (for example `npm install cors` in the correct package directory).
 
 Once `run_tests` returns a 100% passing state (Exit Code: 0) for the target tests, you MUST output exactly the word "IMPLEMENTED" in your final response to complete the task.
 """
@@ -89,12 +94,45 @@ Once `run_tests` returns a 100% passing state (Exit Code: 0) for the target test
         return ["read_file", "write_file", "edit_file", "delete_file", "list_directory", "glob", "grep",
                 "execute_command", "run_tests", "run_build", "search_interfaces_by_keyword", "search_interfaces_by_relation", "get_node_relations"]
 
+    @staticmethod
+    def _validate_execute_command(command: str) -> str | None:
+        normalized = re.sub(r"\s+", " ", str(command or "").strip()).lower()
+        if not normalized:
+            return "Rejected empty execute_command invocation."
+
+        if any(token in normalized for token in ("vitest", "playwright test", "npm test", "pnpm test", "yarn test")):
+            return (
+                "Rejected execute_command test run. Use `run_tests` for the current target batch instead of "
+                "manually invoking Vitest or Playwright."
+            )
+
+        if any(token in normalized for token in ("npm run build", "pnpm build", "yarn build", "vite build", "gradlew assemble", "gradlew test")):
+            return (
+                "Rejected execute_command build/test invocation. Use `run_build` for build verification and "
+                "`run_tests` for the target test batch."
+            )
+
+        command_head = normalized.split(" ", 1)[0]
+        if command_head in {"ls", "dir", "tree", "find", "rg", "grep", "cat", "type", "pwd"}:
+            return (
+                "Rejected execute_command repository exploration. Use `read_file`, `list_directory`, `glob`, or `grep` "
+                "for codebase inspection."
+            )
+
+        return None
+
     async def _intercept_tool_call(
         self,
         tool_name: str,
         tool_args: Dict[str, Any],
         node_id: str | None = None,
     ) -> tuple[bool, Any]:
+        if tool_name == "execute_command":
+            validation_error = self._validate_execute_command(tool_args.get("command", ""))
+            if validation_error:
+                return True, validation_error
+            return False, None
+
         if tool_name != "run_tests":
             return False, None
 

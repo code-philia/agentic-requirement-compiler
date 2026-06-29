@@ -40,8 +40,18 @@ class NodeContextCache:
 
     def invalidate_file_layers(self, node_id: str):
         """Invalidate layers that depend on file contents (after write_file, run_build)."""
-        for layer in self.FILE_DEPENDENT_LAYERS:
-            self._cache.pop((node_id, layer), None)
+        stale_keys = []
+        for cache_node_id, layer_name in self._cache.keys():
+            if cache_node_id != node_id:
+                continue
+            if (
+                layer_name in self.FILE_DEPENDENT_LAYERS
+                or layer_name.startswith("test_code::")
+                or layer_name.startswith("project_structure::")
+            ):
+                stale_keys.append((cache_node_id, layer_name))
+        for cache_key in stale_keys:
+            self._cache.pop(cache_key, None)
 
     def invalidate_db_layers(self, node_id: str):
         """Invalidate layers that depend on DB state (after insert_interface, insert_test)."""
@@ -84,7 +94,7 @@ class ContextPipeline:
     def _get_project_structure(self, agent_type: str = "") -> str:
         """Layer 1.5: Source tree under relevant src/ subtrees only (pre-fetched so LLM doesn't need list_directory)."""
         from utils import get_abs_path
-        from utils import get_app_type
+        from utils import get_app_type, get_web_port
         import os as _os
 
         root = get_abs_path(".")
@@ -143,6 +153,19 @@ class ContextPipeline:
         if not src_roots:
             return "<project_structure>\nNo src directories found.\n</project_structure>"
 
+        guidance_lines = []
+        if app_type == "web":
+            guidance_lines = [
+                "- Web structure rules:",
+                f"  - Single runtime port: backend serves frontend dist on port {get_web_port()}",
+                "  - Backend runtime root: backend/",
+                "  - Frontend source root: frontend/src/",
+                "  - Backend Vitest tests: backend/tests/...",
+                "  - Frontend Vitest tests: frontend/src/...",
+                "  - Playwright E2E tests: backend/test-e2e/...",
+                "  - Prefer existing backend/frontend entrypoints before probing new directories",
+            ]
+
         for src_root in sorted(src_roots):
             rel_root = _os.path.relpath(src_root, root).replace("\\", "/")
             lines.append(f"- {rel_root}/")
@@ -154,7 +177,8 @@ class ContextPipeline:
         if len(lines) > 200:
             lines = lines[:200]
             lines.append("... [truncated]")
-        return "<project_structure>\n" + "\n".join(lines) + "\n</project_structure>"
+        merged_lines = guidance_lines + lines if guidance_lines else lines
+        return "<project_structure>\n" + "\n".join(merged_lines) + "\n</project_structure>"
 
     def _get_all_interfaces_summary(self) -> str:
         """Layer 1.6: Summary of ALL existing interfaces (so LLM doesn't need search_interfaces_by_keyword)."""
