@@ -69,10 +69,17 @@ class WorkflowPhaseRunner:
         context_pipeline.cache.invalidate(node_id, "node_session")
         return session
 
-    def _classify_non_leaf_work(self, node_id: str, requirement_data: dict[str, Any]) -> str:
+    @staticmethod
+    def _has_visual_reference_hint(requirement_data: dict[str, Any]) -> bool:
         visual_reference = requirement_data.get("visual_reference") or []
-        scenarios = requirement_data.get("scenarios") or []
         if visual_reference:
+            return True
+        description = str(requirement_data.get("description", "") or "")
+        return bool(re.search(r"!\[[^\]]*\]\(([^)]+)\)", description))
+
+    def _classify_non_leaf_work(self, node_id: str, requirement_data: dict[str, Any]) -> str:
+        scenarios = requirement_data.get("scenarios") or []
+        if self._has_visual_reference_hint(requirement_data):
             return "non_leaf_ui_only"
         if scenarios:
             return "non_leaf_ui_with_shell_tests"
