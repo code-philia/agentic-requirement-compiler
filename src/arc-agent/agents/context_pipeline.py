@@ -78,6 +78,57 @@ class ContextPipeline:
         self.max_tests = 20
         self.cache = NodeContextCache()
 
+    def _build_requirement_focus(self, node_id: str, req_data: Dict[str, Any]) -> str:
+        scenarios = req_data.get("scenarios") or []
+        visual_reference = req_data.get("visual_reference") or []
+        focus = {
+            "req_id": req_data.get("req_id", node_id),
+            "name": req_data.get("name", ""),
+            "description": req_data.get("description", ""),
+            "dependencies": req_data.get("dependencies", []),
+            "children_ids": req_data.get("children_ids", []),
+            "scenario_count": len(scenarios),
+            "visual_reference_count": len(visual_reference),
+        }
+
+        parts = [
+            "<requirement_focus>",
+            json.dumps(focus, indent=2, ensure_ascii=False),
+        ]
+
+        if scenarios:
+            scenario_payload = []
+            for scenario in scenarios[:8]:
+                scenario_payload.append(
+                    {
+                        "scenario_id": scenario.get("scenario_id") or scenario.get("id", ""),
+                        "name": scenario.get("name", ""),
+                        "steps": scenario.get("steps", []),
+                    }
+                )
+            parts.append("<scenarios>")
+            parts.append(json.dumps(scenario_payload, indent=2, ensure_ascii=False))
+            parts.append("</scenarios>")
+
+        if visual_reference:
+            visual_payload = []
+            for item in visual_reference[:3]:
+                analysis = str(item.get("analysis", "") or "")
+                if len(analysis) > 1200:
+                    analysis = analysis[:1200] + "\n...[visual analysis truncated]"
+                visual_payload.append(
+                    {
+                        "image_path": item.get("image_path", ""),
+                        "analysis": analysis,
+                    }
+                )
+            parts.append("<visual_reference>")
+            parts.append(json.dumps(visual_payload, indent=2, ensure_ascii=False))
+            parts.append("</visual_reference>")
+
+        parts.append("</requirement_focus>")
+        return "\n".join(parts)
+
     def _get_global_context(self) -> str:
         """
         Layer 1: Global Context (Tech stack, project rules, directory structure).
@@ -390,7 +441,12 @@ class ContextPipeline:
         if project_structure:
             context_parts.append(project_structure)
 
-        # 2. Current Node Data
+        # 2. Current requirement first: make the active task impossible to miss.
+        requirement_focus = self._build_requirement_focus(node_id, req_data)
+        if requirement_focus:
+            context_parts.append(requirement_focus)
+
+        # 3. Full current node data
         req_json = json.dumps(req_data, indent=2, ensure_ascii=False)
         if len(req_json) > self.max_requirement_chars:
             req_json = req_json[:self.max_requirement_chars] + "\n...[requirement truncated]"

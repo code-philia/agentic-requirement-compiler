@@ -119,6 +119,10 @@ Execution protocol (strict):
 - Do NOT interleave `read_file` and `write_file` while authoring tests.
 - Keep tests deterministic. Do not add random sleeps or flaky waits.
 - For each generated test, ensure `test_id`, `type`, `file_path`, and `first_line` exactly match the real file content.
+- Keep file granularity coarse and stable. Do NOT explode one requirement into many micro test files.
+- Default target shape for a leaf node is at most one primary file per layer: one Unit file, one Integration file, and one E2E file.
+- Only split by scenario when the scenarios are genuinely independent and combining them would make one file unreadable; even then, prefer one file per scenario group, not per tiny assertion.
+- Prefer multiple `describe` / `it` blocks inside one stable file over creating many sibling files with near-duplicate setup.
 - If build or syntax fails, fix tests immediately using `edit_file` and rerun `run_build`.
 - If build or syntax fails because of framework mismatch, wrong directory placement, or wrong module system, rewrite the test file itself. Do not expect a later runtime patch to save it.
 - Use the provided `<project_structure>` as the default source of truth for file and directory locations.
@@ -197,6 +201,7 @@ Generate ALL test types in a single pass:
 
 Write ALL test files using `write_file` calls FIRST, then call `run_build` ONCE to verify compilation.
 For web projects, ensure the generated Unit, Integration, and E2E files already match the correct framework and directory rules in one pass.
+Keep the output compact: prefer one primary test file per layer for this requirement node unless a clear scenario boundary requires a second file.
 """
         elif test_type == "All":
             test_instruction = """
@@ -226,6 +231,7 @@ For E2E generation, use this selector priority:
 {test_instruction}
 Target the interfaces of the current node. Consider the node requirement content, each interface's responsibility, and its spec to decide what to test and how to assert.
 Prefer assertions on stable contract behavior first. Only assert exact href/copy/DOM details when the requirement or frozen node contract clearly requires them.
+Minimize file count. Start by planning the smallest viable set of test files for this node and keep related assertions together.
 When finished, output the mapping JSON block so the system can register these tests in the traceability database.
 """
         system_content = self.get_system_prompt()

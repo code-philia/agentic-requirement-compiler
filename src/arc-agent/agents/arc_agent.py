@@ -529,6 +529,14 @@ Output from {tool_name}:
                             self.notify_edit_failure(str(tool_args.get("path", "")).strip(), tool_result_str)
                         except Exception:
                             pass
+                    if hasattr(self, "drain_forced_followup_user_messages"):
+                        try:
+                            forced_messages = self.drain_forced_followup_user_messages()
+                        except Exception:
+                            forced_messages = []
+                        if forced_messages:
+                            for forced_message in forced_messages:
+                                messages.append({"role": "user", "content": forced_message})
 
                     stop_response = await self._get_stop_response_after_tool_call(
                         tool_name=tool_name,

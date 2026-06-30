@@ -1,5 +1,6 @@
 import json
 import re
+import os
 from typing import List, Dict, Any, Awaitable, Callable
 from .arc_agent import ARCAgent
 
@@ -21,6 +22,7 @@ class TestDrivenDeveloper(ARCAgent):
         self._rejected_execute_commands: set[str] = set()
         self._edit_read_required_paths: set[str] = set()
         self._recent_failure_fingerprints: list[str] = []
+        self._forced_followup_user_messages: list[str] = []
 
     def get_system_prompt(self) -> str:
         from utils import get_app_type, get_android_package, get_web_base_url, get_web_port
@@ -161,9 +163,11 @@ Once `run_tests` returns a 100% passing state (Exit Code: 0) for the target test
         if tool_name == "edit_file":
             path = str(tool_args.get("path", "")).strip()
             if path and path in self._edit_read_required_paths:
+                forced_context = self._consume_forced_followup_messages()
                 return True, (
                     f"Rejected edit_file for `{path}` because a previous exact replacement failed. "
-                    f"Read the current file with `read_file` first, then issue a fresh minimal edit against the latest content."
+                    f"Do NOT retry from stale memory. Use the freshly injected file content below and issue a new minimal edit.\n\n"
+                    f"{forced_context}"
                 )
             return False, None
 
@@ -325,6 +329,7 @@ Once `run_tests` returns a 100% passing state (Exit Code: 0) for the target test
         self._rejected_execute_commands = set()
         self._edit_read_required_paths = set()
         self._recent_failure_fingerprints = []
+        self._forced_followup_user_messages = []
         try:
             return await super().run_from_messages(
                 messages=messages,
@@ -352,6 +357,49 @@ Once `run_tests` returns a 100% passing state (Exit Code: 0) for the target test
             return
         if "old_string not found" in tool_result.lower():
             self._edit_read_required_paths.add(path)
+            self._forced_followup_user_messages.append(self._build_forced_edit_refresh(path))
+
+    def _consume_forced_followup_messages(self) -> str:
+        if not self._forced_followup_user_messages:
+            return "No forced context available."
+        payload = "\n\n".join(self._forced_followup_user_messages)
+        self._forced_followup_user_messages = []
+        return payload
+
+    def drain_forced_followup_user_messages(self) -> list[str]:
+        if not self._forced_followup_user_messages:
+            return []
+        messages = list(self._forced_followup_user_messages)
+        self._forced_followup_user_messages = []
+        return messages
+
+    def _build_forced_edit_refresh(self, path: str) -> str:
+        try:
+            from utils import get_abs_path
+            abs_path = get_abs_path(path)
+            if not abs_path or not os.path.exists(abs_path):
+                return (
+                    f"<forced_file_refresh path=\"{path}\">\n"
+                    "The file no longer exists or could not be re-read.\n"
+                    "</forced_file_refresh>"
+                )
+            with open(abs_path, "r", encoding="utf-8", errors="replace") as handle:
+                content = handle.read()
+            if len(content) > 5000:
+                content = content[:5000] + "\n// ... [forced refresh truncated]"
+            return (
+                f"<forced_file_refresh path=\"{path}\">\n"
+                f"{content}\n"
+                "</forced_file_refresh>\n"
+                "A previous exact replacement failed. Base the next edit on this refreshed file content and do not reuse the stale old_string."
+            )
+        except Exception as exc:
+            return (
+                f"<forced_file_refresh path=\"{path}\">\n"
+                f"Failed to re-read file automatically: {exc}\n"
+                "</forced_file_refresh>\n"
+                "A previous exact replacement failed. Re-read the file logically before issuing another exact edit."
+            )
 
     def build_initial_messages(
         self,
