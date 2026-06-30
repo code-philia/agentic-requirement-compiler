@@ -238,7 +238,7 @@ class InterfaceDesigner(ARCAgent):
                 )
 
     def get_system_prompt(self) -> str:
-        from utils import get_app_type, get_android_package
+        from utils import get_app_type, get_android_package, get_web_base_url, get_web_port
         app_type = get_app_type()
         android_pkg = ""
         pkg_compliance = ""
@@ -256,7 +256,17 @@ class InterfaceDesigner(ARCAgent):
 - If the requirement description mentions a different package name in resource-id patterns (e.g., `org.billthefarmer.editor:id/newFile`), use THAT package name instead of `{android_pkg}`. The resource-id package takes priority.
 """
         else:
-            pkg_compliance = ""
+            pkg_compliance = f"""
+### Web Runtime And Hosting (CRITICAL for Web):
+- The web app has exactly ONE runtime port: `{get_web_port()}`.
+- The deployed runtime base URL is `{get_web_base_url()}`.
+- The frontend is a build artifact producer, not the deployed runtime server.
+- The frontend should be built into `frontend/dist`.
+- The backend is the only runtime server and must host `frontend/dist` on the same origin and same port.
+- Do NOT design architectures that depend on a separate deployed frontend dev server such as `5173` or `5174`.
+- For top-level web design, the backend owns final runtime assembly, top-level route serving, and integration with frontend build output.
+- When designing web parent modules, prefer app shells, route containers, layout frames, shared providers, and thin backend integration points over splitting the deployed system into separate frontend/backend runtime surfaces.
+"""
 
         return f"""You are a Principal Software Architect.
 Your task is to analyze a raw software requirement and design its interfaces (UI -> API -> FUNC -> DB).

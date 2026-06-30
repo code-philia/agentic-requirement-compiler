@@ -1,5 +1,6 @@
 import re
 import os
+import json
 import asyncio
 
 from typing import Awaitable, Callable
@@ -255,7 +256,23 @@ async def _wait_for_tcp_server(host: str, port: int, timeout: float = 20.0) -> b
     return False
 
 
-async def _terminate_process(process: asyncio.subprocess.Process | None) -> None:
+async def _wait_for_tcp_server_shutdown(host: str, port: int, timeout: float = 10.0) -> bool:
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+
+    while loop.time() < deadline:
+        try:
+            reader, writer = await asyncio.open_connection(host, port)
+            writer.close()
+            await writer.wait_closed()
+            await asyncio.sleep(0.25)
+        except OSError:
+            return True
+
+    return False
+
+
+async def _terminate_process(process: asyncio.subprocess.Process | None, *, port: int | None = None) -> None:
     if process is None or process.returncode is not None:
         return
 
@@ -268,6 +285,88 @@ async def _terminate_process(process: asyncio.subprocess.Process | None) -> None
             await process.wait()
         except Exception:
             pass
+    if port is not None:
+        await _wait_for_tcp_server_shutdown("127.0.0.1", port, timeout=10.0)
+
+
+def _read_package_scripts(package_dir: str) -> dict[str, str]:
+    package_json_path = os.path.join(package_dir, "package.json")
+    if not os.path.exists(package_json_path):
+        return {}
+
+    try:
+        with open(package_json_path, "r", encoding="utf-8") as package_file:
+            package_data = json.load(package_file)
+    except Exception:
+        return {}
+
+    scripts = package_data.get("scripts")
+    return scripts if isinstance(scripts, dict) else {}
+
+
+def _resolve_backend_start_command(backend_path: str) -> str | None:
+    scripts = _read_package_scripts(backend_path)
+    if "start" in scripts:
+        return "npm run start"
+    if "dev" in scripts:
+        return "npm run dev"
+    return None
+
+
+async def _build_frontend_dist(workspace_path: str) -> tuple[bool, str]:
+    frontend_path = os.path.join(workspace_path, "frontend")
+    frontend_build_output = await _execute_web_test_command(
+        "npm run build",
+        cwd=frontend_path,
+        timeout=120.0,
+    )
+    dist_index_path = os.path.join(frontend_path, "dist", "index.html")
+    build_ok = _extract_exit_code(frontend_build_output) == 0 and os.path.exists(dist_index_path)
+    if build_ok:
+        return True, frontend_build_output
+
+    if os.path.exists(dist_index_path):
+        return False, frontend_build_output
+
+    return (
+        False,
+        frontend_build_output
+        + "\nFrontend build did not produce `frontend/dist/index.html`, so backend hosting cannot start.\n",
+    )
+
+
+async def _start_backend_runtime(workspace_path: str) -> tuple[asyncio.subprocess.Process | None, str]:
+    backend_path = os.path.join(workspace_path, "backend")
+    start_command = _resolve_backend_start_command(backend_path)
+    if not start_command:
+        return None, (
+            "Backend package.json must define `start` or `dev` so the backend can host "
+            "the built frontend on the single web port."
+        )
+
+    try:
+        backend_process = await asyncio.create_subprocess_shell(
+            start_command,
+            cwd=backend_path,
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL,
+            env={
+                **os.environ,
+                **build_web_runtime_env(),
+            },
+        )
+    except Exception as exc:
+        return None, f"Failed to start backend runtime with `{start_command}`: {str(exc)}"
+
+    server_ready = await _wait_for_tcp_server("127.0.0.1", get_web_port(), timeout=20.0)
+    if not server_ready:
+        await _terminate_process(backend_process, port=get_web_port())
+        return None, (
+            f"Failed to start backend runtime with `{start_command}` on port {get_web_port()} "
+            "within 20 seconds."
+        )
+
+    return backend_process, start_command
 
 
 class WebAppType(AppTypeHandler):
@@ -329,62 +428,43 @@ class WebAppType(AppTypeHandler):
             validation_error = self.validate_test_path(test_type, file_path)
             if validation_error:
                 return f"Exit Code: 1\nSTDERR:\n{validation_error}\n"
-        backend_path = os.path.join(self.workspace_path, "backend")
         try:
             execution = _build_web_test_execution(test_type, file_path, self.workspace_path)
         except ValueError as exc:
             return str(exc)
-        servers_process = None
+        backend_process = None
+        frontend_build_output = ""
+        backend_start_command = ""
 
         if normalized_type == "e2e":
-            frontend_path = os.path.join(self.workspace_path, "frontend")
-            frontend_build_output = await _execute_web_test_command(
-                "npm run build",
-                cwd=frontend_path,
-                timeout=120.0,
-            )
-            if _extract_exit_code(frontend_build_output) != 0:
+            build_ok, frontend_build_output = await _build_frontend_dist(self.workspace_path)
+            if not build_ok:
                 return _prepend_test_execution_header(
                     execution,
                     "Frontend build failed before E2E startup.\n\n"
                     f"=== Frontend Build ===\n{frontend_build_output}",
                 )
 
-            try:
-                backend_process = await asyncio.create_subprocess_shell(
-                    "npm run start",
-                    cwd=backend_path,
-                    stdout=asyncio.subprocess.DEVNULL,
-                    stderr=asyncio.subprocess.DEVNULL,
-                    env={
-                        **os.environ,
-                        **build_web_runtime_env(),
-                    },
+            backend_process, backend_start_command = await _start_backend_runtime(self.workspace_path)
+            if backend_process is None:
+                return _prepend_test_execution_header(
+                    execution,
+                    "Failed to start backend server for E2E testing.\n\n"
+                    f"=== Frontend Build ===\n{frontend_build_output}\n\n"
+                    f"=== Backend Runtime Error ===\n{backend_start_command}\n",
                 )
-                servers_process = (backend_process,)
-                server_ready = await _wait_for_tcp_server("127.0.0.1", get_web_port(), timeout=20.0)
-                if not server_ready:
-                    await _terminate_process(backend_process)
-                    return _prepend_test_execution_header(
-                        execution,
-                        "Failed to start backend server for E2E testing within 20 seconds.\n\n"
-                        f"=== Frontend Build ===\n{frontend_build_output}",
-                    )
-            except Exception as exc:
-                if servers_process:
-                    for process in servers_process:
-                        await _terminate_process(process)
-                return f"Failed to start servers for E2E testing: {str(exc)}"
 
         try:
             result = await _execute_web_test_command(execution["command"], cwd=execution["working_directory"])
             if normalized_type == "e2e":
-                result = f"=== Frontend Build ===\n{frontend_build_output}\n\n{result}"
+                result = (
+                    f"=== Frontend Build ===\n{frontend_build_output}\n\n"
+                    f"=== Backend Runtime ===\nCommand: {backend_start_command}\n"
+                    f"Port: {get_web_port()}\n\n{result}"
+                )
             return _prepend_test_execution_header(execution, result)
         finally:
-            if servers_process:
-                for process in servers_process:
-                    await _terminate_process(process)
+            await _terminate_process(backend_process, port=get_web_port())
 
     async def run_test_group(self, test_type: str, file_paths: list[str]) -> str:
         normalized_type = (test_type or "").strip().lower()
@@ -449,14 +529,8 @@ class WebAppType(AppTypeHandler):
             body = f"Exit Code: {batch_exit_code}\n\n" + "\n\n".join(sections)
             return _prepend_group_execution_header(execution, body)
 
-        backend_path = os.path.join(self.workspace_path, "backend")
-        frontend_path = os.path.join(self.workspace_path, "frontend")
-        frontend_build_output = await _execute_web_test_command(
-            "npm run build",
-            cwd=frontend_path,
-            timeout=120.0,
-        )
-        if _extract_exit_code(frontend_build_output) != 0:
+        build_ok, frontend_build_output = await _build_frontend_dist(self.workspace_path)
+        if not build_ok:
             return _prepend_group_execution_header(
                 execution,
                 "Frontend build failed before E2E startup.\n\n"
@@ -464,24 +538,13 @@ class WebAppType(AppTypeHandler):
             )
 
         backend_process = None
+        backend_start_command = ""
         try:
-            backend_process = await asyncio.create_subprocess_shell(
-                "npm run start",
-                cwd=backend_path,
-                stdout=asyncio.subprocess.DEVNULL,
-                stderr=asyncio.subprocess.DEVNULL,
-                env={
-                    **os.environ,
-                    **build_web_runtime_env(),
-                },
-            )
-            server_ready = await _wait_for_tcp_server("127.0.0.1", get_web_port(), timeout=20.0)
-            if not server_ready:
-                await _terminate_process(backend_process)
+            backend_process, backend_start_command = await _start_backend_runtime(self.workspace_path)
+            if backend_process is None:
                 return _prepend_group_execution_header(
                     execution,
-                    "Failed to start backend server for E2E testing within 20 seconds.\n\n"
-                    f"=== Frontend Build ===\n{frontend_build_output}",
+                    f"Exit Code: 1\nSTDERR:\n{backend_start_command}\n",
                 )
 
             playwright_command = "npx playwright test"
@@ -497,13 +560,16 @@ class WebAppType(AppTypeHandler):
                 playwright_exit_code = 1
             body = (
                 f"Exit Code: {playwright_exit_code}\n\n"
+                f"=== Frontend Build ===\n{frontend_build_output}\n\n"
+                f"=== Backend Runtime ===\nCommand: {backend_start_command}\n"
+                f"Port: {get_web_port()}\n\n"
                 f"{playwright_result}"
             )
             return _prepend_group_execution_header(execution, body)
         except Exception as exc:
             return f"Failed to start grouped E2E execution: {str(exc)}"
         finally:
-            await _terminate_process(backend_process)
+            await _terminate_process(backend_process, port=get_web_port())
 
     @classmethod
     def build_stack_block(cls) -> str:
