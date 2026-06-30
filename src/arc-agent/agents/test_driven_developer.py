@@ -18,6 +18,9 @@ class TestDrivenDeveloper(ARCAgent):
         self._last_run_tests_result: str | None = None
         self._last_completed_run_tests_result: str | None = None
         self._has_called_run_tests_in_session = False
+        self._rejected_execute_commands: set[str] = set()
+        self._edit_read_required_paths: set[str] = set()
+        self._recent_failure_fingerprints: list[str] = []
 
     def get_system_prompt(self) -> str:
         from utils import get_app_type, get_android_package, get_web_base_url, get_web_port
@@ -72,6 +75,7 @@ Execution protocol (strict):
 - For web projects, backend tests and frontend tests may run from different working directories. Use the `Working Directory` and `Resolved Test File` fields from system output as the source of truth before deciding whether the blocker is path, config, test content, or implementation.
 - The current node already has a concrete interface list. Implement those interfaces first and keep them aligned with their declared file path, signature, callers, callees, inputs, and outputs.
 - Use the provided `<project_structure>` as the default source of truth for file and directory locations. Do not start by probing guessed sibling directories.
+- Use the provided `<frozen_node_contract>` as the stable contract for routes, auth semantics, provider ownership, and assembly boundaries. Do not invent conflicting behavior.
 - Prefer the pre-fetched context first. Avoid full-repo rescans, repeated `list_directory`, or unrelated `read_file` calls unless they are directly needed for the current failing batch.
 - Use `glob` and `grep` only for narrow follow-up checks inside known source subtrees. Do not explore `node_modules`, build outputs, caches, or unconstrained workspace-root patterns.
 - Use `execute_command` only when necessary for external actions or bounded diagnostics, such as `npm install`, a package script, or a short runtime check in the correct working directory.
@@ -81,6 +85,7 @@ Execution protocol (strict):
 {pkg_compliance}
 ### Workflow:
 1. Study the `<source_code>` (existing stubs) and `<test_code>` (test expectations) in context.
+1.5. Preserve the `<frozen_node_contract>` while fixing tests. If tests and code drift, converge toward the frozen node contract instead of inventing a third contract.
 2. For each interface of the current node, write the REAL implementation that satisfies its Outputs contract and makes the corresponding tests pass.
 3. Use `write_file` to write ALL implementation files in one batch.
 4. Call `run_tests` with NO arguments to ask the system to execute the current target test batch.
@@ -128,9 +133,32 @@ Once `run_tests` returns a 100% passing state (Exit Code: 0) for the target test
         node_id: str | None = None,
     ) -> tuple[bool, Any]:
         if tool_name == "execute_command":
-            validation_error = self._validate_execute_command(tool_args.get("command", ""))
+            raw_command = str(tool_args.get("command", "")).strip()
+            if raw_command in self._rejected_execute_commands:
+                return True, (
+                    "Rejected repeated execute_command invocation. This command was already rejected in the current "
+                    "TDD session. Use the appropriate system tools or fix code directly."
+                )
+            validation_error = self._validate_execute_command(raw_command)
             if validation_error:
+                if raw_command:
+                    self._rejected_execute_commands.add(raw_command)
                 return True, validation_error
+            return False, None
+
+        if tool_name == "edit_file":
+            path = str(tool_args.get("path", "")).strip()
+            if path and path in self._edit_read_required_paths:
+                return True, (
+                    f"Rejected edit_file for `{path}` because a previous exact replacement failed. "
+                    f"Read the current file with `read_file` first, then issue a fresh minimal edit against the latest content."
+                )
+            return False, None
+
+        if tool_name == "read_file":
+            path = str(tool_args.get("path", "")).strip()
+            if path:
+                self._edit_read_required_paths.discard(path)
             return False, None
 
         if tool_name != "run_tests":
@@ -178,6 +206,7 @@ Once `run_tests` returns a 100% passing state (Exit Code: 0) for the target test
         self._last_run_tests_result = result
         self._last_completed_run_tests_result = result
         self._last_run_tests_exit_code = self._extract_exit_code(result)
+        self._record_failure_fingerprint(result)
         return True, result
 
     async def _get_stop_response_after_tool_call(
@@ -216,10 +245,23 @@ Once `run_tests` returns a 100% passing state (Exit Code: 0) for the target test
                     "Read the most recent test output, fix the real issue, and call run_tests again.\n"
                     "Do not fabricate compatibility test files or move tests just to satisfy discovery."
                 )
+            repeated_failure_note = ""
+            if self._has_repeated_failure_loop():
+                repeated_failure_note = (
+                    "\nThe latest failing test fingerprint has repeated. Before another test rerun, "
+                    "do not keep patching from stale memory. Re-read the current failing test file(s), re-read the exact target implementation file(s), "
+                    "and make one minimal contract-preserving fix before the next `run_tests` call."
+                )
+            repeated_failure_action = ""
+            if self._has_repeated_failure_loop():
+                repeated_failure_action = (
+                    "\nNoise-control rule: avoid unrelated file reads, avoid `execute_command`, avoid broad rescans, "
+                    "and do not rerun tests until you have inspected the latest test and implementation text."
+                )
             return (
                 "The latest run_tests result is still failing, so you cannot end this TDD session yet.\n"
                 "Use the returned test output to make the minimal code or test fix that is actually required, then call run_tests again.\n"
-                "Do not stop at analysis only."
+                f"Do not stop at analysis only.{repeated_failure_note}{repeated_failure_action}"
             )
 
         if "IMPLEMENTED" not in (final_response or "").upper():
@@ -268,6 +310,9 @@ Once `run_tests` returns a 100% passing state (Exit Code: 0) for the target test
         self._last_run_tests_result = None
         self._last_completed_run_tests_result = None
         self._has_called_run_tests_in_session = False
+        self._rejected_execute_commands = set()
+        self._edit_read_required_paths = set()
+        self._recent_failure_fingerprints = []
         try:
             return await super().run_from_messages(
                 messages=messages,
@@ -289,6 +334,12 @@ Once `run_tests` returns a 100% passing state (Exit Code: 0) for the target test
 
     def get_last_run_tests_result(self) -> str | None:
         return self._last_completed_run_tests_result
+
+    def notify_edit_failure(self, path: str, tool_result: str) -> None:
+        if not path or not isinstance(tool_result, str):
+            return
+        if "old_string not found" in tool_result.lower():
+            self._edit_read_required_paths.add(path)
 
     def build_initial_messages(
         self,
@@ -370,6 +421,27 @@ When all target tests pass, output "IMPLEMENTED".
         from .tools import TOOL_REGISTRY
         tools = [TOOL_REGISTRY[n]["schema"] for n in self.get_tool_names() if n in TOOL_REGISTRY]
         return messages, tools
+
+    def _record_failure_fingerprint(self, tool_result: str) -> None:
+        exit_code = self._extract_exit_code(tool_result)
+        if exit_code == 0:
+            self._recent_failure_fingerprints = []
+            return
+        lines = [line.strip() for line in str(tool_result or "").splitlines() if line.strip()]
+        key_line = ""
+        for line in lines:
+            lowered = line.lower()
+            if "error:" in lowered or "failed" in lowered or "no test files found" in lowered:
+                key_line = line[:240]
+                break
+        fingerprint = f"{exit_code}|{key_line}"
+        self._recent_failure_fingerprints.append(fingerprint)
+        self._recent_failure_fingerprints = self._recent_failure_fingerprints[-4:]
+
+    def _has_repeated_failure_loop(self) -> bool:
+        if len(self._recent_failure_fingerprints) < 2:
+            return False
+        return self._recent_failure_fingerprints[-1] == self._recent_failure_fingerprints[-2]
 
     async def implement(self, node_id: str, test_files: List[str], test_type: str, req_desc: str, scenarios: list = None, dependency_context: str = "", current_interfaces: list = None, preloaded_source: str = None, handoff_summary: str = "") -> str:
         """Backwards-compatible: build initial messages then run a new session."""

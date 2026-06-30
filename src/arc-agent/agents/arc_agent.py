@@ -524,6 +524,12 @@ Output from {tool_name}:
                         "content": tool_result_str
                     })
 
+                    if tool_name == "edit_file" and hasattr(self, "notify_edit_failure"):
+                        try:
+                            self.notify_edit_failure(str(tool_args.get("path", "")).strip(), tool_result_str)
+                        except Exception:
+                            pass
+
                     stop_response = await self._get_stop_response_after_tool_call(
                         tool_name=tool_name,
                         tool_args=tool_args,
