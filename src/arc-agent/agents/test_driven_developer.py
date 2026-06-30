@@ -23,6 +23,7 @@ class TestDrivenDeveloper(ARCAgent):
         self._edit_read_required_paths: set[str] = set()
         self._recent_failure_fingerprints: list[str] = []
         self._forced_followup_user_messages: list[str] = []
+        self._needs_failure_analysis = False
 
     def get_system_prompt(self) -> str:
         from utils import get_app_type, get_android_package, get_web_base_url, get_web_port
@@ -50,12 +51,21 @@ Rules:
 - Implement the current node's declared contracts first. Do not invent a conflicting contract.
 - Write the obvious implementation set first, then call `run_tests`.
 - `run_tests` takes no arguments and runs exactly the current batch selected by the system.
-- If tests fail, start from the raw failing output, re-read the failing test file, then read only the most relevant related files until the root cause is evidenced.
+- If tests fail, do not immediately read files or rerun tests.
+- First send a short analysis with exactly these headings: `FAILURE_CLASSIFICATION`, `ROOT_CAUSE_HYPOTHESIS`, `TARGET_FILES`.
+- `FAILURE_CLASSIFICATION` must be one of: `test_bug`, `selector_bug`, `wiring_bug`, `implementation_bug`.
+- `ROOT_CAUSE_HYPOTHESIS` must be a concrete, falsifiable explanation tied to the latest failing output.
+- `TARGET_FILES` must list the failing test file first, then at most two directly relevant code/config files.
+- After that analysis: use `grep` to locate symbols, selectors, routes, or ownership boundaries; use `read_file` to confirm the current implementation text; use `edit_file` or `write_file` to make the smallest fix; use `run_tests` only to verify the hypothesis.
 - Make the smallest contract-preserving fix before the next test run.
 - Treat missing test discovery, wrong framework, wrong path, or wrong selector strategy as test/content/config problems first, not business-logic problems.
 - Do not fabricate compatibility files, duplicate tests, patch `node_modules`, or move tests just to satisfy discovery.
 - Preserve `<frozen_node_contract>` for routes, auth behavior, provider ownership, and shell boundaries.
-- Use narrow reads and targeted search only; avoid broad rescans and unrelated diagnostics.
+- Tool workflow:
+- `grep` is for finding symbols, selectors, route ownership, and likely edit locations.
+- `read_file` is for confirming the exact current implementation in files you already know are relevant.
+- `run_tests` is only for verifying a concrete hypothesis after a minimal change.
+- Avoid broad rescans, unrelated diagnostics, and repeated cached reads without a new hypothesis.
 - Return exactly `IMPLEMENTED` only after the latest `run_tests` result passes with exit code 0.
 
 {runtime_rules}
@@ -98,6 +108,16 @@ Rules:
         tool_args: Dict[str, Any],
         node_id: str | None = None,
     ) -> tuple[bool, Any]:
+        if self._needs_failure_analysis and tool_name in {"read_file", "run_tests"}:
+            return True, (
+                "Blocked by failure-analysis gate. The latest run_tests failed, so before any further `read_file` or "
+                "`run_tests` you must first send a short analysis message with exactly these headings:\n"
+                "FAILURE_CLASSIFICATION: test_bug | selector_bug | wiring_bug | implementation_bug\n"
+                "ROOT_CAUSE_HYPOTHESIS: one concrete falsifiable explanation tied to the latest failing output\n"
+                "TARGET_FILES: failing test file first, then at most two directly relevant files\n"
+                "Then use `grep` if needed, `read_file` to confirm, and `run_tests` only after a minimal fix."
+            )
+
         if tool_name == "execute_command":
             raw_command = str(tool_args.get("command", "")).strip()
             if raw_command in self._rejected_execute_commands:
@@ -175,6 +195,7 @@ Rules:
         self._last_completed_run_tests_result = result
         self._last_run_tests_exit_code = self._extract_exit_code(result)
         self._record_failure_fingerprint(result)
+        self._needs_failure_analysis = self._last_run_tests_exit_code not in (None, 0)
         return True, result
 
     async def _get_stop_response_after_tool_call(
@@ -197,6 +218,8 @@ Rules:
         final_response: str,
         node_id: str | None = None,
     ) -> str | None:
+        self._update_failure_analysis_state(final_response)
+
         if (
             self._has_called_run_tests_in_session
             and self._last_run_tests_exit_code is not None
@@ -278,6 +301,7 @@ Rules:
         self._last_run_tests_result = None
         self._last_completed_run_tests_result = None
         self._has_called_run_tests_in_session = False
+        self._needs_failure_analysis = False
         self._rejected_execute_commands = set()
         self._edit_read_required_paths = set()
         self._recent_failure_fingerprints = []
@@ -446,7 +470,11 @@ Rules:
 **Implementation Strategy**:
 Implement the interfaces of the current node. Use the node understanding, interface spec, and test plan as the authoritative execution contract. Make the target tests pass without inventing a conflicting contract.
 The system will execute exactly this current test batch when you call `run_tests`.
-If the batch fails, start from the raw failing output, read the current failing test file again, then read the most relevant related files one by one until the root cause is evidenced.
+If the batch fails, do not immediately read files or rerun tests. First output:
+FAILURE_CLASSIFICATION: test_bug | selector_bug | wiring_bug | implementation_bug
+ROOT_CAUSE_HYPOTHESIS: one concrete falsifiable explanation
+TARGET_FILES: failing test file first, then at most two directly relevant files
+Only after that analysis may you use `grep` to locate symbols, `read_file` to confirm the hypothesis, and `run_tests` to verify a minimal fix.
 After each file read, reassess whether you already found the cause or whether you still need another directly related file.
 If this is an E2E batch, compare the failing Playwright spec with the raw Playwright output before deciding whether the minimal fix is in app code or the test file.
 When all target tests pass, output "IMPLEMENTED".
@@ -482,6 +510,19 @@ When all target tests pass, output "IMPLEMENTED".
         if len(self._recent_failure_fingerprints) < 2:
             return False
         return self._recent_failure_fingerprints[-1] == self._recent_failure_fingerprints[-2]
+
+    def _update_failure_analysis_state(self, assistant_text: str) -> None:
+        if not self._needs_failure_analysis:
+            return
+        text = str(assistant_text or "")
+        normalized = text.upper()
+        required_headers = [
+            "FAILURE_CLASSIFICATION",
+            "ROOT_CAUSE_HYPOTHESIS",
+            "TARGET_FILES",
+        ]
+        if all(header in normalized for header in required_headers):
+            self._needs_failure_analysis = False
 
     async def implement(
         self,
