@@ -88,6 +88,8 @@ Use JUnit 4 + Robolectric when the test needs Android framework behavior, Contex
 - Playwright E2E must use Playwright APIs such as `test`, `expect`, and `page`.
 - Do not rely on copying `node_modules`, patching package internals, or inventing compatibility shims to make generated tests run.
 - Treat runner/framework mismatches as test-generation bugs to fix in the test files themselves.
+- Prefer frontend tests and source references that target TypeScript/TSX files for pages, components, hooks, and API clients.
+- When UI requirements imply styling, assume Tailwind utility classes are the intended primary styling mechanism and assert against meaningful rendered behavior rather than absence of styling structure.
 """
             test_stack += f"""
 

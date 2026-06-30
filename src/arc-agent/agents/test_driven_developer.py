@@ -49,6 +49,8 @@ class TestDrivenDeveloper(ARCAgent):
                 "### Web Runtime And Port (CRITICAL):\n"
                 f"- The single backend web port is `{get_web_port()}`.\n"
                 f"- The backend serves the built frontend dist at `{get_web_base_url()}`.\n"
+                "- Prefer TypeScript/TSX for frontend source files unless the existing local module is already firmly JS-only.\n"
+                "- Tailwind CSS is available and should be used directly in JSX/TSX markup for page/component styling when you implement UI-facing code.\n"
                 "- Do not assume a separate frontend dev-server port such as `5173` or `5174` for deployment or E2E.\n"
                 "- When fixing Playwright E2E tests, use `process.env.PLAYWRIGHT_BASE_URL` or the configured single-port base URL.\n"
             )

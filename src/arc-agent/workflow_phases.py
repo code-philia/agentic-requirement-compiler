@@ -588,7 +588,7 @@ class WorkflowPhaseRunner:
             auth_expectation = "explicit-unauthenticated-flow"
 
         if not shared_shell_targets and not is_leaf:
-            for fallback in ("frontend/src/App.jsx", "frontend/src/main.jsx", "backend/src/app.js"):
+            for fallback in ("frontend/src/App.tsx", "frontend/src/main.tsx", "backend/src/app.js"):
                 shared_shell_targets.append(fallback)
 
         return {

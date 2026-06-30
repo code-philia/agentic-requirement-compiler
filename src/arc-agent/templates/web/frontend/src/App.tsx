@@ -1,6 +1,6 @@
-import React from 'react';
-import { Routes, Route } from 'react-router-dom';
+import { Route, Routes } from 'react-router-dom';
 import HomePage from './pages/HomePage';
+
 function App() {
   return (
     <Routes>
@@ -8,4 +8,5 @@ function App() {
     </Routes>
   );
 }
+
 export default App;

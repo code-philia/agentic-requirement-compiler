@@ -162,6 +162,8 @@ class ContextPipeline:
                 f"  - Single runtime port: backend serves frontend dist on port {get_web_port()}",
                 "  - Backend runtime root: backend/",
                 "  - Frontend source root: frontend/src/",
+                "  - Prefer TypeScript/TSX for frontend source files when creating or extending pages/components/hooks/api modules",
+                "  - Tailwind CSS is available and should be used directly in component markup for page/component styling",
                 "  - Backend Vitest tests: backend/tests/...",
                 "  - Frontend Vitest tests: frontend/src/...",
                 "  - Playwright E2E tests: backend/test-e2e/...",

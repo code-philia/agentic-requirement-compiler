@@ -263,6 +263,8 @@ class InterfaceDesigner(ARCAgent):
 - The frontend is a build artifact producer, not the deployed runtime server.
 - The frontend should be built into `frontend/dist`.
 - The backend is the only runtime server and must host `frontend/dist` on the same origin and same port.
+- Prefer TypeScript/TSX for frontend source files such as app shells, pages, components, hooks, and API clients.
+- Tailwind CSS is part of the frontend stack and should be reflected in UI-facing interface design as utility-class-driven components, not only as generic CSS availability.
 - Do NOT design architectures that depend on a separate deployed frontend dev server such as `5173` or `5174`.
 - For top-level web design, the backend owns final runtime assembly, top-level route serving, and integration with frontend build output.
 - When designing web parent modules, prefer app shells, route containers, layout frames, shared providers, and thin backend integration points over splitting the deployed system into separate frontend/backend runtime surfaces.
