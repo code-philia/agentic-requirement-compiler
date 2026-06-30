@@ -11,6 +11,8 @@ class TestGenerator(ARCAgent):
             agent_name="TestGenerator",
             log_cb=log_cb,
         )
+        self._soft_read_guard: dict[str, int] = {}
+        self._new_evidence_since_read = True
 
     def get_system_prompt(self) -> str:
         from utils import get_android_package, get_app_type, get_web_base_url, get_web_port
@@ -67,6 +69,36 @@ Rules:
             "search_interfaces_by_relation",
             "get_node_relations",
         ]
+
+    async def _intercept_tool_call(
+        self,
+        tool_name: str,
+        tool_args: Dict[str, Any],
+        node_id: str | None = None,
+    ) -> tuple[bool, Any]:
+        if tool_name == "read_file":
+            path = str(tool_args.get("path", "")).strip()
+            if path:
+                current_count = self._soft_read_guard.get(path, 0)
+                if current_count >= 2 and not self._new_evidence_since_read:
+                    return True, (
+                        f"Soft stop: `{path}` has already been read multiple times in this test-design loop without new evidence. "
+                        "Do not keep re-reading the same file from uncertainty alone. Either synthesize what you already learned and write the target test files, "
+                        "or first gather genuinely new evidence with `grep`, `glob`, relation search, or a different owner/setup file."
+                    )
+                self._soft_read_guard[path] = current_count + 1
+                self._new_evidence_since_read = False
+            return False, None
+
+        if tool_name in {"grep", "glob", "list_directory", "search_interfaces_by_keyword", "search_interfaces_by_relation", "get_node_relations"}:
+            self._new_evidence_since_read = True
+            return False, None
+
+        if tool_name in {"write_file", "edit_file", "delete_file", "run_build"}:
+            self._new_evidence_since_read = True
+            return False, None
+
+        return False, None
 
     @staticmethod
     def _build_scope_instruction(design_mode: str, test_type: str) -> str:
@@ -206,5 +238,7 @@ When finished, output one JSON array in a `json` markdown block:
             interface_spec=interface_spec,
             design_mode=design_mode,
         )
+        self._soft_read_guard = {}
+        self._new_evidence_since_read = True
         result, _ = await self.run_from_messages(messages, node_id=node_id, max_steps=15, tools=tools)
         return result

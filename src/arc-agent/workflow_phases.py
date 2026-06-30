@@ -18,6 +18,7 @@ from traceability.database import (
     insert_interface,
     insert_test,
     upsert_node_contract,
+    update_interface_implemented,
     update_interface_implemented_status,
     update_test_pass_statuses,
     update_interface_req_ids,
@@ -332,6 +333,65 @@ class WorkflowPhaseRunner:
         await self.log_cb(
             "InterfaceDesigner",
             f"Stored {len(interfaces)} interface definition(s) into traceability DB.",
+            None,
+            node_id,
+        )
+
+        await self.log_cb(
+            "InterfaceDesigner",
+            "Materializing designed interfaces into code artifacts...",
+            None,
+            node_id,
+        )
+        materialize_output, materialize_messages = await self.interface_designer.materialize_interfaces(
+            node_id=node_id,
+            requirement_data=requirement_data,
+            interfaces=interfaces,
+            interface_spec=interface_spec,
+            node_understanding=node_understanding,
+            design_mode=design_mode,
+        )
+        materialized = extract_json_array_from_markdown(materialize_output)
+        if not materialized:
+            await self.log_cb(
+                "InterfaceDesigner",
+                "Interface materialization did not return a valid implementation JSON array.",
+                "error",
+                node_id,
+            )
+            return False
+
+        materialized_files = extract_modified_files_from_messages(materialize_messages)
+        if materialized_files:
+            context_pipeline.cache.invalidate_file_layers(node_id)
+            await self.log_cb(
+                "InterfaceDesigner",
+                f"Materialized files: {', '.join(sorted(materialized_files))}",
+                None,
+                node_id,
+            )
+
+        implemented_interface_ids: list[str] = []
+        for item in materialized:
+            if not isinstance(item, dict):
+                continue
+            interface_id = str(item.get("interface_id", "")).strip()
+            if not interface_id:
+                continue
+            if item.get("implemented") is True:
+                update_interface_implemented(interface_id, True)
+                implemented_interface_ids.append(interface_id)
+
+        self._update_node_session(
+            node_id,
+            {
+                "materialized_interfaces": materialized,
+                "materialized_files": materialized_files,
+            },
+        )
+        await self.log_cb(
+            "InterfaceDesigner",
+            f"Materialized {len(implemented_interface_ids)} interface(s) into code.",
             None,
             node_id,
         )

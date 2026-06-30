@@ -50,6 +50,7 @@ def get_interface_designer_guidance() -> str:
                     "For non-leaf work, stay at shell boundaries: routes, layouts, providers, page containers, and mount points.",
                     "Prefer extending an existing interface over creating a parallel one that competes for the same responsibility.",
                     "Avoid speculative interfaces, future-proof abstractions, and contracts that are not required by the current node.",
+                    "When asked to materialize interfaces, UI means real rendered code now; API/FUNC/DB means minimal compilable scaffolding now, not interface JSON alone.",
                 ],
             ),
             _section(
@@ -74,6 +75,7 @@ def get_test_generator_guidance() -> str:
                     "Start from `<interface_spec>` and `<current_requirement>`. Treat them as the contract to test, not as optional hints.",
                     "Inspect existing test patterns near the owner files before inventing new test structure, fixtures, or selector strategy.",
                     "Prefer one primary file per layer or one file per coherent scenario group.",
+                    "Do one compact exploration pass first: identify the nearest existing test example, the target owner file, and the relevant setup or helper file before you start writing.",
                 ],
             ),
             _section(
@@ -89,6 +91,7 @@ def get_test_generator_guidance() -> str:
                     "Decide the coverage matrix first, then write the compact test files that implement it.",
                     "Prefer stable contract assertions over incidental DOM structure, transient styling, or private implementation details.",
                     "Reuse existing setup files, fixtures, helpers, mocks, and assertion idioms whenever possible.",
+                    "Once you already have enough evidence to name the target test files and their assertions, stop exploring and start writing.",
                 ],
             ),
             _section(
@@ -105,6 +108,8 @@ def get_test_generator_guidance() -> str:
                 [
                     "Use `grep` to find existing test files, setup conventions, fixtures, selectors, and assertion patterns.",
                     "Use `read_file` to confirm exact imports, setup, and test idioms in files you already know are relevant.",
+                    "When several file reads are independent, issue them in the same turn instead of spreading them across many turns.",
+                    "Do not re-read the same file repeatedly just to regain confidence. Re-read only if another tool produced new evidence, or if a different file changed your hypothesis.",
                     "Use `run_build` after writing tests to catch placement, syntax, and framework mismatch early.",
                     "Avoid broad rescans once you already know the target layer, file family, and contract.",
                 ],

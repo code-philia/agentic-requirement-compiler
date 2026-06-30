@@ -270,7 +270,11 @@ Rules:
 - If the requirement names exact UI ids or resource ids, keep them exact.
 - For leaf work, design the smallest complete chain needed across UI -> API -> FUNC -> DB.
 - For non-leaf work, stay at parent UI shell scope: routes, layouts, providers, page containers, mount points, and thin composition boundaries.
-- Do not write code files in design or spec generation steps.
+- During understanding / IR design / spec generation, do not write code files.
+- After IR and spec are produced, you must materialize the design into code:
+- UI interfaces owned by the current node must be implemented as real UI code, not left as empty stubs.
+- Non-UI interfaces owned by the current node must be landed as minimal compilable code skeletons or stubs aligned with the spec.
+- Prefer extending existing files with minimal edits over creating parallel files.
 
 {get_common_session_guidance()}
 
@@ -634,6 +638,79 @@ Each object must follow:
         ]
         tools = [TOOL_REGISTRY[name]["schema"] for name in self.get_tool_names() if name in TOOL_REGISTRY]
         result, messages = await self.run_from_messages(messages, node_id=node_id, max_steps=10, tools=tools)
+        return result, messages
+
+    async def materialize_interfaces(
+        self,
+        node_id: str,
+        requirement_data: dict[str, Any],
+        interfaces: list[dict[str, Any]],
+        interface_spec: list[dict[str, Any]],
+        node_understanding: dict[str, Any] | None,
+        design_mode: str = "leaf_full",
+        preloaded_source: str = None,
+    ) -> tuple[str, list]:
+        from .context_pipeline import context_pipeline
+        from .tools import TOOL_REGISTRY
+
+        static_ctx, dynamic_ctx = context_pipeline.build_agent_context_split(
+            node_id=node_id,
+            agent_type=self.agent_name,
+            preloaded_source=preloaded_source,
+        )
+
+        user_prompt = f"""
+### Auto-Prefetched Context for Node [{node_id}]
+{dynamic_ctx}
+
+### Node Understanding
+```json
+{json.dumps(node_understanding or {}, indent=2, ensure_ascii=False)}
+```
+
+### Interface IR
+```json
+{json.dumps(interfaces, indent=2, ensure_ascii=False)}
+```
+
+### Interface Specification
+```json
+{json.dumps(interface_spec, indent=2, ensure_ascii=False)}
+```
+
+### Task
+Materialize the current node's interfaces into code.
+{self._build_design_scope_guidance(design_mode)}
+
+Execution rules:
+- This is a code-writing step.
+- For every current-node UI interface, land real UI code now. Do not leave TODO-only shells, placeholder divs, or interface-only JSON.
+- For every current-node non-UI interface, land the smallest compilable or runnable skeleton that matches the specification.
+- Reuse and minimally edit existing files when possible. If a target file already exists, read it first and use `edit_file` unless a full rewrite is clearly simpler and still local.
+- Keep the implementation shallow: UI can be complete, but API/FUNC/DB should usually be skeletal scaffolding unless the requirement text already demands more.
+- Preserve the declared file paths and ownership boundaries from the interface IR.
+- Call `run_build` once after landing the materialized code.
+
+When finished, output exactly one JSON array in a `json` markdown block.
+Each item must follow this schema:
+{{
+  "interface_id": "exact interface id",
+  "implemented": true,
+  "file_path": "relative path",
+  "first_line": "exact first line now present in code",
+  "kind": "ui_complete|code_skeleton",
+  "summary": "what was landed"
+}}
+"""
+        system_content = self.get_system_prompt()
+        if static_ctx:
+            system_content = f"{system_content}\n\n{static_ctx}"
+        messages = [
+            {"role": "system", "content": system_content},
+            {"role": "user", "content": user_prompt},
+        ]
+        tools = [TOOL_REGISTRY[name]["schema"] for name in self._get_implement_tool_names() if name in TOOL_REGISTRY]
+        result, messages = await self.run_from_messages(messages, node_id=node_id, max_steps=20, tools=tools)
         return result, messages
 
     async def converge_non_leaf(

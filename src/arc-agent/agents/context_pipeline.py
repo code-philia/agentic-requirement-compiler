@@ -343,6 +343,14 @@ class ContextPipeline:
                 + "\n</interface_spec>"
             )
 
+        materialized_interfaces = session.get("materialized_interfaces")
+        if materialized_interfaces:
+            sections.append(
+                "<materialized_interfaces>\n"
+                + json.dumps(materialized_interfaces, indent=2, ensure_ascii=False)
+                + "\n</materialized_interfaces>"
+            )
+
         test_plan = session.get("test_plan")
         if test_plan:
             sections.append(
