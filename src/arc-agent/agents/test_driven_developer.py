@@ -26,6 +26,16 @@ class TestDrivenDeveloper(ARCAgent):
         self._forced_followup_user_messages: list[str] = []
         self._needs_failure_analysis = False
 
+    @staticmethod
+    def _has_required_failure_analysis_headers(text: str) -> bool:
+        normalized = str(text or "").upper()
+        required_headers = [
+            "FAILURE_CLASSIFICATION",
+            "ROOT_CAUSE_HYPOTHESIS",
+            "TARGET_FILES",
+        ]
+        return all(header in normalized for header in required_headers)
+
     def get_system_prompt(self) -> str:
         from utils import get_app_type, get_android_package, get_web_base_url, get_web_port
         app_type = get_app_type()
@@ -202,6 +212,13 @@ Rules:
         self._record_failure_fingerprint(result)
         self._needs_failure_analysis = self._last_run_tests_exit_code not in (None, 0)
         return True, result
+
+    async def _on_assistant_message_before_tool_calls(
+        self,
+        assistant_text: str,
+        node_id: str | None = None,
+    ) -> None:
+        self._update_failure_analysis_state(assistant_text)
 
     async def _get_stop_response_after_tool_call(
         self,
@@ -519,14 +536,7 @@ When all target tests pass, output "IMPLEMENTED".
     def _update_failure_analysis_state(self, assistant_text: str) -> None:
         if not self._needs_failure_analysis:
             return
-        text = str(assistant_text or "")
-        normalized = text.upper()
-        required_headers = [
-            "FAILURE_CLASSIFICATION",
-            "ROOT_CAUSE_HYPOTHESIS",
-            "TARGET_FILES",
-        ]
-        if all(header in normalized for header in required_headers):
+        if self._has_required_failure_analysis_headers(assistant_text):
             self._needs_failure_analysis = False
 
     async def implement(

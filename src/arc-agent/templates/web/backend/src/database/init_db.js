@@ -1,20 +1,93 @@
-const sqlite3 = require('sqlite3').verbose();
+const fs = require('fs');
 const path = require('path');
+const sqlite3 = require('sqlite3').verbose();
 
-// Database file stored in the root directory
 const dbPath = path.resolve(process.cwd(), 'database.db');
-const db = new sqlite3.Database(dbPath);
 
-/**
- * Guide model instructions:
- * 1. Use CREATE TABLE IF NOT EXISTS to create new tables.
- * 2. When adding fields, use ALTER TABLE ... ADD COLUMN ... and wrap it in try/catch logic, or check if the field exists via PRAGMA table_info.
- * 3. Always execute within db.serialize to ensure DDL order.
- */
-db.serialize(() => {
-  // [CREATE TABLE statements added by the model as needed here]
-  
-  // [ALTER TABLE statements for incremental evolution added by the model as needed here]
+let db = null;
+let initPromise = null;
+
+function getDb() {
+  if (!db) {
+    db = new sqlite3.Database(dbPath);
+  }
+  return db;
+}
+
+function runStatement(database, sql) {
+  return new Promise((resolve, reject) => {
+    database.run(sql, (err) => {
+      if (err) {
+        reject(err);
+        return;
+      }
+      resolve();
+    });
+  });
+}
+
+async function initializeDatabase() {
+  if (initPromise) {
+    return initPromise;
+  }
+
+  const database = getDb();
+  initPromise = (async () => {
+    await runStatement(database, 'PRAGMA foreign_keys = ON;');
+
+    /**
+     * Guide model instructions:
+     * 1. Use CREATE TABLE IF NOT EXISTS to create new tables.
+     * 2. When adding fields, use ALTER TABLE ... ADD COLUMN ... and guard it with existence checks or tolerant error handling.
+     * 3. Keep schema evolution idempotent and centralized in this file.
+     */
+  })();
+
+  try {
+    await initPromise;
+  } catch (error) {
+    initPromise = null;
+    throw error;
+  }
+
+  return database;
+}
+
+function closeDb() {
+  if (!db) {
+    initPromise = null;
+    return Promise.resolve();
+  }
+
+  const currentDb = db;
+  db = null;
+  initPromise = null;
+  return new Promise((resolve, reject) => {
+    currentDb.close((err) => {
+      if (err) {
+        reject(err);
+        return;
+      }
+      resolve();
+    });
+  });
+}
+
+async function resetDatabaseFile() {
+  await closeDb();
+  if (fs.existsSync(dbPath)) {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+initializeDatabase().catch((error) => {
+  console.error('Database initialization failed:', error);
 });
 
-module.exports = db;
+module.exports = {
+  dbPath,
+  getDb,
+  initializeDatabase,
+  closeDb,
+  resetDatabaseFile,
+};

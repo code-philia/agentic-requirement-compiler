@@ -140,6 +140,14 @@ class ARCAgent:
         """Allow subclasses to reject or replace a final assistant response before the session ends."""
         return None
 
+    async def _on_assistant_message_before_tool_calls(
+        self,
+        assistant_text: str,
+        node_id: str | None = None,
+    ) -> None:
+        """Allow subclasses to update state from assistant text before tool-call interception."""
+        return None
+
     def _estimate_context_chars(self, messages: List[Dict[str, Any]]) -> int:
         total = 0
         for m in messages:
@@ -419,6 +427,10 @@ Output from {tool_name}:
                     utils.debug_logger.log("LLM_REPLY", reply_content)
 
             if message.tool_calls:
+                await self._on_assistant_message_before_tool_calls(
+                    assistant_text=message.content or "",
+                    node_id=node_id,
+                )
                 any_cache_miss = False
 
                 for tool_call in message.tool_calls:

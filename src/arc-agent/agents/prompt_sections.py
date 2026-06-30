@@ -97,6 +97,7 @@ def get_test_generator_guidance() -> str:
                     "If `run_build` fails, treat it first as a syntax, path, import, framework, or configuration problem.",
                     "Read the failing test file and the nearest setup or config file before changing assertions or business expectations.",
                     "When a selector is unstable, prefer requirement-visible text first, then stable local selectors, then role-based queries.",
+                    "For file-based SQLite tests on Windows, never delete `database.db` while a connection may still be open. Prefer an exported cleanup helper such as `closeDb()` or `resetDatabaseFile()` and call it in test teardown before removing files.",
                 ],
             ),
             _section(
@@ -145,6 +146,7 @@ def get_tdd_guidance() -> str:
                     "Use the latest `run_tests` output as the source of truth.",
                     "Classify the failure, state a falsifiable root-cause hypothesis, and name the target files before new reads or reruns.",
                     "If the same failure repeats, assume the current hypothesis is wrong or incomplete and change the evidence plan explicitly.",
+                    "For SQLite-backed backend tests on Windows, check database teardown first: a failing unlink/remove usually means the connection was never closed. Prefer fixing teardown helpers over patching around the symptom.",
                 ],
             ),
             _section(
