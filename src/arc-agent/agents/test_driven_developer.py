@@ -3,6 +3,7 @@ import re
 import os
 from typing import List, Dict, Any, Awaitable, Callable
 from .arc_agent import ARCAgent
+from .prompt_sections import get_common_session_guidance, get_tdd_guidance
 
 class TestDrivenDeveloper(ARCAgent):
     def __init__(self, log_cb=None):
@@ -67,6 +68,10 @@ Rules:
 - `run_tests` is only for verifying a concrete hypothesis after a minimal change.
 - Avoid broad rescans, unrelated diagnostics, and repeated cached reads without a new hypothesis.
 - Return exactly `IMPLEMENTED` only after the latest `run_tests` result passes with exit code 0.
+
+{get_common_session_guidance()}
+
+{get_tdd_guidance()}
 
 {runtime_rules}
 """

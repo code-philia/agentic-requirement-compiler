@@ -11,6 +11,7 @@ from urllib.parse import urlparse
 import requests
 
 from .arc_agent import ARCAgent
+from .prompt_sections import get_common_session_guidance, get_interface_designer_guidance
 from traceability.database import update_requirement_visuals
 from utils import read_json_file, write_json_file
 
@@ -270,6 +271,10 @@ Rules:
 - For leaf work, design the smallest complete chain needed across UI -> API -> FUNC -> DB.
 - For non-leaf work, stay at parent UI shell scope: routes, layouts, providers, page containers, mount points, and thin composition boundaries.
 - Do not write code files in design or spec generation steps.
+
+{get_common_session_guidance()}
+
+{get_interface_designer_guidance()}
 
 {runtime_rules}
 """

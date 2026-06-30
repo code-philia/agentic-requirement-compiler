@@ -2,6 +2,7 @@ import json
 from typing import Any, Dict, List
 
 from .arc_agent import ARCAgent
+from .prompt_sections import get_common_session_guidance, get_test_generator_guidance
 
 
 class TestGenerator(ARCAgent):
@@ -44,6 +45,10 @@ Rules:
 - Preserve `<frozen_node_contract>` and do not assert a conflicting route, auth behavior, or shell boundary.
 - If a generated test file is wrong, fix the file itself; do not rely on later environment hacks.
 - Write test files first, then call `run_build` once to catch syntax and placement mistakes.
+
+{get_common_session_guidance()}
+
+{get_test_generator_guidance()}
 
 {stack_rules}
 """
