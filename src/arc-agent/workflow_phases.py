@@ -256,7 +256,11 @@ class WorkflowPhaseRunner:
             None,
             node_id,
         )
-        await self.interface_designer.parse_and_store_visual_elements(self.workspace_path, requirement_data)
+        await self.interface_designer.parse_and_store_visual_elements(
+            self.workspace_path,
+            os.path.dirname(os.path.abspath(self.requirement_path)),
+            requirement_data,
+        )
 
         design_output, _ = await self.interface_designer.design_ir(
             node_id=node_id,

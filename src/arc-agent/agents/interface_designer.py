@@ -125,6 +125,7 @@ class InterfaceDesigner(ARCAgent):
     async def parse_and_store_visual_elements(
         self,
         workspace_path: str,
+        requirements_dir: str,
         requirement_data: dict[str, Any],
     ) -> None:
         description = requirement_data.get("description", "")
@@ -148,7 +149,8 @@ class InterfaceDesigner(ARCAgent):
             if normalized_path.startswith(os.sep):
                 normalized_path = normalized_path.lstrip(os.sep)
 
-            full_path = os.path.abspath(os.path.join(workspace_path, normalized_path))
+            base_dir = requirements_dir if requirements_dir else workspace_path
+            full_path = os.path.abspath(os.path.join(base_dir, normalized_path))
             if not os.path.exists(full_path):
                 if self.log_cb:
                     await self.log_cb("System", f"Image not found: {full_path}", "warning", req_id)
