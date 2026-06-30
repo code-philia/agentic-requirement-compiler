@@ -90,6 +90,9 @@ Use JUnit 4 + Robolectric when the test needs Android framework behavior, Contex
 - Treat runner/framework mismatches as test-generation bugs to fix in the test files themselves.
 - Prefer frontend tests and source references that target TypeScript/TSX files for pages, components, hooks, and API clients.
 - When UI requirements imply styling, assume Tailwind utility classes are the intended primary styling mechanism and assert against meaningful rendered behavior rather than absence of styling structure.
+- For Playwright selector design, prefer visible text explicitly described in the requirement/scenario first.
+- If the visible text is duplicated or ambiguous, fall back to stable `className` selectors, then role-based selectors, and only use `id` as the last fallback.
+- Do not start with brittle deep DOM-chain selectors when requirement-visible text or stable local selectors already exist.
 """
             test_stack += f"""
 
@@ -204,6 +207,14 @@ Return an empty JSON array: `[]`.
         else:
             test_instruction = f"""
 Please write the {test_type} test files using the `write_file` tool.
+"""
+            if test_type == "E2E":
+                test_instruction += """
+For E2E generation, use this selector priority:
+1. Requirement/scenario-visible text
+2. Stable className when visible text is duplicated or ambiguous
+3. Role-based selectors
+4. id as the final fallback
 """
 
         user_prompt = f"""

@@ -61,7 +61,12 @@ Your job is to implement the business logic for the provided interfaces until th
 Execution protocol (strict):
 - Write ALL implementation files FIRST, THEN request a test run. Do NOT write one file and test immediately.
 - The `run_tests` tool is only a signal. It takes NO arguments. When you call it, the system will execute the current target test batch and return the results in the tool output.
-- If tests fail, read the returned error output carefully, use `edit_file` to fix the minimal set of issues (provide exact old_string/new_string), and then call `run_tests` again.
+- If tests fail, do root-cause analysis first instead of patching immediately.
+- Start from the raw failing output, identify the failing assertion / runtime error / compile error, then trace outward.
+- Re-read the current failing test file first. After that, read the most relevant implementation, route, page, component, API, or config files that the failure actually touches.
+- After each read, explicitly reassess whether you have found the root cause or whether you still need more related files.
+- Only after you have enough evidence should you decide whether the minimal fix belongs in implementation code, configuration, or the current test file.
+- Once the root cause is clear, use `edit_file` to make the minimal contract-preserving fix, then call `run_tests` again.
 - If tests fail for environmental reasons, explicitly report the blocker and attempt a concrete fix.
 - The current TDD session is scoped to one test group only. Do not read or reason about unrelated test groups unless the current failure explicitly depends on them.
 - Treat `No test files found` and equivalent discovery errors as runner/path/config problems first. Do not start by changing business logic when the runner did not actually execute the target test file.
@@ -73,6 +78,9 @@ Execution protocol (strict):
 - E2E tests must be Playwright tests. They are not Vitest tests, and you must not reinterpret E2E failures through `require('vitest')`, `describe/it/expect`-only assumptions, or rewrite E2E into Vitest unless the requirement explicitly changes frameworks.
 - If an E2E file itself appears to be Vitest-style, treat that as a test-generation or test-content error to be corrected. Do not "fix" it by changing the runner away from Playwright.
 - When E2E fails, debug it as Playwright: page interaction, selectors, assertions, server startup, and runtime environment.
+- When E2E fails, first re-read the current failing Playwright spec file and compare it against the raw test output before deciding whether the fix belongs in implementation or in the test itself.
+- You MAY minimally edit the current E2E test file when the failure is caused by selector strategy, duplicated visible text, wrong expectation text, or another clear test-content bug.
+- For Playwright selector repair, prefer this priority: requirement/scenario-visible text first; if duplicated, stable className next; then role-based selectors; and `id` only as the last fallback.
 - For web projects, Playwright E2E spec files belong under `backend/test-e2e/...`. Do not move them to `frontend/src/...` or root-level `e2e/...`.
 - For web projects, backend tests and frontend tests may run from different working directories. Use the `Working Directory` and `Resolved Test File` fields from system output as the source of truth before deciding whether the blocker is path, config, test content, or implementation.
 - The current node already has a concrete interface list. Implement those interfaces first and keep them aligned with their declared file path, signature, callers, callees, inputs, and outputs.
@@ -81,6 +89,7 @@ Execution protocol (strict):
 - Prefer the pre-fetched context first. Avoid full-repo rescans, repeated `list_directory`, or unrelated `read_file` calls unless they are directly needed for the current failing batch.
 - Use `glob` and `grep` only for narrow follow-up checks inside known source subtrees. Do not explore `node_modules`, build outputs, caches, or unconstrained workspace-root patterns.
 - Use `execute_command` only when necessary for external actions or bounded diagnostics, such as `npm install`, a package script, or a short runtime check in the correct working directory.
+- Use a deliberate reasoning loop for failures: inspect the failure, read the next most relevant file, reassess the hypothesis, and continue until the root cause is grounded in evidence.
 - If you discover that passing tests requires a genuinely new interface that was not in the original node IR, you may add it. In that case, include a JSON array in a markdown `json` block in your final response describing only the newly added interfaces using the same schema as interface design. Do not emit this JSON for ordinary code edits.
 - Return exactly "IMPLEMENTED" only when target tests are truly passing.
 
@@ -91,8 +100,9 @@ Execution protocol (strict):
 2. For each interface of the current node, write the REAL implementation that satisfies its Outputs contract and makes the corresponding tests pass.
 3. Use `write_file` to write ALL implementation files in one batch.
 4. Call `run_tests` with NO arguments to ask the system to execute the current target test batch.
-5. If tests fail, read the returned error output, fix the code, and call `run_tests` again.
-6. If you need a new npm package or a bounded external diagnostic, use `execute_command` sparingly (for example `npm install cors` in the correct package directory).
+5. If tests fail, decompose the failure, read the failing test file, read the most relevant related files, and keep tracing until the root cause is evidenced.
+6. Fix the actual root cause with the smallest correct change, then call `run_tests` again.
+7. If you need a new npm package or a bounded external diagnostic, use `execute_command` sparingly (for example `npm install cors` in the correct package directory).
 
 Once `run_tests` returns a 100% passing state (Exit Code: 0) for the target tests, you MUST output exactly the word "IMPLEMENTED" in your final response to complete the task.
 """
@@ -244,15 +254,15 @@ Once `run_tests` returns a 100% passing state (Exit Code: 0) for the target test
             if "IMPLEMENTED" in (final_response or "").upper():
                 return (
                     "The latest run_tests result did not pass with Exit Code: 0, so you cannot declare IMPLEMENTED yet.\n"
-                    "Read the most recent test output, fix the real issue, and call run_tests again.\n"
+                    "Read the most recent test output, trace the root cause by re-reading the failing test and the most relevant related files, then make the minimal correct fix and call run_tests again.\n"
                     "Do not fabricate compatibility test files or move tests just to satisfy discovery."
                 )
             repeated_failure_note = ""
             if self._has_repeated_failure_loop():
                 repeated_failure_note = (
                     "\nThe latest failing test fingerprint has repeated. Before another test rerun, "
-                    "do not keep patching from stale memory. Re-read the current failing test file(s), re-read the exact target implementation file(s), "
-                    "and make one minimal contract-preserving fix before the next `run_tests` call."
+                    "do not keep patching from stale memory. Re-read the current failing test file(s), then re-read the most relevant implementation/configuration file(s), "
+                    "and only make one minimal contract-preserving fix after the root cause is evidenced."
                 )
             repeated_failure_action = ""
             if self._has_repeated_failure_loop():
@@ -262,7 +272,7 @@ Once `run_tests` returns a 100% passing state (Exit Code: 0) for the target test
                 )
             return (
                 "The latest run_tests result is still failing, so you cannot end this TDD session yet.\n"
-                "Use the returned test output to make the minimal code or test fix that is actually required, then call run_tests again.\n"
+                "Use the returned test output to decompose the failure, read the failing test and the next most relevant related files, then make the minimal code or test fix that is actually required and call run_tests again.\n"
                 f"Do not stop at analysis only.{repeated_failure_note}{repeated_failure_action}"
             )
 
@@ -278,7 +288,7 @@ Once `run_tests` returns a 100% passing state (Exit Code: 0) for the target test
         )
         return (
             "The latest run_tests result did not pass with Exit Code: 0, so you cannot declare IMPLEMENTED yet.\n"
-            "Read the most recent test output, fix the real issue, and call run_tests again.\n"
+            "Read the most recent test output, trace the root cause through the failing test and the most relevant related files, then make the minimal correct fix and call run_tests again.\n"
             "Do not fabricate compatibility test files or move tests just to satisfy discovery."
         )
 
@@ -411,6 +421,9 @@ Once `run_tests` returns a 100% passing state (Exit Code: 0) for the target test
 **Implementation Strategy**:
 Implement the interfaces of the current node. Consider the node requirement content, each interface's responsibility, and its spec to decide what to implement. Make the target tests pass.
 The system will execute exactly this current test batch when you call `run_tests`.
+If the batch fails, start from the raw failing output, read the current failing test file again, then read the most relevant related files one by one until the root cause is evidenced.
+After each file read, reassess whether you already found the cause or whether you still need another directly related file.
+If this is an E2E batch, compare the failing Playwright spec with the raw Playwright output before deciding whether the minimal fix is in app code or the test file.
 When all target tests pass, output "IMPLEMENTED".
 """
         system_content = self.get_system_prompt()
