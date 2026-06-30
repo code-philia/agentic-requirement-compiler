@@ -12,6 +12,7 @@ from traceability.database import (
     get_interface_by_id,
     get_interfaces_by_req_id,
     get_node_contract,
+    get_node_state,
     get_tests_by_req_id,
     insert_call_edge,
     insert_interface,
@@ -64,9 +65,9 @@ class WorkflowPhaseRunner:
         visual_reference = requirement_data.get("visual_reference") or []
         scenarios = requirement_data.get("scenarios") or []
         if visual_reference:
-            return "ui_only"
+            return "non_leaf_ui_only"
         if scenarios:
-            return "ui_and_shell_tests"
+            return "non_leaf_ui_with_shell_tests"
         return "skip"
 
     def _build_base_node_session(
@@ -138,6 +139,52 @@ class WorkflowPhaseRunner:
             lines = lines[-max_lines:]
             lines.insert(0, "...[truncated]")
         return "\n".join(lines)
+
+    def _build_empty_test_plan(self) -> dict[str, Any]:
+        return {
+            "unit_files": [],
+            "integration_files": [],
+            "e2e_files": [],
+            "test_ids": [],
+        }
+
+    def _determine_non_leaf_result_state(self, requirement_data: dict[str, Any]) -> str:
+        child_ids = [
+            str(child_id).strip()
+            for child_id in (requirement_data.get("children_ids") or [])
+            if str(child_id).strip()
+        ]
+        for child_id in child_ids:
+            child_state = get_node_state(child_id) or {}
+            if str(child_state.get("state", "")).strip().upper() == "FAILED":
+                return "CONVERGED_WITH_FAILED_CHILDREN"
+        return "CONVERGED"
+
+    async def _run_non_leaf_shell_test_verification(
+        self,
+        node_id: str,
+        tests: list[dict[str, Any]],
+    ) -> tuple[bool, str, dict[str, bool | None]]:
+        aggregated_outputs: list[str] = []
+        merged_statuses: dict[str, bool | None] = {}
+        all_passed = True
+
+        for test_type in TEST_TYPE_ORDER:
+            typed_tests = [test for test in tests if str(test.get("type", "")).strip() == test_type]
+            if not typed_tests:
+                continue
+            test_files = self._collect_test_files(typed_tests)
+            batch_output = await self._run_test_batch_for_agent(node_id=node_id, test_type=test_type, test_files=test_files)
+            batch_passed, batch_statuses = self._map_statuses_from_batch_output(
+                tests=typed_tests,
+                batch_output=batch_output,
+            )
+            merged_statuses.update(batch_statuses)
+            aggregated_outputs.append(f"## {test_type}\n{batch_output}")
+            if not batch_passed:
+                all_passed = False
+
+        return all_passed, "\n\n".join(aggregated_outputs), merged_statuses
 
     async def run_design_phase(self, node_id: str, requirement_data: dict[str, Any]) -> bool:
         is_leaf = not bool(requirement_data.get("children_ids"))
@@ -258,23 +305,18 @@ class WorkflowPhaseRunner:
             node_id,
         )
 
-        if not is_leaf:
+        if not is_leaf and design_mode == "non_leaf_ui_only":
             self._update_node_session(
                 node_id,
                 {
-                    "test_plan": {
-                        "unit_files": [],
-                        "integration_files": [],
-                        "e2e_files": [],
-                        "test_ids": [],
-                    },
+                    "test_plan": self._build_empty_test_plan(),
                     "test_artifacts": [],
                     "phase_status": {"test": "skipped"},
                 },
             )
             await self.log_cb(
                 "TestGenerator",
-                "Skipping test generation for non-leaf node. DESIGN keeps only shared interface and aggregation artifacts.",
+                "Skipping test generation for non-leaf UI-only node.",
                 None,
                 node_id,
             )
@@ -313,7 +355,12 @@ class WorkflowPhaseRunner:
             return False
 
         try:
-            self._store_tests(node_id, tests, is_leaf=is_leaf)
+            self._store_tests(
+                node_id,
+                tests,
+                is_leaf=is_leaf,
+                allow_non_leaf_shell_tests=(design_mode == "non_leaf_ui_with_shell_tests"),
+            )
         except ValueError as exc:
             await self.log_cb(
                 "TestGenerator",
@@ -381,7 +428,9 @@ class WorkflowPhaseRunner:
             return False
 
         if not is_leaf:
-            if tests:
+            design_mode = str(session.get("design_mode", "")).strip()
+            shell_test_mode = design_mode == "non_leaf_ui_with_shell_tests"
+            if tests and not shell_test_mode:
                 await self.log_cb(
                     "Compiler",
                     f"Ignoring {len(tests)} stored test record(s) for non-leaf node {node_id}. Non-leaf IMPLEMENT performs only lightweight convergence.",
@@ -412,6 +461,7 @@ class WorkflowPhaseRunner:
                 self._update_node_session(
                     node_id,
                     {
+                        "result_state": self._determine_non_leaf_result_state(requirement_data),
                         "phase_status": {"implement": "completed"},
                         "tdd_handoff": {
                             "last_test_type": "non_leaf_convergence",
@@ -469,6 +519,43 @@ class WorkflowPhaseRunner:
                     },
                 )
                 return False
+
+            if shell_test_mode and tests:
+                await self.log_cb(
+                    "Compiler",
+                    f"Running lightweight non-leaf shell tests for node {node_id}...",
+                    None,
+                    node_id,
+                )
+                shell_tests_passed, shell_test_output, shell_statuses = await self._run_non_leaf_shell_test_verification(
+                    node_id=node_id,
+                    tests=tests,
+                )
+                update_test_pass_statuses(shell_statuses)
+                if not shell_tests_passed:
+                    await self.log_cb(
+                        "Compiler",
+                        "Non-leaf shell-level verification failed.",
+                        "error",
+                        node_id,
+                    )
+                    if utils.debug_logger:
+                        utils.debug_logger.log(f"NON_LEAF_SHELL_TESTS[{node_id}]", shell_test_output)
+                    update_interface_implemented_status(node_id, False)
+                    self._update_node_session(
+                        node_id,
+                        {
+                            "phase_status": {"implement": "failed"},
+                            "tdd_handoff": {
+                                "last_test_type": "non_leaf_shell_tests",
+                                "last_failed_output_summary": self._summarize_batch_output(shell_test_output, max_lines=50),
+                                "modified_files": modified_files,
+                                "root_cause_notes": ["Parent shell verification failed after convergence."],
+                            },
+                        },
+                    )
+                    return False
+
             await self.log_cb(
                 "Compiler",
                 "Non-leaf IMPLEMENT completed with lightweight convergence only. Parent-level assembly and build verification passed.",
@@ -479,12 +566,17 @@ class WorkflowPhaseRunner:
             self._update_node_session(
                 node_id,
                 {
+                    "result_state": self._determine_non_leaf_result_state(requirement_data),
                     "phase_status": {"implement": "completed"},
                     "tdd_handoff": {
-                        "last_test_type": "non_leaf_convergence",
+                        "last_test_type": "non_leaf_shell_tests" if shell_test_mode and tests else "non_leaf_convergence",
                         "last_failed_output_summary": "",
                         "modified_files": modified_files,
-                        "root_cause_notes": ["Parent-level convergence passed build verification."],
+                        "root_cause_notes": [
+                            "Parent-level convergence passed build verification."
+                            if not (shell_test_mode and tests)
+                            else "Parent-level convergence and shell verification both passed."
+                        ],
                     },
                 },
             )
@@ -695,7 +787,13 @@ class WorkflowPhaseRunner:
 
             self._register_interface_edges(node_id, interface_id, interface)
 
-    def _store_tests(self, node_id: str, tests: list[dict[str, Any]], is_leaf: bool) -> None:
+    def _store_tests(
+        self,
+        node_id: str,
+        tests: list[dict[str, Any]],
+        is_leaf: bool,
+        allow_non_leaf_shell_tests: bool = False,
+    ) -> None:
         generated_ids: set[str] = set()
         sequence = 0
 
@@ -709,10 +807,15 @@ class WorkflowPhaseRunner:
 
             test_type = str(test.get("type", "")).strip()
             file_path = str(test.get("file_path", "")).strip()
-            if not is_leaf:
+            if not is_leaf and not allow_non_leaf_shell_tests:
                 raise ValueError(
                     f"Generated test `{raw_test_id}` is invalid for non-leaf node `{node_id}`. "
                     "Non-leaf nodes should not register tests; they only keep shared interface and aggregation artifacts."
+                )
+            if not is_leaf and allow_non_leaf_shell_tests and test_type not in {"Integration", "E2E"}:
+                raise ValueError(
+                    f"Generated non-leaf shell test `{raw_test_id}` has invalid type `{test_type}`. "
+                    "Non-leaf shell verification may only use Integration or E2E tests."
                 )
             validation_error = self.app_handler.validate_test_path(test_type, file_path)
             if validation_error:

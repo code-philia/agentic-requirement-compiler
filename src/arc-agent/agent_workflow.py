@@ -46,6 +46,8 @@ TASK_FAILED = "FAILED"
 NODE_UNSEEN = "UNSEEN"
 NODE_DESIGNED = "DESIGNED"
 NODE_PASSED = "PASSED"
+NODE_CONVERGED = "CONVERGED"
+NODE_CONVERGED_WITH_FAILED_CHILDREN = "CONVERGED_WITH_FAILED_CHILDREN"
 NODE_FAILED = "FAILED"
 
 
@@ -245,7 +247,7 @@ class ARCWorkflowManager:
 
             if task_ok:
                 task["status"] = TASK_COMPLETED
-                new_state = NODE_DESIGNED if phase == PHASE_DESIGN else NODE_PASSED
+                new_state = self._resolve_completed_node_state(node_id, phase)
                 self._set_node_state(queue_state["node_states"], node_id, new_state)
                 self._save_processing_queue(queue_state)
                 if phase == PHASE_DESIGN:
@@ -347,7 +349,7 @@ class ARCWorkflowManager:
     def _apply_saved_states_to_tasks(self, queue_state: dict[str, Any]) -> None:
         for task in queue_state["tasks"]:
             node_state = queue_state["node_states"].get(task["node_id"], NODE_UNSEEN)
-            if node_state == NODE_PASSED:
+            if node_state in {NODE_PASSED, NODE_CONVERGED, NODE_CONVERGED_WITH_FAILED_CHILDREN}:
                 task["status"] = TASK_COMPLETED
             elif node_state == NODE_DESIGNED and task["phase"] == PHASE_DESIGN:
                 task["status"] = TASK_COMPLETED
@@ -406,6 +408,17 @@ class ARCWorkflowManager:
         commit_message = build_commit_message(node_id, phase, requirement_data)
         await self.log_cb("Compiler", f"Running git checkpoint for {phase} on node {node_id}...", None, node_id)
         await run_git_commit(self.workspace_path, commit_message, self.log_cb)
+
+    def _resolve_completed_node_state(self, node_id: str, phase: str) -> str:
+        if phase == PHASE_DESIGN:
+            return NODE_DESIGNED
+        session = read_json_file(os.path.join(self.arc_dir, "node_sessions", f"{node_id}.json")) or {}
+        result_state = str(session.get("result_state", "")).strip().upper()
+        if result_state == NODE_CONVERGED_WITH_FAILED_CHILDREN:
+            return NODE_CONVERGED_WITH_FAILED_CHILDREN
+        if result_state == NODE_CONVERGED:
+            return NODE_CONVERGED
+        return NODE_PASSED
 
     def _set_node_state(self, node_states: dict[str, str], node_id: str, state: str) -> None:
         node_states[node_id] = state
