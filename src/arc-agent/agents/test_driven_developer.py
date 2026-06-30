@@ -27,86 +27,38 @@ class TestDrivenDeveloper(ARCAgent):
     def get_system_prompt(self) -> str:
         from utils import get_app_type, get_android_package, get_web_base_url, get_web_port
         app_type = get_app_type()
-        # Keep a safe default so web mode does not crash when formatting shared prompt sections.
-        android_pkg = "com.example.app"
-
         if app_type == "android":
             android_pkg = get_android_package()
-            pkg_compliance = f"""
-### Package Compliance (CRITICAL for Android):
-- The application package is `{android_pkg}`. You MUST use this package for ALL generated code:
-  - `package {android_pkg};` in every main source Java file
-  - `import {android_pkg}.xxx;` for cross-module references
-  - File paths must use `{android_pkg.replace('.', '/')}/` as the package directory
-  - AndroidManifest.xml must reference activities as `{android_pkg}.ActivityName`
-- For TEST code, use the correct sub-package matching the test type directory:
-  - Unit tests: `package {android_pkg}.unit;`
-  - Integration tests: `package {android_pkg}.integration;`
-  - E2E tests: `package {android_pkg}.e2e;`
-- Do NOT use `com.example.template` or any other package name.
-- If the requirement description mentions a different package name in resource-id patterns, use THAT package name instead.
+            runtime_rules = f"""
+### Android runtime rules
+- Use `{android_pkg}` consistently in source and test package declarations.
+- Keep the implementation aligned with the generated test package split.
 """
         else:
-            pkg_compliance = (
-                "### Web Runtime And Port (CRITICAL):\n"
-                f"- The single backend web port is `{get_web_port()}`.\n"
-                f"- The backend serves the built frontend dist at `{get_web_base_url()}`.\n"
-                "- Prefer TypeScript/TSX for frontend source files unless the existing local module is already firmly JS-only.\n"
-                "- Tailwind CSS is available and should be used directly in JSX/TSX markup for page/component styling when you implement UI-facing code.\n"
-                "- Do not assume a separate frontend dev-server port such as `5173` or `5174` for deployment or E2E.\n"
-                "- When fixing Playwright E2E tests, use `process.env.PLAYWRIGHT_BASE_URL` or the configured single-port base URL.\n"
+            runtime_rules = (
+                "### Web runtime rules\n"
+                f"- The only deployed backend port is `{get_web_port()}`.\n"
+                f"- The backend serves the frontend at `{get_web_base_url()}`.\n"
+                "- Prefer existing TS/TSX modules and Tailwind-based UI composition when touching frontend code.\n"
+                "- E2E remains Playwright-based under the current single-port runtime.\n"
             )
 
-        return f"""You are an Elite Full-Stack Developer strictly following Test-Driven Development (TDD).
-Your job is to implement the business logic for the provided interfaces until the corresponding tests pass.
+        return f"""You are the TDD implementation agent for this compiler.
+Land the current test batch by following the structured handoff: `<node_understanding>`, `<interface_spec>`, `<test_plan>`, `<test_code>`, and `<frozen_node_contract>`.
 
-Execution protocol (strict):
-- Write ALL implementation files FIRST, THEN request a test run. Do NOT write one file and test immediately.
-- The `run_tests` tool is only a signal. It takes NO arguments. When you call it, the system will execute the current target test batch and return the results in the tool output.
-- If tests fail, do root-cause analysis first instead of patching immediately.
-- Start from the raw failing output, identify the failing assertion / runtime error / compile error, then trace outward.
-- Re-read the current failing test file first. After that, read the most relevant implementation, route, page, component, API, or config files that the failure actually touches.
-- After each read, explicitly reassess whether you have found the root cause or whether you still need more related files.
-- Only after you have enough evidence should you decide whether the minimal fix belongs in implementation code, configuration, or the current test file.
-- Once the root cause is clear, use `edit_file` to make the minimal contract-preserving fix, then call `run_tests` again.
-- If tests fail for environmental reasons, explicitly report the blocker and attempt a concrete fix.
-- The current TDD session is scoped to one test group only. Do not read or reason about unrelated test groups unless the current failure explicitly depends on them.
-- Treat `No test files found` and equivalent discovery errors as runner/path/config problems first. Do not start by changing business logic when the runner did not actually execute the target test file.
-- Do not create mirror test files, proxy test files, duplicate test files, or path-compatibility files such as `backend/backend/...` just to satisfy a broken runner path.
-- Do not copy or relocate tests only to make discovery pass unless the system output explicitly shows the real project configuration itself must be fixed.
-- Do not copy dependencies between `backend` and `frontend`, do not vendor packages manually, and do not patch `node_modules` or package internals to make tests pass.
-- Do not write ad hoc Vitest or Playwright config files unless the real project configuration is genuinely missing and the system output shows that configuration is the blocker.
-- If a generated test file uses the wrong framework for its type, treat that as a test-content bug. Do not compensate by rewriting the runtime environment around it.
-- E2E tests must be Playwright tests. They are not Vitest tests, and you must not reinterpret E2E failures through `require('vitest')`, `describe/it/expect`-only assumptions, or rewrite E2E into Vitest unless the requirement explicitly changes frameworks.
-- If an E2E file itself appears to be Vitest-style, treat that as a test-generation or test-content error to be corrected. Do not "fix" it by changing the runner away from Playwright.
-- When E2E fails, debug it as Playwright: page interaction, selectors, assertions, server startup, and runtime environment.
-- When E2E fails, first re-read the current failing Playwright spec file and compare it against the raw test output before deciding whether the fix belongs in implementation or in the test itself.
-- You MAY minimally edit the current E2E test file when the failure is caused by selector strategy, duplicated visible text, wrong expectation text, or another clear test-content bug.
-- For Playwright selector repair, prefer this priority: requirement/scenario-visible text first; if duplicated, stable className next; then role-based selectors; and `id` only as the last fallback.
-- For web projects, Playwright E2E spec files belong under `backend/test-e2e/...`. Do not move them to `frontend/src/...` or root-level `e2e/...`.
-- For web projects, backend tests and frontend tests may run from different working directories. Use the `Working Directory` and `Resolved Test File` fields from system output as the source of truth before deciding whether the blocker is path, config, test content, or implementation.
-- The current node already has a concrete interface list. Implement those interfaces first and keep them aligned with their declared file path, signature, callers, callees, inputs, and outputs.
-- Use the provided `<project_structure>` as the default source of truth for file and directory locations. Do not start by probing guessed sibling directories.
-- Use the provided `<frozen_node_contract>` as the stable contract for routes, auth semantics, provider ownership, and assembly boundaries. Do not invent conflicting behavior.
-- Prefer the pre-fetched context first. Avoid full-repo rescans, repeated `list_directory`, or unrelated `read_file` calls unless they are directly needed for the current failing batch.
-- Use `glob` and `grep` only for narrow follow-up checks inside known source subtrees. Do not explore `node_modules`, build outputs, caches, or unconstrained workspace-root patterns.
-- Use `execute_command` only when necessary for external actions or bounded diagnostics, such as `npm install`, a package script, or a short runtime check in the correct working directory.
-- Use a deliberate reasoning loop for failures: inspect the failure, read the next most relevant file, reassess the hypothesis, and continue until the root cause is grounded in evidence.
-- If you discover that passing tests requires a genuinely new interface that was not in the original node IR, you may add it. In that case, include a JSON array in a markdown `json` block in your final response describing only the newly added interfaces using the same schema as interface design. Do not emit this JSON for ordinary code edits.
-- Return exactly "IMPLEMENTED" only when target tests are truly passing.
+Rules:
+- Implement the current node's declared contracts first. Do not invent a conflicting contract.
+- Write the obvious implementation set first, then call `run_tests`.
+- `run_tests` takes no arguments and runs exactly the current batch selected by the system.
+- If tests fail, start from the raw failing output, re-read the failing test file, then read only the most relevant related files until the root cause is evidenced.
+- Make the smallest contract-preserving fix before the next test run.
+- Treat missing test discovery, wrong framework, wrong path, or wrong selector strategy as test/content/config problems first, not business-logic problems.
+- Do not fabricate compatibility files, duplicate tests, patch `node_modules`, or move tests just to satisfy discovery.
+- Preserve `<frozen_node_contract>` for routes, auth behavior, provider ownership, and shell boundaries.
+- Use narrow reads and targeted search only; avoid broad rescans and unrelated diagnostics.
+- Return exactly `IMPLEMENTED` only after the latest `run_tests` result passes with exit code 0.
 
-{pkg_compliance}
-### Workflow:
-1. Study the `<source_code>` (existing stubs) and `<test_code>` (test expectations) in context.
-1.5. Preserve the `<frozen_node_contract>` while fixing tests. If tests and code drift, converge toward the frozen node contract instead of inventing a third contract.
-2. For each interface of the current node, write the REAL implementation that satisfies its Outputs contract and makes the corresponding tests pass.
-3. Use `write_file` to write ALL implementation files in one batch.
-4. Call `run_tests` with NO arguments to ask the system to execute the current target test batch.
-5. If tests fail, decompose the failure, read the failing test file, read the most relevant related files, and keep tracing until the root cause is evidenced.
-6. Fix the actual root cause with the smallest correct change, then call `run_tests` again.
-7. If you need a new npm package or a bounded external diagnostic, use `execute_command` sparingly (for example `npm install cors` in the correct package directory).
-
-Once `run_tests` returns a 100% passing state (Exit Code: 0) for the target tests, you MUST output exactly the word "IMPLEMENTED" in your final response to complete the task.
+{runtime_rules}
 """
 
     def get_tool_names(self) -> List[str]:
@@ -406,12 +358,13 @@ Once `run_tests` returns a 100% passing state (Exit Code: 0) for the target test
         node_id: str,
         test_files: List[str],
         test_type: str,
-        req_desc: str,
         scenarios: list = None,
-        dependency_context: str = "",
         current_interfaces: list = None,
         preloaded_source: str = None,
-        handoff_summary: str = "",
+        node_understanding: dict[str, Any] | None = None,
+        interface_spec: list[dict[str, Any]] | None = None,
+        test_plan: dict[str, Any] | None = None,
+        previous_failure_summary: str = "",
     ) -> tuple:
         """Build the [system, user] messages and tools list without calling run().
         Returns (messages, tools) so the caller can use run_from_messages() or continue a session.
@@ -452,14 +405,38 @@ Once `run_tests` returns a 100% passing state (Exit Code: 0) for the target test
             if interface_lines:
                 interfaces_context = "\n### Current Node Interfaces\n" + "\n".join(interface_lines)
 
+        understanding_context = ""
+        if node_understanding:
+            understanding_context = (
+                "\n### Node Understanding\n```json\n"
+                f"{json.dumps(node_understanding, indent=2, ensure_ascii=False)}\n```\n"
+            )
+
+        spec_context = ""
+        if interface_spec:
+            spec_context = (
+                "\n### Interface Specification\n```json\n"
+                f"{json.dumps(interface_spec, indent=2, ensure_ascii=False)}\n```\n"
+            )
+
+        test_plan_context = ""
+        if test_plan:
+            test_plan_context = (
+                "\n### Test Plan\n```json\n"
+                f"{json.dumps(test_plan, indent=2, ensure_ascii=False)}\n```\n"
+            )
+
         handoff_context = ""
-        if handoff_summary:
-            handoff_context = f"\n### Stage Handoff Summary\n{handoff_summary}\n"
+        if previous_failure_summary:
+            handoff_context = f"\n### Previous Failure Summary\n{previous_failure_summary}\n"
 
         user_prompt = f"""
 ### Auto-Prefetched Context for Node [{node_id}]
 {dynamic_ctx}
 {scenarios_context}
+{understanding_context}
+{spec_context}
+{test_plan_context}
 {interfaces_context}
 {handoff_context}
 
@@ -467,7 +444,7 @@ Once `run_tests` returns a 100% passing state (Exit Code: 0) for the target test
 {json.dumps(test_files, indent=2)}
 
 **Implementation Strategy**:
-Implement the interfaces of the current node. Consider the node requirement content, each interface's responsibility, and its spec to decide what to implement. Make the target tests pass.
+Implement the interfaces of the current node. Use the node understanding, interface spec, and test plan as the authoritative execution contract. Make the target tests pass without inventing a conflicting contract.
 The system will execute exactly this current test batch when you call `run_tests`.
 If the batch fails, start from the raw failing output, read the current failing test file again, then read the most relevant related files one by one until the root cause is evidenced.
 After each file read, reassess whether you already found the cause or whether you still need another directly related file.
@@ -506,13 +483,31 @@ When all target tests pass, output "IMPLEMENTED".
             return False
         return self._recent_failure_fingerprints[-1] == self._recent_failure_fingerprints[-2]
 
-    async def implement(self, node_id: str, test_files: List[str], test_type: str, req_desc: str, scenarios: list = None, dependency_context: str = "", current_interfaces: list = None, preloaded_source: str = None, handoff_summary: str = "") -> str:
+    async def implement(
+        self,
+        node_id: str,
+        test_files: List[str],
+        test_type: str,
+        scenarios: list = None,
+        current_interfaces: list = None,
+        preloaded_source: str = None,
+        node_understanding: dict[str, Any] | None = None,
+        interface_spec: list[dict[str, Any]] | None = None,
+        test_plan: dict[str, Any] | None = None,
+        previous_failure_summary: str = "",
+    ) -> str:
         """Backwards-compatible: build initial messages then run a new session."""
         messages, tools = self.build_initial_messages(
-            node_id=node_id, test_files=test_files, test_type=test_type,
-            req_desc=req_desc, scenarios=scenarios, dependency_context=dependency_context,
-            current_interfaces=current_interfaces, preloaded_source=preloaded_source,
-            handoff_summary=handoff_summary,
+            node_id=node_id,
+            test_files=test_files,
+            test_type=test_type,
+            scenarios=scenarios,
+            current_interfaces=current_interfaces,
+            preloaded_source=preloaded_source,
+            node_understanding=node_understanding,
+            interface_spec=interface_spec,
+            test_plan=test_plan,
+            previous_failure_summary=previous_failure_summary,
         )
         result, _ = await self.run_from_messages(
             messages,

@@ -5,7 +5,7 @@ import json
 import mimetypes
 import os
 import re
-from typing import List, Dict, Any
+from typing import Any, Dict, List
 from urllib.parse import urlparse
 
 import requests
@@ -14,11 +14,12 @@ from .arc_agent import ARCAgent
 from traceability.database import update_requirement_visuals
 from utils import read_json_file, write_json_file
 
+
 class InterfaceDesigner(ARCAgent):
     def __init__(self, log_cb=None):
         super().__init__(
             agent_name="InterfaceDesigner",
-            log_cb=log_cb
+            log_cb=log_cb,
         )
         self._non_leaf_existing_write_guard = False
         self._non_leaf_no_write_guard = False
@@ -238,255 +239,394 @@ class InterfaceDesigner(ARCAgent):
                 )
 
     def get_system_prompt(self) -> str:
-        from utils import get_app_type, get_android_package, get_web_base_url, get_web_port
-        app_type = get_app_type()
-        android_pkg = ""
-        pkg_compliance = ""
+        from utils import get_android_package, get_app_type, get_web_base_url, get_web_port
 
+        app_type = get_app_type()
         if app_type == "android":
             android_pkg = get_android_package()
-            pkg_compliance = f"""
-### Package Compliance (CRITICAL for Android):
-- The application package is `{android_pkg}`. You MUST use this package for ALL generated code:
-  - `package {android_pkg};` in every Java file
-  - `import {android_pkg}.xxx;` for cross-module references
-  - File paths must use `{android_pkg.replace('.', '/')}/` as the package directory
-  - AndroidManifest.xml must reference activities as `{android_pkg}.ActivityName`
-- Do NOT use `com.example.template` or any other package name.
-- If the requirement description mentions a different package name in resource-id patterns (e.g., `org.billthefarmer.editor:id/newFile`), use THAT package name instead of `{android_pkg}`. The resource-id package takes priority.
+            runtime_rules = f"""
+### Android package rules
+- Use `{android_pkg}` consistently in source paths and package declarations.
+- If the requirement or scenario gives an explicit resource-id package, that package wins for the ids it names.
 """
         else:
-            pkg_compliance = f"""
-### Web Runtime And Hosting (CRITICAL for Web):
-- The web app has exactly ONE runtime port: `{get_web_port()}`.
-- The deployed runtime base URL is `{get_web_base_url()}`.
-- The frontend is a build artifact producer, not the deployed runtime server.
-- The frontend should be built into `frontend/dist`.
-- The backend is the only runtime server and must host `frontend/dist` on the same origin and same port.
-- Prefer TypeScript/TSX for frontend source files such as app shells, pages, components, hooks, and API clients.
-- Tailwind CSS is part of the frontend stack and should be reflected in UI-facing interface design as utility-class-driven components, not only as generic CSS availability.
-- Do NOT design architectures that depend on a separate deployed frontend dev server such as `5173` or `5174`.
-- For top-level web design, the backend owns final runtime assembly, top-level route serving, and integration with frontend build output.
-- When designing web parent modules, prefer app shells, route containers, layout frames, shared providers, and thin backend integration points over splitting the deployed system into separate frontend/backend runtime surfaces.
+            runtime_rules = f"""
+### Web runtime rules
+- The only deployed web runtime is the backend on port `{get_web_port()}` at `{get_web_base_url()}`.
+- The backend serves `frontend/dist` on the same origin.
+- Prefer existing app shells, route containers, layouts, providers, pages, TS/TSX modules, and Tailwind-based UI composition.
 """
 
-        return f"""You are a Principal Software Architect.
-Your task is to analyze a raw software requirement and design its interfaces (UI -> API -> FUNC -> DB).
+        return f"""You are the interface design agent for this compiler.
+Produce compact, structured design artifacts that the next agents can execute against.
 
-For **non-leaf nodes**: design only the top-level module shell and system-convergence layer for child nodes. Focus on the smallest parent-level interface set that connects child capabilities into one coherent system: page shells, routing/entry points, frontend interface framework, shared state/providers, common data contracts, and thin integration facades. Prefer top-level module design over implementation-heavy service/DAO design. If the requirement includes reference images or is clearly page-centric, bias strongly toward frontend shell, layout, container structure, navigation, and entrypoint design.
+Rules:
+- Reuse existing interfaces before inventing new ones.
+- Preserve `<frozen_node_contract>` unless the requirement explicitly forces a change.
+- Respect `<current_requirement>`, `<node_understanding>`, visual analysis, and scenario details.
+- If the requirement names exact UI ids or resource ids, keep them exact.
+- For leaf work, design the smallest complete chain needed across UI -> API -> FUNC -> DB.
+- For non-leaf work, stay at parent UI shell scope: routes, layouts, providers, page containers, mount points, and thin composition boundaries.
+- Do not write code files in design or spec generation steps.
 
-For **leaf nodes**: design ALL layers with real logic (not just `throw UnsupportedOperationException`). Use actual DAO calls, return real data, wire up LiveData/queries.
-
-{pkg_compliance}
-
-Design constraints (strict):
-- Prefer stable, deterministic module boundaries. One interface = one clear responsibility.
-- Interface IDs must be stable and explicit: `IF_{{TYPE}}_{{DOMAIN}}_{{ACTION}}` (e.g., `IF_API_USER_LOGIN`).
-- Keep contracts backward-compatible when reusing interfaces; use optional params for extensions.
-- Do not invent dependency interfaces if they already exist in traceability search results.
-- Use the provided `<frozen_node_contract>` when available as the current stable node contract for routes, auth semantics, provider ownership, and shared-shell ownership.
-- **UI Resource-ID Compliance**: If the requirement description or scenarios specify exact `resource-id` values (e.g., `org.billthefarmer.editor:id/newFile`), you MUST use those exact IDs when designing UI interfaces. The `android:id` in XML layouts and `findViewById(R.id.xxx)` in Java must match the resource-id suffix specified in the scenarios. This is critical for automated testing to find the UI elements.
-- For non-leaf nodes, default to as few interfaces as possible. Only design parent-level interfaces whose absence would block child-node connectivity.
-- For non-leaf nodes, do NOT invent parent-owned DAO/config/service layers just to hold placeholder data or platform metadata unless the requirement explicitly asks for them.
-- For non-leaf nodes, prefer reusing or minimally extending existing entrypoints and shared shells over creating new backend/platform modules.
-- For non-leaf nodes, prefer frontend interface framework interfaces before backend expansion: app shells, route containers, layout frames, navigation scaffolds, shared providers, and top-level section/component skeletons.
-- If the requirement contains visual references or obviously describes a page/container module, prefer frontend shell interfaces first and avoid speculative backend expansion.
-
-# Workflow:
-1. **Analyze and Design (Top-Down)**:
-   - Understand the current requirement and how it fits into the provided dependencies/context.
-   - If `<frozen_node_contract>` exists, preserve it unless the current requirement explicitly justifies a change. Do not invent conflicting routes, auth semantics, provider ownership, or parent-shell ownership.
-   - **Extract Resource-IDs**: If the requirement description contains `resource-id` references (e.g., `` `pkg:id/buttonName` ``), extract and record them. These MUST be used as the actual `android:id` values in the generated UI code.
-   - Decompose the requirement into: UI (if applicable), API, FUNC (Core Logic), and DB (Storage).
-   - **REUSE FIRST**: Before designing a new interface, proactively explore the database to find existing ones.
-     - Use `search_interfaces_by_keyword` to find logic by name (e.g., 'auth', 'payment').
-     - Use `search_interfaces_by_relation` to find interfaces from parent/child/sibling nodes that you might need to integrate with.
-2. **Interface Reuse Mechanism**:
-   - If an existing interface perfectly matches your needs, mark it for reuse by setting `"reuse": true` and providing its exact existing `"interface_id"`.
-   - If an existing interface needs slight modification, you MUST first call `find_interface_impacts` to see what other interfaces call it.
-
-# CRITICAL Output Requirement:
-You MUST output a single JSON array in a markdown block (` ```json ... ``` `).
-This JSON represents the Intermediate Representation (IR) mapping of the interfaces you designed or reused.
-Do NOT write any code files yet — this phase is ONLY for designing the interface architecture.
-Each object in the array must follow this exact schema:
-{{
-  "interface_id": "Unique string ID (if reusing, MUST use the exact existing ID)",
-  "reuse": true or false,
-  "type": "Must be exactly one of: UI, API, FUNC, DB",
-  "name": "Logical name of the module/function",
-  "description": "Brief description of its purpose",
-  "inputs": ["List of input parameter descriptions or types"],
-  "outputs": ["List of output data descriptions or types"],
-  "callers": ["List of interface_ids that call this module"],
-  "callees": ["List of interface_ids that this module calls"],
-  "file_path": "The relative path to the file (e.g., src/api/user.py)",
-  "first_line": "The exact first line of the function/class definition (e.g., 'async def login_user(request: Request) -> Response:')"
-}}
+{runtime_rules}
 """
 
     def get_tool_names(self) -> List[str]:
         return [
-            "read_file", "list_directory", "glob", "grep",
-            "search_interfaces_by_keyword", "search_interfaces_by_relation",
-            "find_interface_impacts", "get_node_relations"
+            "read_file",
+            "list_directory",
+            "glob",
+            "grep",
+            "search_interfaces_by_keyword",
+            "search_interfaces_by_relation",
+            "find_interface_impacts",
+            "get_node_relations",
         ]
 
     def _get_implement_tool_names(self) -> List[str]:
         return [
-            "read_file", "write_file", "edit_file", "delete_file",
-            "list_directory", "glob", "grep", "run_build",
-            "search_interfaces_by_keyword", "search_interfaces_by_relation",
-            "find_interface_impacts", "get_node_relations"
+            "read_file",
+            "write_file",
+            "edit_file",
+            "delete_file",
+            "list_directory",
+            "glob",
+            "grep",
+            "run_build",
+            "search_interfaces_by_keyword",
+            "search_interfaces_by_relation",
+            "find_interface_impacts",
+            "get_node_relations",
         ]
 
     def _get_non_leaf_audit_tool_names(self) -> List[str]:
         return [
-            "read_file", "write_file", "edit_file", "delete_file",
-            "list_directory", "glob", "grep", "run_build",
-            "search_interfaces_by_keyword", "search_interfaces_by_relation",
-            "find_interface_impacts", "get_node_relations"
+            "read_file",
+            "write_file",
+            "edit_file",
+            "delete_file",
+            "list_directory",
+            "glob",
+            "grep",
+            "run_build",
+            "search_interfaces_by_keyword",
+            "search_interfaces_by_relation",
+            "find_interface_impacts",
+            "get_node_relations",
         ]
 
-    async def design_ir(self, node_id: str, requirement_data: dict, is_leaf: bool = True) -> tuple:
-        """Phase 1: Design interfaces and output IR JSON. No code writing.
-        Returns (ir_output, messages) so the session can be continued by implement_stubs_from_session().
-        """
+    @staticmethod
+    def _extract_json_object_from_markdown(raw_output: str) -> dict[str, Any] | None:
+        if not raw_output:
+            return None
+        fenced = re.search(r"```json\s*(.*?)\s*```", raw_output, re.DOTALL | re.IGNORECASE)
+        candidate = fenced.group(1) if fenced else raw_output
+        try:
+            data = json.loads(candidate)
+            return data if isinstance(data, dict) else None
+        except Exception:
+            pass
+        span = re.search(r"(\{\s*\"[\s\S]*\})", raw_output)
+        if not span:
+            return None
+        try:
+            data = json.loads(span.group(1))
+            return data if isinstance(data, dict) else None
+        except Exception:
+            return None
+
+    @staticmethod
+    def _extract_json_array_from_markdown(raw_output: str) -> list[dict[str, Any]] | None:
+        if not raw_output:
+            return None
+        fenced = re.search(r"```json\s*(.*?)\s*```", raw_output, re.DOTALL | re.IGNORECASE)
+        candidate = fenced.group(1) if fenced else raw_output
+        try:
+            data = json.loads(candidate)
+            return data if isinstance(data, list) else None
+        except Exception:
+            pass
+        span = re.search(r"(\[\s*{[\s\S]*}\s*\])", raw_output)
+        if not span:
+            return None
+        try:
+            data = json.loads(span.group(1))
+            return data if isinstance(data, list) else None
+        except Exception:
+            return None
+
+    @staticmethod
+    def _build_design_scope_guidance(design_mode: str) -> str:
+        if design_mode == "leaf_full":
+            return """
+### Scope
+- This is a leaf node.
+- Decompose the feature from UI to API to FUNC to DB.
+- Reuse existing interfaces where possible, and only add the minimum new contracts needed to land the feature.
+"""
+        if design_mode == "non_leaf_ui_with_shell_tests":
+            return """
+### Scope
+- This is a non-leaf parent node.
+- Design only parent UI shell interfaces: top-level routes, layouts, providers, mount points, and thin composition boundaries.
+- The result must support parent shell testing, but it must not invent API/FUNC/DB layers unless the requirement text makes it unavoidable.
+"""
+        return """
+### Scope
+- This is a non-leaf parent node.
+- Design only parent UI shell interfaces: top-level routes, layouts, providers, mount points, and thin composition boundaries.
+- Do not design API/FUNC/DB interfaces in this mode.
+"""
+
+    @staticmethod
+    def _build_fallback_understanding(requirement_data: dict[str, Any]) -> dict[str, Any]:
+        scenarios = requirement_data.get("scenarios") or []
+        visual_reference = requirement_data.get("visual_reference") or []
+        return {
+            "requirement_summary": {
+                "name": requirement_data.get("name", ""),
+                "description": requirement_data.get("description", ""),
+                "dependencies": requirement_data.get("dependencies") or [],
+            },
+            "scenario_summary": [
+                {
+                    "scenario_id": scenario.get("scenario_id") or scenario.get("id", ""),
+                    "name": scenario.get("name", ""),
+                    "steps": scenario.get("steps", [])[:8],
+                }
+                for scenario in scenarios[:8]
+            ],
+            "visual_summary": [
+                {
+                    "image_path": item.get("image_path", ""),
+                    "analysis": str(item.get("analysis", "") or "")[:600],
+                }
+                for item in visual_reference[:4]
+            ],
+            "relevant_files": [],
+            "reuse_candidates": [],
+            "risks": ["Understanding fell back to deterministic requirement parsing."],
+        }
+
+    @staticmethod
+    def _build_fallback_interface_spec(
+        interfaces: list[dict[str, Any]],
+        node_understanding: dict[str, Any] | None = None,
+    ) -> list[dict[str, Any]]:
+        reuse_constraints = []
+        if node_understanding and node_understanding.get("reuse_candidates"):
+            reuse_constraints.append("Check existing related interfaces before adding a new contract.")
+
+        specs: list[dict[str, Any]] = []
+        for interface in interfaces:
+            if not isinstance(interface, dict):
+                continue
+            specs.append(
+                {
+                    "interface_id": str(interface.get("interface_id", "")).strip(),
+                    "type": str(interface.get("type", "")).strip(),
+                    "file_path": str(interface.get("file_path", "")).strip(),
+                    "first_line": str(interface.get("first_line", "")).strip(),
+                    "responsibility": str(interface.get("description", "") or "").strip(),
+                    "inputs": interface.get("inputs", []) if isinstance(interface.get("inputs"), list) else [],
+                    "outputs": interface.get("outputs", []) if isinstance(interface.get("outputs"), list) else [],
+                    "preconditions": [],
+                    "postconditions": [],
+                    "error_cases": [],
+                    "reuse_constraints": list(reuse_constraints),
+                }
+            )
+        return specs
+
+    async def understand_node(
+        self,
+        node_id: str,
+        requirement_data: dict[str, Any],
+        design_mode: str = "leaf_full",
+        preloaded_source: str = None,
+    ) -> tuple[dict[str, Any], list]:
         from .context_pipeline import context_pipeline
+        from .tools import TOOL_REGISTRY
 
-        static_ctx, dynamic_ctx = context_pipeline.build_agent_context_split(node_id=node_id, agent_type=self.agent_name)
-
-        if is_leaf:
-            scope_guidance = """
-### Node Scope: LEAF NODE (Full Implementation)
-This is a **leaf node** (no children). Design interfaces for ALL layers:
-- **DB layer**: Room entities, DAOs (only if not already created by a parent node)
-- **API layer**: Repositories / Services
-- **FUNC layer**: ViewModels / UseCases
-- **UI layer**: Activities, Fragments, Adapters, XML layouts
-
-Implement real logic (not just `throw UnsupportedOperationException`). Use actual DAO/Repository calls, return real data from LiveData/queries.
-"""
-        else:
-            scope_guidance = """
-### Node Scope: NON-LEAF NODE (Shared Foundation, Aggregation & System Convergence)
-This is a **non-leaf node** (it has children). Design the shared foundation, aggregation, and system-convergence layer that child nodes will extend and plug into:
-- Design the parent as a top-level module shell, not as a feature implementation node.
-- Prefer page shells, routing/entry points, frontend interface framework, shared state/providers, shared contracts, composition roots, and thin integration facades.
-- Frontend interface framework includes top-level page/layout shells, route containers, shared navigation, app entry composition, section skeleton components, and parent-owned UI composition boundaries.
-- Reuse routes, providers, and shell ownership already present in `<frozen_node_contract>` whenever possible.
-- The key responsibility is to connect child-node capabilities into one consistent subsystem: define how child features are mounted, coordinated, and exposed through stable parent-level interfaces.
-- If the requirement is page-centric or has reference images, bias toward frontend shell/layout/container/navigation design for the parent module.
-- Prefer interfaces that guarantee system connectivity and consistency: composition roots, parent-level facades, cross-child coordination flows, shared session/state contracts, navigation entry points, and top-level page containers.
-- Reuse existing entry files, routes, and shared shells whenever possible. Extend them minimally instead of designing new parent-owned subsystems.
-- Avoid DB-layer and backend service-layer interfaces unless they are strictly necessary as thin cross-child integration contracts.
-- Avoid parent-owned implementation layers such as DAO, repository, service, bootstrap, registry, health, or platform-management modules unless they are explicitly required by the requirement itself.
-- Do NOT create a conflicting second owner for routes, auth/session providers, or top-level app shells.
-- Do NOT duplicate child business logic in the parent. The parent should assemble, constrain, and expose child capabilities as one coherent system.
-- Keep the design modular and small; do NOT implement full feature logic — that belongs to leaf nodes.
-- A good non-leaf design usually has only a small number of parent interfaces. Do not inflate the parent with speculative infrastructure.
-"""
-
+        static_ctx, dynamic_ctx = context_pipeline.build_agent_context_split(
+            node_id=node_id,
+            agent_type=self.agent_name,
+            preloaded_source=preloaded_source,
+        )
         user_prompt = f"""
 ### Auto-Prefetched Context for Node [{node_id}]
 {dynamic_ctx}
 
-{scope_guidance}
+### Task
+Understand this node before interface design.
+{self._build_design_scope_guidance(design_mode)}
 
-Perform the top-down decomposition for Node [{node_id}].
-Use the `<current_requirement>` block in the prefetched context as the authoritative current-node payload.
-Design the interface architecture and output the IR JSON mapping.
-Do NOT write any code files — this phase is ONLY for architecture design.
+Return exactly one JSON object in a `json` markdown block with this schema:
+{{
+  "requirement_summary": {{
+    "name": "short name",
+    "description": "1-3 sentence summary",
+    "dependencies": ["dependency ids"]
+  }},
+  "scenario_summary": [
+    {{
+      "scenario_id": "id",
+      "name": "scenario name",
+      "steps": ["important step", "..."]
+    }}
+  ],
+  "visual_summary": [
+    {{
+      "image_path": "path",
+      "analysis": "short visual summary"
+    }}
+  ],
+  "relevant_files": ["most relevant existing files"],
+  "reuse_candidates": [
+    {{
+      "interface_id": "existing interface id",
+      "type": "UI/API/FUNC/DB",
+      "reason": "why it may be reused"
+    }}
+  ],
+  "risks": ["main design or integration risks"]
+}}
+
+Keep it concrete. Favor existing code and existing interfaces over speculation.
 """
         system_content = self.get_system_prompt()
         if static_ctx:
             system_content = f"{system_content}\n\n{static_ctx}"
         messages = [
             {"role": "system", "content": system_content},
-            {"role": "user", "content": user_prompt}
+            {"role": "user", "content": user_prompt},
         ]
-        from .tools import TOOL_REGISTRY
-        tools = [TOOL_REGISTRY[n]["schema"] for n in self.get_tool_names() if n in TOOL_REGISTRY]
-        result, messages = await self.run_from_messages(messages, node_id=node_id, max_steps=10, tools=tools)
-        return result, messages
+        tools = [TOOL_REGISTRY[name]["schema"] for name in self.get_tool_names() if name in TOOL_REGISTRY]
+        raw_output, messages = await self.run_from_messages(messages, node_id=node_id, max_steps=8, tools=tools)
+        parsed = self._extract_json_object_from_markdown(raw_output)
+        if not parsed:
+            parsed = self._build_fallback_understanding(requirement_data)
+        return parsed, messages
 
-    async def implement_stubs_from_session(self, messages: List[Dict], interfaces: List[Dict], node_id: str, is_leaf: bool = True) -> tuple:
-        """Phase 2: Continue from design_ir's session to implement stub code.
-        The LLM already understands the architecture from design_ir, so it can
-        start writing code immediately without re-reading/re-understanding the context.
-        Returns (output, messages).
-        """
+    async def build_interface_spec(
+        self,
+        node_id: str,
+        requirement_data: dict[str, Any],
+        interfaces: list[dict[str, Any]],
+        node_understanding: dict[str, Any] | None,
+        design_mode: str = "leaf_full",
+        preloaded_source: str = None,
+    ) -> tuple[list[dict[str, Any]], list]:
         from .context_pipeline import context_pipeline
-        from utils import get_app_type, get_android_package
         from .tools import TOOL_REGISTRY
 
-        # Switch to implementation tool set (adds write_file, run_build, etc.)
-        impl_tools = [TOOL_REGISTRY[n]["schema"] for n in self._get_implement_tool_names() if n in TOOL_REGISTRY]
+        static_ctx, dynamic_ctx = context_pipeline.build_agent_context_split(
+            node_id=node_id,
+            agent_type=self.agent_name,
+            preloaded_source=preloaded_source,
+        )
+        user_prompt = f"""
+### Auto-Prefetched Context for Node [{node_id}]
+{dynamic_ctx}
 
-        # Build a summary of what needs to be implemented
-        iface_summaries = []
-        for iface in interfaces:
-            iface_summaries.append(
-                f"- [{iface.get('interface_id')}] Type: {iface.get('type')} "
-                f"File: `{iface.get('file_path', 'TBD')}` "
-                f"Name: {iface.get('name', '')} "
-                f"Desc: {iface.get('description', '')}"
-            )
+### Node Understanding
+```json
+{json.dumps(node_understanding or {}, indent=2, ensure_ascii=False)}
+```
 
-        # Package compliance for Android
-        pkg_compliance = ""
-        if get_app_type() == "android":
-            android_pkg = get_android_package()
-            pkg_compliance = f"""
-### Package Compliance (CRITICAL):
-- Use `package {android_pkg};` in every Java file.
-- Use `import {android_pkg}.xxx;` for cross-module references.
-- Place files under `app/src/main/java/{android_pkg.replace('.', '/')}/`.
-- Do NOT use `com.example.template` or any other package.
-- If the requirement description mentions a resource-id with a different package (e.g., `org.billthefarmer.editor:id/newFile`), use THAT package instead.
-"""
-
-        if is_leaf:
-            impl_guidance = f"""
-### Implementation Scope: LEAF NODE
-Implement ALL interfaces with real logic. Use actual DAO calls, return real data.
-Do NOT use `throw UnsupportedOperationException` — implement working code.
-**UI Resource-ID Compliance**: When writing XML layouts, use the exact `android:id` values specified in the requirement description/scenarios (e.g., if a scenario says `org.billthefarmer.editor:id/newFile`, the XML must have `android:id="@+id/newFile"`). When writing Java code, use `findViewById(R.id.newFile)` with matching IDs.
-After writing all files, call `run_build` to verify compilation. Fix any errors.
-{pkg_compliance}
-"""
-        else:
-            impl_guidance = f"""
-### Implementation Scope: NON-LEAF NODE
-Implement ONLY the DB layer interfaces (Entity/DAO/AppDatabase).
-Do NOT create Repository/ViewModel/Fragment/Layout files.
-After writing all files, call `run_build` to verify compilation. Fix any errors.
-{pkg_compliance}
-"""
-
-        impl_prompt = f"""
-### Implementation Task for Node [{node_id}]
-{impl_guidance}
-
-### Interfaces to Implement ({len(interfaces)} total):
-{chr(10).join(iface_summaries)}
-
-### Full Interface Definitions:
+### Interface IR
 ```json
 {json.dumps(interfaces, indent=2, ensure_ascii=False)}
 ```
 
-Before writing code, confirm whether each target file already exists.
-- For a new file, use `write_file`.
-- For an existing file, read it first and then use `edit_file` for the minimal compatible change.
-Batch new-file creation together when possible, then call `run_build` ONCE to verify compilation.
-Ensure all imports, class hierarchies, and method signatures match the interface definitions above.
-Fix any build errors found using `edit_file` (provide exact old_string/new_string for precise replacements).
-When all files are written and compilation passes, output "IMPLEMENTED".
+### Task
+Build the executable specification for each interface.
+{self._build_design_scope_guidance(design_mode)}
+
+Return exactly one JSON array in a `json` markdown block.
+Each item must follow this schema:
+{{
+  "interface_id": "exact interface id",
+  "type": "UI/API/FUNC/DB",
+  "file_path": "relative path",
+  "first_line": "definition signature",
+  "responsibility": "what this interface must do",
+  "inputs": ["input contract"],
+  "outputs": ["output contract"],
+  "preconditions": ["required state before call or render"],
+  "postconditions": ["observable result after success"],
+  "error_cases": ["important failure or edge cases"],
+  "reuse_constraints": ["rules for reusing or extending existing code"]
+}}
+
+Do not restate the IR mechanically. Turn it into testable behavioral contracts.
 """
-        # Append implementation prompt to the existing session
-        messages.append({"role": "user", "content": impl_prompt})
-        result, messages = await self.run_from_messages(messages, node_id=node_id, max_steps=20, tools=impl_tools)
+        system_content = self.get_system_prompt()
+        if static_ctx:
+            system_content = f"{system_content}\n\n{static_ctx}"
+        messages = [
+            {"role": "system", "content": system_content},
+            {"role": "user", "content": user_prompt},
+        ]
+        tools = [TOOL_REGISTRY[name]["schema"] for name in self.get_tool_names() if name in TOOL_REGISTRY]
+        raw_output, messages = await self.run_from_messages(messages, node_id=node_id, max_steps=8, tools=tools)
+        parsed = self._extract_json_array_from_markdown(raw_output)
+        if not parsed:
+            parsed = self._build_fallback_interface_spec(interfaces, node_understanding)
+        return parsed, messages
+
+    async def design_ir(
+        self,
+        node_id: str,
+        requirement_data: dict,
+        design_mode: str = "leaf_full",
+    ) -> tuple:
+        from .context_pipeline import context_pipeline
+        from .tools import TOOL_REGISTRY
+
+        static_ctx, dynamic_ctx = context_pipeline.build_agent_context_split(
+            node_id=node_id,
+            agent_type=self.agent_name,
+        )
+        user_prompt = f"""
+### Auto-Prefetched Context for Node [{node_id}]
+{dynamic_ctx}
+
+{self._build_design_scope_guidance(design_mode)}
+
+### Task
+Design the interface IR for this node.
+- Use `<current_requirement>` as the authoritative task payload.
+- Reuse existing interfaces whenever possible.
+- Respect `<node_understanding>` and `<frozen_node_contract>` if present.
+- In non-leaf modes, stay at parent shell scope and avoid API/FUNC/DB expansion unless the requirement text makes it unavoidable.
+
+Return exactly one JSON array in a `json` markdown block.
+Each object must follow:
+{{
+  "interface_id": "stable explicit id",
+  "reuse": true or false,
+  "type": "UI/API/FUNC/DB",
+  "name": "logical module name",
+  "description": "purpose",
+  "inputs": ["inputs"],
+  "outputs": ["outputs"],
+  "callers": ["caller interface ids"],
+  "callees": ["callee interface ids"],
+  "file_path": "relative file path",
+  "first_line": "exact signature or declaration line"
+}}
+"""
+        system_content = self.get_system_prompt()
+        if static_ctx:
+            system_content = f"{system_content}\n\n{static_ctx}"
+        messages = [
+            {"role": "system", "content": system_content},
+            {"role": "user", "content": user_prompt},
+        ]
+        tools = [TOOL_REGISTRY[name]["schema"] for name in self.get_tool_names() if name in TOOL_REGISTRY]
+        result, messages = await self.run_from_messages(messages, node_id=node_id, max_steps=10, tools=tools)
         return result, messages
 
     async def converge_non_leaf(
@@ -496,7 +636,6 @@ When all files are written and compilation passes, output "IMPLEMENTED".
         convergence_summary: str,
         preloaded_source: str = None,
     ) -> tuple:
-        """Run a lightweight non-leaf convergence session to assemble child capabilities."""
         from .context_pipeline import context_pipeline
         from .tools import TOOL_REGISTRY
 
@@ -505,7 +644,6 @@ When all files are written and compilation passes, output "IMPLEMENTED".
             agent_type=self.agent_name,
             preloaded_source=preloaded_source,
         )
-
         iface_summaries = []
         for iface in interfaces:
             iface_summaries.append(
@@ -554,7 +692,7 @@ Do only the minimal parent-level assembly needed to connect child capabilities i
             {"role": "system", "content": system_content},
             {"role": "user", "content": user_prompt},
         ]
-        tools = [TOOL_REGISTRY[n]["schema"] for n in self._get_implement_tool_names() if n in TOOL_REGISTRY]
+        tools = [TOOL_REGISTRY[name]["schema"] for name in self._get_implement_tool_names() if name in TOOL_REGISTRY]
         previous_guard = self._non_leaf_existing_write_guard
         previous_no_write_guard = self._non_leaf_no_write_guard
         self._non_leaf_existing_write_guard = True
@@ -573,7 +711,6 @@ Do only the minimal parent-level assembly needed to connect child capabilities i
         convergence_summary: str,
         preloaded_source: str = None,
     ) -> tuple[str, list]:
-        """Run a read-only audit to decide whether parent-level convergence needs any code changes."""
         from .context_pipeline import context_pipeline
         from .tools import TOOL_REGISTRY
 
@@ -582,7 +719,6 @@ Do only the minimal parent-level assembly needed to connect child capabilities i
             agent_type=self.agent_name,
             preloaded_source=preloaded_source,
         )
-
         iface_summaries = []
         for iface in interfaces:
             iface_summaries.append(
@@ -628,6 +764,6 @@ Output exactly one of:
             {"role": "system", "content": system_content},
             {"role": "user", "content": user_prompt},
         ]
-        tools = [TOOL_REGISTRY[n]["schema"] for n in self._get_non_leaf_audit_tool_names() if n in TOOL_REGISTRY]
+        tools = [TOOL_REGISTRY[name]["schema"] for name in self._get_non_leaf_audit_tool_names() if name in TOOL_REGISTRY]
         result, messages = await self.run_from_messages(messages, node_id=node_id, max_steps=12, tools=tools)
         return result, messages

@@ -95,101 +95,17 @@ class WorkflowPhaseRunner:
             },
         }
 
-    def _run_leaf_understand_step(
+    async def _run_leaf_understand_step(
         self,
         node_id: str,
         requirement_data: dict[str, Any],
     ) -> dict[str, Any]:
-        scenarios = requirement_data.get("scenarios") or []
-        visual_reference = requirement_data.get("visual_reference") or []
-        related_interfaces = context_pipeline._get_relational_interfaces(node_id)
-        relevant_files: list[str] = []
-        reuse_candidates: list[dict[str, Any]] = []
-
-        for interface in related_interfaces:
-            file_path = str(interface.get("file_path", "")).strip()
-            if file_path and file_path not in relevant_files:
-                relevant_files.append(file_path)
-            if len(reuse_candidates) < 12:
-                reuse_candidates.append(
-                    {
-                        "interface_id": str(interface.get("interface_id", "")).strip(),
-                        "type": str(interface.get("type", "")).strip(),
-                        "file_path": file_path,
-                    }
-                )
-
-        scenario_summary = []
-        for scenario in scenarios[:8]:
-            scenario_summary.append(
-                {
-                    "scenario_id": scenario.get("scenario_id") or scenario.get("id", ""),
-                    "name": scenario.get("name", ""),
-                    "steps": scenario.get("steps", [])[:8],
-                }
-            )
-
-        visual_summary = []
-        for item in visual_reference[:4]:
-            analysis = str(item.get("analysis", "") or "")
-            if len(analysis) > 600:
-                analysis = analysis[:600] + "\n...[truncated]"
-            visual_summary.append(
-                {
-                    "image_path": item.get("image_path", ""),
-                    "analysis": analysis,
-                }
-            )
-
-        risks: list[str] = []
-        if not related_interfaces:
-            risks.append("No reusable related interfaces were found; the node may require more direct code exploration.")
-        if scenarios and not visual_reference:
-            risks.append("This node has scenarios but no visual reference; route and interaction boundaries may be ambiguous.")
-        if visual_reference and not scenarios:
-            risks.append("This node has visual reference but no scenario narrative; interaction behavior may need confirmation from existing code.")
-
-        return {
-            "requirement_summary": {
-                "name": requirement_data.get("name", ""),
-                "description": requirement_data.get("description", ""),
-                "dependencies": requirement_data.get("dependencies") or [],
-            },
-            "scenario_summary": scenario_summary,
-            "visual_summary": visual_summary,
-            "relevant_files": relevant_files[:12],
-            "reuse_candidates": reuse_candidates,
-            "risks": risks,
-        }
-
-    def _build_interface_spec(
-        self,
-        interfaces: list[dict[str, Any]],
-    ) -> list[dict[str, Any]]:
-        specs: list[dict[str, Any]] = []
-        for interface in interfaces:
-            if not isinstance(interface, dict):
-                continue
-            specs.append(
-                {
-                    "interface_id": str(interface.get("interface_id", "")).strip(),
-                    "type": str(interface.get("type", "")).strip(),
-                    "file_path": str(interface.get("file_path", "")).strip(),
-                    "first_line": str(interface.get("first_line", "")).strip(),
-                    "responsibility": str(interface.get("description", "") or "").strip(),
-                    "inputs": interface.get("inputs", []) if isinstance(interface.get("inputs"), list) else [],
-                    "outputs": interface.get("outputs", []) if isinstance(interface.get("outputs"), list) else [],
-                    "preconditions": [],
-                    "postconditions": [],
-                    "error_cases": [],
-                    "reuse_constraints": (
-                        ["Reuse the existing implementation if it already exists."]
-                        if interface.get("reuse")
-                        else []
-                    ),
-                }
-            )
-        return specs
+        understanding, _ = await self.interface_designer.understand_node(
+            node_id=node_id,
+            requirement_data=requirement_data,
+            design_mode="leaf_full",
+        )
+        return understanding
 
     def _build_test_plan(self, tests: list[dict[str, Any]]) -> dict[str, Any]:
         grouped = {
@@ -259,7 +175,7 @@ class WorkflowPhaseRunner:
             return True
 
         if is_leaf:
-            understanding = self._run_leaf_understand_step(node_id, requirement_data)
+            understanding = await self._run_leaf_understand_step(node_id, requirement_data)
             self._update_node_session(
                 node_id,
                 {
@@ -298,7 +214,7 @@ class WorkflowPhaseRunner:
         design_output, _ = await self.interface_designer.design_ir(
             node_id=node_id,
             requirement_data=requirement_data,
-            is_leaf=is_leaf,
+            design_mode=design_mode,
         )
         interfaces = extract_json_array_from_markdown(design_output)
         if not interfaces:
@@ -310,6 +226,16 @@ class WorkflowPhaseRunner:
             )
             return False
 
+        session_after_understand = utils.load_node_session(node_id)
+        node_understanding = session_after_understand.get("node_understanding", {})
+        interface_spec, _ = await self.interface_designer.build_interface_spec(
+            node_id=node_id,
+            requirement_data=requirement_data,
+            interfaces=interfaces,
+            node_understanding=node_understanding,
+            design_mode=design_mode,
+        )
+
         clear_node_design_artifacts(node_id)
         self._store_interfaces(node_id, interfaces)
         upsert_node_contract(node_id, self._build_frozen_node_contract(node_id, requirement_data, interfaces, []))
@@ -318,7 +244,7 @@ class WorkflowPhaseRunner:
             node_id,
             {
                 "interface_ir": interfaces,
-                "interface_spec": self._build_interface_spec(interfaces),
+                "interface_spec": interface_spec,
                 "phase_status": {
                     "design": "completed",
                     "spec": "completed",
@@ -366,6 +292,9 @@ class WorkflowPhaseRunner:
             interfaces_ir=interfaces,
             test_type="All",
             is_leaf=is_leaf,
+            node_understanding=node_understanding,
+            interface_spec=interface_spec,
+            design_mode=design_mode,
         )
         test_output, test_messages = await self.test_generator.run_from_messages(
             messages=messages,
@@ -584,6 +513,10 @@ class WorkflowPhaseRunner:
 
         previous_group_handoff_summary = ""
         previous_group_modified_files: list[str] = []
+        session = utils.load_node_session(node_id)
+        node_understanding = session.get("node_understanding", {})
+        interface_spec = session.get("interface_spec", [])
+        test_plan = session.get("test_plan", {})
 
         for test_type in TEST_TYPE_ORDER:
             typed_tests = [test for test in tests if str(test.get("type", "")).strip() == test_type]
@@ -603,11 +536,13 @@ class WorkflowPhaseRunner:
                 node_id=node_id,
                 test_files=test_files,
                 test_type=test_type,
-                req_desc=requirement_data.get("description", ""),
                 scenarios=requirement_data.get("scenarios", []),
                 current_interfaces=interfaces,
                 preloaded_source=context_pipeline.build_incremental_context(node_id, previous_group_modified_files) if previous_group_modified_files else None,
-                handoff_summary=previous_group_handoff_summary,
+                node_understanding=node_understanding,
+                interface_spec=interface_spec,
+                test_plan=test_plan,
+                previous_failure_summary=previous_group_handoff_summary,
             )
             implement_output, implement_messages = await self.test_driven_developer.run_from_messages(
                 messages=messages,

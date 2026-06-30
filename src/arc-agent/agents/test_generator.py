@@ -1,171 +1,90 @@
 import json
-from typing import List, Dict, Any
+from typing import Any, Dict, List
+
 from .arc_agent import ARCAgent
+
 
 class TestGenerator(ARCAgent):
     def __init__(self, log_cb=None):
         super().__init__(
             agent_name="TestGenerator",
-            log_cb=log_cb
+            log_cb=log_cb,
         )
 
     def get_system_prompt(self) -> str:
-        from utils import get_app_type, get_android_package, get_web_base_url, get_web_port
-        app_type = get_app_type()
+        from utils import get_android_package, get_app_type, get_web_base_url, get_web_port
 
+        app_type = get_app_type()
         if app_type == "android":
             android_pkg = get_android_package()
-            pkg_dir = android_pkg.replace('.', '/')
-            test_stack = f"""
-# Testing Stack (Android):
-
-## Test Directory Structure (MANDATORY)
-Tests are organized into sub-packages by type. Each type has its own directory and package:
-```
-app/src/test/java/{pkg_dir}/
-  unit/
-    *Test.java             package {android_pkg}.unit;
-  integration/
-    *IntegrationTest.java  package {android_pkg}.integration;
-  e2e/
-    *E2ETest.java          package {android_pkg}.e2e;
-```
-Gradle filters by package prefix: `--tests "{android_pkg}.unit.*"`, `--tests "{android_pkg}.integration.*"`, `--tests "{android_pkg}.e2e.*"`
-
-## JVM-ONLY
-ALL tests run on the JVM via `./gradlew testDebugUnitTest`. There is NO device and NO emulator.
-
-## Forbidden Android Test APIs
-- Do not use `ApplicationProvider`
-- Do not use `ActivityScenario`
-- Do not use `AndroidJUnit4`
-- Do not use Espresso
-- Do not use `InstrumentationRegistry`
-- Do not write to `app/src/androidTest/`
-- Do not modify `app/build.gradle`
-
-## Runner Selection
-Use JUnit 5 for pure JVM tests with mocked collaborators.
-Use JUnit 4 + Robolectric when the test needs Android framework behavior, Context, Activity, Room, or AndroidViewModel.
-
-## Test Placement
-- Unit tests: `app/src/test/java/{pkg_dir}/unit/`
-- Integration tests: `app/src/test/java/{pkg_dir}/integration/`
-- E2E tests: `app/src/test/java/{pkg_dir}/e2e/`
-"""
-            pkg_compliance = f"""
-### Package Compliance (CRITICAL for Android)
-- Main source code uses `package {android_pkg};`
-- Unit tests use `package {android_pkg}.unit;`
-- Integration tests use `package {android_pkg}.integration;`
-- E2E tests use `package {android_pkg}.e2e;`
-- The package declaration must match the directory.
-- Do not use `com.example.template` or any other package name.
+            pkg_dir = android_pkg.replace(".", "/")
+            stack_rules = f"""
+### Android test rules
+- Unit, Integration, and E2E test packages must align with `{android_pkg}.unit`, `{android_pkg}.integration`, and `{android_pkg}.e2e`.
+- Keep tests under `app/src/test/java/{pkg_dir}/...`.
+- Stay JVM-only. Do not generate instrumentation or `androidTest` assets.
 """
         else:
-            web_port = get_web_port()
-            web_base_url = get_web_base_url()
-            test_stack = """
-# Testing Stack (Web):
-
-## Test Framework Boundaries (MANDATORY)
+            stack_rules = f"""
+### Web test rules
 - Unit and Integration tests use Vitest.
-- E2E tests use Playwright.
-- Never mix Vitest and Playwright APIs in the same file.
-
-## Web Test Placement Rules (MANDATORY)
-- Backend Vitest tests must live under `backend/tests/...`
-- Frontend Vitest tests must live under `frontend/src/...`
-- Frontend hook/component tests that use React Testing Library belong to frontend Vitest.
-- E2E tests must target browser behavior with Playwright and must not be authored as frontend Vitest files.
-- Playwright E2E spec files must be written under `backend/test-e2e/...`.
-- Do not place Playwright spec files under `frontend/src/...`, project-root `e2e/...`, or any other directory outside `backend/test-e2e/...`.
-
-## Web Test Content Rules (MANDATORY)
-- For Vitest, generate ESM test files using `import { describe, it, expect, vi } from 'vitest'`.
-- Do not generate CommonJS Vitest imports such as `require('vitest')`.
-- Do not generate E2E files that import `vitest`, `@testing-library/react`, `@testing-library/user-event`, or React hook testing helpers.
-- Playwright E2E must use Playwright APIs such as `test`, `expect`, and `page`.
-- Do not rely on copying `node_modules`, patching package internals, or inventing compatibility shims to make generated tests run.
-- Treat runner/framework mismatches as test-generation bugs to fix in the test files themselves.
-- Prefer frontend tests and source references that target TypeScript/TSX files for pages, components, hooks, and API clients.
-- When UI requirements imply styling, assume Tailwind utility classes are the intended primary styling mechanism and assert against meaningful rendered behavior rather than absence of styling structure.
-- For Playwright selector design, prefer visible text explicitly described in the requirement/scenario first.
-- If the visible text is duplicated or ambiguous, fall back to stable `className` selectors, then role-based selectors, and only use `id` as the last fallback.
-- Do not start with brittle deep DOM-chain selectors when requirement-visible text or stable local selectors already exist.
+- E2E tests use Playwright under `backend/test-e2e/...`.
+- Frontend Vitest tests stay under `frontend/src/...`; backend Vitest tests stay under `backend/tests/...`.
+- The only runtime base URL is `{get_web_base_url()}` on port `{get_web_port()}`.
+- Do not invent a separate frontend runtime port.
 """
-            test_stack += f"""
 
-## Runtime And Port Rules (MANDATORY)
-- The web app uses ONE backend port only: `{web_port}`.
-- The Express backend serves the built frontend dist on the same origin.
-- E2E tests must target `{web_base_url}`.
-- Prefer `process.env.PLAYWRIGHT_BASE_URL` when authoring Playwright navigation code, with `{web_base_url}` as the expected value.
-- Do not assume or hardcode a separate frontend dev-server port such as `5173` or `5174`.
+        return f"""You are the test design agent for this compiler.
+Generate compact, executable test plans and test files that follow the interface spec instead of guessing behavior.
 
-"""
-            pkg_compliance = ""
+Rules:
+- Tests must cover `<interface_spec>` and `<current_requirement>`.
+- Keep granularity coarse: prefer one primary file per layer, or one file per coherent scenario group.
+- Prefer stable contract assertions over incidental DOM structure or implementation details.
+- Preserve `<frozen_node_contract>` and do not assert a conflicting route, auth behavior, or shell boundary.
+- If a generated test file is wrong, fix the file itself; do not rely on later environment hacks.
+- Write test files first, then call `run_build` once to catch syntax and placement mistakes.
 
-        return f"""You are a Principal Software Development Engineer in Test (SDET).
-Your task is to write comprehensive, executable test cases for a newly designed component following Test-Driven Development (TDD) principles.
-
-Generate tests bottom-up:
-- Start with Unit tests for specific FUNC/DB interfaces.
-- Then write Integration tests for interface boundaries and collaboration.
-- Finish with E2E tests for the current requirement node and its UI scenarios.
-
-Execution protocol (strict):
-- Write ALL test files FIRST using multiple `write_file` calls, THEN call `run_build` ONCE.
-- Do NOT interleave `read_file` and `write_file` while authoring tests.
-- Keep tests deterministic. Do not add random sleeps or flaky waits.
-- For each generated test, ensure `test_id`, `type`, `file_path`, and `first_line` exactly match the real file content.
-- Keep file granularity coarse and stable. Do NOT explode one requirement into many micro test files.
-- Default target shape for a leaf node is at most one primary file per layer: one Unit file, one Integration file, and one E2E file.
-- Only split by scenario when the scenarios are genuinely independent and combining them would make one file unreadable; even then, prefer one file per scenario group, not per tiny assertion.
-- Prefer multiple `describe` / `it` blocks inside one stable file over creating many sibling files with near-duplicate setup.
-- If build or syntax fails, fix tests immediately using `edit_file` and rerun `run_build`.
-- If build or syntax fails because of framework mismatch, wrong directory placement, or wrong module system, rewrite the test file itself. Do not expect a later runtime patch to save it.
-- Use the provided `<project_structure>` as the default source of truth for file and directory locations.
-- Use the provided `<frozen_node_contract>` as the stable node-level contract for routes, auth expectations, shell ownership, and assembly boundaries.
-- Prefer stable-contract assertions first: route reachability, child mounting, declared auth behavior, declared API contract, required form fields, and required visible entry points.
-- Avoid over-binding tests to incidental implementation details unless the requirement explicitly requires them.
-- Do not default to asserting exact href values, exact marketing copy, or fragile DOM nesting unless those details are explicitly part of the requirement or the frozen node contract.
-- For non-leaf-facing shells and top-level pages, prefer assertions about mounting, routing, guards, and visible section boundaries over detailed leaf-content assertions.
-- Avoid exploratory `glob` or `list_directory` calls unless the required location is still unclear after reading `<project_structure>`.
-- If you use `glob` or `grep`, keep them narrow and inside known source subtrees. Do not explore `node_modules`, build outputs, caches, or unconstrained workspace-root patterns.
-- Use `execute_command` only when you must run a package script or install dependencies. Do not use it as a substitute for normal code/context inspection.
-
-{pkg_compliance}
-{test_stack}
-
-# Workflow
-1. Analyze the tech stack, requirement description, and Interface IR.
-1.5. Preserve the frozen node contract. Do not invent conflicting routes, auth semantics, provider ownership, or parent-shell behavior.
-1.6. Prefer stable behavioral assertions over brittle implementation-detail assertions.
-2. Use `list_directory` if needed to confirm target test directories.
-3. Write all required test files.
-4. Call `run_build` to catch syntax or compilation problems.
-5. Fix test-generation mistakes immediately, especially framework, directory, and module-system mismatches.
-
-# Final Output Requirement
-After writing all test files, output a single JSON array enclosed in a markdown block (` ```json ... ``` `).
-This JSON maps the generated tests to the requirement and interfaces.
-Schema for each object:
-{{
-  "test_id": "Unique string ID (e.g., TEST_UNIT_01)",
-  "req_id": "The ID of the requirement node being tested",
-  "interface_ids": ["List of interface_ids that this test specifically covers"],
-  "type": "Must be exactly one of: Unit, Integration, E2E",
-  "file_path": "Relative path to the written test file",
-  "first_line": "The exact first line of the test definition"
-}}
+{stack_rules}
 """
 
     def get_tool_names(self) -> List[str]:
         return [
-            "read_file", "write_file", "edit_file", "delete_file", "list_directory", "glob", "grep",
-            "run_build", "search_interfaces_by_keyword", "search_interfaces_by_relation", "get_node_relations"
+            "read_file",
+            "write_file",
+            "edit_file",
+            "delete_file",
+            "list_directory",
+            "glob",
+            "grep",
+            "run_build",
+            "search_interfaces_by_keyword",
+            "search_interfaces_by_relation",
+            "get_node_relations",
         ]
+
+    @staticmethod
+    def _build_scope_instruction(design_mode: str, test_type: str) -> str:
+        if design_mode == "non_leaf_ui_only":
+            return """
+This non-leaf node is UI-shell-only.
+Do not generate test files. Return an empty JSON array: `[]`.
+"""
+        if design_mode == "non_leaf_ui_with_shell_tests":
+            return """
+This non-leaf node may only receive shell-level tests.
+Only assert parent shell behavior such as route reachability, mount-point visibility, auth guard behavior, and top-level section boundaries.
+Do not generate leaf business tests or parent-owned API/FUNC/DB tests.
+Keep the file count minimal.
+"""
+        if test_type == "All":
+            return """
+Generate Unit, Integration, and E2E coverage in one pass.
+- Unit covers DB/FUNC contracts.
+- Integration covers API and boundary collaboration.
+- E2E covers the UI flows that are explicit in the requirement and scenarios.
+"""
+        return f"Generate the `{test_type}` layer for this node."
 
     def build_initial_messages(
         self,
@@ -175,81 +94,105 @@ Schema for each object:
         test_type: str = "Unit",
         preloaded_source: str = None,
         is_leaf: bool = True,
+        node_understanding: dict[str, Any] | None = None,
+        interface_spec: list[dict[str, Any]] | None = None,
+        design_mode: str = "leaf_full",
     ) -> tuple:
-        """Build the [system, user] messages and tools list without calling run().
-        Returns (messages, tools) so the caller can use run_from_messages() or continue a session.
-        """
         from .context_pipeline import context_pipeline
+        from .tools import TOOL_REGISTRY
 
         static_ctx, dynamic_ctx = context_pipeline.build_agent_context_split(
-            node_id=node_id, agent_type=self.agent_name, preloaded_source=preloaded_source
+            node_id=node_id,
+            agent_type=self.agent_name,
+            preloaded_source=preloaded_source,
         )
 
+        scenarios = requirement_data.get("scenarios") or []
         scenarios_context = ""
-        if requirement_data.get("scenarios"):
+        if scenarios:
             scenarios_context = (
-                "\n### Target UI Scenarios\n"
-                f"{json.dumps(requirement_data.get('scenarios'), indent=2, ensure_ascii=False)}\n"
+                "\n### Target Scenarios\n"
+                f"{json.dumps(scenarios, indent=2, ensure_ascii=False)}\n"
             )
 
-        if test_type == "All" and is_leaf:
-            test_instruction = """
-Generate ALL test types in a single pass:
-1. Unit tests for DB and FUNC interfaces
-2. Integration tests for API interfaces
-3. E2E tests for UI interfaces
+        understanding_context = ""
+        if node_understanding:
+            understanding_context = (
+                "\n### Node Understanding\n```json\n"
+                f"{json.dumps(node_understanding, indent=2, ensure_ascii=False)}\n```\n"
+            )
 
-Write ALL test files using `write_file` calls FIRST, then call `run_build` ONCE to verify compilation.
-For web projects, ensure the generated Unit, Integration, and E2E files already match the correct framework and directory rules in one pass.
-Keep the output compact: prefer one primary test file per layer for this requirement node unless a clear scenario boundary requires a second file.
-"""
-        elif test_type == "All":
-            test_instruction = """
-This is a non-leaf node. Do NOT generate test files.
-Non-leaf nodes keep only shared interface, routing, aggregation, and foundation design artifacts.
-Return an empty JSON array: `[]`.
-"""
-        else:
-            test_instruction = f"""
-Please write the {test_type} test files using the `write_file` tool.
-"""
-            if test_type == "E2E":
-                test_instruction += """
-For E2E generation, use this selector priority:
-1. Requirement/scenario-visible text
-2. Stable className when visible text is duplicated or ambiguous
-3. Role-based selectors
-4. id as the final fallback
-"""
+        spec_context = ""
+        if interface_spec:
+            spec_context = (
+                "\n### Interface Specification\n```json\n"
+                f"{json.dumps(interface_spec, indent=2, ensure_ascii=False)}\n```\n"
+            )
+
+        ir_context = (
+            "\n### Interface IR\n```json\n"
+            f"{json.dumps(interfaces_ir, indent=2, ensure_ascii=False)}\n```\n"
+        )
 
         user_prompt = f"""
 ### Auto-Prefetched Context for Node [{node_id}]
 {dynamic_ctx}
-
 {scenarios_context}
+{understanding_context}
+{spec_context}
+{ir_context}
 
-{test_instruction}
-Target the interfaces of the current node. Consider the node requirement content, each interface's responsibility, and its spec to decide what to test and how to assert.
-Prefer assertions on stable contract behavior first. Only assert exact href/copy/DOM details when the requirement or frozen node contract clearly requires them.
-Minimize file count. Start by planning the smallest viable set of test files for this node and keep related assertions together.
-When finished, output the mapping JSON block so the system can register these tests in the traceability database.
+### Task
+{self._build_scope_instruction(design_mode, test_type)}
+
+Additional rules:
+- Cover the spec, not speculation.
+- Do not write tests that assert parent-owned behavior outside this node's scope.
+- Keep the file count low and stable.
+- For E2E selectors, prefer requirement-visible text first, then stable local selectors, then role, and use id only as a last fallback.
+
+When finished, output one JSON array in a `json` markdown block:
+[
+  {{
+    "test_id": "unique id",
+    "req_id": "{node_id}",
+    "interface_ids": ["covered interfaces"],
+    "type": "Unit|Integration|E2E",
+    "file_path": "relative path",
+    "first_line": "exact first line in the written test file"
+  }}
+]
 """
         system_content = self.get_system_prompt()
         if static_ctx:
             system_content = f"{system_content}\n\n{static_ctx}"
         messages = [
             {"role": "system", "content": system_content},
-            {"role": "user", "content": user_prompt}
+            {"role": "user", "content": user_prompt},
         ]
-        from .tools import TOOL_REGISTRY
-        tools = [TOOL_REGISTRY[n]["schema"] for n in self.get_tool_names() if n in TOOL_REGISTRY]
+        tools = [TOOL_REGISTRY[name]["schema"] for name in self.get_tool_names() if name in TOOL_REGISTRY]
         return messages, tools
 
-    async def generate_tests(self, node_id: str, requirement_data: Dict[str, Any], interfaces_ir: list, test_type: str = "Unit", preloaded_source: str = None) -> str:
+    async def generate_tests(
+        self,
+        node_id: str,
+        requirement_data: Dict[str, Any],
+        interfaces_ir: list,
+        test_type: str = "Unit",
+        preloaded_source: str = None,
+        node_understanding: dict[str, Any] | None = None,
+        interface_spec: list[dict[str, Any]] | None = None,
+        design_mode: str = "leaf_full",
+    ) -> str:
         messages, tools = self.build_initial_messages(
-            node_id=node_id, requirement_data=requirement_data,
-            interfaces_ir=interfaces_ir, test_type=test_type,
-            preloaded_source=preloaded_source
+            node_id=node_id,
+            requirement_data=requirement_data,
+            interfaces_ir=interfaces_ir,
+            test_type=test_type,
+            preloaded_source=preloaded_source,
+            node_understanding=node_understanding,
+            interface_spec=interface_spec,
+            design_mode=design_mode,
         )
         result, _ = await self.run_from_messages(messages, node_id=node_id, max_steps=15, tools=tools)
         return result
