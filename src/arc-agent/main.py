@@ -16,6 +16,7 @@ class CompilationConfig:
     clear_all: bool = False
     app_type: str = "web"
     web_port: int = 3301
+    test_level: str = "middle"
     resume_from_queue: bool = False
 
 
@@ -42,6 +43,12 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=3301,
         help="Single backend port for web apps. The backend serves the built frontend on this port.",
+    )
+    parser.add_argument(
+        "--test-level",
+        choices=["light", "middle", "heavy"],
+        default="middle",
+        help="Test generation level: light=Unit only, middle=Unit+Integration, heavy=Unit+Integration+E2E.",
     )
     return parser.parse_args()
 
@@ -71,6 +78,7 @@ def prepare_config(args: argparse.Namespace) -> CompilationConfig:
         clear_all=args.clear_all,
         app_type=normalized_app_type,
         web_port=web_port,
+        test_level=str(args.test_level).strip().lower(),
         resume_from_queue=resume_from_queue,
     )
 
@@ -96,6 +104,7 @@ async def run() -> None:
             requirement_path=config.requirement_path,
             app_type=config.app_type,
             web_port=config.web_port,
+            test_level=config.test_level,
             log_cb=cli_log,
         )
         await workflow_manager.start_compilation(

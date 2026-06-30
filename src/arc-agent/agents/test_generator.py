@@ -84,6 +84,13 @@ Generate Unit, Integration, and E2E coverage in one pass.
 - Integration covers API and boundary collaboration.
 - E2E covers the UI flows that are explicit in the requirement and scenarios.
 """
+        if test_type == "Unit+Integration":
+            return """
+Generate Unit and Integration coverage in one pass.
+- Unit covers DB/FUNC contracts.
+- Integration covers API and boundary collaboration.
+- Do not generate E2E tests in this mode.
+"""
         return f"Generate the `{test_type}` layer for this node."
 
     def build_initial_messages(

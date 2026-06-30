@@ -26,6 +26,11 @@ from utils import extract_json_array_from_markdown, extract_modified_files_from_
 
 TEST_TYPE_ORDER = ["Unit", "Integration", "E2E"]
 DEFAULT_TDD_TEST_BUDGET = 10
+TEST_LEVEL_TO_TYPES = {
+    "light": ["Unit"],
+    "middle": ["Unit", "Integration"],
+    "heavy": ["Unit", "Integration", "E2E"],
+}
 
 
 class WorkflowPhaseRunner:
@@ -36,6 +41,7 @@ class WorkflowPhaseRunner:
         workspace_path: str,
         requirement_path: str,
         app_type: str,
+        test_level: str,
         interface_designer,
         test_generator,
         test_driven_developer,
@@ -44,6 +50,8 @@ class WorkflowPhaseRunner:
         self.workspace_path = workspace_path
         self.requirement_path = requirement_path
         self.app_type = app_type
+        normalized_test_level = str(test_level or "middle").strip().lower()
+        self.test_level = normalized_test_level if normalized_test_level in TEST_LEVEL_TO_TYPES else "middle"
         self.interface_designer = interface_designer
         self.test_generator = test_generator
         self.test_driven_developer = test_driven_developer
@@ -94,6 +102,7 @@ class WorkflowPhaseRunner:
                 "children_ids": requirement_data.get("children_ids") or [],
                 "dependencies": requirement_data.get("dependencies") or [],
             },
+            "test_level": self.test_level,
         }
 
     async def _run_leaf_understand_step(
@@ -147,6 +156,17 @@ class WorkflowPhaseRunner:
             "e2e_files": [],
             "test_ids": [],
         }
+
+    def _get_selected_test_types(self) -> list[str]:
+        return list(TEST_LEVEL_TO_TYPES.get(self.test_level, TEST_LEVEL_TO_TYPES["middle"]))
+
+    def _get_test_generation_mode(self) -> str:
+        selected = self._get_selected_test_types()
+        if selected == ["Unit"]:
+            return "Unit"
+        if selected == ["Unit", "Integration"]:
+            return "Unit+Integration"
+        return "All"
 
     def _determine_non_leaf_result_state(self, requirement_data: dict[str, Any]) -> str:
         child_ids = [
@@ -336,7 +356,7 @@ class WorkflowPhaseRunner:
             node_id=node_id,
             requirement_data=requirement_data,
             interfaces_ir=interfaces,
-            test_type="All",
+            test_type=self._get_test_generation_mode(),
             is_leaf=is_leaf,
             node_understanding=node_understanding,
             interface_spec=interface_spec,
@@ -614,7 +634,7 @@ class WorkflowPhaseRunner:
         interface_spec = session.get("interface_spec", [])
         test_plan = session.get("test_plan", {})
 
-        for test_type in TEST_TYPE_ORDER:
+        for test_type in self._get_selected_test_types():
             typed_tests = [test for test in tests if str(test.get("type", "")).strip() == test_type]
             if not typed_tests:
                 continue
