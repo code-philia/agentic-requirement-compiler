@@ -11,10 +11,12 @@ from traceability.database import (
     clear_node_design_artifacts,
     get_interface_by_id,
     get_interfaces_by_req_id,
+    get_node_contract,
     get_tests_by_req_id,
     insert_call_edge,
     insert_interface,
     insert_test,
+    upsert_node_contract,
     update_interface_implemented_status,
     update_test_pass_statuses,
     update_interface_req_ids,
@@ -81,6 +83,7 @@ class WorkflowPhaseRunner:
 
         clear_node_design_artifacts(node_id)
         self._store_interfaces(node_id, interfaces)
+        upsert_node_contract(node_id, self._build_frozen_node_contract(node_id, requirement_data, interfaces, []))
         context_pipeline.cache.invalidate_db_layers(node_id)
         await self.log_cb(
             "InterfaceDesigner",
@@ -137,7 +140,9 @@ class WorkflowPhaseRunner:
                 node_id,
             )
             return False
+        upsert_node_contract(node_id, self._build_frozen_node_contract(node_id, requirement_data, interfaces, tests))
         context_pipeline.cache.invalidate_file_layers(node_id)
+        context_pipeline.cache.invalidate_db_layers(node_id)
 
         modified_test_files = extract_modified_files_from_messages(test_messages)
         if modified_test_files:
@@ -514,7 +519,107 @@ class WorkflowPhaseRunner:
             f"- Tests passed in previous group: {', '.join(passed_tests[:12]) if passed_tests else 'none'}",
             f"- Remaining failing tests from previous group: {', '.join(failed_tests[:12]) if failed_tests else 'none'}",
         ]
+        contract_row = get_node_contract(node_id)
+        contract = contract_row.get("content", {}) if isinstance(contract_row, dict) else {}
+        canonical_routes = contract.get("canonical_routes") or []
+        if canonical_routes:
+            summary_lines.append(f"- Canonical routes for this node: {', '.join(canonical_routes[:10])}")
+        auth_expectation = contract.get("auth_expectation", "")
+        if auth_expectation:
+            summary_lines.append(f"- Auth expectation: {auth_expectation}")
         return "\n".join(summary_lines)
+
+    def _build_frozen_node_contract(
+        self,
+        node_id: str,
+        requirement_data: dict[str, Any],
+        interfaces: list[dict[str, Any]],
+        tests: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        is_leaf = not bool(requirement_data.get("children_ids"))
+        interface_summaries = []
+        canonical_routes: list[str] = []
+        shared_shell_targets: list[str] = []
+        provider_hints: list[str] = []
+        auth_expectation = "unspecified"
+
+        for interface in interfaces:
+            if not isinstance(interface, dict):
+                continue
+            file_path = str(interface.get("file_path", "")).strip()
+            first_line = str(interface.get("first_line", "")).strip()
+            description = str(interface.get("description", "") or "")
+            iface_type = str(interface.get("type", "")).strip()
+            interface_summaries.append(
+                {
+                    "interface_id": str(interface.get("interface_id", "")).strip(),
+                    "type": iface_type,
+                    "file_path": file_path,
+                    "first_line": first_line,
+                }
+            )
+
+            for candidate in re.findall(r'["\'](/[^"\']+)["\']', f"{first_line}\n{description}\n{file_path}"):
+                if candidate not in canonical_routes:
+                    canonical_routes.append(candidate)
+
+            normalized_path = file_path.replace("\\", "/")
+            if any(token in normalized_path for token in ("app.", "/app.", "main.", "/main.", "routes/", "router", "layout", "provider")):
+                if file_path and file_path not in shared_shell_targets:
+                    shared_shell_targets.append(file_path)
+
+            if "provider" in normalized_path.lower() or "provider" in first_line.lower():
+                if file_path and file_path not in provider_hints:
+                    provider_hints.append(file_path)
+
+        for test in tests:
+            if not isinstance(test, dict):
+                continue
+            file_path = str(test.get("file_path", "")).strip()
+            first_line = str(test.get("first_line", "")).strip()
+            for candidate in re.findall(r'["\'](/[^"\']+)["\']', f"{file_path}\n{first_line}"):
+                if candidate not in canonical_routes:
+                    canonical_routes.append(candidate)
+
+        requirement_blob = json.dumps(requirement_data, ensure_ascii=False).lower()
+        if "login" in requirement_blob or "authenticated" in requirement_blob or "logout" in requirement_blob:
+            auth_expectation = "auth-sensitive"
+        if "without login" in requirement_blob or "unauthenticated" in requirement_blob:
+            auth_expectation = "explicit-unauthenticated-flow"
+
+        if not shared_shell_targets and not is_leaf:
+            for fallback in ("frontend/src/App.jsx", "frontend/src/main.jsx", "backend/src/app.js"):
+                shared_shell_targets.append(fallback)
+
+        return {
+            "req_id": node_id,
+            "node_role": "leaf" if is_leaf else "non_leaf",
+            "children_ids": requirement_data.get("children_ids") or [],
+            "interface_count": len(interface_summaries),
+            "interfaces": interface_summaries,
+            "test_files": sorted(
+                {
+                    str(test.get("file_path", "")).strip()
+                    for test in tests
+                    if isinstance(test, dict) and str(test.get("file_path", "")).strip()
+                }
+            ),
+            "canonical_routes": canonical_routes[:20],
+            "auth_expectation": auth_expectation,
+            "provider_hints": provider_hints[:10],
+            "shared_shell_targets": shared_shell_targets[:12],
+            "assembly_scope": (
+                [
+                    "app shell",
+                    "router / route container",
+                    "top-level layout / page container",
+                    "shared provider composition",
+                    "child mounting points",
+                ]
+                if not is_leaf else
+                ["leaf feature implementation"]
+            ),
+        }
 
     def _build_non_leaf_convergence_summary(self, node_id: str, requirement_data: dict[str, Any]) -> str:
         child_ids = [str(child_id).strip() for child_id in (requirement_data.get("children_ids") or []) if str(child_id).strip()]
@@ -525,6 +630,24 @@ class WorkflowPhaseRunner:
             "- This parent node should converge child capabilities into one coherent subsystem.",
             "- Use concrete child outputs as assembly inputs: implemented interfaces, landed files, passed tests, and remaining failures.",
         ]
+        contract_row = get_node_contract(node_id)
+        contract = contract_row.get("content", {}) if isinstance(contract_row, dict) else {}
+        assembly_scope = contract.get("assembly_scope") or []
+        shared_shell_targets = contract.get("shared_shell_targets") or []
+        provider_hints = contract.get("provider_hints") or []
+        canonical_routes = contract.get("canonical_routes") or []
+        auth_expectation = contract.get("auth_expectation", "")
+        if assembly_scope:
+            lines.append(f"- Parent assembly scope: {', '.join(assembly_scope)}")
+        if shared_shell_targets:
+            lines.append(f"- Parent shared shell targets: {', '.join(shared_shell_targets[:10])}")
+        if provider_hints:
+            lines.append(f"- Parent provider hints: {', '.join(provider_hints[:10])}")
+        if canonical_routes:
+            lines.append(f"- Parent canonical routes: {', '.join(canonical_routes[:12])}")
+        if auth_expectation:
+            lines.append(f"- Parent auth expectation: {auth_expectation}")
+        lines.append("- Parent convergence must not duplicate providers, invent fake user/session fallbacks, or override child feature semantics.")
         for child_id in child_ids:
             child_interfaces = get_interfaces_by_req_id(child_id)
             child_tests = get_tests_by_req_id(child_id)

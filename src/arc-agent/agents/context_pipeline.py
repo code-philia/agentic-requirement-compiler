@@ -6,7 +6,8 @@ import traceability.database as db_module
 from traceability.database import (
     get_requirement_by_id,
     get_interfaces_by_req_id,
-    get_tests_by_req_id
+    get_tests_by_req_id,
+    get_node_contract,
 )
 
 class NodeContextCache:
@@ -57,6 +58,7 @@ class NodeContextCache:
         """Invalidate layers that depend on DB state (after insert_interface, insert_test)."""
         for layer in self.DB_DEPENDENT_LAYERS:
             self._cache.pop((node_id, layer), None)
+        self._cache.pop((node_id, "node_contract"), None)
 
     def clear(self):
         self._cache.clear()
@@ -292,6 +294,13 @@ class ContextPipeline:
             return ""
         return "<source_code>\n" + "\n\n".join(lines) + "\n</source_code>"
 
+    def _get_node_contract(self, node_id: str) -> str:
+        contract_row = get_node_contract(node_id)
+        if not contract_row or not isinstance(contract_row.get("content"), dict):
+            return ""
+        contract_json = json.dumps(contract_row["content"], indent=2, ensure_ascii=False)
+        return "<frozen_node_contract>\n" + contract_json + "\n</frozen_node_contract>"
+
     def _get_test_code_for_node(
         self,
         node_id: str,
@@ -438,6 +447,10 @@ class ContextPipeline:
         own_ifaces_str = self.cache.get_or_compute(node_id, "own_interfaces", _compute_own_interfaces)
         if own_ifaces_str:
             context_parts.append(own_ifaces_str)
+
+        node_contract = self.cache.get_or_compute(node_id, "node_contract", lambda: self._get_node_contract(node_id))
+        if node_contract:
+            context_parts.append(node_contract)
 
         # 4. Role-Specific Prefetching
         if agent_type == "InterfaceDesigner":

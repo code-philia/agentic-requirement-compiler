@@ -25,6 +25,7 @@ def init_db(reset: bool = False):
     cursor.execute('PRAGMA foreign_keys = ON;')
     
     if reset:
+        cursor.execute('DROP TABLE IF EXISTS node_contracts')
         cursor.execute('DROP TABLE IF EXISTS node_states')
         cursor.execute('DROP TABLE IF EXISTS call_edges')
         cursor.execute('DROP TABLE IF EXISTS tests')
@@ -93,6 +94,16 @@ def init_db(reset: bool = False):
     CREATE TABLE IF NOT EXISTS node_states (
         req_id TEXT PRIMARY KEY,
         state TEXT,
+        updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY(req_id) REFERENCES requirements(req_id)
+    )
+    ''')
+
+    # 6. Create node contract snapshots (frozen node-level contract after DESIGN)
+    cursor.execute('''
+    CREATE TABLE IF NOT EXISTS node_contracts (
+        req_id TEXT PRIMARY KEY,
+        content TEXT,
         updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
         FOREIGN KEY(req_id) REFERENCES requirements(req_id)
     )
@@ -658,3 +669,39 @@ def get_all_node_states():
     rows = cursor.fetchall()
     conn.close()
     return [dict(row) for row in rows]
+
+
+"""
+Node Contract Record
+"""
+def upsert_node_contract(req_id: str, content: dict):
+    """Insert or update frozen node contract snapshot."""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute('''
+    INSERT INTO node_contracts (req_id, content, updated_at)
+    VALUES (?, ?, CURRENT_TIMESTAMP)
+    ON CONFLICT(req_id) DO UPDATE SET
+        content=excluded.content,
+        updated_at=CURRENT_TIMESTAMP
+    ''', (req_id, json.dumps(content, ensure_ascii=False)))
+    conn.commit()
+    conn.close()
+
+
+def get_node_contract(req_id: str):
+    """Retrieve frozen node contract snapshot."""
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+    cursor.execute('SELECT * FROM node_contracts WHERE req_id = ?', (req_id,))
+    row = cursor.fetchone()
+    conn.close()
+    if not row:
+        return None
+    data = dict(row)
+    try:
+        data["content"] = json.loads(data["content"]) if data.get("content") else {}
+    except json.JSONDecodeError:
+        data["content"] = {}
+    return data
