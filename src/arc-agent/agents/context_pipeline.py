@@ -20,7 +20,7 @@ class NodeContextCache:
     # Layers that change only when files are written (after stub impl, test gen, TDD fix)
     FILE_DEPENDENT_LAYERS = {"source_code", "test_code"}
     # Layers that change when DB is updated (after insert_interface, insert_test)
-    DB_DEPENDENT_LAYERS = {"existing_interfaces", "own_interfaces", "related_interfaces"}
+    DB_DEPENDENT_LAYERS = {"own_interfaces", "related_interfaces"}
 
     def __init__(self):
         self._cache = {}  # (node_id, layer_name) -> content_str
@@ -183,41 +183,6 @@ class ContextPipeline:
             lines.append("... [truncated]")
         merged_lines = guidance_lines + lines if guidance_lines else lines
         return "<project_structure>\n" + "\n".join(merged_lines) + "\n</project_structure>"
-
-    def _get_all_interfaces_summary(self) -> str:
-        """Layer 1.6: Summary of ALL existing interfaces (so LLM doesn't need search_interfaces_by_keyword)."""
-        conn = sqlite3.connect(db_module.DB_PATH)
-        conn.row_factory = sqlite3.Row
-        cursor = conn.cursor()
-        cursor.execute('SELECT interface_id, type, file_path, first_line, content FROM interfaces ORDER BY interface_id')
-        rows = cursor.fetchall()
-        conn.close()
-
-        if not rows:
-            return ""
-
-        lines = []
-        for row in rows:
-            entry = f"- [{row['interface_id']}] Type: {row['type']}"
-            if row['file_path']:
-                entry += f" File: `{row['file_path']}`"
-            if row['first_line']:
-                entry += f" Sig: `{row['first_line']}`"
-            # Add description from content JSON
-            try:
-                content = json.loads(row['content'])
-                desc = content.get('description', '')
-                if desc:
-                    entry += f" Desc: {desc[:100]}"
-            except Exception:
-                pass
-            lines.append(entry)
-
-        if len(lines) > 50:
-            lines = lines[:50]
-            lines.append("... [more interfaces exist, use search_interfaces_by_keyword to find specific ones]")
-
-        return "<existing_interfaces>\n" + "\n".join(lines) + "\n</existing_interfaces>"
 
     def _get_relational_interfaces(self, node_id: str) -> List[Dict]:
         """
@@ -425,14 +390,6 @@ class ContextPipeline:
         if project_structure:
             context_parts.append(project_structure)
 
-        # 1.6 Inject All Existing Interfaces Summary (cached per node, invalidated after DB changes)
-        if agent_type != "TestGenerator":
-            all_ifaces = self.cache.get_or_compute(
-                node_id, "existing_interfaces", self._get_all_interfaces_summary
-            )
-            if all_ifaces:
-                context_parts.append(all_ifaces)
-
         # 2. Current Node Data
         req_json = json.dumps(req_data, indent=2, ensure_ascii=False)
         if len(req_json) > self.max_requirement_chars:
@@ -615,10 +572,6 @@ class ContextPipeline:
         )
         if proj_struct:
             parts.append(proj_struct)
-        if agent_type != "TestGenerator":
-            all_ifaces = self.cache.get_or_compute(node_id, "existing_interfaces", self._get_all_interfaces_summary)
-            if all_ifaces:
-                parts.append(all_ifaces)
         return "\n\n".join(parts)
 
     def build_incremental_context(self, node_id: str, modified_files: list = None) -> str:
