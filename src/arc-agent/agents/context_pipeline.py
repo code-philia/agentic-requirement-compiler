@@ -462,6 +462,21 @@ class ContextPipeline:
             return f"<error>Requirement node {node_id} not found in database.</error>"
 
         context_parts = []
+
+        # Keep the active requirement payload ahead of generic project context.
+        requirement_focus = self._build_requirement_focus(node_id, req_data)
+        if requirement_focus:
+            context_parts.append(requirement_focus)
+
+        req_json = json.dumps(req_data, indent=2, ensure_ascii=False)
+        if len(req_json) > self.max_requirement_chars:
+            req_json = req_json[:self.max_requirement_chars] + "\n...[requirement truncated]"
+        context_parts.append(f"<current_requirement id=\"{node_id}\">\n{req_json}\n</current_requirement>")
+
+        node_contract = self.cache.get_or_compute(node_id, "node_contract", lambda: self._get_node_contract(node_id))
+        if node_contract:
+            context_parts.append(node_contract)
+
         context_parts.append(
             "<context_policy>\n"
             "- Prefer reusing existing interfaces before creating new ones.\n"
@@ -483,17 +498,6 @@ class ContextPipeline:
         if project_structure:
             context_parts.append(project_structure)
 
-        # 2. Current requirement first: make the active task impossible to miss.
-        requirement_focus = self._build_requirement_focus(node_id, req_data)
-        if requirement_focus:
-            context_parts.append(requirement_focus)
-
-        # 3. Full current node data
-        req_json = json.dumps(req_data, indent=2, ensure_ascii=False)
-        if len(req_json) > self.max_requirement_chars:
-            req_json = req_json[:self.max_requirement_chars] + "\n...[requirement truncated]"
-        context_parts.append(f"<current_requirement id=\"{node_id}\">\n{req_json}\n</current_requirement>")
-
         node_session_layers = self.cache.get_or_compute(
             node_id,
             "node_session",
@@ -512,10 +516,6 @@ class ContextPipeline:
         own_ifaces_str = self.cache.get_or_compute(node_id, "own_interfaces", _compute_own_interfaces)
         if own_ifaces_str:
             context_parts.append(own_ifaces_str)
-
-        node_contract = self.cache.get_or_compute(node_id, "node_contract", lambda: self._get_node_contract(node_id))
-        if node_contract:
-            context_parts.append(node_contract)
 
         # 4. Role-Specific Prefetching
         if agent_type == "InterfaceDesigner":
