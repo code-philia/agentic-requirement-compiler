@@ -35,6 +35,15 @@ def get_interface_designer_guidance() -> str:
                 ],
             ),
             _section(
+                "Visual Reference Priority",
+                [
+                    "When `<visual_reference>` exists, treat it as a primary UI contract, not optional inspiration.",
+                    "Match the referenced layout hierarchy, section ordering, spacing rhythm, alignment, typography scale, visual density, and component grouping as closely as the requirement allows.",
+                    "Do not fallback to the starter template look or invent a new visual direction when the reference already defines one.",
+                    "Only deviate from the reference when the requirement text, scenarios, or technical constraints explicitly require it.",
+                ],
+            ),
+            _section(
                 "Fast Solution Design",
                 [
                     "For leaf work, design only the smallest executable chain needed across UI -> API -> FUNC -> DB.",
@@ -65,6 +74,13 @@ def get_test_generator_guidance() -> str:
                     "Start from `<interface_spec>` and `<current_requirement>`. Treat them as the contract to test, not as optional hints.",
                     "Inspect existing test patterns near the owner files before inventing new test structure, fixtures, or selector strategy.",
                     "Prefer one primary file per layer or one file per coherent scenario group.",
+                ],
+            ),
+            _section(
+                "Visual Reference Priority",
+                [
+                    "When `<visual_reference>` exists, keep UI-facing assertions aligned with the referenced structure, visible text, and major section ordering.",
+                    "Do not encode incidental starter-template content or selectors that only exist in the scaffold but not in the requirement or reference.",
                 ],
             ),
             _section(
@@ -105,6 +121,14 @@ def get_tdd_guidance() -> str:
                     "Start from the current test batch, `<interface_spec>`, `<test_plan>`, `<test_code>`, and `<node_understanding>`.",
                     "Identify one likely owner file and, if needed, one adjacent boundary file before editing.",
                     "Use the prefetched source and test context first; do not rediscover the whole repository unless the current evidence is insufficient.",
+                ],
+            ),
+            _section(
+                "Visual Reference Priority",
+                [
+                    "When `<visual_reference>` exists, treat its style and layout as binding UI evidence for implementation decisions.",
+                    "Prefer edits that move the page toward the referenced hierarchy, spacing, composition, and visible content instead of preserving scaffold layout.",
+                    "If a UI test fails and a reference exists, check whether the implementation diverged from the reference before assuming the test is wrong.",
                 ],
             ),
             _section(
