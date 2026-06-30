@@ -250,7 +250,20 @@ class WorkflowPhaseRunner:
             return True
 
         if is_leaf:
-            understanding = await self._run_leaf_understand_step(node_id, requirement_data)
+            await self.log_cb(
+                "InterfaceDesigner",
+                "Running combined leaf understanding, interface design, and specification step...",
+                None,
+                node_id,
+            )
+            leaf_bundle, _ = await self.interface_designer.design_leaf_bundle(
+                node_id=node_id,
+                requirement_data=requirement_data,
+            )
+            understanding = leaf_bundle.get("node_understanding", {})
+            node_understanding = understanding
+            interfaces = leaf_bundle.get("interfaces", [])
+            interface_spec = leaf_bundle.get("interface_spec", [])
             self._update_node_session(
                 node_id,
                 {
@@ -260,7 +273,7 @@ class WorkflowPhaseRunner:
             )
             await self.log_cb(
                 "InterfaceDesigner",
-                "Completed leaf understand step and persisted node session context.",
+                "Completed combined leaf understanding/design/spec step and persisted node session context.",
                 None,
                 node_id,
             )
@@ -290,30 +303,48 @@ class WorkflowPhaseRunner:
             requirement_data,
         )
 
-        design_output, _ = await self.interface_designer.design_ir(
-            node_id=node_id,
-            requirement_data=requirement_data,
-            design_mode=design_mode,
-        )
-        interfaces = extract_json_array_from_markdown(design_output)
-        if not interfaces:
-            await self.log_cb(
-                "InterfaceDesigner",
-                "DESIGN phase did not return a valid interface JSON array.",
-                "error",
-                node_id,
+        if not is_leaf:
+            design_output, _ = await self.interface_designer.design_ir(
+                node_id=node_id,
+                requirement_data=requirement_data,
+                design_mode=design_mode,
             )
-            return False
+            interfaces = extract_json_array_from_markdown(design_output)
+            if not interfaces:
+                await self.log_cb(
+                    "InterfaceDesigner",
+                    "DESIGN phase did not return a valid interface JSON array.",
+                    "error",
+                    node_id,
+                )
+                return False
 
-        session_after_understand = utils.load_node_session(node_id)
-        node_understanding = session_after_understand.get("node_understanding", {})
-        interface_spec, _ = await self.interface_designer.build_interface_spec(
-            node_id=node_id,
-            requirement_data=requirement_data,
-            interfaces=interfaces,
-            node_understanding=node_understanding,
-            design_mode=design_mode,
-        )
+            session_after_understand = utils.load_node_session(node_id)
+            node_understanding = session_after_understand.get("node_understanding", {})
+            interface_spec, _ = await self.interface_designer.build_interface_spec(
+                node_id=node_id,
+                requirement_data=requirement_data,
+                interfaces=interfaces,
+                node_understanding=node_understanding,
+                design_mode=design_mode,
+            )
+        else:
+            if not interfaces:
+                await self.log_cb(
+                    "InterfaceDesigner",
+                    "Combined leaf design step did not return a valid interface JSON array.",
+                    "error",
+                    node_id,
+                )
+                return False
+            if not interface_spec:
+                await self.log_cb(
+                    "InterfaceDesigner",
+                    "Combined leaf design step did not return a valid interface spec array.",
+                    "error",
+                    node_id,
+                )
+                return False
 
         clear_node_design_artifacts(node_id)
         self._store_interfaces(node_id, interfaces)

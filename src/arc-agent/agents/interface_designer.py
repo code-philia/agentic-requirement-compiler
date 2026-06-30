@@ -393,27 +393,16 @@ Rules:
     @staticmethod
     def _build_fallback_understanding(requirement_data: dict[str, Any]) -> dict[str, Any]:
         scenarios = requirement_data.get("scenarios") or []
-        visual_reference = requirement_data.get("visual_reference") or []
         return {
-            "requirement_summary": {
-                "name": requirement_data.get("name", ""),
-                "description": requirement_data.get("description", ""),
-                "dependencies": requirement_data.get("dependencies") or [],
-            },
+            "summary": str(requirement_data.get("description", "") or "")[:500],
+            "dependencies": requirement_data.get("dependencies") or [],
             "scenario_summary": [
                 {
                     "scenario_id": scenario.get("scenario_id") or scenario.get("id", ""),
                     "name": scenario.get("name", ""),
-                    "steps": scenario.get("steps", [])[:8],
+                    "steps": scenario.get("steps", [])[:4],
                 }
-                for scenario in scenarios[:8]
-            ],
-            "visual_summary": [
-                {
-                    "image_path": item.get("image_path", ""),
-                    "analysis": str(item.get("analysis", "") or "")[:600],
-                }
-                for item in visual_reference[:4]
+                for scenario in scenarios[:2]
             ],
             "relevant_files": [],
             "reuse_candidates": [],
@@ -449,6 +438,20 @@ Rules:
                 }
             )
         return specs
+
+    def _build_fallback_leaf_design_bundle(
+        self,
+        requirement_data: dict[str, Any],
+        interfaces: list[dict[str, Any]] | None = None,
+        node_understanding: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        resolved_understanding = node_understanding or self._build_fallback_understanding(requirement_data)
+        resolved_interfaces = interfaces or []
+        return {
+            "node_understanding": resolved_understanding,
+            "interfaces": resolved_interfaces,
+            "interface_spec": self._build_fallback_interface_spec(resolved_interfaces, resolved_understanding),
+        }
 
     async def understand_node(
         self,
@@ -519,6 +522,126 @@ Keep it concrete. Favor existing code and existing interfaces over speculation.
         if not parsed:
             parsed = self._build_fallback_understanding(requirement_data)
         return parsed, messages
+
+    async def design_leaf_bundle(
+        self,
+        node_id: str,
+        requirement_data: dict[str, Any],
+        preloaded_source: str = None,
+    ) -> tuple[dict[str, Any], list]:
+        from .context_pipeline import context_pipeline
+        from .tools import TOOL_REGISTRY
+
+        static_ctx, dynamic_ctx = context_pipeline.build_agent_context_split(
+            node_id=node_id,
+            agent_type=self.agent_name,
+            preloaded_source=preloaded_source,
+        )
+        user_prompt = f"""
+### Auto-Prefetched Context for Node [{node_id}]
+{dynamic_ctx}
+
+### Task
+This is a leaf node. In one pass:
+1. Understand the requirement and the most relevant existing code.
+2. Design the smallest interface chain needed across UI -> API -> FUNC -> DB.
+3. Turn each interface into an executable behavioral specification.
+
+{self._build_design_scope_guidance("leaf_full")}
+
+Return exactly one JSON object in a `json` markdown block with this schema:
+{{
+  "node_understanding": {{
+    "summary": "1-3 short sentences",
+    "dependencies": ["dependency ids"],
+    "scenario_summary": [
+      {{
+        "scenario_id": "id",
+        "name": "scenario name",
+        "steps": ["important step", "..."]
+      }}
+    ],
+    "relevant_files": ["most relevant existing files"],
+    "reuse_candidates": [
+      {{
+        "interface_id": "existing interface id",
+        "type": "UI/API/FUNC/DB",
+        "reason": "why it may be reused"
+      }}
+    ],
+    "risks": ["main design or integration risks"]
+  }},
+  "interfaces": [
+    {{
+      "interface_id": "stable explicit id",
+      "reuse": true,
+      "type": "UI/API/FUNC/DB",
+      "name": "logical module name",
+      "description": "purpose",
+      "inputs": ["inputs"],
+      "outputs": ["outputs"],
+      "callers": ["caller interface ids"],
+      "callees": ["callee interface ids"],
+      "file_path": "relative file path",
+      "first_line": "exact signature or declaration line"
+    }}
+  ],
+  "interface_spec": [
+    {{
+      "interface_id": "exact interface id",
+      "type": "UI/API/FUNC/DB",
+      "file_path": "relative path",
+      "first_line": "definition signature",
+      "responsibility": "what this interface must do",
+      "inputs": ["input contract"],
+      "outputs": ["output contract"],
+      "preconditions": ["required state before call or render"],
+      "postconditions": ["observable result after success"],
+      "error_cases": ["important failure or edge cases"],
+      "reuse_constraints": ["rules for reusing or extending existing code"]
+    }}
+  ]
+}}
+
+Rules:
+- Reuse existing interfaces whenever possible.
+- Keep the interface chain minimal and executable.
+- Make `interface_spec` align exactly with `interfaces`.
+- Keep the output compact:
+- `scenario_summary`: at most 2 items, each with at most 4 key steps.
+- `relevant_files`: at most 5.
+- `reuse_candidates`: at most 3.
+- In `interface_spec`, keep each array concise and only include requirements that matter for testing or implementation.
+- Prefer short phrases over full paragraphs except for `summary`.
+- Do not write code in this step.
+"""
+        system_content = self.get_system_prompt()
+        if static_ctx:
+            system_content = f"{system_content}\n\n{static_ctx}"
+        messages = [
+            {"role": "system", "content": system_content},
+            {"role": "user", "content": user_prompt},
+        ]
+        tools = [TOOL_REGISTRY[name]["schema"] for name in self.get_tool_names() if name in TOOL_REGISTRY]
+        raw_output, messages = await self.run_from_messages(messages, node_id=node_id, max_steps=12, tools=tools)
+        parsed = self._extract_json_object_from_markdown(raw_output) or {}
+
+        node_understanding = parsed.get("node_understanding")
+        interfaces = parsed.get("interfaces")
+        interface_spec = parsed.get("interface_spec")
+
+        if not isinstance(node_understanding, dict):
+            node_understanding = self._build_fallback_understanding(requirement_data)
+        if not isinstance(interfaces, list):
+            interfaces = []
+        if not isinstance(interface_spec, list):
+            interface_spec = self._build_fallback_interface_spec(interfaces, node_understanding)
+
+        return {
+            "node_understanding": node_understanding,
+            "interfaces": interfaces,
+            "interface_spec": interface_spec,
+        }, messages
 
     async def build_interface_spec(
         self,
