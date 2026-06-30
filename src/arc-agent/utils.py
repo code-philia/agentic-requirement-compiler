@@ -6,6 +6,7 @@ import yaml
 import json
 import asyncio
 import threading
+import copy
 
 from typing import Awaitable, Callable, Optional, Dict, List, Any
 from colorama import Fore, Style, init as colorama_init
@@ -89,6 +90,41 @@ def write_json_file(path: str, data: dict[str, Any]) -> None:
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w", encoding="utf-8") as file:
         json.dump(data, file, indent=2, ensure_ascii=False)
+
+
+def get_node_session_dir() -> str:
+    return get_abs_path(os.path.join(".arc", "node_sessions"))
+
+
+def get_node_session_path(node_id: str) -> str:
+    safe_node_id = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(node_id or "").strip()) or "node"
+    return os.path.join(get_node_session_dir(), f"{safe_node_id}.json")
+
+
+def load_node_session(node_id: str) -> dict[str, Any]:
+    data = read_json_file(get_node_session_path(node_id))
+    return data if isinstance(data, dict) else {}
+
+
+def save_node_session(node_id: str, data: dict[str, Any]) -> None:
+    write_json_file(get_node_session_path(node_id), data)
+
+
+def _deep_merge_dict(base: dict[str, Any], patch: dict[str, Any]) -> dict[str, Any]:
+    merged = copy.deepcopy(base)
+    for key, value in patch.items():
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            merged[key] = _deep_merge_dict(merged[key], value)
+        else:
+            merged[key] = copy.deepcopy(value)
+    return merged
+
+
+def merge_node_session(node_id: str, patch: dict[str, Any]) -> dict[str, Any]:
+    current = load_node_session(node_id)
+    merged = _deep_merge_dict(current, patch)
+    save_node_session(node_id, merged)
+    return merged
 
 
 def extract_json_array_from_markdown(raw_output: str) -> list[dict[str, Any]] | None:

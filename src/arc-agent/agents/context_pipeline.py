@@ -319,6 +319,48 @@ class ContextPipeline:
         contract_json = json.dumps(contract_row["content"], indent=2, ensure_ascii=False)
         return "<frozen_node_contract>\n" + contract_json + "\n</frozen_node_contract>"
 
+    def _get_node_session_layers(self, node_id: str) -> str:
+        from utils import load_node_session
+
+        session = load_node_session(node_id)
+        if not session:
+            return ""
+
+        sections: list[str] = []
+        node_understanding = session.get("node_understanding")
+        if node_understanding:
+            sections.append(
+                "<node_understanding>\n"
+                + json.dumps(node_understanding, indent=2, ensure_ascii=False)
+                + "\n</node_understanding>"
+            )
+
+        interface_spec = session.get("interface_spec")
+        if interface_spec:
+            sections.append(
+                "<interface_spec>\n"
+                + json.dumps(interface_spec, indent=2, ensure_ascii=False)
+                + "\n</interface_spec>"
+            )
+
+        test_plan = session.get("test_plan")
+        if test_plan:
+            sections.append(
+                "<test_plan>\n"
+                + json.dumps(test_plan, indent=2, ensure_ascii=False)
+                + "\n</test_plan>"
+            )
+
+        tdd_handoff = session.get("tdd_handoff")
+        if tdd_handoff:
+            sections.append(
+                "<tdd_handoff>\n"
+                + json.dumps(tdd_handoff, indent=2, ensure_ascii=False)
+                + "\n</tdd_handoff>"
+            )
+
+        return "\n".join(sections)
+
     def _get_test_code_for_node(
         self,
         node_id: str,
@@ -451,6 +493,14 @@ class ContextPipeline:
         if len(req_json) > self.max_requirement_chars:
             req_json = req_json[:self.max_requirement_chars] + "\n...[requirement truncated]"
         context_parts.append(f"<current_requirement id=\"{node_id}\">\n{req_json}\n</current_requirement>")
+
+        node_session_layers = self.cache.get_or_compute(
+            node_id,
+            "node_session",
+            lambda: self._get_node_session_layers(node_id),
+        )
+        if node_session_layers:
+            context_parts.append(node_session_layers)
 
         # 3. Existing Interfaces for this node (cached per node, invalidated after DB changes)
         def _compute_own_interfaces():

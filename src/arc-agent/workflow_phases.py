@@ -55,8 +55,237 @@ class WorkflowPhaseRunner:
             log_cb=log_cb,
         )
 
+    def _update_node_session(self, node_id: str, patch: dict[str, Any]) -> dict[str, Any]:
+        session = utils.merge_node_session(node_id, patch)
+        context_pipeline.cache.invalidate(node_id, "node_session")
+        return session
+
+    def _classify_non_leaf_work(self, node_id: str, requirement_data: dict[str, Any]) -> str:
+        visual_reference = requirement_data.get("visual_reference") or []
+        scenarios = requirement_data.get("scenarios") or []
+        if visual_reference:
+            return "ui_only"
+        if scenarios:
+            return "ui_and_shell_tests"
+        return "skip"
+
+    def _build_base_node_session(
+        self,
+        node_id: str,
+        requirement_data: dict[str, Any],
+        node_role: str,
+        design_mode: str,
+    ) -> dict[str, Any]:
+        return {
+            "node_id": node_id,
+            "node_role": node_role,
+            "design_mode": design_mode,
+            "phase_status": {
+                "understand": "pending",
+                "design": "pending",
+                "spec": "pending",
+                "test": "pending",
+                "implement": "pending",
+            },
+            "requirement_snapshot": {
+                "name": requirement_data.get("name", ""),
+                "description": requirement_data.get("description", ""),
+                "children_ids": requirement_data.get("children_ids") or [],
+                "dependencies": requirement_data.get("dependencies") or [],
+            },
+        }
+
+    def _run_leaf_understand_step(
+        self,
+        node_id: str,
+        requirement_data: dict[str, Any],
+    ) -> dict[str, Any]:
+        scenarios = requirement_data.get("scenarios") or []
+        visual_reference = requirement_data.get("visual_reference") or []
+        related_interfaces = context_pipeline._get_relational_interfaces(node_id)
+        relevant_files: list[str] = []
+        reuse_candidates: list[dict[str, Any]] = []
+
+        for interface in related_interfaces:
+            file_path = str(interface.get("file_path", "")).strip()
+            if file_path and file_path not in relevant_files:
+                relevant_files.append(file_path)
+            if len(reuse_candidates) < 12:
+                reuse_candidates.append(
+                    {
+                        "interface_id": str(interface.get("interface_id", "")).strip(),
+                        "type": str(interface.get("type", "")).strip(),
+                        "file_path": file_path,
+                    }
+                )
+
+        scenario_summary = []
+        for scenario in scenarios[:8]:
+            scenario_summary.append(
+                {
+                    "scenario_id": scenario.get("scenario_id") or scenario.get("id", ""),
+                    "name": scenario.get("name", ""),
+                    "steps": scenario.get("steps", [])[:8],
+                }
+            )
+
+        visual_summary = []
+        for item in visual_reference[:4]:
+            analysis = str(item.get("analysis", "") or "")
+            if len(analysis) > 600:
+                analysis = analysis[:600] + "\n...[truncated]"
+            visual_summary.append(
+                {
+                    "image_path": item.get("image_path", ""),
+                    "analysis": analysis,
+                }
+            )
+
+        risks: list[str] = []
+        if not related_interfaces:
+            risks.append("No reusable related interfaces were found; the node may require more direct code exploration.")
+        if scenarios and not visual_reference:
+            risks.append("This node has scenarios but no visual reference; route and interaction boundaries may be ambiguous.")
+        if visual_reference and not scenarios:
+            risks.append("This node has visual reference but no scenario narrative; interaction behavior may need confirmation from existing code.")
+
+        return {
+            "requirement_summary": {
+                "name": requirement_data.get("name", ""),
+                "description": requirement_data.get("description", ""),
+                "dependencies": requirement_data.get("dependencies") or [],
+            },
+            "scenario_summary": scenario_summary,
+            "visual_summary": visual_summary,
+            "relevant_files": relevant_files[:12],
+            "reuse_candidates": reuse_candidates,
+            "risks": risks,
+        }
+
+    def _build_interface_spec(
+        self,
+        interfaces: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        specs: list[dict[str, Any]] = []
+        for interface in interfaces:
+            if not isinstance(interface, dict):
+                continue
+            specs.append(
+                {
+                    "interface_id": str(interface.get("interface_id", "")).strip(),
+                    "type": str(interface.get("type", "")).strip(),
+                    "file_path": str(interface.get("file_path", "")).strip(),
+                    "first_line": str(interface.get("first_line", "")).strip(),
+                    "responsibility": str(interface.get("description", "") or "").strip(),
+                    "inputs": interface.get("inputs", []) if isinstance(interface.get("inputs"), list) else [],
+                    "outputs": interface.get("outputs", []) if isinstance(interface.get("outputs"), list) else [],
+                    "preconditions": [],
+                    "postconditions": [],
+                    "error_cases": [],
+                    "reuse_constraints": (
+                        ["Reuse the existing implementation if it already exists."]
+                        if interface.get("reuse")
+                        else []
+                    ),
+                }
+            )
+        return specs
+
+    def _build_test_plan(self, tests: list[dict[str, Any]]) -> dict[str, Any]:
+        grouped = {
+            "unit_files": [],
+            "integration_files": [],
+            "e2e_files": [],
+            "test_ids": [],
+        }
+        for test in tests:
+            if not isinstance(test, dict):
+                continue
+            test_type = str(test.get("type", "")).strip()
+            file_path = str(test.get("file_path", "")).strip()
+            test_id = str(test.get("test_id", "")).strip()
+            if test_id:
+                grouped["test_ids"].append(test_id)
+            if test_type == "Unit" and file_path and file_path not in grouped["unit_files"]:
+                grouped["unit_files"].append(file_path)
+            elif test_type == "Integration" and file_path and file_path not in grouped["integration_files"]:
+                grouped["integration_files"].append(file_path)
+            elif test_type == "E2E" and file_path and file_path not in grouped["e2e_files"]:
+                grouped["e2e_files"].append(file_path)
+        return grouped
+
+    def _summarize_batch_output(self, batch_output: str, max_lines: int = 30) -> str:
+        lines = [line for line in (batch_output or "").splitlines() if line.strip()]
+        if not lines:
+            return ""
+        if len(lines) > max_lines:
+            lines = lines[-max_lines:]
+            lines.insert(0, "...[truncated]")
+        return "\n".join(lines)
+
     async def run_design_phase(self, node_id: str, requirement_data: dict[str, Any]) -> bool:
         is_leaf = not bool(requirement_data.get("children_ids"))
+        design_mode = "leaf_full" if is_leaf else self._classify_non_leaf_work(node_id, requirement_data)
+        self._update_node_session(
+            node_id,
+            self._build_base_node_session(
+                node_id=node_id,
+                requirement_data=requirement_data,
+                node_role="leaf" if is_leaf else "non_leaf",
+                design_mode=design_mode,
+            ),
+        )
+
+        if not is_leaf and design_mode == "skip":
+            self._update_node_session(
+                node_id,
+                {
+                    "execution_mode": "skipped_non_leaf",
+                    "reason": "no visual reference and no scenarios",
+                    "phase_status": {
+                        "design": "completed",
+                        "spec": "skipped",
+                        "test": "skipped",
+                        "implement": "skipped",
+                    },
+                },
+            )
+            await self.log_cb(
+                "InterfaceDesigner",
+                "Skipping DESIGN for non-leaf node because it has neither visual reference nor scenarios.",
+                None,
+                node_id,
+            )
+            return True
+
+        if is_leaf:
+            understanding = self._run_leaf_understand_step(node_id, requirement_data)
+            self._update_node_session(
+                node_id,
+                {
+                    "node_understanding": understanding,
+                    "phase_status": {"understand": "completed"},
+                },
+            )
+            await self.log_cb(
+                "InterfaceDesigner",
+                "Completed leaf understand step and persisted node session context.",
+                None,
+                node_id,
+            )
+        else:
+            self._update_node_session(
+                node_id,
+                {
+                    "phase_status": {"understand": "skipped"},
+                },
+            )
+            await self.log_cb(
+                "InterfaceDesigner",
+                f"Classified non-leaf node into `{design_mode}` mode.",
+                None,
+                node_id,
+            )
 
         await self.log_cb(
             "InterfaceDesigner",
@@ -85,6 +314,17 @@ class WorkflowPhaseRunner:
         self._store_interfaces(node_id, interfaces)
         upsert_node_contract(node_id, self._build_frozen_node_contract(node_id, requirement_data, interfaces, []))
         context_pipeline.cache.invalidate_db_layers(node_id)
+        self._update_node_session(
+            node_id,
+            {
+                "interface_ir": interfaces,
+                "interface_spec": self._build_interface_spec(interfaces),
+                "phase_status": {
+                    "design": "completed",
+                    "spec": "completed",
+                },
+            },
+        )
         await self.log_cb(
             "InterfaceDesigner",
             f"Stored {len(interfaces)} interface definition(s) into traceability DB.",
@@ -93,6 +333,19 @@ class WorkflowPhaseRunner:
         )
 
         if not is_leaf:
+            self._update_node_session(
+                node_id,
+                {
+                    "test_plan": {
+                        "unit_files": [],
+                        "integration_files": [],
+                        "e2e_files": [],
+                        "test_ids": [],
+                    },
+                    "test_artifacts": [],
+                    "phase_status": {"test": "skipped"},
+                },
+            )
             await self.log_cb(
                 "TestGenerator",
                 "Skipping test generation for non-leaf node. DESIGN keeps only shared interface and aggregation artifacts.",
@@ -143,6 +396,14 @@ class WorkflowPhaseRunner:
         upsert_node_contract(node_id, self._build_frozen_node_contract(node_id, requirement_data, interfaces, tests))
         context_pipeline.cache.invalidate_file_layers(node_id)
         context_pipeline.cache.invalidate_db_layers(node_id)
+        self._update_node_session(
+            node_id,
+            {
+                "test_plan": self._build_test_plan(tests),
+                "test_artifacts": tests,
+                "phase_status": {"test": "completed"},
+            },
+        )
 
         modified_test_files = extract_modified_files_from_messages(test_messages)
         if modified_test_files:
@@ -162,6 +423,23 @@ class WorkflowPhaseRunner:
 
     async def run_implement_phase(self, node_id: str, requirement_data: dict[str, Any]) -> bool:
         is_leaf = not bool(requirement_data.get("children_ids"))
+        session = utils.load_node_session(node_id)
+        if not is_leaf and session.get("execution_mode") == "skipped_non_leaf":
+            await self.log_cb(
+                "Compiler",
+                "Skipping IMPLEMENT for non-leaf node because DESIGN marked it as skipped.",
+                None,
+                node_id,
+            )
+            return True
+
+        self._update_node_session(
+            node_id,
+            {
+                "phase_status": {"implement": "in_progress"},
+            },
+        )
+
         interfaces = get_interfaces_by_req_id(node_id)
         tests = get_tests_by_req_id(node_id)
         if not interfaces:
@@ -202,6 +480,18 @@ class WorkflowPhaseRunner:
                     node_id,
                 )
                 update_interface_implemented_status(node_id, True)
+                self._update_node_session(
+                    node_id,
+                    {
+                        "phase_status": {"implement": "completed"},
+                        "tdd_handoff": {
+                            "last_test_type": "non_leaf_convergence",
+                            "last_failed_output_summary": "",
+                            "modified_files": audit_modified_files,
+                            "root_cause_notes": ["Audit reported no changes needed and build verification passed."],
+                        },
+                    },
+                )
                 return True
 
             convergence_output, convergence_messages = await self.interface_designer.converge_non_leaf(
@@ -237,6 +527,18 @@ class WorkflowPhaseRunner:
                 if utils.debug_logger:
                     utils.debug_logger.log(f"NON_LEAF_BUILD[{node_id}]", build_output)
                 update_interface_implemented_status(node_id, False)
+                self._update_node_session(
+                    node_id,
+                    {
+                        "phase_status": {"implement": "failed"},
+                        "tdd_handoff": {
+                            "last_test_type": "non_leaf_convergence",
+                            "last_failed_output_summary": self._summarize_batch_output(build_output),
+                            "modified_files": modified_files,
+                            "root_cause_notes": ["Build verification failed after non-leaf convergence."],
+                        },
+                    },
+                )
                 return False
             await self.log_cb(
                 "Compiler",
@@ -245,6 +547,18 @@ class WorkflowPhaseRunner:
                 node_id,
             )
             update_interface_implemented_status(node_id, True)
+            self._update_node_session(
+                node_id,
+                {
+                    "phase_status": {"implement": "completed"},
+                    "tdd_handoff": {
+                        "last_test_type": "non_leaf_convergence",
+                        "last_failed_output_summary": "",
+                        "modified_files": modified_files,
+                        "root_cause_notes": ["Parent-level convergence passed build verification."],
+                    },
+                },
+            )
             return True
 
         if not tests:
@@ -254,6 +568,18 @@ class WorkflowPhaseRunner:
                 node_id,
             )
             update_interface_implemented_status(node_id, True)
+            self._update_node_session(
+                node_id,
+                {
+                    "phase_status": {"implement": "completed"},
+                    "tdd_handoff": {
+                        "last_test_type": "",
+                        "last_failed_output_summary": "",
+                        "modified_files": [],
+                        "root_cause_notes": ["No tests were generated for this node."],
+                    },
+                },
+            )
             return True
 
         previous_group_handoff_summary = ""
@@ -339,6 +665,21 @@ class WorkflowPhaseRunner:
                 latest_run_tests_result=latest_run_tests_result,
             )
             previous_group_modified_files = modified_files
+            self._update_node_session(
+                node_id,
+                {
+                    "tdd_handoff": {
+                        "last_test_type": test_type,
+                        "last_failed_output_summary": "" if group_passed else self._summarize_batch_output(latest_run_tests_result or ""),
+                        "modified_files": modified_files,
+                        "root_cause_notes": (
+                            [f"{test_type} batch passed from the latest run_tests result."]
+                            if group_passed
+                            else [f"{test_type} batch still has failing tests and requires another TDD pass."]
+                        ),
+                    },
+                },
+            )
 
             if group_passed:
                 await self.log_cb(
@@ -363,6 +704,12 @@ class WorkflowPhaseRunner:
         final_ok = bool(final_statuses) and all(value is True for value in final_statuses.values())
 
         update_interface_implemented_status(node_id, final_ok)
+        self._update_node_session(
+            node_id,
+            {
+                "phase_status": {"implement": "completed" if final_ok else "failed"},
+            },
+        )
         return final_ok
 
     async def _run_non_leaf_build_verification(self, node_id: str) -> str:
