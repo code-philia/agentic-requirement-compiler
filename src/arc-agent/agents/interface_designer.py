@@ -607,6 +607,7 @@ Rules:
 - Reuse existing interfaces whenever possible.
 - Keep the interface chain minimal and executable.
 - Make `interface_spec` align exactly with `interfaces`.
+- If `<visual_reference>` exists, use it to determine UI structure, major sections, visible copy, and layout ownership for the UI interfaces.
 - Keep the output compact:
 - `scenario_summary`: at most 2 items, each with at most 4 key steps.
 - `relevant_files`: at most 5.
@@ -807,7 +808,10 @@ Materialize the current node's interfaces into code.
 
 Execution rules:
 - This is a code-writing step.
+- If `<visual_reference>` exists, it is a primary UI contract for this node.
 - For every current-node UI interface, land real UI code now. Do not leave TODO-only shells, placeholder divs, or interface-only JSON.
+- For UI code, follow the visual reference's layout hierarchy, section ordering, visible text, alignment, spacing rhythm, and overall composition as closely as the requirement allows.
+- Do not fall back to the starter template look, generic Tailwind composition, or your own preferred layout when the visual reference already specifies one.
 - For every current-node non-UI interface, land the smallest compilable or runnable skeleton that matches the specification.
 - Reuse and minimally edit existing files when possible. If a target file already exists, read it first and use `edit_file` unless a full rewrite is clearly simpler and still local.
 - Keep the implementation shallow: UI can be complete, but API/FUNC/DB should usually be skeletal scaffolding unless the requirement text already demands more.

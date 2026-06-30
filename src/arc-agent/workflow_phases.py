@@ -9,6 +9,7 @@ from agents.tools.cli_tools import parse_test_results
 from app_types import create_app_type_handler
 from traceability.database import (
     clear_node_design_artifacts,
+    get_requirement_by_id,
     get_interface_by_id,
     get_interfaces_by_req_id,
     get_node_contract,
@@ -249,6 +250,13 @@ class WorkflowPhaseRunner:
             )
             return True
 
+        await self.interface_designer.parse_and_store_visual_elements(
+            self.workspace_path,
+            os.path.dirname(os.path.abspath(self.requirement_path)),
+            requirement_data,
+        )
+        requirement_data = get_requirement_by_id(node_id) or requirement_data
+
         if is_leaf:
             await self.log_cb(
                 "InterfaceDesigner",
@@ -296,11 +304,6 @@ class WorkflowPhaseRunner:
             "Analyzing requirement context and designing interface IR...",
             None,
             node_id,
-        )
-        await self.interface_designer.parse_and_store_visual_elements(
-            self.workspace_path,
-            os.path.dirname(os.path.abspath(self.requirement_path)),
-            requirement_data,
         )
 
         if not is_leaf:
