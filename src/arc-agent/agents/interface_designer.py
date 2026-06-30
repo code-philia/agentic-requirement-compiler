@@ -272,6 +272,7 @@ Design constraints (strict):
 - Interface IDs must be stable and explicit: `IF_{{TYPE}}_{{DOMAIN}}_{{ACTION}}` (e.g., `IF_API_USER_LOGIN`).
 - Keep contracts backward-compatible when reusing interfaces; use optional params for extensions.
 - Do not invent dependency interfaces if they already exist in traceability search results.
+- Use the provided `<frozen_node_contract>` when available as the current stable node contract for routes, auth semantics, provider ownership, and shared-shell ownership.
 - **UI Resource-ID Compliance**: If the requirement description or scenarios specify exact `resource-id` values (e.g., `org.billthefarmer.editor:id/newFile`), you MUST use those exact IDs when designing UI interfaces. The `android:id` in XML layouts and `findViewById(R.id.xxx)` in Java must match the resource-id suffix specified in the scenarios. This is critical for automated testing to find the UI elements.
 - For non-leaf nodes, default to as few interfaces as possible. Only design parent-level interfaces whose absence would block child-node connectivity.
 - For non-leaf nodes, do NOT invent parent-owned DAO/config/service layers just to hold placeholder data or platform metadata unless the requirement explicitly asks for them.
@@ -282,6 +283,7 @@ Design constraints (strict):
 # Workflow:
 1. **Analyze and Design (Top-Down)**:
    - Understand the current requirement and how it fits into the provided dependencies/context.
+   - If `<frozen_node_contract>` exists, preserve it unless the current requirement explicitly justifies a change. Do not invent conflicting routes, auth semantics, provider ownership, or parent-shell ownership.
    - **Extract Resource-IDs**: If the requirement description contains `resource-id` references (e.g., `` `pkg:id/buttonName` ``), extract and record them. These MUST be used as the actual `android:id` values in the generated UI code.
    - Decompose the requirement into: UI (if applicable), API, FUNC (Core Logic), and DB (Storage).
    - **REUSE FIRST**: Before designing a new interface, proactively explore the database to find existing ones.
@@ -360,12 +362,14 @@ This is a **non-leaf node** (it has children). Design the shared foundation, agg
 - Design the parent as a top-level module shell, not as a feature implementation node.
 - Prefer page shells, routing/entry points, frontend interface framework, shared state/providers, shared contracts, composition roots, and thin integration facades.
 - Frontend interface framework includes top-level page/layout shells, route containers, shared navigation, app entry composition, section skeleton components, and parent-owned UI composition boundaries.
+- Reuse routes, providers, and shell ownership already present in `<frozen_node_contract>` whenever possible.
 - The key responsibility is to connect child-node capabilities into one consistent subsystem: define how child features are mounted, coordinated, and exposed through stable parent-level interfaces.
 - If the requirement is page-centric or has reference images, bias toward frontend shell/layout/container/navigation design for the parent module.
 - Prefer interfaces that guarantee system connectivity and consistency: composition roots, parent-level facades, cross-child coordination flows, shared session/state contracts, navigation entry points, and top-level page containers.
 - Reuse existing entry files, routes, and shared shells whenever possible. Extend them minimally instead of designing new parent-owned subsystems.
 - Avoid DB-layer and backend service-layer interfaces unless they are strictly necessary as thin cross-child integration contracts.
 - Avoid parent-owned implementation layers such as DAO, repository, service, bootstrap, registry, health, or platform-management modules unless they are explicitly required by the requirement itself.
+- Do NOT create a conflicting second owner for routes, auth/session providers, or top-level app shells.
 - Do NOT duplicate child business logic in the parent. The parent should assemble, constrain, and expose child capabilities as one coherent system.
 - Keep the design modular and small; do NOT implement full feature logic — that belongs to leaf nodes.
 - A good non-leaf design usually has only a small number of parent interfaces. Do not inflate the parent with speculative infrastructure.
@@ -518,12 +522,15 @@ This is a non-leaf convergence task.
 Do only the minimal parent-level assembly needed to connect child capabilities into one coherent subsystem.
 - First prefer a no-op outcome: if the current parent shell is already connected and builds successfully, make no code changes.
 - Treat the provided child convergence summary as the source of truth for what child nodes already implemented and verified.
+- Treat the provided `<frozen_node_contract>` as the stable parent assembly contract.
 - Do NOT create new parent-layer implementation files in this phase.
-- Prefer editing existing parent-level shells, facades, routing, shared state, and composition points.
+- Prefer editing only existing parent-level shells, route containers, layout frames, shared provider composition points, and child mounting boundaries.
 - If a target file already exists, read it first and use `edit_file` for minimal changes.
 - Base your work on concrete child outputs: their implemented interfaces, landed files, and current pass/fail state.
 - Do NOT re-implement child business logic in the parent.
 - Do NOT create broad new feature code unless required for system connectivity.
+- Do NOT introduce new auth semantics, fake user/session fallbacks, duplicate providers, or conflicting route ownership in the parent.
+- Do NOT overwrite child feature behavior from the parent. Parent code may only mount, connect, guard, or expose child capabilities.
 - If a child still has failing tests, avoid masking that failure in the parent. Only add the minimum parent wiring that remains valid.
 - If repair is required, edit only the smallest set of existing shared files, then call `run_build` once.
 - When the parent-level convergence is complete and the build passes, output exactly `IMPLEMENTED`.
@@ -591,8 +598,10 @@ Do only the minimal parent-level assembly needed to connect child capabilities i
 This is a read-only non-leaf connectivity audit.
 Your job is to inspect the current parent shell and child outputs, then decide whether parent-level code changes are actually necessary.
 - Read the relevant existing shared shell files, routes, app entrypoints, providers, facades, and composition roots.
+- Use the provided `<frozen_node_contract>` as the source of truth for allowed parent assembly scope.
 - Verify whether the child capabilities are already mounted and connected coherently.
 - Prefer a no-op result when the subsystem is already connected.
+- Treat duplicate providers, fake auth/session fallbacks in parent shells, and parent-owned route conflicts as `CHANGES_REQUIRED`.
 - Do NOT write or edit files in this audit.
 - Do NOT invent new parent-layer implementation files.
 

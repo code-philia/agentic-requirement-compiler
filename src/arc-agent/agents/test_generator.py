@@ -117,6 +117,11 @@ Execution protocol (strict):
 - If build or syntax fails, fix tests immediately using `edit_file` and rerun `run_build`.
 - If build or syntax fails because of framework mismatch, wrong directory placement, or wrong module system, rewrite the test file itself. Do not expect a later runtime patch to save it.
 - Use the provided `<project_structure>` as the default source of truth for file and directory locations.
+- Use the provided `<frozen_node_contract>` as the stable node-level contract for routes, auth expectations, shell ownership, and assembly boundaries.
+- Prefer stable-contract assertions first: route reachability, child mounting, declared auth behavior, declared API contract, required form fields, and required visible entry points.
+- Avoid over-binding tests to incidental implementation details unless the requirement explicitly requires them.
+- Do not default to asserting exact href values, exact marketing copy, or fragile DOM nesting unless those details are explicitly part of the requirement or the frozen node contract.
+- For non-leaf-facing shells and top-level pages, prefer assertions about mounting, routing, guards, and visible section boundaries over detailed leaf-content assertions.
 - Avoid exploratory `glob` or `list_directory` calls unless the required location is still unclear after reading `<project_structure>`.
 - If you use `glob` or `grep`, keep them narrow and inside known source subtrees. Do not explore `node_modules`, build outputs, caches, or unconstrained workspace-root patterns.
 - Use `execute_command` only when you must run a package script or install dependencies. Do not use it as a substitute for normal code/context inspection.
@@ -126,6 +131,8 @@ Execution protocol (strict):
 
 # Workflow
 1. Analyze the tech stack, requirement description, and Interface IR.
+1.5. Preserve the frozen node contract. Do not invent conflicting routes, auth semantics, provider ownership, or parent-shell behavior.
+1.6. Prefer stable behavioral assertions over brittle implementation-detail assertions.
 2. Use `list_directory` if needed to confirm target test directories.
 3. Write all required test files.
 4. Call `run_build` to catch syntax or compilation problems.
@@ -205,6 +212,7 @@ Please write the {test_type} test files using the `write_file` tool.
 
 {test_instruction}
 Target the interfaces of the current node. Consider the node requirement content, each interface's responsibility, and its spec to decide what to test and how to assert.
+Prefer assertions on stable contract behavior first. Only assert exact href/copy/DOM details when the requirement or frozen node contract clearly requires them.
 When finished, output the mapping JSON block so the system can register these tests in the traceability database.
 """
         system_content = self.get_system_prompt()
