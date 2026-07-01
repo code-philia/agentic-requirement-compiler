@@ -50,7 +50,7 @@ class TestDrivenDeveloper(ARCAgent):
         "You work in a bounded fix-verify loop: form a hypothesis, inspect only the most relevant files, make the smallest change, then verify with `run_tests`.",
     ],
     outputs=[
-        "Minimal contract-preserving code changes for the current node.",
+        "Implementation on existing interfaces or new code for the current node.",
         "Passing results for the current target test batch.",
         "A final `IMPLEMENTED` only when the latest `run_tests` batch passes.",
     ],
