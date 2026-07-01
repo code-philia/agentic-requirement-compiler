@@ -7,6 +7,23 @@ def _section(title: str, bullets: list[str]) -> str:
     return "\n".join(lines)
 
 
+def get_using_your_tools_guidance() -> str:
+    return _section(
+        "Using Your Tools",
+        [
+            "Use relation/interface search tools to find reusable contracts, ownership boundaries, and nearby dependencies before inventing new structure.",
+            "Use `grep`, `glob`, and `list_directory` to narrow the search space; use `read_file` to confirm exact current code only after you know why that file matters.",
+            "For an existing file, prefer `read_file` first and then `edit_file` for a targeted change.",
+            "Use `write_file` for genuinely new files, or for a full-file replacement only when the change is broad enough that patching the existing file would be less reliable than rewriting it.",
+            "Do not use `write_file` to overwrite an existing file when a local edit is sufficient.",
+            "After new evidence appears, update the hypothesis and only read the next directly relevant files instead of rescanning broadly.",
+            "Use verification tools like `run_build` or `run_tests` only after you have landed a concrete change or when the current stage explicitly requires validation.",
+            "Avoid repeating the same reads from uncertainty alone. Prefer synthesizing what you already learned unless another tool produced genuinely new evidence.",
+            "When several tool calls are independent, you should use multiple tools in the same turn instead of stretching them across many turns.",
+        ],
+    )
+
+
 def get_compiler_role_guidance(
     role_name: str,
     stage_name: str,
@@ -83,22 +100,14 @@ def get_interface_designer_guidance() -> str:
             _section(
                 "Fast Solution Design",
                 [
-                    "For leaf work, design only the smallest executable chain needed across UI -> API -> FUNC -> DB.",
+                    "For leaf work, design the executable chain needed across UI -> API -> FUNC -> DB.",
                     "For non-leaf work, stay at shell boundaries: routes, layouts, providers, page containers, and mount points.",
                     "Prefer extending an existing interface over creating a parallel one that competes for the same responsibility.",
                     "Avoid speculative interfaces, future-proof abstractions, and contracts that are not required by the current node.",
                     "When asked to materialize interfaces, UI means real rendered code now; API/FUNC/DB means minimal compilable scaffolding now, not interface JSON alone.",
                 ],
             ),
-            _section(
-                "Using Your Tools",
-                [
-                    "Use `search_interfaces_by_keyword`, `search_interfaces_by_relation`, and `get_node_relations` to find reusable contracts and ownership.",
-                    "Use `grep`, `glob`, and `list_directory` to locate likely owner files when context is insufficient.",
-                    "Use `read_file` only on files that can confirm ownership, route wiring, or an interface contract.",
-                    "Do not write code during design, understanding, or spec-generation steps.",
-                ],
-            ),
+            get_using_your_tools_guidance(),
         ]
     )
 
@@ -140,17 +149,7 @@ def get_test_generator_guidance() -> str:
                     "For file-based SQLite tests on Windows, never delete `database.db` while a connection may still be open. Prefer an exported cleanup helper such as `closeDb()` or `resetDatabaseFile()` and call it in test teardown before removing files.",
                 ],
             ),
-            _section(
-                "Using Your Tools",
-                [
-                    "Use `grep` to find existing test files, setup conventions, fixtures, selectors, and assertion patterns.",
-                    "Use `read_file` to confirm exact imports, setup, and test idioms in files you already know are relevant.",
-                    "When several file reads are independent, issue them in the same turn instead of spreading them across many turns.",
-                    "Do not re-read the same file repeatedly just to regain confidence. Re-read only if another tool produced new evidence, or if a different file changed your hypothesis.",
-                    "Use `run_build` after writing tests to catch placement, syntax, and framework mismatch early.",
-                    "Avoid broad rescans once you already know the target layer, file family, and contract.",
-                ],
-            ),
+            get_using_your_tools_guidance(),
         ]
     )
 
@@ -191,15 +190,6 @@ def get_tdd_guidance() -> str:
                     "For SQLite-backed backend tests on Windows, check database teardown first: a failing unlink/remove usually means the connection was never closed. Prefer fixing teardown helpers over patching around the symptom.",
                 ],
             ),
-            _section(
-                "Using Your Tools",
-                [
-                    "Use `grep` to locate symbols, selectors, routes, ownership boundaries, and likely edit locations when the file is not yet known.",
-                    "Use `read_file` to confirm the exact current implementation in files you already know are relevant.",
-                    "Use `edit_file` or `write_file` to make the smallest fix that can verify the current hypothesis.",
-                    "Use `run_tests` only to verify a concrete hypothesis after a minimal change.",
-                    "Use `execute_command` only for non-test terminal operations that truly require shell execution, like npm install...",
-                ],
-            ),
+            get_using_your_tools_guidance(),
         ]
     )
