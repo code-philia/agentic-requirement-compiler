@@ -256,8 +256,6 @@ class WorkflowPhaseRunner:
             requirement_data=requirement_data,
             design_mode=design_mode,
         )
-        understanding = design_bundle.get("node_understanding", {})
-        node_understanding = understanding
         interfaces = design_bundle.get("interfaces", [])
         interface_spec = design_bundle.get("interface_spec", [])
 
@@ -278,13 +276,7 @@ class WorkflowPhaseRunner:
             )
             return False
 
-        self._update_node_session(
-            node_id,
-            {
-                "node_understanding": understanding,
-                "phase_status": {"understand": "completed"},
-            },
-        )
+        self._update_node_session(node_id, {"phase_status": {"understand": "completed"}})
         await self.log_cb(
             "InterfaceDesigner",
             "Completed unified design session and persisted node session context.",
@@ -300,6 +292,7 @@ class WorkflowPhaseRunner:
             node_id,
             {
                 "interface_ir": interfaces,
+                "interfaces": interfaces,
                 "interface_spec": interface_spec,
                 "phase_status": {
                     "design": "completed",
@@ -336,6 +329,7 @@ class WorkflowPhaseRunner:
             node_id,
             {
                 "materialized_interfaces": materialized,
+                "interfaces": materialized,
                 "materialized_files": materialized_files,
             },
         )

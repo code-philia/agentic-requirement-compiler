@@ -1,4 +1,3 @@
-import json
 from typing import Any, Dict, List
 
 from .arc_agent import ARCAgent
@@ -57,10 +56,11 @@ class TestGenerator(ARCAgent):
 )}
 
 Rules:
-- Tests must cover `<interface_spec>` and `<requirement_focus>`.
+- Tests must cover `<interfaces>` and `<requirement_focus>`.
 - Keep granularity coarse: prefer one primary file per layer, or one file per coherent scenario group.
 - Prefer stable contract assertions over incidental DOM structure or implementation details.
-- Preserve `<frozen_node_contract>` and do not assert a conflicting route, auth behavior, or shell boundary.
+- Treat the provided `<interfaces>` block as the source of truth for responsibility, specification, and test focus.
+- Generate tests either per interface or per coherent scenario group, whichever yields fewer, more maintainable files.
 - If a generated test file is wrong, fix the file itself; do not rely on later environment hacks.
 - Write test files first, then call `run_build` once to catch syntax and placement mistakes.
 
@@ -123,13 +123,6 @@ Rules:
 This non-leaf node is UI-shell-only.
 Do not generate test files. Return an empty JSON array: `[]`.
 """
-        if design_mode == "non_leaf_ui_with_shell_tests":
-            return """
-This non-leaf node may only receive shell-level tests.
-Only assert parent shell behavior such as route reachability, mount-point visibility, auth guard behavior, and top-level section boundaries.
-Do not generate leaf business tests or parent-owned API/FUNC/DB tests.
-Keep the file count minimal.
-"""
         if test_type == "All":
             return """
 Generate Unit, Integration, and E2E coverage in one pass.
@@ -167,47 +160,18 @@ Generate Unit and Integration coverage in one pass.
             preloaded_source=preloaded_source,
         )
 
-        scenarios = requirement_data.get("scenarios") or []
-        scenarios_context = ""
-        if scenarios:
-            scenarios_context = (
-                "\n### Target Scenarios\n"
-                f"{json.dumps(scenarios, indent=2, ensure_ascii=False)}\n"
-            )
-
-        understanding_context = ""
-        if node_understanding:
-            understanding_context = (
-                "\n### Node Understanding\n```json\n"
-                f"{json.dumps(node_understanding, indent=2, ensure_ascii=False)}\n```\n"
-            )
-
-        spec_context = ""
-        if interface_spec:
-            spec_context = (
-                "\n### Interface Specification\n```json\n"
-                f"{json.dumps(interface_spec, indent=2, ensure_ascii=False)}\n```\n"
-            )
-
-        ir_context = (
-            "\n### Interface IR\n```json\n"
-            f"{json.dumps(interfaces_ir, indent=2, ensure_ascii=False)}\n```\n"
-        )
-
         user_prompt = f"""
 ### Current Node Context
 Read this first. The current requirement payload below is the authoritative task input for node `{node_id}`.
 {dynamic_ctx}
-{scenarios_context}
-{understanding_context}
-{spec_context}
-{ir_context}
 
 ### Task
 {self._build_scope_instruction(design_mode, test_type)}
 
 Additional rules:
 - Cover the spec, not speculation.
+- Use the provided `<interfaces>` block as the authoritative contract for ownership, responsibility, specification, and test focus.
+- Prefer one main test file per enabled layer, or one file per coherent scenario group when that is cleaner.
 - Do not write tests that assert parent-owned behavior outside this node's scope.
 - Keep the file count low and stable.
 - For E2E selectors, prefer requirement-visible text first, then stable local selectors, then role, and use id only as a last fallback.

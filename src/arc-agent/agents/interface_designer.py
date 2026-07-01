@@ -255,24 +255,22 @@ class InterfaceDesigner(ARCAgent):
         "When the workflow asks you to materialize interfaces, you must also land the owned code skeletons or UI implementation for those interfaces.",
     ],
     outputs=[
-        "A concrete node understanding grounded in the current requirement and existing codebase.",
-        "A minimal interface IR with clear ownership, file paths, and reuse decisions.",
-        "A testable interface specification aligned with the IR.",
-        "When requested by the workflow, materialized code for current-node UI and scaffolding for current-node non-UI interfaces.",
+        "A compact understanding of the current node grounded in the requirement and existing codebase.",
+        "A minimal interface set with clear ownership, file paths, reuse decisions, and brief contract fields.",
+        "Materialized code for current-node UI and scaffolding for current-node non-UI interfaces.",
     ],
 )}
 
 Rules:
 - Reuse existing interfaces before inventing new ones.
-- Preserve `<frozen_node_contract>` unless the requirement explicitly forces a change.
-- Respect `<requirement_focus>`, `<node_understanding>`, visual analysis, and scenario details.
+- Respect `<requirement_focus>`, `<scenarios>`, `<visual_reference>`, and the declared interface ownership.
 - If the requirement names exact UI ids or resource ids, keep them exact.
 - For leaf work, design the smallest complete chain needed across UI -> API -> FUNC -> DB.
 - For non-leaf work, stay at parent UI shell scope: routes, layouts, providers, page containers, mount points, and thin composition boundaries.
-- During understanding / IR design / spec generation, do not write code files.
-- After IR and spec are produced, you must materialize the design into code:
+- During understanding and interface design, do not write code files.
+- After the interface set is produced, you must materialize the design into code:
 - UI interfaces owned by the current node must be implemented as real UI code, not left as empty stubs.
-- Non-UI interfaces owned by the current node must be landed as minimal compilable code skeletons or stubs aligned with the spec.
+- Non-UI interfaces owned by the current node must be landed as minimal compilable code skeletons or stubs aligned with the declared contract fields.
 - Prefer extending existing files with minimal edits over creating parallel files.
 
 {get_common_session_guidance()}
@@ -352,28 +350,28 @@ Rules:
     def _build_design_stage_task(design_mode: str) -> str:
         if design_mode == "leaf_full":
             return """
-This is stage 1 of `InterfaceDesigner` for a leaf node.
+This is the design step of `InterfaceDesigner` for a leaf node.
 - Analyze the current requirement, scenarios, visual reference, and the most relevant existing code.
 - Design the smallest executable interface chain needed across UI -> API -> FUNC -> DB.
 - Reuse existing interfaces whenever possible, and only add the minimum new contracts needed to land the feature.
-- For each interface, produce a brief specification that says what responsibility it owns and how that interface should be tested.
+- For each interface, include brief contract fields that say what responsibility it owns and how that interface should be tested.
 - Do not write code in this stage.
 """
         if design_mode == "non_leaf_full":
             return """
-This is stage 1 of `InterfaceDesigner` for a non-leaf node with concrete scenarios.
+This is the design step of `InterfaceDesigner` for a non-leaf node with concrete scenarios.
 - Analyze the current requirement, scenarios, visual reference if present, and the most relevant existing code.
 - Perform the same full-chain design discipline as a leaf node: decompose the feature across UI -> API -> FUNC -> DB as needed.
 - Reuse existing interfaces whenever possible, and only add the minimum new contracts needed to land the current node.
-- For each interface, produce a brief specification that says what responsibility it owns and how that interface should be tested.
+- For each interface, include brief contract fields that say what responsibility it owns and how that interface should be tested.
 - Do not write code in this stage.
 """
         return """
-This is stage 1 of `InterfaceDesigner` for a non-leaf UI-only parent node.
+This is the design step of `InterfaceDesigner` for a non-leaf UI-only parent node.
 - Analyze the current parent shell and the most relevant existing shared files.
 - Design only parent UI shell interfaces: top-level routes, layouts, providers, mount points, and thin composition boundaries.
 - Do not design API/FUNC/DB interfaces in this mode.
-- For each interface, produce a brief specification that says what responsibility it owns and how that shell interface should be validated.
+- For each interface, include brief contract fields that say what responsibility it owns and how that shell interface should be validated.
 - Do not write code in this stage.
 """
 
@@ -381,52 +379,28 @@ This is stage 1 of `InterfaceDesigner` for a non-leaf UI-only parent node.
     def _build_materialize_stage_task(design_mode: str) -> str:
         if design_mode == "leaf_full":
             return """
-This is stage 2 of `InterfaceDesigner` for a leaf node.
+This is the materialization step of `InterfaceDesigner` for a leaf node.
 - Materialize the current node's interfaces into code.
 - For UI interfaces, land real UI code now.
 - For non-UI interfaces, land the smallest compilable or runnable skeleton that matches the declared responsibility and test intent.
 """
         if design_mode == "non_leaf_full":
             return """
-This is stage 2 of `InterfaceDesigner` for a non-leaf node with concrete scenarios.
+This is the materialization step of `InterfaceDesigner` for a non-leaf node with concrete scenarios.
 - Materialize the current node's interfaces into code using the same full-chain discipline as a leaf node.
 - For UI interfaces, land real UI code now.
 - For non-UI interfaces, land the smallest compilable or runnable skeleton that matches the declared responsibility and test intent.
 """
         return """
-This is stage 2 of `InterfaceDesigner` for a non-leaf UI-only parent node.
+This is the materialization step of `InterfaceDesigner` for a non-leaf UI-only parent node.
 - Materialize only the parent shell interfaces for routes, layouts, providers, mount points, and composition boundaries.
 - Do not expand into API/FUNC/DB work in this mode.
 """
 
     @staticmethod
-    def _build_fallback_understanding(requirement_data: dict[str, Any]) -> dict[str, Any]:
-        scenarios = requirement_data.get("scenarios") or []
-        return {
-            "summary": str(requirement_data.get("description", "") or "")[:500],
-            "dependencies": requirement_data.get("dependencies") or [],
-            "scenario_summary": [
-                {
-                    "scenario_id": scenario.get("scenario_id") or scenario.get("id", ""),
-                    "name": scenario.get("name", ""),
-                    "steps": scenario.get("steps", [])[:4],
-                }
-                for scenario in scenarios[:2]
-            ],
-            "relevant_files": [],
-            "reuse_candidates": [],
-            "risks": ["Understanding fell back to deterministic requirement parsing."],
-        }
-
-    @staticmethod
     def _enrich_interfaces_with_contracts(
         interfaces: list[dict[str, Any]],
-        node_understanding: dict[str, Any] | None = None,
     ) -> list[dict[str, Any]]:
-        reuse_notes = []
-        if node_understanding and node_understanding.get("reuse_candidates"):
-            reuse_notes.append("Check existing related interfaces before adding a new contract.")
-
         enriched: list[dict[str, Any]] = []
         for interface in interfaces:
             if not isinstance(interface, dict):
@@ -451,8 +425,8 @@ This is stage 2 of `InterfaceDesigner` for a non-leaf UI-only parent node.
                 ]
             merged["test_focus"] = [str(item).strip() for item in raw_test_focus if str(item).strip()]
             raw_reuse_notes = merged.get("reuse_notes")
-            if not isinstance(raw_reuse_notes, list) or not raw_reuse_notes:
-                raw_reuse_notes = list(reuse_notes)
+            if not isinstance(raw_reuse_notes, list):
+                raw_reuse_notes = []
             merged["reuse_notes"] = [str(item).strip() for item in raw_reuse_notes if str(item).strip()]
             enriched.append(merged)
         return enriched
@@ -480,23 +454,17 @@ This is stage 2 of `InterfaceDesigner` for a non-leaf UI-only parent node.
     @staticmethod
     def _build_materialize_followup_prompt(
         node_id: str,
-        node_understanding: dict[str, Any],
         interfaces: list[dict[str, Any]],
         design_mode: str,
     ) -> str:
         return f"""
 ### Task
-Continue the same `InterfaceDesigner` design session for node `{node_id}`.
+Continue the same `InterfaceDesigner` session for node `{node_id}`.
 
-You already finished the design bundle. Now complete the design stage by materializing the interfaces into code.
+You already finished the design bundle. Now materialize the designed interfaces into code.
 {InterfaceDesigner._build_materialize_stage_task(design_mode)}
 
-### Node Understanding
-```json
-{json.dumps(node_understanding or {}, indent=2, ensure_ascii=False)}
-```
-
-### Interface IR
+### Interfaces
 ```json
 {json.dumps(interfaces, indent=2, ensure_ascii=False)}
 ```
@@ -509,7 +477,7 @@ Execution rules:
 - Do not fall back to the starter template look, generic Tailwind composition, or your own preferred layout when the visual reference already specifies one.
 - For every current-node non-UI interface, land the smallest compilable or runnable skeleton that matches the declared responsibility and test intent.
 - Reuse and minimally edit existing files when possible. If a target file already exists, read it first and use `edit_file` unless a full rewrite is clearly simpler and still local.
-- Preserve the declared file paths and ownership boundaries from the interface IR.
+- Preserve the declared file paths and ownership boundaries from the interface list.
 - Call `run_build` once after landing the materialized code.
 
 When finished, return exactly one JSON array in a `json` markdown block.
@@ -558,30 +526,10 @@ Read this first. The current requirement payload below is the authoritative task
 
 ### Task
 {self._build_design_stage_task(design_mode)}
-Stop after returning the design bundle JSON for this substep. Do not materialize code yet.
+Stop after returning the design bundle JSON for this step. Do not materialize code yet.
 
 Return exactly one JSON object in a `json` markdown block with this schema:
 {{
-  "node_understanding": {{
-    "summary": "1-3 short sentences",
-    "dependencies": ["dependency ids"],
-    "scenario_summary": [
-      {{
-        "scenario_id": "id",
-        "name": "scenario name",
-        "steps": ["important step", "..."]
-      }}
-    ],
-    "relevant_files": ["most relevant existing files"],
-    "reuse_candidates": [
-      {{
-        "interface_id": "existing interface id",
-        "type": "UI/API/FUNC/DB",
-        "reason": "why it may be reused"
-      }}
-    ],
-    "risks": ["main design or integration risks"]
-  }},
   "interfaces": [
     {{
       "interface_id": "stable explicit id",
@@ -606,14 +554,11 @@ Return exactly one JSON object in a `json` markdown block with this schema:
 Rules:
 - Reuse existing interfaces whenever possible.
 - Keep the interface chain minimal and executable.
-- Put the brief contract directly on each interface object instead of returning a separate `interface_spec` array.
+- Include brief contract fields directly on each interface object instead of returning a separate `interface_spec` array.
 - If `<visual_reference>` exists, use it to determine UI structure, major sections, visible copy, and layout ownership for the UI interfaces.
 - Keep the output compact:
-- `scenario_summary`: at most 2 items, each with at most 4 key steps.
-- `relevant_files`: at most 5.
-- `reuse_candidates`: at most 3.
 - Keep `responsibility`, `specification`, and `test_focus` brief and concrete.
-- Prefer short phrases over full paragraphs except for `summary`.
+- Prefer short phrases over full paragraphs.
 - Do not write code in this step.
 """
         system_content = self.get_system_prompt()
@@ -627,17 +572,13 @@ Rules:
         raw_output, messages = await self.run_from_messages(messages, node_id=node_id, max_steps=12, tools=read_tools)
         parsed = self._extract_json_object_from_markdown(raw_output) or {}
 
-        node_understanding = parsed.get("node_understanding")
         interfaces = parsed.get("interfaces")
-        if not isinstance(node_understanding, dict):
-            node_understanding = self._build_fallback_understanding(requirement_data)
         if not isinstance(interfaces, list):
             interfaces = []
-        interfaces = self._enrich_interfaces_with_contracts(interfaces, node_understanding)
+        interfaces = self._enrich_interfaces_with_contracts(interfaces)
 
         followup_prompt = self._build_materialize_followup_prompt(
             node_id=node_id,
-            node_understanding=node_understanding,
             interfaces=interfaces,
             design_mode=design_mode,
         )
@@ -652,11 +593,10 @@ Rules:
         final_interfaces = self._extract_json_array_from_markdown(materialize_output)
         if not final_interfaces:
             final_interfaces = interfaces
-        final_interfaces = self._enrich_interfaces_with_contracts(final_interfaces, node_understanding)
+        final_interfaces = self._enrich_interfaces_with_contracts(final_interfaces)
         interface_spec = self._derive_interface_spec(final_interfaces)
 
         return {
-            "node_understanding": node_understanding,
             "interfaces": final_interfaces,
             "interface_spec": interface_spec,
         }, messages
@@ -696,7 +636,7 @@ Read this first. The current requirement payload below is the authoritative task
 ### Parent Interfaces To Converge ({len(interfaces)} total)
 {chr(10).join(iface_summaries)}
 
-### Full Interface Definitions
+### Interfaces
 ```json
 {json.dumps(interfaces, indent=2, ensure_ascii=False)}
 ```
@@ -705,7 +645,7 @@ This is a non-leaf convergence task.
 Do only the minimal parent-level assembly needed to connect child capabilities into one coherent subsystem.
 - First prefer a no-op outcome: if the current parent shell is already connected and builds successfully, make no code changes.
 - Treat the provided child convergence summary as the source of truth for what child nodes already implemented and verified.
-- Treat the provided `<frozen_node_contract>` as the stable parent assembly contract.
+- Treat the provided interface list and current requirement context as the parent assembly contract.
 - Do NOT create new parent-layer implementation files in this phase.
 - Prefer editing only existing parent-level shells, route containers, layout frames, shared provider composition points, and child mounting boundaries.
 - If a target file already exists, read it first and use `edit_file` for minimal changes.
@@ -769,7 +709,7 @@ Read this first. The current requirement payload below is the authoritative task
 ### Parent Interfaces To Audit ({len(interfaces)} total)
 {chr(10).join(iface_summaries)}
 
-### Full Interface Definitions
+### Interfaces
 ```json
 {json.dumps(interfaces, indent=2, ensure_ascii=False)}
 ```
@@ -777,7 +717,7 @@ Read this first. The current requirement payload below is the authoritative task
 This is a read-only non-leaf connectivity audit.
 Your job is to inspect the current parent shell and child outputs, then decide whether parent-level code changes are actually necessary.
 - Read the relevant existing shared shell files, routes, app entrypoints, providers, facades, and composition roots.
-- Use the provided `<frozen_node_contract>` as the source of truth for allowed parent assembly scope.
+- Use the provided interface list and current requirement context as the source of truth for allowed parent assembly scope.
 - Verify whether the child capabilities are already mounted and connected coherently.
 - Prefer a no-op result when the subsystem is already connected.
 - Treat duplicate providers, fake auth/session fallbacks in parent shells, and parent-owned route conflicts as `CHANGES_REQUIRED`.

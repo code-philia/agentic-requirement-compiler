@@ -8,7 +8,6 @@ from traceability.database import (
     get_requirement_by_id,
     get_interfaces_by_req_id,
     get_tests_by_req_id,
-    get_node_contract,
 )
 
 class NodeContextCache:
@@ -21,7 +20,7 @@ class NodeContextCache:
     # Layers that change only when files are written (after stub impl, test gen, TDD fix)
     FILE_DEPENDENT_LAYERS = {"source_code", "test_code"}
     # Layers that change when DB is updated (after insert_interface, insert_test)
-    DB_DEPENDENT_LAYERS = {"own_interfaces", "related_interfaces"}
+    DB_DEPENDENT_LAYERS = set()
 
     def __init__(self):
         self._cache = {}  # (node_id, layer_name) -> content_str
@@ -59,7 +58,6 @@ class NodeContextCache:
         """Invalidate layers that depend on DB state (after insert_interface, insert_test)."""
         for layer in self.DB_DEPENDENT_LAYERS:
             self._cache.pop((node_id, layer), None)
-        self._cache.pop((node_id, "node_contract"), None)
 
     def clear(self):
         self._cache.clear()
@@ -327,13 +325,6 @@ class ContextPipeline:
             return ""
         return "<source_code>\n" + "\n\n".join(lines) + "\n</source_code>"
 
-    def _get_node_contract(self, node_id: str) -> str:
-        contract_row = get_node_contract(node_id)
-        if not contract_row or not isinstance(contract_row.get("content"), dict):
-            return ""
-        contract_json = json.dumps(contract_row["content"], indent=2, ensure_ascii=False)
-        return "<frozen_node_contract>\n" + contract_json + "\n</frozen_node_contract>"
-
     def _get_node_session_layers(self, node_id: str) -> str:
         from utils import load_node_session
 
@@ -342,28 +333,12 @@ class ContextPipeline:
             return ""
 
         sections: list[str] = []
-        node_understanding = session.get("node_understanding")
-        if node_understanding:
+        interfaces = session.get("materialized_interfaces") or session.get("interfaces")
+        if interfaces:
             sections.append(
-                "<node_understanding>\n"
-                + json.dumps(node_understanding, indent=2, ensure_ascii=False)
-                + "\n</node_understanding>"
-            )
-
-        interface_spec = session.get("interface_spec")
-        if interface_spec:
-            sections.append(
-                "<interface_spec>\n"
-                + json.dumps(interface_spec, indent=2, ensure_ascii=False)
-                + "\n</interface_spec>"
-            )
-
-        materialized_interfaces = session.get("materialized_interfaces")
-        if materialized_interfaces:
-            sections.append(
-                "<materialized_interfaces>\n"
-                + json.dumps(materialized_interfaces, indent=2, ensure_ascii=False)
-                + "\n</materialized_interfaces>"
+                "<interfaces>\n"
+                + json.dumps(interfaces, indent=2, ensure_ascii=False)
+                + "\n</interfaces>"
             )
 
         test_plan = session.get("test_plan")
@@ -491,11 +466,6 @@ class ContextPipeline:
         if requirement_focus:
             context_parts.append(requirement_focus)
 
-        node_contract = self.cache.get_or_compute(node_id, "node_contract", lambda: self._get_node_contract(node_id))
-        if node_contract:
-            context_parts.append(node_contract)
-
-
         # 1. Inject Global Context (cached globally — never changes)
         context_parts.append(
             self.cache.get_or_compute(node_id, "tech_stack_context", self._get_tech_stack_context)
@@ -516,17 +486,6 @@ class ContextPipeline:
         if node_session_layers:
             context_parts.append(node_session_layers)
 
-        # 3. Existing Interfaces for this node (cached per node, invalidated after DB changes)
-        def _compute_own_interfaces():
-            own = get_interfaces_by_req_id(node_id)[:self.max_interfaces]
-            if own:
-                return f"<own_interfaces>\n" + "\n".join([self._format_interface(i, agent_type) for i in own]) + "\n</own_interfaces>"
-            return ""
-
-        own_ifaces_str = self.cache.get_or_compute(node_id, "own_interfaces", _compute_own_interfaces)
-        if own_ifaces_str:
-            context_parts.append(own_ifaces_str)
-
         # 4. Role-Specific Prefetching
         if agent_type == "InterfaceDesigner":
             # Use preloaded_source if available, otherwise cache the disk read
@@ -539,16 +498,6 @@ class ContextPipeline:
                 )
                 if source_code:
                     context_parts.append(source_code)
-            # Designer needs to know about surrounding architecture to reuse interfaces
-            def _compute_related():
-                related = self._get_relational_interfaces(node_id)
-                if related:
-                    return f"<related_architecture_interfaces>\n" + "\n".join([self._format_interface(i, agent_type) for i in related]) + "\n</related_architecture_interfaces>"
-                return ""
-            related_str = self.cache.get_or_compute(node_id, "related_interfaces", _compute_related)
-            if related_str:
-                context_parts.append(related_str)
-
         elif agent_type == "TestDrivenDeveloper":
             # TDD needs both source code AND test code pre-injected with larger budgets
             if preloaded_source:
@@ -621,16 +570,6 @@ class ContextPipeline:
                 )
                 if source_code:
                     context_parts.append(source_code)
-            # Test Generator needs to know what interfaces exist and what architecture it connects to
-            def _compute_related():
-                related = self._get_relational_interfaces(node_id)
-                if related:
-                    return f"<related_architecture_interfaces>\n" + "\n".join([self._format_interface(i, agent_type) for i in related]) + "\n</related_architecture_interfaces>"
-                return ""
-            related_str = self.cache.get_or_compute(node_id, "related_interfaces", _compute_related)
-            if related_str:
-                context_parts.append(related_str)
-
         return "\n\n".join(context_parts)
 
     def build_agent_context_split(

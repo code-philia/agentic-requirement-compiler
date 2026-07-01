@@ -56,7 +56,7 @@ class TestDrivenDeveloper(ARCAgent):
     ],
 )}
 
-Land the current test batch by following the structured handoff: `<node_understanding>`, `<interface_spec>`, `<test_plan>`, `<test_code>`, and `<frozen_node_contract>`.
+Land the current test batch by following the structured handoff: `<interfaces>`, `<test_plan>`, `<test_code>`, `<requirement_focus>`, and any provided `<scenarios>` / `<visual_reference>`.
 
 Rules:
 - Implement the current node's declared contracts first. Do not invent a conflicting contract.
@@ -71,7 +71,7 @@ Rules:
 - Make the smallest contract-preserving fix before the next test run.
 - Treat missing test discovery, wrong framework, wrong path, or wrong selector strategy as test/content/config problems first, not business-logic problems.
 - Do not fabricate compatibility files, duplicate tests, patch `node_modules`, or move tests just to satisfy discovery.
-- Preserve `<frozen_node_contract>` for routes, auth behavior, provider ownership, and shell boundaries.
+- Treat the provided `<interfaces>` block as the source of truth for ownership, responsibility, specification, and test focus.
 - Tool workflow:
 - `grep` is for finding symbols, selectors, route ownership, and likely edit locations.
 - `read_file` is for confirming the exact current implementation in files you already know are relevant.
@@ -423,53 +423,6 @@ Rules:
             target_test_files=test_files,
         )
 
-        scenarios_context = ""
-        if test_type == "E2E" and scenarios:
-            scenarios_context = f"\n### Target UI Scenarios\n{json.dumps(scenarios, indent=2, ensure_ascii=False)}"
-
-        interfaces_context = ""
-        if current_interfaces:
-            interface_lines = []
-            for interface in current_interfaces:
-                if not isinstance(interface, dict):
-                    continue
-                interface_lines.append(
-                    json.dumps(
-                        {
-                            "interface_id": interface.get("interface_id", ""),
-                            "type": interface.get("type", ""),
-                            "file_path": interface.get("file_path", ""),
-                            "first_line": interface.get("first_line", ""),
-                            "implemented": interface.get("implemented", False),
-                            "content": interface.get("content", ""),
-                        },
-                        ensure_ascii=False,
-                    )
-                )
-            if interface_lines:
-                interfaces_context = "\n### Current Node Interfaces\n" + "\n".join(interface_lines)
-
-        understanding_context = ""
-        if node_understanding:
-            understanding_context = (
-                "\n### Node Understanding\n```json\n"
-                f"{json.dumps(node_understanding, indent=2, ensure_ascii=False)}\n```\n"
-            )
-
-        spec_context = ""
-        if interface_spec:
-            spec_context = (
-                "\n### Interface Specification\n```json\n"
-                f"{json.dumps(interface_spec, indent=2, ensure_ascii=False)}\n```\n"
-            )
-
-        test_plan_context = ""
-        if test_plan:
-            test_plan_context = (
-                "\n### Test Plan\n```json\n"
-                f"{json.dumps(test_plan, indent=2, ensure_ascii=False)}\n```\n"
-            )
-
         handoff_context = ""
         if previous_failure_summary:
             handoff_context = f"\n### Previous Failure Summary\n{previous_failure_summary}\n"
@@ -478,18 +431,13 @@ Rules:
 ### Current Node Context
 Read this first. The current requirement payload below is the authoritative task input for node `{node_id}`.
 {dynamic_ctx}
-{scenarios_context}
-{understanding_context}
-{spec_context}
-{test_plan_context}
-{interfaces_context}
 {handoff_context}
 
 ### Target Test Files
 {json.dumps(test_files, indent=2)}
 
 **Implementation Strategy**:
-Implement the interfaces of the current node. Use the node understanding, interface spec, and test plan as the authoritative execution contract. Make the target tests pass without inventing a conflicting contract.
+Implement the interfaces of the current node. Use the provided `<interfaces>`, `<test_plan>`, `<test_code>`, and requirement context as the authoritative execution contract. Make the target tests pass without inventing a conflicting contract.
 The system will execute exactly this current test batch when you call `run_tests`.
 If the batch fails, do not immediately read files or rerun tests. First output:
 FAILURE_CLASSIFICATION: test_bug | selector_bug | wiring_bug | implementation_bug

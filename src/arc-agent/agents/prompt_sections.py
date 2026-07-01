@@ -38,7 +38,7 @@ def get_compiler_role_guidance(
                     "This system is a requirement compiler, not a generic coding chat.",
                     "The input is a requirement tree. Each node is a requirement unit that must be compiled into design artifacts, tests, and working code without breaking the larger system.",
                     "Compilation proceeds by node and by stage. The main stages are: design interfaces and ownership, generate tests from the declared contract, then implement through a test-driven loop.",
-                    "The current node is only one part of the tree, so respect parent shell boundaries, child ownership, dependency links, and any frozen node contract.",
+                    "The current node is only one part of the tree, so respect parent shell boundaries, child ownership, dependency links, and declared interface ownership.",
                     "Treat the current requirement payload, scenarios, and visual reference as the primary specification. Generic repo priors are weaker evidence.",
                 ],
             ),
@@ -63,7 +63,7 @@ def get_common_session_guidance() -> str:
         "Session Guidance",
         [
             "The user prompt begins with the current node payload and its dynamic context. Read that block first before interpreting the rest of the prompt.",
-            "Start from `<requirement_focus>` and the prefetched node context. Treat explicit requirement text, scenarios, visual analysis, and frozen contracts as stronger evidence than generic repo priors.",
+            "Start from `<requirement_focus>` and the prefetched node context. Treat explicit requirement text, scenarios, visual analysis, interfaces, and test handoff artifacts as stronger evidence than generic repo priors.",
             "Prefer reusing existing interfaces and code before creating new boundaries.",
             "If you modify a reused interface or shared boundary, check the likely impact first.",
             "Before acting, form a compact working map: target behavior, likely owner files, reuse candidates, and hard constraints.",
@@ -82,7 +82,7 @@ def get_interface_designer_guidance() -> str:
             _section(
                 "Fast Codebase Understanding",
                 [
-                    "Start from the current requirement, visual/scenario evidence, and `<node_understanding>`.",
+                    "Start from `<requirement_focus>`, `<scenarios>`, `<visual_reference>`, and the prefetched source context.",
                     "Identify existing route, page, layout, provider, API, and domain owners before inventing new interfaces.",
                     "Use relation and interface search tools first to discover reusable boundaries before opening source files.",
                     "If ownership is unclear, inspect app entrypoints, route files, and top-level containers before reading leaf implementation details.",
@@ -118,7 +118,7 @@ def get_test_generator_guidance() -> str:
             _section(
                 "Fast Codebase Understanding",
                 [
-                    "Start from `<interface_spec>` and `<requirement_focus>`. Treat them as the contract to test, not as optional hints.",
+                    "Start from `<interfaces>`, `<requirement_focus>`, and `<scenarios>`. Treat them as the contract to test, not as optional hints.",
                     "Inspect existing test patterns near the owner files before inventing new test structure, fixtures, or selector strategy.",
                     "Prefer one primary file per layer or one file per coherent scenario group.",
                     "Do one compact exploration pass first: identify the nearest existing test example, the target owner file, and the relevant setup or helper file before you start writing.",
@@ -160,7 +160,7 @@ def get_tdd_guidance() -> str:
             _section(
                 "Fast Codebase Understanding",
                 [
-                    "Start from the current test batch, `<interface_spec>`, `<test_plan>`, `<test_code>`, and `<node_understanding>`.",
+                    "Start from the current test batch, `<interfaces>`, `<test_plan>`, `<test_code>`, and `<requirement_focus>`.",
                     "Identify one likely owner file and, if needed, one adjacent boundary file before editing.",
                     "Use the prefetched source and test context first; do not rediscover the whole repository unless the current evidence is insufficient.",
                 ],
