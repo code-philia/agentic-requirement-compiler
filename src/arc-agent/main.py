@@ -65,7 +65,7 @@ def _copy_requirement_dir_contents(requirement_dir: str, output_dir: str) -> Non
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run ARC agent workflow from the command line.")
     parser.add_argument(
-        "requirement_path",
+        "requirement-path",
         help="Requirement directory containing requirements.yaml and optional reference/ assets. Its contents will be copied into output-dir/requirements/ before compilation.",
     )
     parser.add_argument(
@@ -86,7 +86,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--web-port",
         type=int,
-        default=3301,
+        default=3000,
         help="Single backend port for web apps. The backend serves the built frontend on this port.",
     )
     parser.add_argument(
