@@ -7,7 +7,7 @@ import shutil
 from traceability.database import get_all_requirements
 from utils import set_android_package
 
-from .base import ARC_STACK_END, ARC_STACK_START, AppTypeHandler
+from .base import AppTypeHandler
 
 
 def _android_file_to_test_class(file_path: str) -> str:
@@ -158,7 +158,6 @@ class AndroidAppType(AppTypeHandler):
     def build_stack_block(cls) -> str:
         return "\n".join(
             [
-                ARC_STACK_START,
                 "* **Platform** : Android Native App (Single-module `app` template)",
                 "* **Build System** : Gradle Wrapper + Android Gradle Plugin `8.1.4`",
                 "* **Language** : Java 8 (`sourceCompatibility` / `targetCompatibility` = 1.8)",
@@ -171,7 +170,6 @@ class AndroidAppType(AppTypeHandler):
                 "* **Test Discovery** : android-junit5 1.11.0.0 Gradle plugin",
                 "* **Testing (Integration)** : JUnit5 + Robolectric + MockWebServer 4.12.0 + Room in-memory DB (`app/src/test/`)",
                 "* **Testing (E2E)** : JUnit5 + Robolectric + ActivityScenario (`app/src/test/`)",
-                ARC_STACK_END,
             ]
         )
 

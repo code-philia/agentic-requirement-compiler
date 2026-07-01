@@ -5,10 +5,6 @@ from abc import ABC, abstractmethod
 from importlib import resources
 from typing import Awaitable, Callable
 
-
-ARC_STACK_START = "<!-- ARC_TECH_STACK_START -->"
-ARC_STACK_END = "<!-- ARC_TECH_STACK_END -->"
-
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 PACKAGE_TEMPLATES_PACKAGE = "templates"
 

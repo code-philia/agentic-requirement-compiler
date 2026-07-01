@@ -5,7 +5,7 @@ import asyncio
 
 from typing import Awaitable, Callable
 
-from .base import ARC_STACK_END, ARC_STACK_START, AppTypeHandler
+from .base import AppTypeHandler
 from utils import build_web_runtime_env, get_web_base_url, get_web_port
 
 async def run_npm_install(target_dir: str, log_cb: Callable[..., Awaitable[None]]):
@@ -592,7 +592,6 @@ class WebAppType(AppTypeHandler):
         web_port = get_web_port()
         base_url = get_web_base_url()
         return (
-            f"{ARC_STACK_START}\n"
             "### Main Stack\n"
             "- backend: nodejs\n"
             "- frontend: react\n"
@@ -621,7 +620,6 @@ class WebAppType(AppTypeHandler):
             "  * Vitest: Used for backend Unit and Integration testing.\n"
             "  * Supertest: Used with Vitest for API route testing.\n"
             "  * Playwright: Used for End-to-End (E2E) testing, located in `backend/test-e2e`, configured by `backend/playwright.config.js`, and expected to use `process.env.PLAYWRIGHT_BASE_URL`.\n"
-            f"{ARC_STACK_END}"
         )
 
     @classmethod
