@@ -37,24 +37,6 @@ class TestDrivenDeveloper(ARCAgent):
         return all(header in normalized for header in required_headers)
 
     def get_system_prompt(self) -> str:
-        from utils import get_app_type, get_android_package, get_web_base_url, get_web_port
-        app_type = get_app_type()
-        if app_type == "android":
-            android_pkg = get_android_package()
-            runtime_rules = f"""
-### Android runtime rules
-- Use `{android_pkg}` consistently in source and test package declarations.
-- Keep the implementation aligned with the generated test package split.
-"""
-        else:
-            runtime_rules = (
-                "### Web runtime rules\n"
-                f"- The only deployed backend port is `{get_web_port()}`.\n"
-                f"- The backend serves the frontend at `{get_web_base_url()}`.\n"
-                "- Prefer existing TS/TSX modules and Tailwind-based UI composition when touching frontend code.\n"
-                "- E2E remains Playwright-based under the current single-port runtime.\n"
-            )
-
         return f"""You are the TDD implementation agent for this compiler.
 Land the current test batch by following the structured handoff: `<node_understanding>`, `<interface_spec>`, `<test_plan>`, `<test_code>`, and `<frozen_node_contract>`.
 
@@ -82,8 +64,6 @@ Rules:
 {get_common_session_guidance()}
 
 {get_tdd_guidance()}
-
-{runtime_rules}
 """
 
     def get_tool_names(self) -> List[str]:

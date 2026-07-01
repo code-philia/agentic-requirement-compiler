@@ -242,24 +242,6 @@ class InterfaceDesigner(ARCAgent):
                 )
 
     def get_system_prompt(self) -> str:
-        from utils import get_android_package, get_app_type, get_web_base_url, get_web_port
-
-        app_type = get_app_type()
-        if app_type == "android":
-            android_pkg = get_android_package()
-            runtime_rules = f"""
-### Android package rules
-- Use `{android_pkg}` consistently in source paths and package declarations.
-- If the requirement or scenario gives an explicit resource-id package, that package wins for the ids it names.
-"""
-        else:
-            runtime_rules = f"""
-### Web runtime rules
-- The only deployed web runtime is the backend on port `{get_web_port()}` at `{get_web_base_url()}`.
-- The backend serves `frontend/dist` on the same origin.
-- Prefer existing app shells, route containers, layouts, providers, pages, TS/TSX modules, and Tailwind-based UI composition.
-"""
-
         return f"""You are the interface design agent for this compiler.
 Produce compact, structured design artifacts that the next agents can execute against.
 
@@ -279,8 +261,6 @@ Rules:
 {get_common_session_guidance()}
 
 {get_interface_designer_guidance()}
-
-{runtime_rules}
 """
 
     def get_tool_names(self) -> List[str]:
