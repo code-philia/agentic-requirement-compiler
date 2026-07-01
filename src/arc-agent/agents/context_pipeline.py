@@ -1,4 +1,5 @@
 import os
+import re
 import json
 import sqlite3
 from typing import Dict, Any, List
@@ -16,7 +17,7 @@ class NodeContextCache:
     when the data hasn't changed between phases.
     """
     # Layers that are truly global (never change during a run)
-    GLOBAL_LAYERS = {"global_context", "project_structure"}
+    GLOBAL_LAYERS = {"tech_stack_context", "project_structure"}
     # Layers that change only when files are written (after stub impl, test gen, TDD fix)
     FILE_DEPENDENT_LAYERS = {"source_code", "test_code"}
     # Layers that change when DB is updated (after insert_interface, insert_test)
@@ -72,7 +73,6 @@ class ContextPipeline:
     def __init__(self, workspace_dir: str = "."):
         self.workspace_dir = workspace_dir
         self.max_global_chars = 8000
-        self.max_requirement_chars = 6000
         self.max_interfaces = 20
         self.max_related_interfaces = 30
         self.max_tests = 20
@@ -113,13 +113,10 @@ class ContextPipeline:
         if visual_reference:
             visual_payload = []
             for item in visual_reference[:3]:
-                analysis = str(item.get("analysis", "") or "")
-                if len(analysis) > 1200:
-                    analysis = analysis[:1200] + "\n...[visual analysis truncated]"
                 visual_payload.append(
                     {
                         "image_path": item.get("image_path", ""),
-                        "analysis": analysis,
+                        "analysis": str(item.get("analysis", "") or ""),
                     }
                 )
             parts.append("<visual_reference>")
@@ -129,20 +126,34 @@ class ContextPipeline:
         parts.append("</requirement_focus>")
         return "\n".join(parts)
 
-    def _get_global_context(self) -> str:
+    def _get_tech_stack_context(self) -> str:
         """
-        Layer 1: Global Context (Tech stack, project rules, directory structure).
-        Reads from a standard file like `.arc_context.md` if it exists.
+        Layer 1: Global Context (Tech stack and runtime rules).
+        Build it directly from the active app type instead of reading metadata files.
         """
-        from utils import get_abs_path
-        context_file = get_abs_path(os.path.join(".arc", "metadata.md"))
-        if os.path.exists(context_file):
-            with open(context_file, "r", encoding="utf-8") as f:
-                content = f.read()
-                if len(content) > self.max_global_chars:
-                    content = content[:self.max_global_chars] + "\n...[global context truncated]"
-                return f"<global_context>\n{content}\n</global_context>"
-        return "<global_context>\nNo global context file (.arc/metadata.md) found.\n</global_context>"
+        from app_types import get_app_type_handler_class
+        from utils import get_android_package, get_app_type
+
+        app_type = get_app_type()
+        handler_class = get_app_type_handler_class(app_type)
+        content = handler_class.build_stack_block()
+
+        if app_type == "android":
+            package_name = get_android_package()
+            pkg_dir = package_name.replace(".", "/")
+            content += (
+                "\n\n## Android Package Configuration\n"
+                f"- **Package**: `{package_name}`\n"
+                f"- **Package directory**: `{pkg_dir}`\n"
+                f"- **Main source**: `app/src/main/java/{pkg_dir}/`\n"
+                f"- **Unit tests**: `app/src/test/java/{pkg_dir}/unit/` --package `{package_name}.unit`\n"
+                f"- **Integration tests**: `app/src/test/java/{pkg_dir}/integration/` --package `{package_name}.integration`\n"
+                f"- **E2E tests**: `app/src/test/java/{pkg_dir}/e2e/` --package `{package_name}.e2e`\n"
+            )
+
+        if len(content) > self.max_global_chars:
+            content = content[:self.max_global_chars] + "\n...[global context truncated]"
+        return f"<tech_stack_context>\n{content}\n</tech_stack_context>"
 
     def _get_project_structure(self, agent_type: str = "") -> str:
         """Layer 1.5: Relevant source and test roots (pre-fetched so LLM doesn't need list_directory)."""
@@ -480,27 +491,14 @@ class ContextPipeline:
         if requirement_focus:
             context_parts.append(requirement_focus)
 
-        req_json = json.dumps(req_data, indent=2, ensure_ascii=False)
-        if len(req_json) > self.max_requirement_chars:
-            req_json = req_json[:self.max_requirement_chars] + "\n...[requirement truncated]"
-        context_parts.append(f"<current_requirement id=\"{node_id}\">\n{req_json}\n</current_requirement>")
-
         node_contract = self.cache.get_or_compute(node_id, "node_contract", lambda: self._get_node_contract(node_id))
         if node_contract:
             context_parts.append(node_contract)
 
-        context_parts.append(
-            "<context_policy>\n"
-            "- Prefer reusing existing interfaces before creating new ones.\n"
-            "- If modifying a reused interface, check impacts first.\n"
-            "- Prefer minimal file reads and targeted grep over full scans.\n"
-            "- Keep outputs deterministic and schema-valid.\n"
-            "</context_policy>"
-        )
 
         # 1. Inject Global Context (cached globally — never changes)
         context_parts.append(
-            self.cache.get_or_compute(node_id, "global_context", self._get_global_context)
+            self.cache.get_or_compute(node_id, "tech_stack_context", self._get_tech_stack_context)
         )
 
         # 1.5 Inject Project Structure (cached per node, invalidated after writes)
@@ -654,15 +652,17 @@ class ContextPipeline:
             target_test_files=target_test_files,
         )
         static = self.get_static_context(node_id, agent_type)
-        # Remove the static portion from the full context to get the dynamic portion
-        # The static layers appear at the start of full_context
-        if static and static in full_context:
-            idx = full_context.index(static)
-            # Take everything after the static portion
-            dynamic = full_context[idx + len(static):].lstrip("\n")
+        dynamic = full_context
+
+        # Remove static layers while preserving the leading requirement payload.
+        # The dynamic user prompt must still start with the current node context
+        # (`<requirement_focus>`, scenarios, visual refs, contracts).
+        if static:
+            static_parts = [part.strip() for part in static.split("\n\n") if part.strip()]
+            for part in static_parts:
+                dynamic = dynamic.replace(part, "", 1)
+            dynamic = re.sub(r"\n{3,}", "\n\n", dynamic).strip()
         else:
-            # Fallback: put everything in dynamic (no split)
-            dynamic = full_context
             static = ""
         return static, dynamic
 
@@ -672,16 +672,7 @@ class ContextPipeline:
         to reduce per-step token cost.
         """
         parts = []
-        # context_policy is static
-        parts.append(
-            "<context_policy>\n"
-            "- Prefer reusing existing interfaces before creating new ones.\n"
-            "- If modifying a reused interface, check impacts first.\n"
-            "- Prefer minimal file reads and targeted grep over full scans.\n"
-            "- Keep outputs deterministic and schema-valid.\n"
-            "</context_policy>"
-        )
-        global_ctx = self.cache.get_or_compute(node_id, "global_context", self._get_global_context)
+        global_ctx = self.cache.get_or_compute(node_id, "tech_stack_context", self._get_tech_stack_context)
         parts.append(global_ctx)
         proj_struct = self.cache.get_or_compute(
             node_id,
@@ -722,7 +713,7 @@ class ContextPipeline:
 
     def prewarm(self, node_id: str):
         """Eagerly populate global cache layers so subsequent calls get cache hits."""
-        self.cache.get_or_compute(node_id, "global_context", self._get_global_context)
+        self.cache.get_or_compute(node_id, "tech_stack_context", self._get_tech_stack_context)
         self.cache.get_or_compute(node_id, "project_structure::", lambda: self._get_project_structure(""))
 
 # Singleton instance
