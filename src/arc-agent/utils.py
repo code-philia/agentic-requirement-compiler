@@ -394,8 +394,72 @@ class DebugLogger:
                 file.write(f"[{timestamp}] [{tag}] {content}\n")
 
 
+class PromptDumpLogger:
+    def __init__(self, dump_dir: str, reset_existing: bool = True):
+        self._dir = dump_dir
+        self._lock = threading.Lock()
+        self._counter = 0
+        self._ensure_dir(reset=reset_existing)
+
+    def _ensure_dir(self, reset: bool = False):
+        if reset and os.path.isdir(self._dir):
+            shutil.rmtree(self._dir, ignore_errors=True)
+        os.makedirs(self._dir, exist_ok=True)
+
+    @staticmethod
+    def _safe_segment(value: str, fallback: str) -> str:
+        cleaned = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(value or "").strip())
+        return cleaned or fallback
+
+    def dump(self, agent_name: str, node_id: str | None, step: int, payload: dict[str, Any]) -> str:
+        timestamp = time.strftime("%Y%m%d-%H%M%S")
+        safe_agent = self._safe_segment(agent_name, "Agent")
+        safe_node = self._safe_segment(node_id or "GLOBAL", "GLOBAL")
+        with self._lock:
+            self._counter += 1
+            sequence = self._counter
+            filename = f"{timestamp}-{sequence:04d}-{safe_agent}-{safe_node}-step{int(step):02d}.md"
+            path = os.path.join(self._dir, filename)
+            request = payload.get("request", {}) if isinstance(payload, dict) else {}
+            messages = request.get("messages", []) if isinstance(request, dict) else []
+            tools = request.get("tools", []) if isinstance(request, dict) else []
+            lines = [
+                "# Model Request Dump",
+                "",
+                f"- Timestamp: `{timestamp}`",
+                f"- Agent: `{agent_name}`",
+                f"- Node: `{node_id or 'GLOBAL'}`",
+                f"- Step: `{int(step)}`",
+                f"- Model: `{request.get('model', '')}`",
+                f"- Temperature: `{request.get('temperature', '')}`",
+                f"- Tool Choice: `{request.get('tool_choice', '')}`",
+                "",
+                "## Messages",
+            ]
+            for index, message in enumerate(messages, start=1):
+                role = str(message.get("role", "unknown"))
+                lines.append("")
+                lines.append(f"### {index}. `{role}`")
+                content = message.get("content", "")
+                if isinstance(content, str):
+                    lines.append("```text")
+                    lines.append(content)
+                    lines.append("```")
+                else:
+                    lines.append("```json")
+                    lines.append(json.dumps(content, indent=2, ensure_ascii=False))
+                    lines.append("```")
+
+            lines.extend(["", "## Tools", "```json", json.dumps(tools, indent=2, ensure_ascii=False), "```"])
+            lines.extend(["", "## Full Request JSON", "```json", json.dumps(payload, indent=2, ensure_ascii=False), "```"])
+            with open(path, "w", encoding="utf-8") as file:
+                file.write("\n".join(lines))
+        return path
+
+
 _spinner = Spinner()
 debug_logger: Optional[DebugLogger] = None
+prompt_dump_logger: Optional[PromptDumpLogger] = None
 
 ARC_GITIGNORE_START = "# ARC_MANAGED_START"
 ARC_GITIGNORE_END = "# ARC_MANAGED_END"
@@ -482,11 +546,15 @@ async def _configure_git_identity(target_dir: str) -> tuple[bool, str]:
 
 
 def init_debug_logger(project_path: str, reset_existing: bool = True) -> str:
-    global debug_logger
+    global debug_logger, prompt_dump_logger
     arc_dir = os.path.join(project_path, ".arc")
     os.makedirs(arc_dir, exist_ok=True)
     log_path = os.path.join(arc_dir, "debug.log")
     debug_logger = DebugLogger(log_path, reset_existing=reset_existing)
+    prompt_dump_logger = PromptDumpLogger(
+        os.path.join(arc_dir, "prompt_dumps"),
+        reset_existing=reset_existing,
+    )
     return log_path
 
 
@@ -517,7 +585,7 @@ def print_cli_startup(
     from app_types import read_stack_summary
 
     print(f"  {Fore.WHITE}Debug Log {Style.RESET_ALL}  {log_path}")
-    print(f"\n  {Fore.WHITE}Project   {Style.RESET_ALL}  {project_path}")
+    print(f"\n  {Fore.WHITE}Output    {Style.RESET_ALL}  {project_path}")
     print(f"  {Fore.WHITE}Require   {Style.RESET_ALL}  {requirement_path}")
     print(f"  {Fore.WHITE}App Type  {Style.RESET_ALL}  {Fore.CYAN}{app_type}{Style.RESET_ALL}")
     if app_type == "web" and web_port is not None:

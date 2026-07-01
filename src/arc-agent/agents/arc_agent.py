@@ -372,6 +372,25 @@ Output from {tool_name}:
                     display_msg = last_msg
                 await self._log(f"[DEBUG] Input to model:\n{display_msg}", node_id=node_id)
 
+            if utils.prompt_dump_logger:
+                try:
+                    prompt_payload = {
+                        "agent_name": self.agent_name,
+                        "node_id": node_id,
+                        "step": step + 1,
+                        "request": api_kwargs,
+                    }
+                    dump_path = utils.prompt_dump_logger.dump(
+                        agent_name=self.agent_name,
+                        node_id=node_id,
+                        step=step + 1,
+                        payload=prompt_payload,
+                    )
+                    if DEBUG_MODE:
+                        await self._log(f"[DEBUG] Prompt dump saved: {dump_path}", node_id=node_id)
+                except Exception as exc:
+                    await self._log(f"[DEBUG] Failed to dump prompt payload: {str(exc)}", node_id=node_id)
+
             response = await self._create_chat_completion_with_retry(**api_kwargs)
             message = response.choices[0].message
             messages.append(message.model_dump(exclude_none=True))
