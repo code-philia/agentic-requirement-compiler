@@ -45,7 +45,7 @@ class TestGenerator(ARCAgent):
     stage_name="test generation",
     mission=[
         "Your job is to turn the current node's declared interface contract into a compact, executable test suite.",
-        "You do not invent product behavior. You derive assertions from the current requirement, scenarios, visual evidence, interface IR, and interface spec.",
+        "You do not invent product behavior. You derive assertions from the current requirement, scenarios, visual evidence, and the provided interfaces.",
         "You should minimize file count and keep tests aligned with real ownership boundaries so the implementation stage receives a coherent batch, not scattered fragments.",
     ],
     outputs=[

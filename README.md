@@ -132,17 +132,23 @@ cd src/arc-agent
 # Linux/Mac:
 source .venv/bin/activate
 
-# Basic usage: compile a web project
-python main.py /path/to/target/project --app-type web
+# Basic usage: compile from a requirement directory
+python main.py /path/to/requirement-dir --app-type web
+
+# Compile into a specific output workspace
+python main.py /path/to/requirement-dir --output-dir /path/to/output-dir --app-type web
 
 # Compile a web project on a specific single backend port
-python main.py /path/to/target/project --app-type web --web-port 3301
+python main.py /path/to/requirement-dir --app-type web --web-port 3301
 
 # Compile an Android project
-python main.py /path/to/target/project --app-type android
+python main.py /path/to/requirement-dir --app-type android
 
-# Clear existing workspace and recompile
-python main.py /path/to/target/project --app-type web --clear-all
+# Choose test generation level
+python main.py /path/to/requirement-dir --test-level heavy
+
+# Clear existing output workspace and recompile
+python main.py /path/to/requirement-dir --output-dir /path/to/output-dir --clear-all
 
 ```
 
@@ -150,28 +156,37 @@ python main.py /path/to/target/project --app-type web --clear-all
 
 | Flag | Description |
 |------|-------------|
-| `project_path` | Target project root directory (positional, required) |
-| `--requirement-path` | Path to requirements YAML. Can be absolute, or relative to `project_path` |
-| `--clear-all` | Clear project workspace and recompile |
+| `requirement_path` | Requirement directory (positional, required). Must contain `requirements.yaml`; may also contain `reference/` and other assets |
+| `--output-dir` | Output workspace directory. Defaults to `<repo_root>/workspace/run-<timestamp>` |
+| `--clear-all` | Clear the output workspace and re-copy the requirement directory before recompiling |
 | `--app-type` | `web` or `android` (default: `web`) |
-| `--web-port` | Web only. Single backend port used to start the website; the backend serves the built frontend on this same port (default: `3301`) |
+| `--web-port` | Web only. Single backend port used to start the website; the backend serves the built frontend on this same port (default: `3000`) |
+| `--test-level` | Test generation level: `light` = Unit only, `middle` = Unit + Integration, `heavy` = Unit + Integration + E2E (default: `middle`) |
 
-## Target Project Directory Format
+At startup, ARC copies the entire requirement directory into:
 
-The target project directory is an existing directory passed as `project_path`.
+```text
+<output-dir>/requirements/
+```
 
-At minimum, ARC expects a requirements file in one of these locations:
+Compilation then runs inside `output-dir`. If `--clear-all` is not used and `output-dir/.arc/processing_queue.json` already exists, ARC resumes from that workspace instead of resetting it.
 
-- `<project_path>/requirements/requirements.yaml`
-- `<project_path>/requirements/requirents.yaml`
-- or a custom path supplied via `--requirement-path`
+## Requirement Directory Format
+
+The positional input is a requirement directory, not an existing project root.
+
+At minimum, ARC expects:
+
+- `<requirement-dir>/requirements.yaml`
+- optional referenced assets such as `<requirement-dir>/reference/...`
 
 Minimal input layout:
 
 ```text
-my-project/
-|-- requirements/
-|   `-- requirements.yaml
+my-requirement-dir/
+|-- requirements.yaml
+`-- reference/
+    `-- homepage.png
 ```
 
 ## Requirements YAML Format
