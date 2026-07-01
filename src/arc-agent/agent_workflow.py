@@ -265,6 +265,8 @@ class ARCWorkflowManager:
                 self._set_node_state(queue_state["node_states"], node_id, NODE_FAILED)
                 self._mark_remaining_node_tasks_failed(queue_state, node_id)
                 self._save_processing_queue(queue_state)
+                if phase == PHASE_DESIGN:
+                    emit_requirement_state(node_id, "design", "failed")
                 if phase == PHASE_IMPLEMENT:
                     emit_requirement_state(node_id, "test", "failed")
                 await self._commit_phase_checkpoint(node_id, f"{phase}-FAILED", requirement_data)

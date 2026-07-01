@@ -2,7 +2,15 @@ import sqlite3
 import json
 import os
 
-from arcbench_compat import emit_traceability_event, resolve_traceability_db_path
+from arcbench_compat import (
+    clear_demo_test_statuses,
+    emit_refresh_signal,
+    emit_traceability_event,
+    resolve_traceability_db_path,
+    set_demo_requirement_status,
+    set_demo_test_status,
+    set_demo_test_statuses,
+)
 
 # Default traceability database path. Runtime can override it via set_db_path().
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -275,6 +283,7 @@ def insert_test(test_id: str, req_id: str, interface_ids: list, type: str,
     
     conn.commit()
     conn.close()
+    set_demo_test_status(test_id, "passed" if passed is True else "failed" if passed is False else None)
     emit_traceability_event({
         "type": "test_upsert",
         "test_id": test_id,
@@ -296,6 +305,8 @@ def update_test_pass_status(test_id: str, passed: bool | None):
     )
     conn.commit()
     conn.close()
+    set_demo_test_status(test_id, "passed" if passed is True else "failed" if passed is False else None)
+    emit_refresh_signal(reason="test_status_updated", traceability_selected=True, traceability_all=True)
 
 
 def update_test_pass_statuses(status_by_test_id: dict[str, bool | None]):
@@ -312,15 +323,25 @@ def update_test_pass_statuses(status_by_test_id: dict[str, bool | None]):
         )
     conn.commit()
     conn.close()
+    set_demo_test_statuses({
+        test_id: "passed" if passed is True else "failed" if passed is False else None
+        for test_id, passed in status_by_test_id.items()
+    })
+    emit_refresh_signal(reason="test_statuses_updated", traceability_selected=True, traceability_all=True)
 
 
 def reset_test_pass_statuses_for_req_id(req_id: str):
     """Reset final pass status for all tests under one requirement."""
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
+    cursor.execute('SELECT test_id FROM tests WHERE req_id = ?', (req_id,))
+    test_ids = [str(row[0]).strip() for row in cursor.fetchall() if row and str(row[0]).strip()]
     cursor.execute('UPDATE tests SET passed = NULL WHERE req_id = ?', (req_id,))
     conn.commit()
     conn.close()
+    clear_demo_test_statuses(test_ids)
+    set_demo_requirement_status(req_id, None)
+    emit_refresh_signal(reason="test_statuses_reset", traceability_selected=True, traceability_all=True)
 
 def update_test_implemented_status(test_ids: list, implemented: bool = True):
     """Update implemented status for the specific interfaces associated with the given tests.
@@ -538,10 +559,15 @@ def clear_node_design_artifacts(req_id: str):
         else:
             cursor.execute('DELETE FROM interfaces WHERE interface_id = ?', (interface_id,))
 
+    cursor.execute('SELECT test_id FROM tests WHERE req_id = ?', (req_id,))
+    test_ids = [str(row['test_id']).strip() for row in cursor.fetchall() if row and str(row['test_id']).strip()]
     cursor.execute('DELETE FROM tests WHERE req_id = ?', (req_id,))
     cursor.execute('DELETE FROM call_edges WHERE source_req_id = ? OR target_req_id = ?', (req_id, req_id))
     conn.commit()
     conn.close()
+    clear_demo_test_statuses(test_ids)
+    set_demo_requirement_status(req_id, None)
+    emit_refresh_signal(reason="design_artifacts_cleared", traceability_selected=True, traceability_all=True)
 
 def get_tests_by_req_id(req_id: str):
     """Retrieve all tests associated with a specific requirement ID."""
@@ -647,6 +673,13 @@ def upsert_node_state(req_id: str, state: str):
     ''', (req_id, state))
     conn.commit()
     conn.close()
+    normalized_state = str(state or "").strip().upper()
+    if normalized_state in {"PASSED", "CONVERGED", "CONVERGED_WITH_FAILED_CHILDREN"}:
+        set_demo_requirement_status(req_id, "passed")
+    elif normalized_state == "FAILED":
+        set_demo_requirement_status(req_id, "failed")
+    else:
+        set_demo_requirement_status(req_id, None)
 
 
 def get_node_state(req_id: str):
