@@ -120,7 +120,6 @@ class AndroidAppType(AppTypeHandler):
         else:
             await self.log_cb("System", "Package extraction failed. Using fallback: com.example.app")
             self._setup_android_package("com.example.app")
-            self._write_android_package_metadata("com.example.app", {})
 
         sdk_root = os.environ.get("ANDROID_SDK_ROOT") or os.environ.get("ANDROID_HOME")
         if sdk_root:
@@ -289,92 +288,13 @@ If no app package can be identified, set package_name to "UNKNOWN"."""
             await self.log_cb("System", f"LLM extracted package name: {package_name}")
             if resource_ids:
                 await self.log_cb("System", f"LLM extracted {len(resource_ids)} resource-id mappings")
-            self._write_android_package_metadata(package_name, resource_ids)
             return package_name
         except Exception as exc:
             await self.log_cb("System", f"Package extraction via LLM failed: {str(exc)}")
             return self._fallback_package_name_extraction(all_reqs)
 
     def _write_android_package_metadata(self, package_name: str, resource_ids: dict):
-        metadata_path = os.path.join(self.workspace_path, ".arc", "metadata.md")
-        if not os.path.exists(metadata_path):
-            return
-
-        with open(metadata_path, "r", encoding="utf-8") as file:
-            content = file.read()
-
-        pkg_dir = package_name.replace(".", "/")
-        lines = [
-            "",
-            "## Android Package Configuration",
-            f"- **Package**: `{package_name}`",
-            f"- **Package directory**: `{pkg_dir}`",
-            f"- **Main source**: `app/src/main/java/{pkg_dir}/`",
-            f"- **Unit tests**: `app/src/test/java/{pkg_dir}/unit/` --package `{package_name}.unit`",
-            f"- **Integration tests**: `app/src/test/java/{pkg_dir}/integration/` --package `{package_name}.integration`",
-            f"- **E2E tests**: `app/src/test/java/{pkg_dir}/e2e/` --package `{package_name}.e2e`",
-        ]
-
-        if resource_ids:
-            lines.append("")
-            lines.append("## Resource-ID Mapping (from requirements)")
-            lines.append("All resource-ids MUST use this package as prefix:")
-            lines.append(f"  Pattern: `{package_name}:id/<resourceName>`")
-            lines.append("")
-            lines.append("| Resource ID | Component Type |")
-            lines.append("|-------------|---------------|")
-            for res_name, comp_type in sorted(resource_ids.items()):
-                lines.append(f"| `{package_name}:id/{res_name}` | {comp_type} |")
-
-        examples_root = os.path.join(self.workspace_path, ".arc", "examples")
-        example_files = []
-        if os.path.exists(examples_root):
-            for root, _, files in os.walk(examples_root):
-                for fname in sorted(files):
-                    if fname.endswith(".java") or fname.endswith(".kt"):
-                        rel = os.path.relpath(os.path.join(root, fname), self.workspace_path)
-                        example_files.append(rel.replace(os.sep, "/"))
-        if example_files:
-            lines.append("")
-            lines.append("## Template Examples (read-only reference --NOT on the build path)")
-            lines.append("These counter-app files demonstrate the correct architectural patterns")
-            lines.append("(ViewModel, Repository, DAO, Room setup, Robolectric test helpers).")
-            lines.append("Read them for guidance. Do NOT copy their `com.example.template` package")
-            lines.append("declarations --use the target package instead.")
-            for example_file in example_files[:40]:
-                lines.append(f"- `{example_file}`")
-            if len(example_files) > 40:
-                lines.append(f"- ... ({len(example_files) - 40} more)")
-
-        test_root = os.path.join(self.workspace_path, "app", "src", "test", "java", pkg_dir)
-        infra_files = []
-        if os.path.exists(test_root):
-            for root, _, files in os.walk(test_root):
-                for fname in sorted(files):
-                    if (fname.endswith(".java") or fname.endswith(".kt")) and not fname.endswith("Test.java"):
-                        rel = os.path.relpath(os.path.join(root, fname), self.workspace_path)
-                        infra_files.append(rel.replace(os.sep, "/"))
-        if infra_files:
-            lines.append("")
-            lines.append("## Test Infrastructure (already in your test package --import directly)")
-            lines.append("These utility classes are compiled alongside your tests. Do NOT recreate them.")
-            for infra_file in infra_files:
-                lines.append(f"- `{infra_file}`")
-
-        lines.append("")
-        pkg_block = "\n".join(lines)
-        start_marker = "## Android Package Configuration"
-        start = content.find(start_marker)
-        if start != -1:
-            end = content.find("\n## ", start + len(start_marker))
-            if end == -1:
-                end = len(content)
-            content = content[:start] + pkg_block + content[end:]
-        else:
-            content = content.rstrip() + "\n" + pkg_block
-
-        with open(metadata_path, "w", encoding="utf-8") as file:
-            file.write(content)
+        return None
 
     def _fallback_package_name_extraction(self, all_reqs: list) -> str:
         for req in all_reqs:

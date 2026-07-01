@@ -6,7 +6,7 @@ import time
 from dataclasses import dataclass
 
 from agent_workflow import ARCWorkflowManager
-from app_types import normalize_app_type, upsert_metadata
+from app_types import normalize_app_type
 from utils import cli_log, init_debug_logger, print_cli_banner, print_cli_startup, set_web_port, stop_cli_spinner
 
 
@@ -81,7 +81,7 @@ def parse_args() -> argparse.Namespace:
         "--app-type",
         choices=["web", "android"],
         default="web",
-        help="Application type for stack metadata writing.",
+        help="Application type for runtime stack context.",
     )
     parser.add_argument(
         "--web-port",
@@ -114,7 +114,6 @@ def prepare_config(args: argparse.Namespace) -> CompilationConfig:
     if not resume_from_queue:
         _reset_directory(normalized_output_dir)
         _copy_requirement_dir_contents(normalized_requirement_dir, normalized_output_dir)
-        upsert_metadata(normalized_output_dir, normalized_app_type)
 
     normalized_requirement_path = os.path.join(normalized_output_dir, "requirements", "requirements.yaml")
     if not os.path.isfile(normalized_requirement_path):

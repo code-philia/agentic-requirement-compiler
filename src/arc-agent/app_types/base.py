@@ -153,46 +153,8 @@ class AppTypeHandler(ABC):
 
     @classmethod
     def upsert_metadata(cls, project_path: str) -> str:
-        arc_dir = os.path.join(project_path, ".arc")
-        os.makedirs(arc_dir, exist_ok=True)
-        metadata_path = os.path.join(arc_dir, "metadata.md")
-        new_block = cls.build_stack_block()
-
-        old_content = ""
-        if os.path.exists(metadata_path):
-            with open(metadata_path, "r", encoding="utf-8") as file:
-                old_content = file.read()
-
-        start = old_content.find(ARC_STACK_START)
-        end = old_content.find(ARC_STACK_END)
-        if start != -1 and end != -1 and end > start:
-            before = old_content[:start].rstrip()
-            after = old_content[end + len(ARC_STACK_END):].lstrip()
-            merged = ""
-            if before:
-                merged += before + "\n\n"
-            merged += new_block
-            if after:
-                merged += "\n\n" + after
-            content = merged.strip() + "\n"
-        elif old_content.strip():
-            content = old_content.rstrip() + "\n\n" + new_block + "\n"
-        else:
-            content = new_block + "\n"
-
-        with open(metadata_path, "w", encoding="utf-8") as file:
-            file.write(content)
-        return metadata_path
+        return cls.build_stack_block()
 
     @classmethod
     def read_stack_summary(cls, project_path: str) -> str:
-        metadata_path = os.path.join(project_path, ".arc", "metadata.md")
-        if not os.path.exists(metadata_path):
-            return cls.default_stack_summary()
-
-        try:
-            with open(metadata_path, "r", encoding="utf-8") as file:
-                content = file.read()
-            return cls.parse_stack_summary(content)
-        except Exception as exc:
-            return f"Failed to parse metadata.md: {str(exc)}"
+        return cls.parse_stack_summary(cls.build_stack_block())
