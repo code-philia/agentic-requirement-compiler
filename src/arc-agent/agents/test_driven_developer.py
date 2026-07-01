@@ -402,12 +402,7 @@ Rules:
         node_id: str,
         test_files: List[str],
         test_type: str,
-        scenarios: list = None,
-        current_interfaces: list = None,
         preloaded_source: str = None,
-        node_understanding: dict[str, Any] | None = None,
-        interface_spec: list[dict[str, Any]] | None = None,
-        test_plan: dict[str, Any] | None = None,
         previous_failure_summary: str = "",
     ) -> tuple:
         """Build the [system, user] messages and tools list without calling run().
@@ -491,12 +486,7 @@ When all target tests pass, output "IMPLEMENTED".
         node_id: str,
         test_files: List[str],
         test_type: str,
-        scenarios: list = None,
-        current_interfaces: list = None,
         preloaded_source: str = None,
-        node_understanding: dict[str, Any] | None = None,
-        interface_spec: list[dict[str, Any]] | None = None,
-        test_plan: dict[str, Any] | None = None,
         previous_failure_summary: str = "",
     ) -> str:
         """Backwards-compatible: build initial messages then run a new session."""
@@ -504,12 +494,7 @@ When all target tests pass, output "IMPLEMENTED".
             node_id=node_id,
             test_files=test_files,
             test_type=test_type,
-            scenarios=scenarios,
-            current_interfaces=current_interfaces,
             preloaded_source=preloaded_source,
-            node_understanding=node_understanding,
-            interface_spec=interface_spec,
-            test_plan=test_plan,
             previous_failure_summary=previous_failure_summary,
         )
         result, _ = await self.run_from_messages(

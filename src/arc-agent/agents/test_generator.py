@@ -143,12 +143,8 @@ Generate Unit and Integration coverage in one pass.
         self,
         node_id: str,
         requirement_data: Dict[str, Any],
-        interfaces_ir: list,
         test_type: str = "Unit",
         preloaded_source: str = None,
-        is_leaf: bool = True,
-        node_understanding: dict[str, Any] | None = None,
-        interface_spec: list[dict[str, Any]] | None = None,
         design_mode: str = "leaf_full",
     ) -> tuple:
         from .context_pipeline import context_pipeline
@@ -202,21 +198,15 @@ When finished, output one JSON array in a `json` markdown block:
         self,
         node_id: str,
         requirement_data: Dict[str, Any],
-        interfaces_ir: list,
         test_type: str = "Unit",
         preloaded_source: str = None,
-        node_understanding: dict[str, Any] | None = None,
-        interface_spec: list[dict[str, Any]] | None = None,
         design_mode: str = "leaf_full",
     ) -> str:
         messages, tools = self.build_initial_messages(
             node_id=node_id,
             requirement_data=requirement_data,
-            interfaces_ir=interfaces_ir,
             test_type=test_type,
             preloaded_source=preloaded_source,
-            node_understanding=node_understanding,
-            interface_spec=interface_spec,
             design_mode=design_mode,
         )
         self._soft_read_guard = {}

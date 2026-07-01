@@ -366,11 +366,7 @@ class WorkflowPhaseRunner:
         messages, tools = self.test_generator.build_initial_messages(
             node_id=node_id,
             requirement_data=requirement_data,
-            interfaces_ir=interfaces,
             test_type=self._get_test_generation_mode(),
-            is_leaf=is_leaf,
-            node_understanding=node_understanding,
-            interface_spec=interface_spec,
             design_mode=design_mode,
         )
         test_output, test_messages = await self.test_generator.run_from_messages(
@@ -601,10 +597,6 @@ class WorkflowPhaseRunner:
 
         previous_group_handoff_summary = ""
         previous_group_modified_files: list[str] = []
-        session = utils.load_node_session(node_id)
-        node_understanding = session.get("node_understanding", {})
-        interface_spec = session.get("interface_spec", [])
-        test_plan = session.get("test_plan", {})
 
         for test_type in self._get_selected_test_types():
             typed_tests = [test for test in tests if str(test.get("type", "")).strip() == test_type]
@@ -624,12 +616,7 @@ class WorkflowPhaseRunner:
                 node_id=node_id,
                 test_files=test_files,
                 test_type=test_type,
-                scenarios=requirement_data.get("scenarios", []),
-                current_interfaces=interfaces,
                 preloaded_source=context_pipeline.build_incremental_context(node_id, previous_group_modified_files) if previous_group_modified_files else None,
-                node_understanding=node_understanding,
-                interface_spec=interface_spec,
-                test_plan=test_plan,
                 previous_failure_summary=previous_group_handoff_summary,
             )
             implement_output, implement_messages = await self.test_driven_developer.run_from_messages(
