@@ -7,17 +7,54 @@ def _section(title: str, bullets: list[str]) -> str:
     return "\n".join(lines)
 
 
+def get_compiler_role_guidance(
+    role_name: str,
+    stage_name: str,
+    mission: list[str],
+    outputs: list[str],
+) -> str:
+    return "\n\n".join(
+        [
+            _section(
+                "ARC Compiler",
+                [
+                    "This system is a requirement compiler, not a generic coding chat.",
+                    "The input is a requirement tree. Each node is a requirement unit that must be compiled into design artifacts, tests, and working code without breaking the larger system.",
+                    "Compilation proceeds by node and by stage. The main stages are: design interfaces and ownership, generate tests from the declared contract, then implement through a test-driven loop.",
+                    "The current node is only one part of the tree, so respect parent shell boundaries, child ownership, dependency links, and any frozen node contract.",
+                    "Treat the current requirement payload, scenarios, and visual reference as the primary specification. Generic repo priors are weaker evidence.",
+                ],
+            ),
+            _section(
+                "Your Current Role",
+                [
+                    f"You are `{role_name}` and you own the `{stage_name}` stage for the current node in this compiler pipeline.",
+                    *mission,
+                    "You may read and modify code only to the extent allowed by your current stage. Do not silently drift into another stage's job.",
+                ],
+            ),
+            _section(
+                "Expected Outputs",
+                outputs,
+            ),
+        ]
+    )
+
+
 def get_common_session_guidance() -> str:
     return _section(
         "Session Guidance",
         [
-            "Start from `<current_requirement>` and the prefetched node context. Treat explicit requirement text, scenarios, visual analysis, and frozen contracts as stronger evidence than generic repo priors.",
+            "The user prompt begins with the current node payload and its dynamic context. Read that block first before interpreting the rest of the prompt.",
+            "Start from `<requirement_focus>` and the prefetched node context. Treat explicit requirement text, scenarios, visual analysis, and frozen contracts as stronger evidence than generic repo priors.",
+            "Prefer reusing existing interfaces and code before creating new boundaries.",
+            "If you modify a reused interface or shared boundary, check the likely impact first.",
             "Before acting, form a compact working map: target behavior, likely owner files, reuse candidates, and hard constraints.",
             "Read code before proposing changes. Prefer files already named in context, entrypoints, route containers, top-level pages, providers, and nearby tests over broad repository scans.",
             "Prefer the smallest set of files that can prove or disprove the current hypothesis.",
             "When several searches or reads are independent, issue them in the same turn. When a later call depends on earlier evidence, keep them sequential.",
             "If an approach fails, identify the exact failed assumption before changing tactics. Gather only the next evidence needed to confirm or replace it.",
-            "Reuse existing code and interfaces unless the requirement clearly forces a new boundary.",
+            "Keep outputs deterministic, schema-valid, and scoped to the current stage.",
         ],
     )
 
@@ -72,7 +109,7 @@ def get_test_generator_guidance() -> str:
             _section(
                 "Fast Codebase Understanding",
                 [
-                    "Start from `<interface_spec>` and `<current_requirement>`. Treat them as the contract to test, not as optional hints.",
+                    "Start from `<interface_spec>` and `<requirement_focus>`. Treat them as the contract to test, not as optional hints.",
                     "Inspect existing test patterns near the owner files before inventing new test structure, fixtures, or selector strategy.",
                     "Prefer one primary file per layer or one file per coherent scenario group.",
                     "Do one compact exploration pass first: identify the nearest existing test example, the target owner file, and the relevant setup or helper file before you start writing.",

@@ -3,7 +3,11 @@ import re
 import os
 from typing import List, Dict, Any, Awaitable, Callable
 from .arc_agent import ARCAgent
-from .prompt_sections import get_common_session_guidance, get_tdd_guidance
+from .prompt_sections import (
+    get_common_session_guidance,
+    get_compiler_role_guidance,
+    get_tdd_guidance,
+)
 
 class TestDrivenDeveloper(ARCAgent):
     def __init__(self, log_cb=None):
@@ -37,7 +41,21 @@ class TestDrivenDeveloper(ARCAgent):
         return all(header in normalized for header in required_headers)
 
     def get_system_prompt(self) -> str:
-        return f"""You are the TDD implementation agent for this compiler.
+        return f"""{get_compiler_role_guidance(
+    role_name="TestDrivenDeveloper",
+    stage_name="test-driven implementation",
+    mission=[
+        "Your job is to take the current node's test batch and handoff artifacts, then land the minimal correct implementation that makes that batch pass.",
+        "You implement against the declared contract from the design and test stages, not against guessed behavior.",
+        "You work in a bounded fix-verify loop: form a hypothesis, inspect only the most relevant files, make the smallest change, then verify with `run_tests`.",
+    ],
+    outputs=[
+        "Minimal contract-preserving code changes for the current node.",
+        "Passing results for the current target test batch.",
+        "A final `IMPLEMENTED` only when the latest `run_tests` batch passes.",
+    ],
+)}
+
 Land the current test batch by following the structured handoff: `<node_understanding>`, `<interface_spec>`, `<test_plan>`, `<test_code>`, and `<frozen_node_contract>`.
 
 Rules:
@@ -457,7 +475,8 @@ Rules:
             handoff_context = f"\n### Previous Failure Summary\n{previous_failure_summary}\n"
 
         user_prompt = f"""
-### Auto-Prefetched Context for Node [{node_id}]
+### Current Node Context
+Read this first. The current requirement payload below is the authoritative task input for node `{node_id}`.
 {dynamic_ctx}
 {scenarios_context}
 {understanding_context}

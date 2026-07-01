@@ -2,7 +2,11 @@ import json
 from typing import Any, Dict, List
 
 from .arc_agent import ARCAgent
-from .prompt_sections import get_common_session_guidance, get_test_generator_guidance
+from .prompt_sections import (
+    get_common_session_guidance,
+    get_compiler_role_guidance,
+    get_test_generator_guidance,
+)
 
 
 class TestGenerator(ARCAgent):
@@ -37,11 +41,23 @@ class TestGenerator(ARCAgent):
 - Do not invent a separate frontend runtime port.
 """
 
-        return f"""You are the test design agent for this compiler.
-Generate compact, executable test plans and test files that follow the interface spec instead of guessing behavior.
+        return f"""{get_compiler_role_guidance(
+    role_name="TestGenerator",
+    stage_name="test generation",
+    mission=[
+        "Your job is to turn the current node's declared interface contract into a compact, executable test suite.",
+        "You do not invent product behavior. You derive assertions from the current requirement, scenarios, visual evidence, interface IR, and interface spec.",
+        "You should minimize file count and keep tests aligned with real ownership boundaries so the implementation stage receives a coherent batch, not scattered fragments.",
+    ],
+    outputs=[
+        "A compact coverage plan across the selected test layers.",
+        "Executable test files with stable assertions and correct placement.",
+        "A JSON manifest of the generated test artifacts for the current node.",
+    ],
+)}
 
 Rules:
-- Tests must cover `<interface_spec>` and `<current_requirement>`.
+- Tests must cover `<interface_spec>` and `<requirement_focus>`.
 - Keep granularity coarse: prefer one primary file per layer, or one file per coherent scenario group.
 - Prefer stable contract assertions over incidental DOM structure or implementation details.
 - Preserve `<frozen_node_contract>` and do not assert a conflicting route, auth behavior, or shell boundary.
@@ -179,7 +195,8 @@ Generate Unit and Integration coverage in one pass.
         )
 
         user_prompt = f"""
-### Auto-Prefetched Context for Node [{node_id}]
+### Current Node Context
+Read this first. The current requirement payload below is the authoritative task input for node `{node_id}`.
 {dynamic_ctx}
 {scenarios_context}
 {understanding_context}

@@ -11,7 +11,11 @@ from urllib.parse import urlparse
 import requests
 
 from .arc_agent import ARCAgent
-from .prompt_sections import get_common_session_guidance, get_interface_designer_guidance
+from .prompt_sections import (
+    get_common_session_guidance,
+    get_compiler_role_guidance,
+    get_interface_designer_guidance,
+)
 from traceability.database import update_requirement_visuals
 from utils import read_json_file, write_json_file
 
@@ -242,13 +246,27 @@ class InterfaceDesigner(ARCAgent):
                 )
 
     def get_system_prompt(self) -> str:
-        return f"""You are the interface design agent for this compiler.
-Produce compact, structured design artifacts that the next agents can execute against.
+        return f"""{get_compiler_role_guidance(
+    role_name="InterfaceDesigner",
+    stage_name="design",
+    mission=[
+        "Your job is to understand the current node, identify the smallest correct ownership boundaries, and declare the interface chain this node needs.",
+        "For leaf nodes, that usually means a minimal executable chain across UI -> API -> FUNC -> DB.",
+        "For non-leaf nodes, that usually means only parent shell assembly such as routes, layouts, providers, containers, and mount points.",
+        "When the workflow asks you to materialize interfaces, you must also land the owned code skeletons or UI implementation for those interfaces.",
+    ],
+    outputs=[
+        "A concrete node understanding grounded in the current requirement and existing codebase.",
+        "A minimal interface IR with clear ownership, file paths, and reuse decisions.",
+        "A testable interface specification aligned with the IR.",
+        "When requested by the workflow, materialized code for current-node UI and scaffolding for current-node non-UI interfaces.",
+    ],
+)}
 
 Rules:
 - Reuse existing interfaces before inventing new ones.
 - Preserve `<frozen_node_contract>` unless the requirement explicitly forces a change.
-- Respect `<current_requirement>`, `<node_understanding>`, visual analysis, and scenario details.
+- Respect `<requirement_focus>`, `<node_understanding>`, visual analysis, and scenario details.
 - If the requirement names exact UI ids or resource ids, keep them exact.
 - For leaf work, design the smallest complete chain needed across UI -> API -> FUNC -> DB.
 - For non-leaf work, stay at parent UI shell scope: routes, layouts, providers, page containers, mount points, and thin composition boundaries.
@@ -449,7 +467,8 @@ Rules:
             preloaded_source=preloaded_source,
         )
         user_prompt = f"""
-### Auto-Prefetched Context for Node [{node_id}]
+### Current Node Context
+Read this first. The current requirement payload below is the authoritative task input for node `{node_id}`.
 {dynamic_ctx}
 
 ### Task
@@ -518,7 +537,8 @@ Keep it concrete. Favor existing code and existing interfaces over speculation.
             preloaded_source=preloaded_source,
         )
         user_prompt = f"""
-### Auto-Prefetched Context for Node [{node_id}]
+### Current Node Context
+Read this first. The current requirement payload below is the authoritative task input for node `{node_id}`.
 {dynamic_ctx}
 
 ### Task
@@ -642,7 +662,8 @@ Rules:
             preloaded_source=preloaded_source,
         )
         user_prompt = f"""
-### Auto-Prefetched Context for Node [{node_id}]
+### Current Node Context
+Read this first. The current requirement payload below is the authoritative task input for node `{node_id}`.
 {dynamic_ctx}
 
 ### Node Understanding
@@ -705,14 +726,15 @@ Do not restate the IR mechanically. Turn it into testable behavioral contracts.
             agent_type=self.agent_name,
         )
         user_prompt = f"""
-### Auto-Prefetched Context for Node [{node_id}]
+### Current Node Context
+Read this first. The current requirement payload below is the authoritative task input for node `{node_id}`.
 {dynamic_ctx}
 
 {self._build_design_scope_guidance(design_mode)}
 
 ### Task
 Design the interface IR for this node.
-- Use `<current_requirement>` as the authoritative task payload.
+- Use `<requirement_focus>` as the authoritative task payload.
 - Reuse existing interfaces whenever possible.
 - Respect `<node_understanding>` and `<frozen_node_contract>` if present.
 - In non-leaf modes, stay at parent shell scope and avoid API/FUNC/DB expansion unless the requirement text makes it unavoidable.
@@ -764,7 +786,8 @@ Each object must follow:
         )
 
         user_prompt = f"""
-### Auto-Prefetched Context for Node [{node_id}]
+### Current Node Context
+Read this first. The current requirement payload below is the authoritative task input for node `{node_id}`.
 {dynamic_ctx}
 
 ### Node Understanding
@@ -845,7 +868,8 @@ Each item must follow this schema:
             )
 
         user_prompt = f"""
-### Auto-Prefetched Context for Node [{node_id}]
+### Current Node Context
+Read this first. The current requirement payload below is the authoritative task input for node `{node_id}`.
 {dynamic_ctx}
 
 ### Convergence Summary
@@ -920,7 +944,8 @@ Do only the minimal parent-level assembly needed to connect child capabilities i
             )
 
         user_prompt = f"""
-### Auto-Prefetched Context for Node [{node_id}]
+### Current Node Context
+Read this first. The current requirement payload below is the authoritative task input for node `{node_id}`.
 {dynamic_ctx}
 
 ### Convergence Summary
