@@ -27,7 +27,6 @@ class InterfaceDesigner(ARCAgent):
             log_cb=log_cb,
         )
         self._non_leaf_existing_write_guard = False
-        self._non_leaf_no_write_guard = False
 
     async def _intercept_tool_call(
         self,
@@ -309,22 +308,6 @@ Rules:
             "get_node_relations",
         ]
 
-    def _get_non_leaf_audit_tool_names(self) -> List[str]:
-        return [
-            "read_file",
-            "write_file",
-            "edit_file",
-            "delete_file",
-            "list_directory",
-            "glob",
-            "grep",
-            "run_build",
-            "search_interfaces_by_keyword",
-            "search_interfaces_by_relation",
-            "find_interface_impacts",
-            "get_node_relations",
-        ]
-
     @staticmethod
     def _extract_json_object_from_markdown(raw_output: str) -> dict[str, Any] | None:
         if not raw_output:
@@ -366,26 +349,54 @@ Rules:
             return None
 
     @staticmethod
-    def _build_design_scope_guidance(design_mode: str) -> str:
+    def _build_design_stage_task(design_mode: str) -> str:
         if design_mode == "leaf_full":
             return """
-### Scope
-- This is a leaf node.
-- Decompose the feature from UI to API to FUNC to DB.
-- Reuse existing interfaces where possible, and only add the minimum new contracts needed to land the feature.
+This is stage 1 of `InterfaceDesigner` for a leaf node.
+- Analyze the current requirement, scenarios, visual reference, and the most relevant existing code.
+- Design the smallest executable interface chain needed across UI -> API -> FUNC -> DB.
+- Reuse existing interfaces whenever possible, and only add the minimum new contracts needed to land the feature.
+- For each interface, produce a brief specification that says what responsibility it owns and how that interface should be tested.
+- Do not write code in this stage.
 """
-        if design_mode == "non_leaf_ui_with_shell_tests":
+        if design_mode == "non_leaf_full":
             return """
-### Scope
-- This is a non-leaf parent node.
-- Design only parent UI shell interfaces: top-level routes, layouts, providers, mount points, and thin composition boundaries.
-- The result must support parent shell testing, but it must not invent API/FUNC/DB layers unless the requirement text makes it unavoidable.
+This is stage 1 of `InterfaceDesigner` for a non-leaf node with concrete scenarios.
+- Analyze the current requirement, scenarios, visual reference if present, and the most relevant existing code.
+- Perform the same full-chain design discipline as a leaf node: decompose the feature across UI -> API -> FUNC -> DB as needed.
+- Reuse existing interfaces whenever possible, and only add the minimum new contracts needed to land the current node.
+- For each interface, produce a brief specification that says what responsibility it owns and how that interface should be tested.
+- Do not write code in this stage.
 """
         return """
-### Scope
-- This is a non-leaf parent node.
+This is stage 1 of `InterfaceDesigner` for a non-leaf UI-only parent node.
+- Analyze the current parent shell and the most relevant existing shared files.
 - Design only parent UI shell interfaces: top-level routes, layouts, providers, mount points, and thin composition boundaries.
 - Do not design API/FUNC/DB interfaces in this mode.
+- For each interface, produce a brief specification that says what responsibility it owns and how that shell interface should be validated.
+- Do not write code in this stage.
+"""
+
+    @staticmethod
+    def _build_materialize_stage_task(design_mode: str) -> str:
+        if design_mode == "leaf_full":
+            return """
+This is stage 2 of `InterfaceDesigner` for a leaf node.
+- Materialize the current node's interfaces into code.
+- For UI interfaces, land real UI code now.
+- For non-UI interfaces, land the smallest compilable or runnable skeleton that matches the declared responsibility and test intent.
+"""
+        if design_mode == "non_leaf_full":
+            return """
+This is stage 2 of `InterfaceDesigner` for a non-leaf node with concrete scenarios.
+- Materialize the current node's interfaces into code using the same full-chain discipline as a leaf node.
+- For UI interfaces, land real UI code now.
+- For non-UI interfaces, land the smallest compilable or runnable skeleton that matches the declared responsibility and test intent.
+"""
+        return """
+This is stage 2 of `InterfaceDesigner` for a non-leaf UI-only parent node.
+- Materialize only the parent shell interfaces for routes, layouts, providers, mount points, and composition boundaries.
+- Do not expand into API/FUNC/DB work in this mode.
 """
 
     @staticmethod
@@ -408,50 +419,124 @@ Rules:
         }
 
     @staticmethod
-    def _build_fallback_interface_spec(
+    def _enrich_interfaces_with_contracts(
         interfaces: list[dict[str, Any]],
         node_understanding: dict[str, Any] | None = None,
     ) -> list[dict[str, Any]]:
-        reuse_constraints = []
+        reuse_notes = []
         if node_understanding and node_understanding.get("reuse_candidates"):
-            reuse_constraints.append("Check existing related interfaces before adding a new contract.")
+            reuse_notes.append("Check existing related interfaces before adding a new contract.")
 
-        specs: list[dict[str, Any]] = []
+        enriched: list[dict[str, Any]] = []
         for interface in interfaces:
             if not isinstance(interface, dict):
                 continue
-            specs.append(
+            merged = dict(interface)
+            merged["responsibility"] = str(
+                merged.get("responsibility")
+                or merged.get("description")
+                or ""
+            ).strip()
+            merged["specification"] = str(
+                merged.get("specification")
+                or merged.get("responsibility")
+                or merged.get("description")
+                or ""
+            ).strip()
+            raw_test_focus = merged.get("test_focus")
+            if not isinstance(raw_test_focus, list) or not raw_test_focus:
+                raw_test_focus = [
+                    "Verify the interface is reachable at the declared boundary.",
+                    "Verify the primary observable behavior described by the requirement.",
+                ]
+            merged["test_focus"] = [str(item).strip() for item in raw_test_focus if str(item).strip()]
+            raw_reuse_notes = merged.get("reuse_notes")
+            if not isinstance(raw_reuse_notes, list) or not raw_reuse_notes:
+                raw_reuse_notes = list(reuse_notes)
+            merged["reuse_notes"] = [str(item).strip() for item in raw_reuse_notes if str(item).strip()]
+            enriched.append(merged)
+        return enriched
+
+    @staticmethod
+    def _derive_interface_spec(interfaces: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        derived: list[dict[str, Any]] = []
+        for interface in interfaces:
+            if not isinstance(interface, dict):
+                continue
+            derived.append(
                 {
                     "interface_id": str(interface.get("interface_id", "")).strip(),
                     "type": str(interface.get("type", "")).strip(),
                     "file_path": str(interface.get("file_path", "")).strip(),
                     "first_line": str(interface.get("first_line", "")).strip(),
-                    "responsibility": str(interface.get("description", "") or "").strip(),
-                    "inputs": interface.get("inputs", []) if isinstance(interface.get("inputs"), list) else [],
-                    "outputs": interface.get("outputs", []) if isinstance(interface.get("outputs"), list) else [],
-                    "preconditions": [],
-                    "postconditions": [],
-                    "error_cases": [],
-                    "reuse_constraints": list(reuse_constraints),
+                    "responsibility": str(interface.get("responsibility", "") or "").strip(),
+                    "specification": str(interface.get("specification", "") or "").strip(),
+                    "test_focus": interface.get("test_focus", []) if isinstance(interface.get("test_focus"), list) else [],
+                    "reuse_notes": interface.get("reuse_notes", []) if isinstance(interface.get("reuse_notes"), list) else [],
                 }
             )
-        return specs
+        return derived
 
-    def _build_fallback_leaf_design_bundle(
-        self,
-        requirement_data: dict[str, Any],
-        interfaces: list[dict[str, Any]] | None = None,
-        node_understanding: dict[str, Any] | None = None,
-    ) -> dict[str, Any]:
-        resolved_understanding = node_understanding or self._build_fallback_understanding(requirement_data)
-        resolved_interfaces = interfaces or []
-        return {
-            "node_understanding": resolved_understanding,
-            "interfaces": resolved_interfaces,
-            "interface_spec": self._build_fallback_interface_spec(resolved_interfaces, resolved_understanding),
-        }
+    @staticmethod
+    def _build_materialize_followup_prompt(
+        node_id: str,
+        node_understanding: dict[str, Any],
+        interfaces: list[dict[str, Any]],
+        design_mode: str,
+    ) -> str:
+        return f"""
+### Task
+Continue the same `InterfaceDesigner` design session for node `{node_id}`.
 
-    async def understand_node(
+You already finished the design bundle. Now complete the design stage by materializing the interfaces into code.
+{InterfaceDesigner._build_materialize_stage_task(design_mode)}
+
+### Node Understanding
+```json
+{json.dumps(node_understanding or {}, indent=2, ensure_ascii=False)}
+```
+
+### Interface IR
+```json
+{json.dumps(interfaces, indent=2, ensure_ascii=False)}
+```
+
+Execution rules:
+- This is now a code-writing step.
+- If `<visual_reference>` exists, it is a primary UI contract for this node.
+- For every current-node UI interface, land real UI code now. Do not leave TODO-only shells, placeholder divs, or interface-only JSON.
+- For UI code, follow the visual reference's layout hierarchy, section ordering, visible text, alignment, spacing rhythm, and overall composition as closely as the requirement allows.
+- Do not fall back to the starter template look, generic Tailwind composition, or your own preferred layout when the visual reference already specifies one.
+- For every current-node non-UI interface, land the smallest compilable or runnable skeleton that matches the declared responsibility and test intent.
+- Reuse and minimally edit existing files when possible. If a target file already exists, read it first and use `edit_file` unless a full rewrite is clearly simpler and still local.
+- Preserve the declared file paths and ownership boundaries from the interface IR.
+- Call `run_build` once after landing the materialized code.
+
+When finished, return exactly one JSON array in a `json` markdown block.
+Each item must follow this schema:
+[
+  {{
+    "interface_id": "stable explicit id",
+    "reuse": true,
+    "implemented": true,
+    "type": "UI/API/FUNC/DB",
+    "name": "logical module name",
+    "description": "purpose",
+    "inputs": ["inputs"],
+    "outputs": ["outputs"],
+    "callers": ["caller interface ids"],
+    "callees": ["callee interface ids"],
+    "responsibility": "what this interface owns",
+    "specification": "brief behavioral contract for this interface",
+    "test_focus": ["what tests should verify for this interface"],
+    "reuse_notes": ["important reuse or extension constraints"],
+    "file_path": "relative file path",
+    "first_line": "exact signature or declaration line now present in code"
+  }}
+]
+"""
+
+    async def design_bundle(
         self,
         node_id: str,
         requirement_data: dict[str, Any],
@@ -472,82 +557,8 @@ Read this first. The current requirement payload below is the authoritative task
 {dynamic_ctx}
 
 ### Task
-Understand this node before interface design.
-{self._build_design_scope_guidance(design_mode)}
-
-Return exactly one JSON object in a `json` markdown block with this schema:
-{{
-  "requirement_summary": {{
-    "name": "short name",
-    "description": "1-3 sentence summary",
-    "dependencies": ["dependency ids"]
-  }},
-  "scenario_summary": [
-    {{
-      "scenario_id": "id",
-      "name": "scenario name",
-      "steps": ["important step", "..."]
-    }}
-  ],
-  "visual_summary": [
-    {{
-      "image_path": "path",
-      "analysis": "short visual summary"
-    }}
-  ],
-  "relevant_files": ["most relevant existing files"],
-  "reuse_candidates": [
-    {{
-      "interface_id": "existing interface id",
-      "type": "UI/API/FUNC/DB",
-      "reason": "why it may be reused"
-    }}
-  ],
-  "risks": ["main design or integration risks"]
-}}
-
-Keep it concrete. Favor existing code and existing interfaces over speculation.
-"""
-        system_content = self.get_system_prompt()
-        if static_ctx:
-            system_content = f"{system_content}\n\n{static_ctx}"
-        messages = [
-            {"role": "system", "content": system_content},
-            {"role": "user", "content": user_prompt},
-        ]
-        tools = [TOOL_REGISTRY[name]["schema"] for name in self.get_tool_names() if name in TOOL_REGISTRY]
-        raw_output, messages = await self.run_from_messages(messages, node_id=node_id, max_steps=8, tools=tools)
-        parsed = self._extract_json_object_from_markdown(raw_output)
-        if not parsed:
-            parsed = self._build_fallback_understanding(requirement_data)
-        return parsed, messages
-
-    async def design_leaf_bundle(
-        self,
-        node_id: str,
-        requirement_data: dict[str, Any],
-        preloaded_source: str = None,
-    ) -> tuple[dict[str, Any], list]:
-        from .context_pipeline import context_pipeline
-        from .tools import TOOL_REGISTRY
-
-        static_ctx, dynamic_ctx = context_pipeline.build_agent_context_split(
-            node_id=node_id,
-            agent_type=self.agent_name,
-            preloaded_source=preloaded_source,
-        )
-        user_prompt = f"""
-### Current Node Context
-Read this first. The current requirement payload below is the authoritative task input for node `{node_id}`.
-{dynamic_ctx}
-
-### Task
-This is a leaf node. In one pass:
-1. Understand the requirement and the most relevant existing code.
-2. Design the smallest interface chain needed across UI -> API -> FUNC -> DB.
-3. Turn each interface into an executable behavioral specification.
-
-{self._build_design_scope_guidance("leaf_full")}
+{self._build_design_stage_task(design_mode)}
+Stop after returning the design bundle JSON for this substep. Do not materialize code yet.
 
 Return exactly one JSON object in a `json` markdown block with this schema:
 {{
@@ -582,23 +593,12 @@ Return exactly one JSON object in a `json` markdown block with this schema:
       "outputs": ["outputs"],
       "callers": ["caller interface ids"],
       "callees": ["callee interface ids"],
+      "responsibility": "what this interface owns",
+      "specification": "brief behavioral contract for this interface",
+      "test_focus": ["what tests should verify for this interface"],
+      "reuse_notes": ["important reuse or extension constraints"],
       "file_path": "relative file path",
       "first_line": "exact signature or declaration line"
-    }}
-  ],
-  "interface_spec": [
-    {{
-      "interface_id": "exact interface id",
-      "type": "UI/API/FUNC/DB",
-      "file_path": "relative path",
-      "first_line": "definition signature",
-      "responsibility": "what this interface must do",
-      "inputs": ["input contract"],
-      "outputs": ["output contract"],
-      "preconditions": ["required state before call or render"],
-      "postconditions": ["observable result after success"],
-      "error_cases": ["important failure or edge cases"],
-      "reuse_constraints": ["rules for reusing or extending existing code"]
     }}
   ]
 }}
@@ -606,13 +606,13 @@ Return exactly one JSON object in a `json` markdown block with this schema:
 Rules:
 - Reuse existing interfaces whenever possible.
 - Keep the interface chain minimal and executable.
-- Make `interface_spec` align exactly with `interfaces`.
+- Put the brief contract directly on each interface object instead of returning a separate `interface_spec` array.
 - If `<visual_reference>` exists, use it to determine UI structure, major sections, visible copy, and layout ownership for the UI interfaces.
 - Keep the output compact:
 - `scenario_summary`: at most 2 items, each with at most 4 key steps.
 - `relevant_files`: at most 5.
 - `reuse_candidates`: at most 3.
-- In `interface_spec`, keep each array concise and only include requirements that matter for testing or implementation.
+- Keep `responsibility`, `specification`, and `test_focus` brief and concrete.
 - Prefer short phrases over full paragraphs except for `summary`.
 - Do not write code in this step.
 """
@@ -623,225 +623,43 @@ Rules:
             {"role": "system", "content": system_content},
             {"role": "user", "content": user_prompt},
         ]
-        tools = [TOOL_REGISTRY[name]["schema"] for name in self.get_tool_names() if name in TOOL_REGISTRY]
-        raw_output, messages = await self.run_from_messages(messages, node_id=node_id, max_steps=12, tools=tools)
+        read_tools = [TOOL_REGISTRY[name]["schema"] for name in self.get_tool_names() if name in TOOL_REGISTRY]
+        raw_output, messages = await self.run_from_messages(messages, node_id=node_id, max_steps=12, tools=read_tools)
         parsed = self._extract_json_object_from_markdown(raw_output) or {}
 
         node_understanding = parsed.get("node_understanding")
         interfaces = parsed.get("interfaces")
-        interface_spec = parsed.get("interface_spec")
-
         if not isinstance(node_understanding, dict):
             node_understanding = self._build_fallback_understanding(requirement_data)
         if not isinstance(interfaces, list):
             interfaces = []
-        if not isinstance(interface_spec, list):
-            interface_spec = self._build_fallback_interface_spec(interfaces, node_understanding)
+        interfaces = self._enrich_interfaces_with_contracts(interfaces, node_understanding)
+
+        followup_prompt = self._build_materialize_followup_prompt(
+            node_id=node_id,
+            node_understanding=node_understanding,
+            interfaces=interfaces,
+            design_mode=design_mode,
+        )
+        messages.append({"role": "user", "content": followup_prompt})
+        implement_tools = [TOOL_REGISTRY[name]["schema"] for name in self._get_implement_tool_names() if name in TOOL_REGISTRY]
+        materialize_output, messages = await self.run_from_messages(
+            messages,
+            node_id=node_id,
+            max_steps=50,
+            tools=implement_tools,
+        )
+        final_interfaces = self._extract_json_array_from_markdown(materialize_output)
+        if not final_interfaces:
+            final_interfaces = interfaces
+        final_interfaces = self._enrich_interfaces_with_contracts(final_interfaces, node_understanding)
+        interface_spec = self._derive_interface_spec(final_interfaces)
 
         return {
             "node_understanding": node_understanding,
-            "interfaces": interfaces,
+            "interfaces": final_interfaces,
             "interface_spec": interface_spec,
         }, messages
-
-    async def build_interface_spec(
-        self,
-        node_id: str,
-        requirement_data: dict[str, Any],
-        interfaces: list[dict[str, Any]],
-        node_understanding: dict[str, Any] | None,
-        design_mode: str = "leaf_full",
-        preloaded_source: str = None,
-    ) -> tuple[list[dict[str, Any]], list]:
-        from .context_pipeline import context_pipeline
-        from .tools import TOOL_REGISTRY
-
-        static_ctx, dynamic_ctx = context_pipeline.build_agent_context_split(
-            node_id=node_id,
-            agent_type=self.agent_name,
-            preloaded_source=preloaded_source,
-        )
-        user_prompt = f"""
-### Current Node Context
-Read this first. The current requirement payload below is the authoritative task input for node `{node_id}`.
-{dynamic_ctx}
-
-### Node Understanding
-```json
-{json.dumps(node_understanding or {}, indent=2, ensure_ascii=False)}
-```
-
-### Interface IR
-```json
-{json.dumps(interfaces, indent=2, ensure_ascii=False)}
-```
-
-### Task
-Build the executable specification for each interface.
-{self._build_design_scope_guidance(design_mode)}
-
-Return exactly one JSON array in a `json` markdown block.
-Each item must follow this schema:
-{{
-  "interface_id": "exact interface id",
-  "type": "UI/API/FUNC/DB",
-  "file_path": "relative path",
-  "first_line": "definition signature",
-  "responsibility": "what this interface must do",
-  "inputs": ["input contract"],
-  "outputs": ["output contract"],
-  "preconditions": ["required state before call or render"],
-  "postconditions": ["observable result after success"],
-  "error_cases": ["important failure or edge cases"],
-  "reuse_constraints": ["rules for reusing or extending existing code"]
-}}
-
-Do not restate the IR mechanically. Turn it into testable behavioral contracts.
-"""
-        system_content = self.get_system_prompt()
-        if static_ctx:
-            system_content = f"{system_content}\n\n{static_ctx}"
-        messages = [
-            {"role": "system", "content": system_content},
-            {"role": "user", "content": user_prompt},
-        ]
-        tools = [TOOL_REGISTRY[name]["schema"] for name in self.get_tool_names() if name in TOOL_REGISTRY]
-        raw_output, messages = await self.run_from_messages(messages, node_id=node_id, max_steps=8, tools=tools)
-        parsed = self._extract_json_array_from_markdown(raw_output)
-        if not parsed:
-            parsed = self._build_fallback_interface_spec(interfaces, node_understanding)
-        return parsed, messages
-
-    async def design_ir(
-        self,
-        node_id: str,
-        requirement_data: dict,
-        design_mode: str = "leaf_full",
-    ) -> tuple:
-        from .context_pipeline import context_pipeline
-        from .tools import TOOL_REGISTRY
-
-        static_ctx, dynamic_ctx = context_pipeline.build_agent_context_split(
-            node_id=node_id,
-            agent_type=self.agent_name,
-        )
-        user_prompt = f"""
-### Current Node Context
-Read this first. The current requirement payload below is the authoritative task input for node `{node_id}`.
-{dynamic_ctx}
-
-{self._build_design_scope_guidance(design_mode)}
-
-### Task
-Design the interface IR for this node.
-- Use `<requirement_focus>` as the authoritative task payload.
-- Reuse existing interfaces whenever possible.
-- Respect `<node_understanding>` and `<frozen_node_contract>` if present.
-- In non-leaf modes, stay at parent shell scope and avoid API/FUNC/DB expansion unless the requirement text makes it unavoidable.
-
-Return exactly one JSON array in a `json` markdown block.
-Each object must follow:
-{{
-  "interface_id": "stable explicit id",
-  "reuse": true or false,
-  "type": "UI/API/FUNC/DB",
-  "name": "logical module name",
-  "description": "purpose",
-  "inputs": ["inputs"],
-  "outputs": ["outputs"],
-  "callers": ["caller interface ids"],
-  "callees": ["callee interface ids"],
-  "file_path": "relative file path",
-  "first_line": "exact signature or declaration line"
-}}
-"""
-        system_content = self.get_system_prompt()
-        if static_ctx:
-            system_content = f"{system_content}\n\n{static_ctx}"
-        messages = [
-            {"role": "system", "content": system_content},
-            {"role": "user", "content": user_prompt},
-        ]
-        tools = [TOOL_REGISTRY[name]["schema"] for name in self.get_tool_names() if name in TOOL_REGISTRY]
-        result, messages = await self.run_from_messages(messages, node_id=node_id, max_steps=10, tools=tools)
-        return result, messages
-
-    async def materialize_interfaces(
-        self,
-        node_id: str,
-        requirement_data: dict[str, Any],
-        interfaces: list[dict[str, Any]],
-        interface_spec: list[dict[str, Any]],
-        node_understanding: dict[str, Any] | None,
-        design_mode: str = "leaf_full",
-        preloaded_source: str = None,
-    ) -> tuple[str, list]:
-        from .context_pipeline import context_pipeline
-        from .tools import TOOL_REGISTRY
-
-        static_ctx, dynamic_ctx = context_pipeline.build_agent_context_split(
-            node_id=node_id,
-            agent_type=self.agent_name,
-            preloaded_source=preloaded_source,
-        )
-
-        user_prompt = f"""
-### Current Node Context
-Read this first. The current requirement payload below is the authoritative task input for node `{node_id}`.
-{dynamic_ctx}
-
-### Node Understanding
-```json
-{json.dumps(node_understanding or {}, indent=2, ensure_ascii=False)}
-```
-
-### Interface IR
-```json
-{json.dumps(interfaces, indent=2, ensure_ascii=False)}
-```
-
-### Interface Specification
-```json
-{json.dumps(interface_spec, indent=2, ensure_ascii=False)}
-```
-
-### Task
-Materialize the current node's interfaces into code.
-{self._build_design_scope_guidance(design_mode)}
-
-Execution rules:
-- This is a code-writing step.
-- If `<visual_reference>` exists, it is a primary UI contract for this node.
-- For every current-node UI interface, land real UI code now. Do not leave TODO-only shells, placeholder divs, or interface-only JSON.
-- For UI code, follow the visual reference's layout hierarchy, section ordering, visible text, alignment, spacing rhythm, and overall composition as closely as the requirement allows.
-- Do not fall back to the starter template look, generic Tailwind composition, or your own preferred layout when the visual reference already specifies one.
-- For every current-node non-UI interface, land the smallest compilable or runnable skeleton that matches the specification.
-- Reuse and minimally edit existing files when possible. If a target file already exists, read it first and use `edit_file` unless a full rewrite is clearly simpler and still local.
-- Keep the implementation shallow: UI can be complete, but API/FUNC/DB should usually be skeletal scaffolding unless the requirement text already demands more.
-- Preserve the declared file paths and ownership boundaries from the interface IR.
-- Call `run_build` once after landing the materialized code.
-
-When finished, output exactly one JSON array in a `json` markdown block.
-Each item must follow this schema:
-{{
-  "interface_id": "exact interface id",
-  "implemented": true,
-  "file_path": "relative path",
-  "first_line": "exact first line now present in code",
-  "kind": "ui_complete|code_skeleton",
-  "summary": "what was landed"
-}}
-"""
-        system_content = self.get_system_prompt()
-        if static_ctx:
-            system_content = f"{system_content}\n\n{static_ctx}"
-        messages = [
-            {"role": "system", "content": system_content},
-            {"role": "user", "content": user_prompt},
-        ]
-        tools = [TOOL_REGISTRY[name]["schema"] for name in self._get_implement_tool_names() if name in TOOL_REGISTRY]
-        result, messages = await self.run_from_messages(messages, node_id=node_id, max_steps=20, tools=tools)
-        return result, messages
 
     async def converge_non_leaf(
         self,
@@ -909,14 +727,11 @@ Do only the minimal parent-level assembly needed to connect child capabilities i
         ]
         tools = [TOOL_REGISTRY[name]["schema"] for name in self._get_implement_tool_names() if name in TOOL_REGISTRY]
         previous_guard = self._non_leaf_existing_write_guard
-        previous_no_write_guard = self._non_leaf_no_write_guard
         self._non_leaf_existing_write_guard = True
-        self._non_leaf_no_write_guard = True
         try:
-            result, messages = await self.run_from_messages(messages, node_id=node_id, max_steps=20, tools=tools)
+            result, messages = await self.run_from_messages(messages, node_id=node_id, max_steps=50, tools=tools)
         finally:
             self._non_leaf_existing_write_guard = previous_guard
-            self._non_leaf_no_write_guard = previous_no_write_guard
         return result, messages
 
     async def audit_non_leaf_connectivity(
@@ -980,6 +795,6 @@ Output exactly one of:
             {"role": "system", "content": system_content},
             {"role": "user", "content": user_prompt},
         ]
-        tools = [TOOL_REGISTRY[name]["schema"] for name in self._get_non_leaf_audit_tool_names() if name in TOOL_REGISTRY]
+        tools = [TOOL_REGISTRY[name]["schema"] for name in self.get_tool_names() if name in TOOL_REGISTRY]
         result, messages = await self.run_from_messages(messages, node_id=node_id, max_steps=12, tools=tools)
         return result, messages
