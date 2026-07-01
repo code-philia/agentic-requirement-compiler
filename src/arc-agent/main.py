@@ -65,7 +65,7 @@ def _copy_requirement_dir_contents(requirement_dir: str, output_dir: str) -> Non
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run ARC agent workflow from the command line.")
     parser.add_argument(
-        "requirement-path",
+        "requirement_path",
         help="Requirement directory containing requirements.yaml and optional reference/ assets. Its contents will be copied into output-dir/requirements/ before compilation.",
     )
     parser.add_argument(
