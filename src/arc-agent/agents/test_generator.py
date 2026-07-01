@@ -32,7 +32,7 @@ class TestGenerator(ARCAgent):
 ### Web test rules
 - Unit and Integration tests use Vitest.
 - E2E tests use Playwright under `backend/test-e2e/...`.
-- Frontend Vitest tests stay under `frontend/src/...`; backend Vitest tests stay under `backend/tests/...`.
+- Frontend Vitest tests stay under `frontend/tests/...`; backend Vitest tests stay under `backend/tests/...`.
 - The only runtime base URL is `{get_web_base_url()}` on port `{get_web_port()}`.
 - Do not invent a separate frontend runtime port.
 """

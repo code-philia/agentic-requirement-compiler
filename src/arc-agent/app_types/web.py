@@ -100,6 +100,18 @@ def _is_valid_web_e2e_test_path(file_path: str) -> bool:
     return normalized.startswith("backend/test-e2e/") and normalized.endswith((".spec.js", ".spec.jsx", ".spec.ts", ".spec.tsx"))
 
 
+def _is_valid_web_vitest_test_path(file_path: str) -> bool:
+    normalized = (file_path or "").strip().replace("\\", "/").lstrip("./")
+    valid_prefix = normalized.startswith("frontend/tests/") or normalized.startswith("backend/tests/")
+    valid_suffix = normalized.endswith(
+        (
+            ".test.js", ".test.jsx", ".test.ts", ".test.tsx",
+            ".spec.js", ".spec.jsx", ".spec.ts", ".spec.tsx",
+        )
+    )
+    return valid_prefix and valid_suffix
+
+
 def _resolve_web_test_target(file_path: str, workspace_path: str) -> tuple[str, str]:
     normalized = (file_path or "").strip().replace("\\", "/")
     backend_path = os.path.join(workspace_path, "backend")
@@ -374,6 +386,12 @@ class WebAppType(AppTypeHandler):
 
     def validate_test_path(self, test_type: str, file_path: str) -> str | None:
         normalized_type = (test_type or "").strip().lower()
+        if normalized_type in {"unit", "integration"} and not _is_valid_web_vitest_test_path(file_path):
+            return (
+                "Web Unit and Integration tests must live under `frontend/tests/...` or `backend/tests/...` "
+                "and use a Vitest test/spec filename. "
+                f"Received: {file_path}"
+            )
         if normalized_type == "e2e" and not _is_valid_web_e2e_test_path(file_path):
             return (
                 "Web E2E tests must live under `backend/test-e2e/...` and use a Playwright spec filename. "
@@ -424,10 +442,9 @@ class WebAppType(AppTypeHandler):
     async def run_test_file(self, test_type: str, file_path: str) -> str:
         await self.log_cb("System", f"System test execution ({test_type}): {file_path}")
         normalized_type = test_type.lower()
-        if normalized_type == "e2e":
-            validation_error = self.validate_test_path(test_type, file_path)
-            if validation_error:
-                return f"Exit Code: 1\nSTDERR:\n{validation_error}\n"
+        validation_error = self.validate_test_path(test_type, file_path)
+        if validation_error:
+            return f"Exit Code: 1\nSTDERR:\n{validation_error}\n"
         try:
             execution = _build_web_test_execution(test_type, file_path, self.workspace_path)
         except ValueError as exc:
@@ -478,13 +495,12 @@ class WebAppType(AppTypeHandler):
         for file_path in file_paths:
             await self.log_cb("System", f"System test execution ({test_type}): {file_path}")
 
-        if normalized_type == "e2e":
-            invalid_paths = [file_path for file_path in file_paths if self.validate_test_path(test_type, file_path)]
-            if invalid_paths:
-                error_lines = ["Exit Code: 1", "STDERR:"]
-                for file_path in invalid_paths:
-                    error_lines.append(self.validate_test_path(test_type, file_path) or "")
-                return "\n".join(error_lines) + "\n"
+        invalid_paths = [file_path for file_path in file_paths if self.validate_test_path(test_type, file_path)]
+        if invalid_paths:
+            error_lines = ["Exit Code: 1", "STDERR:"]
+            for file_path in invalid_paths:
+                error_lines.append(self.validate_test_path(test_type, file_path) or "")
+            return "\n".join(error_lines) + "\n"
 
         try:
             execution = _build_web_group_execution(test_type, file_paths, self.workspace_path)
@@ -594,7 +610,7 @@ class WebAppType(AppTypeHandler):
             "* **Language**: TypeScript + TSX (preferred default for frontend source files)\n"
             "* **Styling**: Tailwind CSS v4 via utility classes in component markup, not only bare CSS imports\n"
             "* **HTTP**: Axios (Must use Interceptors for global error handling)\n"
-            "* **Testing**: Vitest for frontend unit/integration tests in `frontend/src/...`.\n"
+            "* **Testing**: Vitest for frontend unit/integration tests in `frontend/tests/...`.\n"
             "* **Frontend Test Infrastructure**: `vitest` + `jsdom` + `@testing-library/react` + `@testing-library/jest-dom` + `@testing-library/user-event` are preinstalled and configured through `frontend/vite.config.js` and `frontend/src/test/setup.ts`.\n"
             "\n"
             "### Backend\n"

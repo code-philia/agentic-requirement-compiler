@@ -145,7 +145,7 @@ class ContextPipeline:
         return "<global_context>\nNo global context file (.arc/metadata.md) found.\n</global_context>"
 
     def _get_project_structure(self, agent_type: str = "") -> str:
-        """Layer 1.5: Source tree under relevant src/ subtrees only (pre-fetched so LLM doesn't need list_directory)."""
+        """Layer 1.5: Relevant source and test roots (pre-fetched so LLM doesn't need list_directory)."""
         from utils import get_abs_path
         from utils import get_app_type, get_web_port
         import os as _os
@@ -159,10 +159,11 @@ class ContextPipeline:
             "node_modules", ".venv", "venv", "dist", "out", "coverage",
             "__pycache__", "target",
         }
-        src_roots = []
+        relevant_roots = []
         app_type = get_app_type()
+        web_test_roots = {"backend/tests", "frontend/tests", "backend/test-e2e"}
 
-        def _collect_src_roots(path, depth):
+        def _collect_relevant_roots(path, depth):
             if depth > max_depth:
                 return
             try:
@@ -175,14 +176,17 @@ class ContextPipeline:
                 full = _os.path.join(path, item)
                 if not _os.path.isdir(full):
                     continue
-                if item == "src":
-                    rel = _os.path.relpath(full, root).replace("\\", "/")
+                rel = _os.path.relpath(full, root).replace("\\", "/")
+                should_include = item == "src"
+                if app_type == "web" and rel in web_test_roots:
+                    should_include = True
+                if should_include:
                     if agent_type == "TestGenerator" and app_type == "web":
-                        if rel not in {"backend/src", "frontend/src"}:
+                        if rel not in {"backend/src", "frontend/src", "backend/tests", "frontend/tests", "backend/test-e2e"}:
                             continue
-                    src_roots.append(full)
-                else:
-                    _collect_src_roots(full, depth + 1)
+                    relevant_roots.append(full)
+                    continue
+                _collect_relevant_roots(full, depth + 1)
 
         def _traverse(path, depth, prefix=""):
             if depth > max_depth:
@@ -202,9 +206,9 @@ class ContextPipeline:
                 else:
                     lines.append(f"- {rel}")
 
-        _collect_src_roots(root, 1)
-        if not src_roots:
-            return "<project_structure>\nNo src directories found.\n</project_structure>"
+        _collect_relevant_roots(root, 1)
+        if not relevant_roots:
+            return "<project_structure>\nNo relevant source or test directories found.\n</project_structure>"
 
         guidance_lines = []
         if app_type == "web":
@@ -216,12 +220,12 @@ class ContextPipeline:
                 "  - Prefer TypeScript/TSX for frontend source files when creating or extending pages/components/hooks/api modules",
                 "  - Tailwind CSS is available and should be used directly in component markup for page/component styling",
                 "  - Backend Vitest tests: backend/tests/...",
-                "  - Frontend Vitest tests: frontend/src/...",
+                "  - Frontend Vitest tests: frontend/tests/...",
                 "  - Playwright E2E tests: backend/test-e2e/...",
                 "  - Prefer existing backend/frontend entrypoints before probing new directories",
             ]
 
-        for src_root in sorted(src_roots):
+        for src_root in sorted(relevant_roots):
             rel_root = _os.path.relpath(src_root, root).replace("\\", "/")
             lines.append(f"- {rel_root}/")
             _traverse(src_root, 1, f"{rel_root}/")
