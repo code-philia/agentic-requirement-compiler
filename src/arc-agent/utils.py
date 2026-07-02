@@ -450,8 +450,8 @@ class PromptDumpLogger:
                     lines.append(json.dumps(content, indent=2, ensure_ascii=False))
                     lines.append("```")
 
-            lines.extend(["", "## Tools", "```json", json.dumps(tools, indent=2, ensure_ascii=False), "```"])
-            lines.extend(["", "## Full Request JSON", "```json", json.dumps(payload, indent=2, ensure_ascii=False), "```"])
+            # lines.extend(["", "## Tools", "```json", json.dumps(tools, indent=2, ensure_ascii=False), "```"])
+            # lines.extend(["", "## Full Request JSON", "```json", json.dumps(payload, indent=2, ensure_ascii=False), "```"])
             with open(path, "w", encoding="utf-8") as file:
                 file.write("\n".join(lines))
         return path
