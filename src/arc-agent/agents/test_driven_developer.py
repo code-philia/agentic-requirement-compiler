@@ -62,6 +62,7 @@ Rules:
 - Implement the current node's declared contracts first. Do not invent a conflicting contract.
 - Write the obvious implementation set first, then call `run_tests`.
 - `run_tests` takes no arguments and runs exactly the current batch selected by the system.
+- For features that own a UI -> API -> FUNC -> DB chain, make the real runtime path work. Do not satisfy the tests with sample rows, placeholder panels, mocked success branches, or fallback data that bypasses the owned path.
 - If tests fail, do not immediately read files or rerun tests.
 - First send a short analysis with exactly these headings: `FAILURE_CLASSIFICATION`, `ROOT_CAUSE_HYPOTHESIS`, `TARGET_FILES`.
 - `FAILURE_CLASSIFICATION` must be one of: `test_bug`, `selector_bug`, `wiring_bug`, `implementation_bug`.
@@ -72,12 +73,13 @@ Rules:
 - Treat missing test discovery, wrong framework, wrong path, or wrong selector strategy as test/content/config problems first, not business-logic problems.
 - Do not fabricate compatibility files, duplicate tests, patch `node_modules`, or move tests just to satisfy discovery.
 - Treat the provided `<interfaces>` block as the source of truth for ownership, responsibility, specification, and test focus.
+- If the requirement includes fetched or persisted data, assume the intended success condition is a real write/read or request/render loop unless the contract explicitly says otherwise.
 - Tool workflow:
 - `grep` is for finding symbols, selectors, route ownership, and likely edit locations.
 - `read_file` is for confirming the exact current implementation in files you already know are relevant.
 - `run_tests` is only for verifying a concrete hypothesis after a minimal change.
 - Avoid broad rescans, unrelated diagnostics, and repeated cached reads without a new hypothesis.
-- Return exactly `IMPLEMENTED` only after the latest `run_tests` result passes with exit code 0.
+- Return exactly `IMPLEMENTED` only after the latest `run_tests` result passes with exit code 0 and the implemented path is not relying on obvious sample-data or placeholder-only shortcuts for the owned flow.
 
 {get_common_session_guidance()}
 
@@ -434,6 +436,7 @@ Read this first. The current requirement payload below is the authoritative task
 **Implementation Strategy**:
 Implement the interfaces of the current node. Use the provided `<interfaces>`, `<test_code>`, `<recent_failure_summary>`, and requirement context as the authoritative execution contract. Make the target tests pass without inventing a conflicting contract.
 The system will execute exactly this current test batch when you call `run_tests`.
+Do not optimize for mocked green tests if the requirement expects a real runtime data flow. Prefer fixing the app code so the owned request, persistence, and render path actually works.
 If the batch fails, do not immediately read files or rerun tests. First output:
 FAILURE_CLASSIFICATION: test_bug | selector_bug | wiring_bug | implementation_bug
 ROOT_CAUSE_HYPOTHESIS: one concrete falsifiable explanation

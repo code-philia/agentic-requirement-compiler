@@ -21,6 +21,8 @@ from utils import read_json_file, write_json_file
 
 
 class InterfaceDesigner(ARCAgent):
+    VISUAL_ANALYSIS_PROMPT_VERSION = "frontend-style-requirements"
+
     def __init__(self, log_cb=None):
         super().__init__(
             agent_name="InterfaceDesigner",
@@ -387,41 +389,66 @@ class InterfaceDesigner(ARCAgent):
     @staticmethod
     def build_visual_analysis_prompt() -> str:
         return """
-**CRITICAL ROLE:** You are a "Headless" Frontend Reverse-Engineer.
-**SCENARIO:** You must describe this UI screenshot to a blind developer who CANNOT see the image. They must reconstruct this page pixel-perfectly and content-perfectly using only your text description.
+**ROLE:** You extract frontend style requirements from an input UI image.
+**SCENARIO:** Your output will be used as the visual requirement for frontend implementation. Focus on layout, composition, component styling, interaction surfaces, and data presentation patterns. Do NOT treat the image as a source of mock business data.
 
-**CORE DIRECTIVES:**
-1. **FULL OCR TRANSCRIPTION:** You MUST transcribe ALL visible text content exactly as it appears. Do not summarize text.
-2. **STRICT DOM HIERARCHY:** Describe the layout as a tree structure (Parent -> Child -> Sibling).
-3. **PRECISE VISUAL SPECS:** Specify Geometry (px), Layout (Flex/Grid), Style (Hex colors), and Typography.
+**PRIMARY GOAL**
+Convert the image into implementation-oriented frontend style requirements that define:
+- page layout hierarchy
+- section composition
+- component appearance
+- typography and color usage
+- spacing and alignment patterns
+- how future runtime data should be displayed visually
 
-**OUTPUT FORMAT (Strict Markdown Tree):**
+**CORE DIRECTIVES**
+1. **STYLE REQUIREMENTS OVER OCR:** Focus on structure, hierarchy, spacing rhythm, grouping, visual emphasis, and component roles. Do not perform exhaustive OCR transcription.
+2. **NO BUSINESS-DATA EXTRACTION:** Do NOT copy screenshot-specific records, names, phone numbers, emails, IDs, dates, prices, counts, table rows, chart values, or other instance data as future mock content.
+3. **EXTRACT DATA DISPLAY PATTERNS:** If the image shows lists, tables, cards, charts, schedules, dashboards, or other data regions, describe:
+   - the container structure
+   - the column/field types
+   - the visual encoding style
+   - the density and alignment
+   - the expected future data shape
+   Do NOT reproduce the actual row values.
+4. **CAPTURE ONLY STRUCTURAL COPY:** Keep visible text only when it defines page chrome or interaction structure, such as navigation labels, section titles, field labels, button labels, tab names, or status categories. Prefer concise summaries over full transcription.
+5. **STRICT STRUCTURAL HIERARCHY:** Describe the page as a tree structure (Parent -> Child -> Sibling).
+6. **PRECISE VISUAL SPECS:** Estimate layout mode, proportions, spacing, emphasis, colors, border treatment, shadows, and typography scale. Use approximate values where helpful.
+7. **REQUIREMENT LANGUAGE:** Write as frontend style requirements, not as an image caption and not as a pixel-perfect forensic report.
 
-### 1. Global Design Tokens
-* **Colors:** Define Primary, Secondary, Backgrounds (Estimate Hex).
-* **Font:** Suggest font stack.
+**OUTPUT FORMAT (Strict Markdown)**
 
-### 2. Page Structure & Content (Iterate from Top to Bottom)
+### 1. Frontend Style Direction
+* **Colors:** Primary, secondary, surfaces, borders, emphasis states (approximate hex allowed).
+* **Typography:** Font style, size scale, weight pattern.
+* **Spacing Rhythm:** Dense / medium / spacious, notable gaps/padding.
+* **Overall Tone:** e.g. enterprise dashboard, lightweight consumer portal, dense admin console, etc.
 
-#### [A] [Section Name] (e.g., Header, Sidebar, Card)
-* **Container:** Dimensions, background color, layout properties.
-* **Child Element 1:** [Type: Navigation/List]
-    * **Layout:** Flex-row, gap 20px.
-    * **Items (Transcription Examples):**
-        * If English: "Home", "Products", "Contact Us" (Bold, Black).
-        * If Chinese: "Shouye", "Chanpin Zhongxin", "Lianxi Women" (Regular, Gray).
-* **Child Element 2:** [Type: Form Component]
-    * **Container Style:** Border, shadow, padding.
-    * **Internal Layout:** Vertical stack.
-    * **Content (Transcription Examples):**
-        * **Label:** "Username" OR "Yonghu Ming" (Exact text).
-        * **Input Placeholder:** "Enter your email..." OR "Qingshuru Youxiang Dizhi..." (Exact text).
-        * **Button:** "Submit" OR "Liji Tijiao" (White text on Blue bg).
-* **Child Element 3:** [Type: Banner/Hero]
-    * **Headline:** "Build Faster" OR "Jisu Goujian" (Font size ~32px, Bold).
-    * **Sub-text:** "Start your journey today." OR "Kaiqi Ninde Shuzihua Zhilu." (Gray, ~16px).
+### 2. Page Skeleton (Top to Bottom)
+For each major section:
+* **Section Name**
+* **Purpose**
+* **Container:** width behavior, layout mode, background, border/shadow, spacing.
+* **Children:** ordered structural elements and their relationships.
+* **Style Notes:** corner radius, dividers, emphasis, icon usage, visual weight.
 
-**Action:** Start the blind transcription. Ensure every visible CN/EN character is recorded in your description.
+### 3. Data Presentation Style
+For each data-bearing area (table/list/cards/calendar/chart/schedule):
+* **Pattern Type:** table / cards / timeline / schedule grid / chart / etc.
+* **Visual Structure:** columns, lanes, cards, badges, legends, filters, pagination, empty/loading states.
+* **Field Types:** what kinds of values appear there in the future.
+* **Styling Rules:** alignment, emphasis, truncation, badge colors, density.
+* **Do Not Copy Actual Values:** summarize the shape only.
+
+### 4. Interaction Surfaces
+* Main forms, filters, selectors, buttons, tabs, pagination, dialogs, and feedback areas.
+* Note which controls appear primary vs secondary.
+* Describe the expected visual style of controls rather than the concrete values shown in the image.
+
+### 5. Frontend Requirements Summary
+* **Must Preserve:** structural and style traits that should be kept in implementation.
+* **Runtime-Driven Areas:** regions that must stay data-driven instead of hardcoded from the image.
+* **Avoid:** screenshot-specific business content being turned into seeded UI data.
 """
 
     @staticmethod
@@ -437,9 +464,11 @@ class InterfaceDesigner(ARCAgent):
         write_json_file(cls._visual_cache_path(workspace_path), cache)
 
     @staticmethod
-    def _build_visual_cache_key(full_path: str) -> str:
+    def _build_visual_cache_key(full_path: str, prompt_version: str) -> str:
         stat = os.stat(full_path)
-        raw_key = f"{os.path.abspath(full_path)}::{int(stat.st_mtime_ns)}::{stat.st_size}"
+        raw_key = (
+            f"{os.path.abspath(full_path)}::{int(stat.st_mtime_ns)}::{stat.st_size}::{prompt_version}"
+        )
         return hashlib.sha256(raw_key.encode("utf-8")).hexdigest()
 
     @staticmethod
@@ -502,7 +531,10 @@ class InterfaceDesigner(ARCAgent):
                 continue
 
             try:
-                cache_key = self._build_visual_cache_key(full_path)
+                cache_key = self._build_visual_cache_key(
+                    full_path,
+                    self.VISUAL_ANALYSIS_PROMPT_VERSION,
+                )
                 cached_entry = visual_cache.get(cache_key)
                 if cached_entry and cached_entry.get("analysis"):
                     visual_references.append({"image_path": image_path, "analysis": cached_entry["analysis"]})
@@ -564,6 +596,7 @@ class InterfaceDesigner(ARCAgent):
                 visual_cache[cache_key] = {
                     "image_path": image_path,
                     "full_path": os.path.abspath(full_path),
+                    "prompt_version": self.VISUAL_ANALYSIS_PROMPT_VERSION,
                     "analysis": analysis,
                 }
                 cache_updated = True
@@ -608,9 +641,11 @@ Rules:
 - If the requirement names exact UI ids or resource ids, keep them exact.
 - For leaf work, design the smallest complete chain needed across UI -> API -> FUNC -> DB.
 - For non-leaf work, stay at parent UI shell scope: routes, layouts, providers, page containers, mount points, and thin composition boundaries.
+- When visual reference shows business records or data values, treat them as display examples only. Do not convert them into seeded implementation data, fallback arrays, or interface-level mock payloads.
 - In a design-only call, do not write code files.
 - In a materialization call, treat the provided interfaces as the frozen contract unless the user prompt explicitly asks for a repair.
 - In a materialization call, UI interfaces owned by the current node must be implemented as real UI code, not left as empty stubs.
+- In a materialization call, do not rely on hardcoded sample rows, screenshot-derived values, fake success payloads, or fallback data to make the owned feature appear complete.
 - In a materialization call, non-UI interfaces owned by the current node must be landed as minimal compilable code skeletons or stubs aligned with the declared contract fields.
 - Prefer extending existing files with minimal edits over creating parallel files.
 - Maintain compact working memory while materializing: `KNOWN_FACTS`, `VERIFIED_REUSE_NO_CHANGE_FILES`, `TARGET_EDIT_FILES`, `OPEN_QUESTIONS`, and per-interface status.
@@ -699,6 +734,7 @@ This is the design step of `InterfaceDesigner` for a leaf node.
 - Design the smallest executable interface chain needed across UI -> API -> FUNC -> DB.
 - Reuse existing interfaces whenever possible, and only add the minimum new contracts needed to land the feature.
 - For each interface, include brief contract fields that say what responsibility it owns and how that interface should be tested.
+- If the UI contains data-bearing regions, design them as runtime-driven surfaces backed by the owned chain, not as hardcoded example content from the reference image.
 - Keep subtree invariants and assembly boundaries empty unless the current leaf must restate a hard inherited constraint.
 - Do not write code in this stage.
 """
@@ -709,6 +745,7 @@ This is the design step of `InterfaceDesigner` for a non-leaf node with concrete
 - Produce subtree-wide invariants that every child implementation must preserve.
 - Produce assembly boundaries that define what the parent shell owns versus what children must implement.
 - Only include parent-owned interfaces when the current non-leaf truly needs shell-level UI, routes, layouts, providers, or mount points.
+- If the visual reference shows lists, tables, dashboards, schedules, or cards, express them as shell-level presentation structure only, not as copied record content.
 - Do not write code in this stage.
 """
         return """
@@ -717,6 +754,7 @@ This is the design step of `InterfaceDesigner` for a non-leaf UI-only parent nod
 - Produce subtree-wide invariants that every child implementation must preserve.
 - Produce assembly boundaries that define what the parent shell owns versus what children must implement.
 - If shell-level UI is required, design only parent UI shell interfaces: top-level routes, layouts, providers, mount points, and thin composition boundaries.
+- Treat visual reference data regions as layout/style guidance only. Do not turn screenshot values into parent-owned mock content.
 - Do not design API/FUNC/DB interfaces in this mode.
 - Do not write code in this stage.
 """
@@ -728,6 +766,7 @@ This is the design step of `InterfaceDesigner` for a non-leaf UI-only parent nod
 This is the materialization step of `InterfaceDesigner` for a leaf node.
 - Materialize the current node's interfaces into code.
 - For UI interfaces, land real UI code now.
+- If the UI shows fetched or persisted data, wire the real owned runtime path or explicit loading/empty/error states. Do not hardcode sample records to make the page look complete.
 - For non-UI interfaces, land the smallest compilable or runnable skeleton that matches the declared responsibility and test intent.
 """
         if design_mode == "non_leaf_full":
@@ -735,6 +774,7 @@ This is the materialization step of `InterfaceDesigner` for a leaf node.
 This is the materialization step of `InterfaceDesigner` for a non-leaf node with concrete scenarios.
 - Materialize the current node's interfaces into code using the same full-chain discipline as a leaf node.
 - For UI interfaces, land real UI code now.
+- If the UI shows fetched or persisted data, wire the real owned runtime path or explicit loading/empty/error states. Do not hardcode sample records to make the page look complete.
 - For non-UI interfaces, land the smallest compilable or runnable skeleton that matches the declared responsibility and test intent.
 """
         return """
@@ -917,8 +957,11 @@ Execution rules:
 - This is now a code-writing step.
 - If `<visual_reference>` exists, it is a primary UI contract for this node.
 - For every current-node UI interface, land real UI code now. Do not leave TODO-only shells, placeholder divs, or interface-only JSON.
-- For UI code, follow the visual reference's layout hierarchy, section ordering, visible text, alignment, spacing rhythm, and overall composition as closely as the requirement allows.
+- For UI code, follow the visual reference's layout hierarchy, section ordering, stable chrome text, alignment, spacing rhythm, and overall composition as closely as the requirement allows.
+- Use the visual reference to drive structure and presentation style, not to source concrete business data values.
 - Do not fall back to the starter template look, generic Tailwind composition, or your own preferred layout when the visual reference already specifies one.
+- For data-bearing UI regions, bind to the owned runtime data flow when this node owns it. Otherwise, implement explicit empty/loading/error states instead of hardcoded records or fallback arrays.
+- Do not introduce screenshot-derived sample rows, hardcoded fallback payloads, fake success messages detached from real writes, or placeholder-only panels just to satisfy visual expectations or tests.
 - For every current-node non-UI interface, land the smallest compilable or runnable skeleton that matches the declared responsibility and test intent.
 - Reuse and minimally edit existing files when possible. If a target file already exists, read it first and use `edit_file`.
 - Do not use `write_file` on an existing file in this step.
@@ -1018,7 +1061,8 @@ Rules:
 - For leaf nodes, `interfaces` are the main output and `subtree_invariants` / `assembly_boundaries` should usually be empty.
 - For non-leaf nodes, `subtree_invariants` and `assembly_boundaries` are the main output; only include `interfaces` when the parent truly owns shell-level code.
 - Include brief contract fields directly on each interface object instead of returning a separate `interface_spec` array.
-- If `<visual_reference>` exists, use it to determine UI structure, major sections, visible copy, and layout ownership for the UI interfaces.
+- If `<visual_reference>` exists, use it to determine UI structure, major sections, stable chrome copy, data presentation style, and layout ownership for the UI interfaces.
+- Do not copy screenshot-specific row values, names, metrics, or business records into interface specs, seeded mock payloads, or fake default UI data.
 - Keep the output compact:
 - Keep `responsibility`, `specification`, and `test_focus` brief and concrete.
 - Prefer short phrases over full paragraphs.

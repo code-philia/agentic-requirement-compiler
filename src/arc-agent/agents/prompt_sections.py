@@ -93,6 +93,8 @@ def get_interface_designer_guidance() -> str:
                 [
                     "When `<visual_reference>` exists, treat it as a primary UI contract, not optional inspiration.",
                     "Match the referenced layout hierarchy, section ordering, spacing rhythm, alignment, typography scale, visual density, and component grouping as closely as the requirement allows.",
+                    "Use the reference to infer page skeleton and data presentation style, not to copy screenshot-specific business records into the implementation.",
+                    "If the reference shows tables, cards, schedules, charts, or lists, preserve their structure and styling pattern while keeping the actual row/item values runtime-driven.",
                     "Do not fallback to the starter template look or invent a new visual direction when the reference already defines one.",
                     "Only deviate from the reference when the requirement text, scenarios, or technical constraints explicitly require it.",
                 ],
@@ -127,7 +129,8 @@ def get_test_generator_guidance() -> str:
             _section(
                 "Visual Reference Priority",
                 [
-                    "When `<visual_reference>` exists, keep UI-facing assertions aligned with the referenced structure, visible text, and major section ordering.",
+                    "When `<visual_reference>` exists, keep UI-facing assertions aligned with the referenced structure, stable chrome text, and major section ordering.",
+                    "Do not turn screenshot-specific table rows, names, metrics, or record values into expected mock fixtures or assertions.",
                     "Do not encode incidental starter-template content or selectors that only exist in the scaffold but not in the requirement or reference.",
                 ],
             ),
@@ -136,7 +139,10 @@ def get_test_generator_guidance() -> str:
                 [
                     "Decide the coverage matrix first, then write the compact test files that implement it.",
                     "Prefer stable contract assertions over incidental DOM structure, transient styling, or private implementation details.",
-                    "Reuse existing setup files, fixtures, helpers, mocks, and assertion idioms whenever possible.",
+                    "Reuse existing setup files, fixtures, helpers, and assertion idioms whenever possible.",
+                    "For the core happy path of an owned UI -> API -> FUNC -> DB chain, do not mock the internal boundary being validated. Use real handlers, real persistence, and seeded runtime state where the stack supports it.",
+                    "When a requirement involves fetched or persisted data, include at least one test that proves a real request/response or write/read loop instead of asserting against hardcoded fallback data.",
+                    "Only mock external systems or boundaries outside the current node's ownership when isolation is necessary.",
                     "Once you already have enough evidence to name the target test files and their assertions, stop exploring and start writing.",
                 ],
             ),
@@ -170,6 +176,7 @@ def get_tdd_guidance() -> str:
                 [
                     "When `<visual_reference>` exists, treat its style and layout as binding UI evidence for implementation decisions.",
                     "Prefer edits that move the page toward the referenced hierarchy, spacing, composition, and visible content instead of preserving scaffold layout.",
+                    "Preserve the reference's structural and presentation patterns, but keep displayed records and collections data-driven instead of hardcoding values copied from the screenshot.",
                     "If a UI test fails and a reference exists, check whether the implementation diverged from the reference before assuming the test is wrong.",
                 ],
             ),
@@ -179,6 +186,7 @@ def get_tdd_guidance() -> str:
                     "Make one concrete, contract-preserving hypothesis at a time.",
                     "Prefer the smallest edit in existing code over broad refactors, helpers, or compatibility shims.",
                     "Keep changes local to owner files unless the failing output proves a boundary or wiring issue.",
+                    "For features that cross UI -> API -> FUNC -> DB, prefer real runtime wiring over sample data fallbacks, placeholder panels, or mocked success paths.",
                 ],
             ),
             _section(

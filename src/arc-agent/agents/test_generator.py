@@ -61,6 +61,9 @@ Rules:
 - Prefer stable contract assertions over incidental DOM structure or implementation details.
 - Treat the provided `<interfaces>` block as the source of truth for responsibility, specification, and test focus.
 - Generate tests either per interface or per coherent scenario group, whichever yields fewer, more maintainable files.
+- For the core owned path of a feature, prefer real collaborators and runtime wiring over mocks. Do not mock the very UI/API/FUNC/DB boundary the node is supposed to prove.
+- If the requirement involves fetched, persisted, paginated, or user-submitted data, at least one Integration or E2E test must verify a real data loop such as request -> persistence -> response -> render, or submit -> write -> subsequent read.
+- Do not let screenshot-derived sample values, fallback arrays, or placeholder content become the reason a test passes.
 - If a generated test file is wrong, fix the file itself; do not rely on later environment hacks.
 - Write test files first, then call `run_build` once to catch syntax and placement mistakes.
 
@@ -129,12 +132,14 @@ Generate Unit, Integration, and E2E coverage in one pass.
 - Unit covers DB/FUNC contracts.
 - Integration covers API and boundary collaboration.
 - E2E covers the UI flows that are explicit in the requirement and scenarios.
+- Integration and E2E must exercise the real owned chain instead of validating mocked success paths.
 """
         if test_type == "Unit+Integration":
             return """
 Generate Unit and Integration coverage in one pass.
 - Unit covers DB/FUNC contracts.
 - Integration covers API and boundary collaboration.
+- Integration should verify real request/handler/persistence behavior where the current node owns that chain.
 - Do not generate E2E tests in this mode.
 """
         return f"Generate the `{test_type}` layer for this node."
@@ -170,6 +175,8 @@ Additional rules:
 - Prefer one main test file per enabled layer, or one file per coherent scenario group when that is cleaner.
 - Do not write tests that assert parent-owned behavior outside this node's scope.
 - Keep the file count low and stable.
+- For persisted or fetched data flows, write at least one test that would fail if the implementation used hardcoded sample data, mock API payloads, or placeholder panels instead of the real runtime chain.
+- For owned web happy paths, prefer real API handlers and real DB-backed state in Integration/E2E tests; only mock systems outside this node's ownership boundary.
 - For E2E selectors, prefer requirement-visible text first, then stable local selectors, then role, and use id only as a last fallback.
 
 When finished, output one JSON array in a `json` markdown block:
