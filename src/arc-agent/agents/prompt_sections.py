@@ -82,10 +82,9 @@ def get_interface_designer_guidance() -> str:
             _section(
                 "Fast Codebase Understanding",
                 [
-                    "Start from `<requirement_focus>`, `<scenarios>`, `<visual_reference>`, and the prefetched source context.",
+                    "Start from `<acceptance_gate>`, `<requirement_focus>`, `<scenarios>`, `<visual_reference>`, and the prefetched source file cards.",
                     "Identify existing route, page, layout, provider, API, and domain owners before inventing new interfaces.",
-                    "Use relation and interface search tools first to discover reusable boundaries before opening source files.",
-                    "If ownership is unclear, inspect app entrypoints, route files, and top-level containers before reading leaf implementation details.",
+                    "If ownership is unclear, inspect entrypoints, route files, and top-level containers before reading leaf implementation details.",
                 ],
             ),
             _section(
@@ -120,10 +119,9 @@ def get_test_generator_guidance() -> str:
             _section(
                 "Fast Codebase Understanding",
                 [
-                    "Start from `<interfaces>`, `<requirement_focus>`, and `<scenarios>`. Treat them as the contract to test, not as optional hints.",
+                    "Start from `<acceptance_gate>`, `<interfaces>`, `<requirement_focus>`, `<scenarios>`, and source file cards. Treat them as the contract to test.",
                     "Inspect existing test patterns near the owner files before inventing new test structure, fixtures, or selector strategy.",
                     "Prefer one primary file per layer or one file per coherent scenario group.",
-                    "Do one compact exploration pass first: identify the nearest existing test example, the target owner file, and the relevant setup or helper file before you start writing.",
                 ],
             ),
             _section(
@@ -166,9 +164,9 @@ def get_tdd_guidance() -> str:
             _section(
                 "Fast Codebase Understanding",
                 [
-                    "Start from the current test batch, `<interfaces>`, `<test_code>`, `<recent_failure_summary>`, and `<requirement_focus>`.",
+                    "Start from the current test batch, `<acceptance_gate>`, `<interfaces>`, `<test_file_cards>`, `<recent_failure_summary>`, and `<requirement_focus>`.",
                     "Identify one likely owner file and, if needed, one adjacent boundary file before editing.",
-                    "Use the prefetched source and test context first; do not rediscover the whole repository unless the current evidence is insufficient.",
+                    "Use the prefetched source and test file cards first; do not rediscover the whole repository unless the current evidence is insufficient.",
                 ],
             ),
             _section(

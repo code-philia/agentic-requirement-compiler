@@ -56,7 +56,7 @@ class TestDrivenDeveloper(ARCAgent):
     ],
 )}
 
-Land the current test batch by following the structured handoff: `<interfaces>`, `<test_code>`, `<recent_failure_summary>`, `<requirement_focus>`, and any provided `<scenarios>` / `<visual_reference>`.
+Land the current test batch by following the structured handoff: `<acceptance_gate>`, `<interfaces>`, `<test_file_cards>`, `<recent_failure_summary>`, `<requirement_focus>`, and any provided `<scenarios>` / `<visual_reference>`.
 
 Rules:
 - Implement the current node's declared contracts first. Do not invent a conflicting contract.
@@ -434,7 +434,7 @@ Read this first. The current requirement payload below is the authoritative task
 {json.dumps(test_files, indent=2)}
 
 **Implementation Strategy**:
-Implement the interfaces of the current node. Use the provided `<interfaces>`, `<test_code>`, `<recent_failure_summary>`, and requirement context as the authoritative execution contract. Make the target tests pass without inventing a conflicting contract.
+Implement the interfaces of the current node. Use the provided `<acceptance_gate>`, `<interfaces>`, `<test_file_cards>`, `<recent_failure_summary>`, and requirement context as the authoritative execution contract. Make the target tests pass without inventing a conflicting contract.
 The system will execute exactly this current test batch when you call `run_tests`.
 Do not optimize for mocked green tests if the requirement expects a real runtime data flow. Prefer fixing the app code so the owned request, persistence, and render path actually works.
 If the batch fails, do not immediately read files or rerun tests. First output:
