@@ -715,6 +715,13 @@ def ensure_arc_gitignore(project_path: str) -> str:
     managed_block = "\n".join(
         [
             ARC_GITIGNORE_START,
+            "backend/node_modules/",
+            "frontend/node_modules/",
+            "backend/coverage/",
+            "frontend/dist/",
+            "frontend/dist-ssr/",
+            "*.db",
+            ".env",
             "!.arc/",
             "!.arc/**",
             ".arc/debug.log",
