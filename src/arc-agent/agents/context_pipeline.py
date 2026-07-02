@@ -70,11 +70,107 @@ class ContextPipeline:
     """
     def __init__(self, workspace_dir: str = "."):
         self.workspace_dir = workspace_dir
-        self.max_global_chars = 8000
         self.max_interfaces = 20
         self.max_related_interfaces = 30
         self.max_tests = 20
         self.cache = NodeContextCache()
+
+    @staticmethod
+    def _truncate_text(text: Any, limit: int) -> str:
+        value = str(text or "").strip()
+        if len(value) <= limit:
+            return value
+        return value[:limit].rstrip() + "... [truncated]"
+
+    @staticmethod
+    def _normalize_step_keyword(step: Dict[str, Any]) -> str:
+        return str(step.get("keyword") or step.get("type") or "").strip().upper()
+
+    def _build_scenario_digest(self, scenario: Dict[str, Any]) -> Dict[str, Any]:
+        steps = scenario.get("steps") or []
+        flow: list[str] = []
+        for step in steps:
+            if not isinstance(step, dict):
+                continue
+            keyword = self._normalize_step_keyword(step)
+            content = str(step.get("content", "") or "").strip()
+            if keyword and content:
+                flow.append(f"{keyword}: {content}")
+            elif content:
+                flow.append(content)
+        return {
+            "scenario_id": scenario.get("scenario_id") or scenario.get("id", ""),
+            "name": scenario.get("name", ""),
+            "flow": flow,
+        }
+
+    def _build_visual_digest(self, visual_reference: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        payload: list[Dict[str, Any]] = []
+        for item in visual_reference:
+            payload.append(
+                {
+                    "image_path": item.get("image_path", ""),
+                    "analysis": str(item.get("analysis", "") or ""),
+                }
+            )
+        return payload
+
+    @staticmethod
+    def _limit_string_list(values: List[Any], limit: int = 6, item_limit: int = 160) -> List[str]:
+        items: list[str] = []
+        for raw in values[:limit]:
+            text = str(raw or "").strip()
+            if not text:
+                continue
+            if len(text) > item_limit:
+                text = text[:item_limit].rstrip() + "... [truncated]"
+            items.append(text)
+        return items
+
+    def _limit_boundary_list(self, values: List[Dict[str, Any]], limit: int = 4) -> List[Dict[str, Any]]:
+        result: list[Dict[str, Any]] = []
+        for raw in values[:limit]:
+            if not isinstance(raw, dict):
+                continue
+            result.append(
+                {
+                    "boundary_id": str(raw.get("boundary_id", "") or "").strip(),
+                    "parent_owns": self._limit_string_list(raw.get("parent_owns") or [], limit=4),
+                    "children_must_own": self._limit_string_list(raw.get("children_must_own") or [], limit=4),
+                    "forbidden_parent_work": self._limit_string_list(raw.get("forbidden_parent_work") or [], limit=4),
+                    "note": self._truncate_text(raw.get("note", ""), 200),
+                }
+            )
+        return result
+
+    def _build_acceptance_gate(self, node_id: str, req_data: Dict[str, Any]) -> str:
+        scenarios = req_data.get("scenarios") or []
+        visual_reference = req_data.get("visual_reference") or []
+        gate = {
+            "req_id": req_data.get("req_id", node_id),
+            "primary_outcomes": [
+                "Implement the current node's owned behavior, not just a renderable shell.",
+                "Use real owned runtime wiring for fetched or persisted data when this node owns that chain.",
+                "If runtime data is not owned here, render explicit loading, empty, or error states instead of fake records.",
+            ],
+            "scenario_targets": [
+                str(item.get("name", "")).strip()
+                for item in scenarios
+                if str(item.get("name", "")).strip()
+            ],
+            "visual_rule": (
+                "Use visual reference for layout and style only; do not copy screenshot business data."
+                if visual_reference
+                else "No visual-reference-specific acceptance rule."
+            ),
+            "forbidden_shortcuts": [
+                "hardcoded sample rows",
+                "fallback arrays that bypass the owned path",
+                "fake success messages detached from real writes",
+                "placeholder-only panels presented as complete features",
+            ],
+        }
+        return "<acceptance_gate>\n" + json.dumps(gate, indent=2, ensure_ascii=False) + "\n</acceptance_gate>"
 
     @staticmethod
     def _dedupe_records_by_file_path_keep_latest(
@@ -161,8 +257,15 @@ class ContextPipeline:
             "children_ids": req_data.get("children_ids", []),
             "scenario_count": len(scenarios),
             "visual_reference_count": len(visual_reference),
-            "inherited_invariants": inherited_contract.get("inherited_invariants", []),
-            "assembly_boundaries": inherited_contract.get("assembly_boundaries", []),
+            "inherited_invariants": self._limit_string_list(
+                inherited_contract.get("inherited_invariants", []),
+                limit=6,
+                item_limit=180,
+            ),
+            "assembly_boundaries": self._limit_boundary_list(
+                inherited_contract.get("assembly_boundaries", []),
+                limit=4,
+            ),
         }
 
         parts = [
@@ -171,28 +274,16 @@ class ContextPipeline:
         ]
 
         if scenarios:
-            scenario_payload = []
-            for scenario in scenarios[:8]:
-                scenario_payload.append(
-                    {
-                        "scenario_id": scenario.get("scenario_id") or scenario.get("id", ""),
-                        "name": scenario.get("name", ""),
-                        "steps": scenario.get("steps", []),
-                    }
-                )
+            scenario_payload = [
+                self._build_scenario_digest(scenario)
+                for scenario in scenarios
+            ]
             parts.append("<scenarios>")
             parts.append(json.dumps(scenario_payload, indent=2, ensure_ascii=False))
             parts.append("</scenarios>")
 
         if visual_reference:
-            visual_payload = []
-            for item in visual_reference[:3]:
-                visual_payload.append(
-                    {
-                        "image_path": item.get("image_path", ""),
-                        "analysis": str(item.get("analysis", "") or ""),
-                    }
-                )
+            visual_payload = self._build_visual_digest(visual_reference)
             parts.append("<visual_reference>")
             parts.append(json.dumps(visual_payload, indent=2, ensure_ascii=False))
             parts.append("</visual_reference>")
@@ -224,105 +315,34 @@ class ContextPipeline:
                 f"- **Integration tests**: `app/src/test/java/{pkg_dir}/integration/` --package `{package_name}.integration`\n"
                 f"- **E2E tests**: `app/src/test/java/{pkg_dir}/e2e/` --package `{package_name}.e2e`\n"
             )
-
-        if len(content) > self.max_global_chars:
-            content = content[:self.max_global_chars] + "\n...[global context truncated]"
         return f"<tech_stack_context>\n{content}\n</tech_stack_context>"
 
     def _get_project_structure(self, agent_type: str = "") -> str:
-        """Layer 1.5: Relevant source and test roots (pre-fetched so LLM doesn't need list_directory)."""
-        from utils import get_abs_path
+        """Layer 1.5: Minimal runtime roots only. Do not inject full directory trees."""
         from utils import get_app_type, get_web_port
-        import os as _os
-
-        root = get_abs_path(".")
-
-        max_depth = 4
-        lines = []
-        skip_dirs = {
-            ".git", ".arc", ".gradle", "build", ".idea",
-            "node_modules", ".venv", "venv", "dist", "out", "coverage",
-            "__pycache__", "target",
-        }
-        relevant_roots = []
         app_type = get_app_type()
-        web_test_roots = {"backend/tests", "frontend/tests", "backend/test-e2e"}
-
-        def _collect_relevant_roots(path, depth):
-            if depth > max_depth:
-                return
-            try:
-                items = sorted(_os.listdir(path))
-            except (PermissionError, OSError):
-                return
-            for item in items:
-                if item in skip_dirs:
-                    continue
-                full = _os.path.join(path, item)
-                if not _os.path.isdir(full):
-                    continue
-                rel = _os.path.relpath(full, root).replace("\\", "/")
-                should_include = item == "src"
-                if app_type == "web" and rel in web_test_roots:
-                    should_include = True
-                if should_include:
-                    if agent_type == "TestGenerator" and app_type == "web":
-                        if rel not in {"backend/src", "frontend/src", "backend/tests", "frontend/tests", "backend/test-e2e"}:
-                            continue
-                    relevant_roots.append(full)
-                    continue
-                _collect_relevant_roots(full, depth + 1)
-
-        def _traverse(path, depth, prefix=""):
-            if depth > max_depth:
-                return
-            try:
-                items = sorted(_os.listdir(path))
-            except (PermissionError, OSError):
-                return
-            for item in items:
-                if item in skip_dirs:
-                    continue
-                full = _os.path.join(path, item)
-                rel = f"{prefix}{item}"
-                if _os.path.isdir(full):
-                    lines.append(f"- {rel}/")
-                    _traverse(full, depth + 1, f"{rel}/")
-                else:
-                    lines.append(f"- {rel}")
-
-        _collect_relevant_roots(root, 1)
-        if not relevant_roots:
-            return "<project_structure>\nNo relevant source or test directories found.\n</project_structure>"
-
-        guidance_lines = []
         if app_type == "web":
-            guidance_lines = [
+            lines = [
                 "- Web structure rules:",
                 f"  - Single runtime port: backend serves frontend dist on port {get_web_port()}",
                 "  - Backend runtime root: backend/",
                 "  - Frontend source root: frontend/src/",
-                "  - Prefer TypeScript/TSX for frontend source files when creating or extending pages/components/hooks/api modules",
-                "  - Tailwind CSS is available and should be used directly in component markup for page/component styling",
+                "  - Backend source root: backend/src/",
                 "  - Backend Vitest tests: backend/tests/...",
                 "  - Frontend Vitest tests: frontend/tests/...",
                 "  - Playwright E2E tests: backend/test-e2e/...",
-                "  - Prefer existing backend/frontend entrypoints before probing new directories",
+                "  - Prefer entrypoints, route files, and owner files before broader search.",
             ]
-
-        for src_root in sorted(relevant_roots):
-            rel_root = _os.path.relpath(src_root, root).replace("\\", "/")
-            lines.append(f"- {rel_root}/")
-            _traverse(src_root, 1, f"{rel_root}/")
-
-        if not lines:
-            return ""
-        # Cap at 200 lines to avoid bloating context
-        if len(lines) > 200:
-            lines = lines[:200]
-            lines.append("... [truncated]")
-        merged_lines = guidance_lines + lines if guidance_lines else lines
-        return "<project_structure>\n" + "\n".join(merged_lines) + "\n</project_structure>"
+        else:
+            lines = [
+                "- Android structure rules:",
+                "- Main source root: app/src/main/java/...",
+                "- Unit tests: app/src/test/java/.../unit/",
+                "- Integration tests: app/src/test/java/.../integration/",
+                "- E2E tests: app/src/test/java/.../e2e/",
+                "- Prefer app entrypoints, activities, fragments, and owner classes before broader search.",
+            ]
+        return "<project_structure>\n" + "\n".join(lines) + "\n</project_structure>"
 
     def _get_relational_interfaces(self, node_id: str) -> List[Dict]:
         """
@@ -367,40 +387,46 @@ class ContextPipeline:
             unique[iface.get("interface_id")] = iface
         return list(unique.values())[:self.max_related_interfaces]
 
-    def _get_source_code_for_interfaces(self, node_id: str, max_files: int = 10,
+    def _get_source_code_for_interfaces(self, node_id: str, max_files: int | None = None,
                                          max_chars_per_file: int = 2000, total_budget: int = 15000) -> str:
-        """Pre-read source files of interfaces for a node.
-        Eliminates 50+ read_file calls by the LLM during test generation / implementation."""
-        from utils import get_abs_path
+        """Build candidate source file cards instead of injecting full file contents."""
         interfaces = get_interfaces_by_req_id(node_id)
         if not interfaces:
             return ""
         interfaces = self._dedupe_records_by_file_path_keep_latest(interfaces)
 
-        lines = []
-        total = 0
-        for iface in interfaces[:max_files]:
-            fp = iface.get('file_path', '')
+        cards: list[Dict[str, Any]] = []
+        selected_interfaces = interfaces if max_files is None else interfaces[:max_files]
+        for iface in selected_interfaces:
+            fp = str(iface.get('file_path', '') or '').strip()
             if not fp:
                 continue
-            abs_path = get_abs_path(fp)
-            if not os.path.exists(abs_path):
-                continue
+            content_obj: Dict[str, Any] = {}
             try:
-                with open(abs_path, 'r', encoding='utf-8', errors='replace') as f:
-                    content = f.read()
-                if len(content) > max_chars_per_file:
-                    content = content[:max_chars_per_file] + "\n// ... [truncated]"
-                lines.append(f"// === {fp} ===\n{content}")
-                total += len(content)
-                if total > total_budget:
-                    break
+                raw_content = iface.get("content", "")
+                if raw_content:
+                    content_obj = json.loads(raw_content)
             except Exception:
-                continue
+                content_obj = {}
+            cards.append(
+                {
+                    "file_path": fp,
+                    "first_line": str(iface.get("first_line", "") or "").strip(),
+                    "interface_id": str(iface.get("interface_id", "") or "").strip(),
+                    "type": str(iface.get("type", "") or "").strip(),
+                    "implemented": bool(iface.get("implemented")),
+                    "responsibility": self._truncate_text(content_obj.get("responsibility", ""), 180),
+                    "specification": self._truncate_text(content_obj.get("specification", ""), 220),
+                    "test_focus": self._limit_string_list(content_obj.get("test_focus") or [], limit=4, item_limit=120),
+                    "callers": self._limit_string_list(content_obj.get("callers") or [], limit=3, item_limit=80),
+                    "callees": self._limit_string_list(content_obj.get("callees") or [], limit=3, item_limit=80),
+                    "why_relevant": "Current-node owned interface file.",
+                }
+            )
 
-        if not lines:
+        if not cards:
             return ""
-        return "<source_code>\n" + "\n\n".join(lines) + "\n</source_code>"
+        return "<source_file_cards>\n" + json.dumps(cards, indent=2, ensure_ascii=False) + "\n</source_file_cards>"
 
     def _get_node_session_layers(self, node_id: str) -> str:
         from utils import load_node_session
@@ -437,13 +463,12 @@ class ContextPipeline:
     def _get_test_code_for_node(
         self,
         node_id: str,
-        max_files: int = 8,
+        max_files: int | None = None,
         max_chars_per_file: int = 2000,
         total_budget: int = 12000,
         target_test_files: list[str] | None = None,
     ) -> str:
-        """Pre-read test files for a node so TDD agent doesn't need read_file calls."""
-        from utils import get_abs_path
+        """Build candidate test file cards instead of injecting full test contents."""
         tests = get_tests_by_req_id(node_id)
         if not tests:
             return ""
@@ -462,30 +487,26 @@ class ContextPipeline:
             if not tests:
                 return ""
 
-        lines = []
-        total = 0
-        for t in tests[:max_files]:
-            fp = t.get('file_path', '')
+        cards: list[Dict[str, Any]] = []
+        selected_tests = tests if max_files is None else tests[:max_files]
+        for t in selected_tests:
+            fp = str(t.get('file_path', '') or '').strip()
             if not fp:
                 continue
-            abs_path = get_abs_path(fp)
-            if not os.path.exists(abs_path):
-                continue
-            try:
-                with open(abs_path, 'r', encoding='utf-8', errors='replace') as f:
-                    content = f.read()
-                if len(content) > max_chars_per_file:
-                    content = content[:max_chars_per_file] + "\n// ... [truncated]"
-                lines.append(f"// === {fp} ===\n{content}")
-                total += len(content)
-                if total > total_budget:
-                    break
-            except Exception:
-                continue
+            cards.append(
+                {
+                    "file_path": fp,
+                    "first_line": str(t.get("first_line", "") or "").strip(),
+                    "type": str(t.get("type", "") or "").strip(),
+                    "interface_ids": self._limit_string_list(t.get("interface_ids") or [], limit=6, item_limit=80),
+                    "passed": t.get("passed"),
+                    "why_relevant": "Current-node generated test artifact.",
+                }
+            )
 
-        if not lines:
+        if not cards:
             return ""
-        return "<test_code>\n" + "\n\n".join(lines) + "\n</test_code>"
+        return "<test_file_cards>\n" + json.dumps(cards, indent=2, ensure_ascii=False) + "\n</test_file_cards>"
 
     def _format_interface(self, iface: Dict, agent_type: str) -> str:
         """Format interface data differently based on agent focus."""
@@ -541,6 +562,7 @@ class ContextPipeline:
         requirement_focus = self._build_requirement_focus(node_id, req_data)
         if requirement_focus:
             context_parts.append(requirement_focus)
+        context_parts.append(self._build_acceptance_gate(node_id, req_data))
 
         # 1. Inject Global Context (cached globally — never changes)
         context_parts.append(
@@ -570,7 +592,7 @@ class ContextPipeline:
             else:
                 source_code = self.cache.get_or_compute(
                     node_id, "source_code",
-                    lambda: self._get_source_code_for_interfaces(node_id, max_files=15, total_budget=20000)
+                    lambda: self._get_source_code_for_interfaces(node_id)
                 )
                 if source_code:
                     context_parts.append(source_code)
@@ -581,9 +603,7 @@ class ContextPipeline:
             else:
                 source_code = self.cache.get_or_compute(
                     node_id, "source_code",
-                    lambda: self._get_source_code_for_interfaces(
-                        node_id, max_files=15, max_chars_per_file=3000, total_budget=25000
-                    )
+                    lambda: self._get_source_code_for_interfaces(node_id)
                 )
                 if source_code:
                     context_parts.append(source_code)
@@ -601,18 +621,13 @@ class ContextPipeline:
                     test_cache_key,
                     lambda: self._get_test_code_for_node(
                         node_id,
-                        max_files=10,
-                        max_chars_per_file=3000,
-                        total_budget=15000,
                         target_test_files=normalized_targets,
                     ),
                 )
             else:
                 test_code = self.cache.get_or_compute(
                     node_id, "test_code",
-                    lambda: self._get_test_code_for_node(
-                        node_id, max_files=10, max_chars_per_file=3000, total_budget=15000
-                    )
+                    lambda: self._get_test_code_for_node(node_id)
                 )
             if test_code:
                 context_parts.append(test_code)

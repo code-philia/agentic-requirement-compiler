@@ -17,15 +17,17 @@ load_dotenv(dotenv_path=_ENV_FILE, override=False)
 # Global Debug Flag
 DEBUG_MODE = int(os.environ.get("ARC_DEBUG", "1"))
 MAX_TOOL_OUTPUT_LENGTH = int(os.environ.get("ARC_MAX_TOOL_OUTPUT_CHARS", "100000"))
-MAX_CONTEXT_CHARS = int(os.environ.get("ARC_MAX_CONTEXT_CHARS", "500000"))
-# Two-level compact thresholds (fraction of MAX_CONTEXT_CHARS)
-DEDUP_THRESHOLD = 0.70    # Level 1: remove duplicate/redundant tool results
-SUMMARIZE_THRESHOLD = 0.8  # Level 2: ask LLM to summarize
+SOFT_CONTEXT_CHARS = int(os.environ.get("ARC_SOFT_CONTEXT_CHARS", "50000"))
+HARD_CONTEXT_CHARS = int(os.environ.get("ARC_HARD_CONTEXT_CHARS", "90000"))
+if HARD_CONTEXT_CHARS < SOFT_CONTEXT_CHARS:
+    HARD_CONTEXT_CHARS = SOFT_CONTEXT_CHARS + 10000
 MICROCOMPACT_MIN_TOOL_OUTPUT = int(os.environ.get("ARC_MICROCOMPACT_MIN_CHARS", "1000"))
 MICROCOMPACT_KEEP_MESSAGES = int(os.environ.get("ARC_MICROCOMPACT_KEEP_MESSAGES", "10"))
 MODEL_RETRY_COUNT = int(os.environ.get("ARC_MODEL_RETRY_COUNT", "2"))
 EPHEMERAL_GUIDANCE_PREFIX = "<arc_ephemeral_guidance>"
 EPHEMERAL_GUIDANCE_SUFFIX = "</arc_ephemeral_guidance>"
+COMPACT_STATE_PREFIX = "<arc_compact_state>"
+COMPACT_STATE_SUFFIX = "</arc_compact_state>"
 
 # Required args per mutating tool, validated before dispatch to surface clean errors.
 _REQUIRED_TOOL_ARGS: Dict[str, list] = {
@@ -175,6 +177,118 @@ class ARCAgent:
                         except Exception:
                             pass
         return read_files
+
+    @staticmethod
+    def _extract_json_object(text: str) -> Dict[str, Any] | None:
+        if not isinstance(text, str):
+            return None
+        fenced = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL)
+        candidates = [fenced.group(1)] if fenced else []
+        stripped = text.strip()
+        if stripped.startswith("{") and stripped.endswith("}"):
+            candidates.append(stripped)
+        brace_match = re.search(r"(\{.*\})", text, re.DOTALL)
+        if brace_match:
+            candidates.append(brace_match.group(1))
+        for candidate in candidates:
+            try:
+                parsed = json.loads(candidate)
+                if isinstance(parsed, dict):
+                    return parsed
+            except Exception:
+                continue
+        return None
+
+    def _build_fallback_compact_state(self, messages: List[Dict[str, Any]]) -> Dict[str, Any]:
+        read_files = self._extract_read_files(messages)
+        latest_assistant = ""
+        latest_tool = ""
+        for message in reversed(messages):
+            content = message.get("content")
+            if not isinstance(content, str) or not content.strip():
+                continue
+            if not latest_tool and message.get("role") == "tool":
+                latest_tool = content[:400]
+            if not latest_assistant and message.get("role") == "assistant":
+                latest_assistant = content[:400]
+            if latest_tool and latest_assistant:
+                break
+        return {
+            "task_state": "partial_progress_preserved",
+            "validated_facts": [],
+            "active_hypothesis": latest_assistant[:300],
+            "target_files": read_files[:8],
+            "completed_actions": [],
+            "remaining_gaps": [],
+            "latest_failure_signature": latest_tool[:300],
+            "next_action": "Continue from the preserved state and gather only the next directly relevant evidence.",
+        }
+
+    async def _compact_messages_to_state(
+        self,
+        messages: List[Dict[str, Any]],
+        node_id: str | None = None,
+    ) -> List[Dict[str, Any]]:
+        read_files = self._extract_read_files(messages)
+        read_files_context = ""
+        if read_files:
+            read_files_context = "\nFiles already read:\n" + "\n".join(f"- {path}" for path in read_files[:20])
+
+        compact_prompt = (
+            "Compress this session into one strict JSON object for continued work.\n"
+            "Return JSON only with this schema:\n"
+            "{\n"
+            '  "task_state": "one short sentence",\n'
+            '  "validated_facts": ["fact"],\n'
+            '  "active_hypothesis": "one concrete current hypothesis",\n'
+            '  "target_files": ["file path"],\n'
+            '  "completed_actions": ["action already completed"],\n'
+            '  "remaining_gaps": ["missing behavior or unresolved issue"],\n'
+            '  "latest_failure_signature": "short failure summary or empty string",\n'
+            '  "next_action": "next smallest step"\n'
+            "}\n"
+            "Rules:\n"
+            "- Keep arrays short and concrete.\n"
+            "- Preserve acceptance-critical facts and current ownership boundaries.\n"
+            "- Do not include prose outside JSON.\n"
+            f"{read_files_context}"
+        )
+
+        summary_messages = messages + [{"role": "user", "content": compact_prompt}]
+        compact_state: Dict[str, Any]
+        try:
+            response = await self._create_chat_completion_with_retry(
+                model=self.model,
+                messages=summary_messages,
+                temperature=0.1,
+            )
+            summary_content = response.choices[0].message.content or ""
+            parsed = self._extract_json_object(summary_content)
+            if not parsed:
+                raise ValueError("Structured compact state was not valid JSON.")
+            compact_state = parsed
+        except Exception as exc:
+            await self._log(f"Structured auto-compact fallback: {str(exc)}", node_id=node_id)
+            compact_state = self._build_fallback_compact_state(messages)
+
+        compact_state.setdefault("target_files", read_files[:8])
+        compact_text = (
+            f"{COMPACT_STATE_PREFIX}\n"
+            f"{json.dumps(compact_state, indent=2, ensure_ascii=False)}\n"
+            f"{COMPACT_STATE_SUFFIX}"
+        )
+        return [
+            messages[0],
+            messages[1],
+            {"role": "assistant", "content": compact_text},
+            {
+                "role": "user",
+                "content": (
+                    "Continue from the compact state above. Preserve the acceptance gate, current ownership boundaries, "
+                    "and the next smallest proof step."
+                ),
+            },
+        ]
 
     async def _summarize_tool_error(self, tool_name: str, raw_output: str) -> str:
         """Summarize long build/test error output via a quick single-shot LLM call.
@@ -365,11 +479,12 @@ Output from {tool_name}:
 
         step = 0
         while step < max_steps:
-            # 1. Two-level Auto-Compact: Prevent context overflow
+            self._microcompact_messages(messages)
+            # Compact opportunistically before each reasoning step.
             total_chars = self._estimate_context_chars(messages)
 
-            # Level 1: Dedup — remove duplicate tool results (at 70% threshold)
-            if total_chars > MAX_CONTEXT_CHARS * DEDUP_THRESHOLD:
+            # Level 1: dedup once the soft budget is exceeded.
+            if total_chars > SOFT_CONTEXT_CHARS:
                 chars_removed = self._dedup_messages(messages)
                 if chars_removed > 0:
                     total_chars = self._estimate_context_chars(messages)
@@ -378,51 +493,15 @@ Output from {tool_name}:
                         node_id=node_id,
                     )
 
-            # Level 2: Summarize — ask LLM for a summary (at 85% threshold)
-            if total_chars > MAX_CONTEXT_CHARS * SUMMARIZE_THRESHOLD:
+            # Level 2: replace prior history with a structured compact state at the hard budget.
+            if total_chars > HARD_CONTEXT_CHARS:
                 await self._log(
-                    f"Triggering Auto-Compact (Step {step}, Chars: {total_chars})...",
+                    f"Triggering structured auto-compact (Step {step}, Chars: {total_chars})...",
                     node_id=node_id,
                 )
 
-                # Extract list of files already read to preserve in summary
-                read_files = self._extract_read_files(messages)
-                read_files_context = ""
-                if read_files:
-                    read_files_context = "\n\nFiles you have already read (do NOT re-read these unless absolutely necessary):\n" + "\n".join([f"- {f}" for f in read_files[:20]])
+                messages = await self._compact_messages_to_state(messages, node_id=node_id)
 
-                summary_prompt = (
-                    "You have been working on this task for several steps. "
-                    "Please provide a concise summary (max 300 words) of what you have accomplished so far, "
-                    "the current blockers or errors, and your immediate next plan."
-                    f"{read_files_context}"
-                )
-
-                # Ask the model to summarize the current progress
-                summary_messages = messages + [{"role": "user", "content": summary_prompt}]
-                try:
-                    summary_response = await self._create_chat_completion_with_retry(
-                        model=self.model,
-                        messages=summary_messages,
-                        temperature=0.2
-                    )
-                    summary_content = summary_response.choices[0].message.content
-
-                    if DEBUG_MODE:
-                        await self._log(f"[DEBUG] Auto-Compact Summary:\n{summary_content}", node_id=node_id)
-
-                    # Replace history with the summary to free up context
-                    messages = [
-                        messages[0],  # System prompt
-                        messages[1],  # Original User prompt
-                        {"role": "assistant", "content": f"[Auto-Compact Summary of previous steps]\n{summary_content}"},
-                        {"role": "user", "content": "Please continue with the next steps based on the summary above."}
-                    ]
-                except Exception as e:
-                    await self._log(f"Auto-Compact failed: {str(e)}", node_id=node_id)
-
-            # 2. Microcompact: Fold old tool results
-            self._microcompact_messages(messages)
             messages = self._apply_ephemeral_user_message(messages, node_id=node_id)
 
             await self._log(f"Thinking... (Step {step + 1}/{max_steps})", node_id=node_id)
