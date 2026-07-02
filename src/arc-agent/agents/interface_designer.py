@@ -26,7 +26,282 @@ class InterfaceDesigner(ARCAgent):
             agent_name="InterfaceDesigner",
             log_cb=log_cb,
         )
-        self._non_leaf_existing_write_guard = False
+        self._existing_file_write_guard = False
+        self._materialization_state_by_node: dict[str, dict[str, Any]] = {}
+
+    @staticmethod
+    def _normalize_path(path: str) -> str:
+        return str(path or "").strip().replace("\\", "/")
+
+    @staticmethod
+    def _append_unique_limited(items: list[str], value: str, limit: int = 12) -> None:
+        text = str(value or "").strip()
+        if not text or text in items:
+            return
+        items.append(text)
+        if len(items) > limit:
+            del items[:-limit]
+
+    def _build_materialization_state(
+        self,
+        node_id: str,
+        interfaces: list[dict[str, Any]],
+        design_mode: str,
+    ) -> dict[str, Any]:
+        owner_files: list[str] = []
+        interface_statuses: dict[str, str] = {}
+        file_to_interfaces: dict[str, list[str]] = {}
+
+        for interface in interfaces:
+            if not isinstance(interface, dict):
+                continue
+            interface_id = str(interface.get("interface_id", "") or "").strip()
+            file_path = self._normalize_path(interface.get("file_path", ""))
+            if interface_id:
+                interface_statuses[interface_id] = "pending"
+            if not file_path:
+                continue
+            if file_path not in owner_files:
+                owner_files.append(file_path)
+            file_to_interfaces.setdefault(file_path, [])
+            if interface_id and interface_id not in file_to_interfaces[file_path]:
+                file_to_interfaces[file_path].append(interface_id)
+
+        return {
+            "node_id": node_id,
+            "design_mode": design_mode,
+            "owner_files": owner_files,
+            "interface_statuses": interface_statuses,
+            "file_to_interfaces": file_to_interfaces,
+            "read_counts": {},
+            "known_facts": [],
+            "verified_reuse_no_change_files": [],
+            "target_edit_files": [],
+            "open_questions": [],
+            "modified_files": [],
+            "allowed_reread_once": set(),
+            "has_materialized_change": False,
+            "has_run_build": False,
+        }
+
+    def _start_materialization_session(
+        self,
+        node_id: str,
+        interfaces: list[dict[str, Any]],
+        design_mode: str,
+    ) -> None:
+        state = self._build_materialization_state(node_id=node_id, interfaces=interfaces, design_mode=design_mode)
+        self._materialization_state_by_node[node_id] = state
+        if state["owner_files"]:
+            self._append_unique_limited(
+                state["known_facts"],
+                "Frozen owner files: " + ", ".join(state["owner_files"]),
+            )
+
+    def _finish_materialization_session(self, node_id: str) -> None:
+        self._materialization_state_by_node.pop(node_id, None)
+
+    def _get_materialization_state(self, node_id: str | None) -> dict[str, Any] | None:
+        if not node_id:
+            return None
+        return self._materialization_state_by_node.get(node_id)
+
+    def _all_owner_files_read_once(self, state: dict[str, Any]) -> bool:
+        owner_files = state.get("owner_files") or []
+        if not owner_files:
+            return False
+        read_counts = state.get("read_counts") or {}
+        return all(int(read_counts.get(path, 0)) > 0 for path in owner_files)
+
+    def _mark_interface_status_for_path(self, state: dict[str, Any], path: str, status: str) -> None:
+        normalized_path = self._normalize_path(path)
+        for interface_id in state.get("file_to_interfaces", {}).get(normalized_path, []):
+            state["interface_statuses"][interface_id] = status
+
+    def _mark_files(self, state: dict[str, Any], key: str, files: list[str]) -> None:
+        bucket = state.setdefault(key, [])
+        for path in files:
+            normalized_path = self._normalize_path(path)
+            if normalized_path and normalized_path not in bucket:
+                bucket.append(normalized_path)
+
+    @staticmethod
+    def _extract_path_tokens(text: str) -> list[str]:
+        if not text:
+            return []
+        matches = re.findall(r"([A-Za-z0-9_./\\-]+\.[A-Za-z0-9]+)", text)
+        paths: list[str] = []
+        for match in matches:
+            normalized = str(match or "").strip().replace("\\", "/")
+            if normalized and normalized not in paths:
+                paths.append(normalized)
+        return paths
+
+    @staticmethod
+    def _extract_heading_block(text: str, heading: str) -> str:
+        pattern = re.compile(
+            rf"{re.escape(heading)}\s*:?(.*?)(?:\n[A-Z][A-Z_ ]{{2,}}\s*:|\Z)",
+            re.DOTALL,
+        )
+        match = pattern.search(text)
+        return match.group(1).strip() if match else ""
+
+    def _update_materialization_state_from_assistant_text(
+        self,
+        assistant_text: str,
+        node_id: str | None = None,
+    ) -> None:
+        state = self._get_materialization_state(node_id)
+        if not state or not assistant_text:
+            return
+
+        known_facts_block = self._extract_heading_block(assistant_text, "KNOWN_FACTS")
+        verified_block = self._extract_heading_block(assistant_text, "VERIFIED_REUSE_NO_CHANGE_FILES")
+        target_block = self._extract_heading_block(assistant_text, "TARGET_EDIT_FILES")
+        open_questions_block = self._extract_heading_block(assistant_text, "OPEN_QUESTIONS")
+        interface_status_block = self._extract_heading_block(assistant_text, "INTERFACE_STATUSES")
+        reread_reason_block = self._extract_heading_block(assistant_text, "RE_READ_REASON")
+        target_file_block = self._extract_heading_block(assistant_text, "TARGET_FILE")
+        next_action_block = self._extract_heading_block(assistant_text, "NEXT_ACTION")
+
+        for line in known_facts_block.splitlines():
+            cleaned = line.lstrip("- ").strip()
+            if cleaned:
+                self._append_unique_limited(state["known_facts"], cleaned)
+
+        verified_files = self._extract_path_tokens(verified_block)
+        target_files = self._extract_path_tokens(target_block)
+        open_question_lines = [line.lstrip("- ").strip() for line in open_questions_block.splitlines() if line.strip()]
+
+        self._mark_files(state, "verified_reuse_no_change_files", verified_files)
+        self._mark_files(state, "target_edit_files", target_files)
+        for path in verified_files:
+            self._mark_interface_status_for_path(state, path, "verified_reuse_no_change")
+        for path in target_files:
+            self._mark_interface_status_for_path(state, path, "change_required")
+        state["open_questions"] = open_question_lines[-6:]
+
+        for raw_line in interface_status_block.splitlines():
+            line = raw_line.strip().lstrip("- ").strip()
+            if not line or ":" not in line:
+                continue
+            interface_id, status = line.split(":", 1)
+            interface_id = interface_id.strip()
+            normalized_status = status.strip().lower().replace(" ", "_")
+            if interface_id in state["interface_statuses"] and normalized_status:
+                state["interface_statuses"][interface_id] = normalized_status
+
+        if reread_reason_block and target_file_block and "read" in next_action_block.lower():
+            reread_targets = self._extract_path_tokens(target_file_block)
+            if not reread_targets:
+                reread_targets = self._extract_path_tokens(reread_reason_block)
+            for path in reread_targets:
+                state["allowed_reread_once"].add(self._normalize_path(path))
+
+    def _record_materialization_tool_result(
+        self,
+        tool_name: str,
+        tool_args: Dict[str, Any],
+        tool_result: str,
+        node_id: str | None = None,
+    ) -> None:
+        state = self._get_materialization_state(node_id)
+        if not state:
+            return
+
+        if tool_name == "read_file":
+            path = self._normalize_path(tool_args.get("path", ""))
+            if not path:
+                return
+            read_counts = state.setdefault("read_counts", {})
+            read_counts[path] = int(read_counts.get(path, 0)) + 1
+            self._append_unique_limited(state["known_facts"], f"Read {path}.")
+            current_status = "change_required" if path in state.get("target_edit_files", []) else "inspected"
+            self._mark_interface_status_for_path(state, path, current_status)
+            return
+
+        if tool_name in {"edit_file", "write_file"}:
+            path = self._normalize_path(tool_args.get("path", ""))
+            if not path:
+                return
+            state["has_materialized_change"] = True
+            self._mark_files(state, "modified_files", [path])
+            self._mark_files(state, "target_edit_files", [path])
+            self._append_unique_limited(state["known_facts"], f"Modified {path}.")
+            self._mark_interface_status_for_path(state, path, "change_required")
+            return
+
+        if tool_name != "run_build":
+            return
+
+        state["has_run_build"] = True
+        build_succeeded = "Exit Code: 0" in str(tool_result or "")
+        if build_succeeded:
+            self._append_unique_limited(state["known_facts"], "run_build passed.")
+            for path in state.get("modified_files", []):
+                self._mark_interface_status_for_path(state, path, "implemented")
+            inspected_files = [
+                path
+                for path, count in (state.get("read_counts") or {}).items()
+                if int(count) > 0 and path not in state.get("modified_files", [])
+            ]
+            self._mark_files(state, "verified_reuse_no_change_files", inspected_files)
+            for path in inspected_files:
+                self._mark_interface_status_for_path(state, path, "verified_reuse_no_change")
+        else:
+            self._append_unique_limited(state["known_facts"], "run_build failed.")
+            if "run_build failed." not in state["open_questions"]:
+                state["open_questions"] = (state.get("open_questions") or [])[-5:] + ["run_build failed."]
+
+    def _build_materialization_progress_note(self, state: dict[str, Any]) -> str:
+        known_facts = state.get("known_facts") or []
+        verified_files = state.get("verified_reuse_no_change_files") or []
+        target_files = state.get("target_edit_files") or []
+        interface_statuses = state.get("interface_statuses") or {}
+        open_questions = state.get("open_questions") or []
+
+        unresolved_paths = [
+            path
+            for path in state.get("owner_files", [])
+            if path not in verified_files and path not in target_files and path not in state.get("modified_files", [])
+        ]
+        if not open_questions:
+            if not self._all_owner_files_read_once(state):
+                open_questions = ["Read the remaining frozen owner files once before choosing edit targets."]
+            elif unresolved_paths and not state.get("has_materialized_change") and not state.get("has_run_build"):
+                open_questions = ["Choose the smallest target edit file or justify one re-read with RE_READ_REASON."]
+
+        next_action = "read remaining owner files"
+        if self._all_owner_files_read_once(state):
+            next_action = "edit_file on TARGET_EDIT_FILES"
+            if not target_files and not state.get("has_materialized_change"):
+                next_action = "set TARGET_EDIT_FILES, then edit_file"
+        if state.get("has_materialized_change") and not state.get("has_run_build"):
+            next_action = "run_build"
+
+        lines = [
+            "### Materialization Working Memory",
+            f"- Frozen owner files: {', '.join(state.get('owner_files', [])) or 'none'}",
+            f"- Owner-file inspection complete: {'yes' if self._all_owner_files_read_once(state) else 'no'}",
+            f"- Materialized change landed: {'yes' if state.get('has_materialized_change') else 'no'}",
+            f"- Build already run: {'yes' if state.get('has_run_build') else 'no'}",
+            "- Interface statuses:",
+        ]
+        if interface_statuses:
+            lines.extend(f"  - {interface_id}: {status}" for interface_id, status in interface_statuses.items())
+        else:
+            lines.append("  - none")
+        lines.append("- Known facts:")
+        lines.extend(f"  - {fact}" for fact in known_facts[-8:]) if known_facts else lines.append("  - none")
+        lines.append("- Verified reuse no-change files:")
+        lines.extend(f"  - {path}" for path in verified_files) if verified_files else lines.append("  - none")
+        lines.append("- Target edit files:")
+        lines.extend(f"  - {path}" for path in target_files) if target_files else lines.append("  - none")
+        lines.append("- Open questions:")
+        lines.extend(f"  - {item}" for item in open_questions[:6]) if open_questions else lines.append("  - none")
+        lines.append(f"- Next preferred action: {next_action}")
+        lines.append("- Re-read gate: after every frozen owner file has been read once, do not re-read the same owner files from uncertainty alone.")
+        return "\n".join(lines)
 
     async def _intercept_tool_call(
         self,
@@ -34,14 +309,80 @@ class InterfaceDesigner(ARCAgent):
         tool_args: Dict[str, Any],
         node_id: str | None = None,
     ) -> tuple[bool, Any]:
-        if self._non_leaf_existing_write_guard and tool_name == "write_file":
+        state = self._get_materialization_state(node_id)
+        if state and tool_name == "read_file":
+            path = self._normalize_path(tool_args.get("path", ""))
+            allow_once = path in state.get("allowed_reread_once", set())
+            if allow_once:
+                state["allowed_reread_once"].discard(path)
+            elif (
+                path
+                and path in (state.get("read_counts") or {})
+                and path in (state.get("owner_files") or [])
+                and self._all_owner_files_read_once(state)
+                and not state.get("has_materialized_change")
+                and not state.get("has_run_build")
+            ):
+                return True, (
+                    f"Repeated-read gate: `{path}` was already read in this materialization session, and every frozen owner file "
+                    "has already been inspected once.\n"
+                    "Do not keep rotating through the same owner files from uncertainty alone.\n\n"
+                    "Before any justified re-read, first send a short progress note with these headings:\n"
+                    "MATERIALIZATION_PROGRESS\n"
+                    "KNOWN_FACTS:\n"
+                    "VERIFIED_REUSE_NO_CHANGE_FILES:\n"
+                    "TARGET_EDIT_FILES:\n"
+                    "OPEN_QUESTIONS:\n"
+                    "INTERFACE_STATUSES:\n"
+                    "RE_READ_REASON:\n"
+                    "TARGET_FILE:\n"
+                    "NEXT_ACTION:\n\n"
+                    "Preferred next action: choose `TARGET_EDIT_FILES` and call `edit_file`, or call `run_build` if you already landed a change."
+                )
+
+        if self._existing_file_write_guard and tool_name == "write_file":
             path = str(tool_args.get("path", "")).strip()
             if path and os.path.exists(path):
                 return True, (
-                    f"Error: `{path}` already exists. In non-leaf convergence, do not overwrite existing shared files "
-                    "with `write_file`. Read the file and use `edit_file` for a minimal targeted change instead."
+                    f"Error: `{path}` already exists. Do not overwrite existing files with `write_file` in "
+                    "`InterfaceDesigner` materialization or convergence. Read the file and use `edit_file` for a "
+                    "minimal targeted change instead."
                 )
         return await super()._intercept_tool_call(tool_name, tool_args, node_id)
+
+    async def _on_assistant_message_before_tool_calls(
+        self,
+        assistant_text: str,
+        node_id: str | None = None,
+    ) -> None:
+        self._update_materialization_state_from_assistant_text(assistant_text, node_id=node_id)
+        await super()._on_assistant_message_before_tool_calls(assistant_text, node_id=node_id)
+
+    async def _get_stop_response_after_tool_call(
+        self,
+        tool_name: str,
+        tool_args: Dict[str, Any],
+        tool_result: str,
+        node_id: str | None = None,
+    ) -> str | None:
+        self._record_materialization_tool_result(
+            tool_name=tool_name,
+            tool_args=tool_args,
+            tool_result=tool_result,
+            node_id=node_id,
+        )
+        return await super()._get_stop_response_after_tool_call(
+            tool_name=tool_name,
+            tool_args=tool_args,
+            tool_result=tool_result,
+            node_id=node_id,
+        )
+
+    def _build_ephemeral_user_message(self, node_id: str | None = None) -> str | None:
+        state = self._get_materialization_state(node_id)
+        if not state:
+            return None
+        return self._build_materialization_progress_note(state)
 
     @staticmethod
     def build_visual_analysis_prompt() -> str:
@@ -247,17 +588,17 @@ class InterfaceDesigner(ARCAgent):
     def get_system_prompt(self) -> str:
         return f"""{get_compiler_role_guidance(
     role_name="InterfaceDesigner",
-    stage_name="design",
+    stage_name="interface design and materialization workflow",
     mission=[
-        "Your job is to understand the current node, identify the smallest correct ownership boundaries, and declare the interface chain this node needs.",
+        "Across this node's lifecycle, your job is to understand the current node, identify the smallest correct ownership boundaries, and declare the interface chain this node needs.",
         "For leaf nodes, that usually means a minimal executable chain across UI -> API -> FUNC -> DB.",
         "For non-leaf nodes, that usually means only parent shell assembly such as routes, layouts, providers, containers, and mount points.",
-        "When the workflow asks you to materialize interfaces, you must also land the owned code skeletons or UI implementation for those interfaces.",
+        "You may later be asked to materialize the frozen interface bundle into code, but in any single call you must do only the subtask explicitly assigned in the user prompt.",
     ],
     outputs=[
         "A compact understanding of the current node grounded in the requirement and existing codebase.",
         "A minimal interface set with clear ownership, file paths, reuse decisions, and brief contract fields.",
-        "Materialized code for current-node UI and scaffolding for current-node non-UI interfaces.",
+        "When the assigned subtask is materialization, landed code for current-node UI and scaffolding for current-node non-UI interfaces.",
     ],
 )}
 
@@ -267,11 +608,14 @@ Rules:
 - If the requirement names exact UI ids or resource ids, keep them exact.
 - For leaf work, design the smallest complete chain needed across UI -> API -> FUNC -> DB.
 - For non-leaf work, stay at parent UI shell scope: routes, layouts, providers, page containers, mount points, and thin composition boundaries.
-- During understanding and interface design, do not write code files.
-- After the interface set is produced, you must materialize the design into code:
-- UI interfaces owned by the current node must be implemented as real UI code, not left as empty stubs.
-- Non-UI interfaces owned by the current node must be landed as minimal compilable code skeletons or stubs aligned with the declared contract fields.
+- In a design-only call, do not write code files.
+- In a materialization call, treat the provided interfaces as the frozen contract unless the user prompt explicitly asks for a repair.
+- In a materialization call, UI interfaces owned by the current node must be implemented as real UI code, not left as empty stubs.
+- In a materialization call, non-UI interfaces owned by the current node must be landed as minimal compilable code skeletons or stubs aligned with the declared contract fields.
 - Prefer extending existing files with minimal edits over creating parallel files.
+- Maintain compact working memory while materializing: `KNOWN_FACTS`, `VERIFIED_REUSE_NO_CHANGE_FILES`, `TARGET_EDIT_FILES`, `OPEN_QUESTIONS`, and per-interface status.
+- Use only these interface status values when you need to reason explicitly about progress: `pending`, `inspected`, `change_required`, `verified_reuse_no_change`, `implemented`, `blocked`.
+- Once every frozen owner file has been read once, prefer `edit_file` on the chosen target files. Do not keep re-reading the same owner files from uncertainty alone.
 
 {get_common_session_guidance()}
 
@@ -355,23 +699,25 @@ This is the design step of `InterfaceDesigner` for a leaf node.
 - Design the smallest executable interface chain needed across UI -> API -> FUNC -> DB.
 - Reuse existing interfaces whenever possible, and only add the minimum new contracts needed to land the feature.
 - For each interface, include brief contract fields that say what responsibility it owns and how that interface should be tested.
+- Keep subtree invariants and assembly boundaries empty unless the current leaf must restate a hard inherited constraint.
 - Do not write code in this stage.
 """
         if design_mode == "non_leaf_full":
             return """
 This is the design step of `InterfaceDesigner` for a non-leaf node with concrete scenarios.
 - Analyze the current requirement, scenarios, visual reference if present, and the most relevant existing code.
-- Perform the same full-chain design discipline as a leaf node: decompose the feature across UI -> API -> FUNC -> DB as needed.
-- Reuse existing interfaces whenever possible, and only add the minimum new contracts needed to land the current node.
-- For each interface, include brief contract fields that say what responsibility it owns and how that interface should be tested.
+- Produce subtree-wide invariants that every child implementation must preserve.
+- Produce assembly boundaries that define what the parent shell owns versus what children must implement.
+- Only include parent-owned interfaces when the current non-leaf truly needs shell-level UI, routes, layouts, providers, or mount points.
 - Do not write code in this stage.
 """
         return """
 This is the design step of `InterfaceDesigner` for a non-leaf UI-only parent node.
 - Analyze the current parent shell and the most relevant existing shared files.
-- Design only parent UI shell interfaces: top-level routes, layouts, providers, mount points, and thin composition boundaries.
+- Produce subtree-wide invariants that every child implementation must preserve.
+- Produce assembly boundaries that define what the parent shell owns versus what children must implement.
+- If shell-level UI is required, design only parent UI shell interfaces: top-level routes, layouts, providers, mount points, and thin composition boundaries.
 - Do not design API/FUNC/DB interfaces in this mode.
-- For each interface, include brief contract fields that say what responsibility it owns and how that shell interface should be validated.
 - Do not write code in this stage.
 """
 
@@ -396,6 +742,40 @@ This is the materialization step of `InterfaceDesigner` for a non-leaf UI-only p
 - Materialize only the parent shell interfaces for routes, layouts, providers, mount points, and composition boundaries.
 - Do not expand into API/FUNC/DB work in this mode.
 """
+
+    @staticmethod
+    def _normalize_string_list(value: Any) -> list[str]:
+        if not isinstance(value, list):
+            return []
+        items: list[str] = []
+        for raw in value:
+            text = str(raw or "").strip()
+            if text and text not in items:
+                items.append(text)
+        return items
+
+    @classmethod
+    def _normalize_boundary_items(cls, value: Any) -> list[dict[str, Any]]:
+        if not isinstance(value, list):
+            return []
+        items: list[dict[str, Any]] = []
+        for raw in value:
+            if not isinstance(raw, dict):
+                continue
+            parent_owns = cls._normalize_string_list(raw.get("parent_owns"))
+            children_must_own = cls._normalize_string_list(raw.get("children_must_own"))
+            forbidden_parent_work = cls._normalize_string_list(raw.get("forbidden_parent_work"))
+            note = str(raw.get("note", "") or "").strip()
+            item = {
+                "boundary_id": str(raw.get("boundary_id", "") or "").strip(),
+                "parent_owns": parent_owns,
+                "children_must_own": children_must_own,
+                "forbidden_parent_work": forbidden_parent_work,
+                "note": note,
+            }
+            if any(item.values()):
+                items.append(item)
+        return items
 
     @staticmethod
     def _enrich_interfaces_with_contracts(
@@ -428,8 +808,50 @@ This is the materialization step of `InterfaceDesigner` for a non-leaf UI-only p
             if not isinstance(raw_reuse_notes, list):
                 raw_reuse_notes = []
             merged["reuse_notes"] = [str(item).strip() for item in raw_reuse_notes if str(item).strip()]
+            merged["file_path"] = str(merged.get("file_path", "") or "").strip()
+            merged["first_line"] = str(merged.get("first_line", "") or "").strip()
             enriched.append(merged)
         return enriched
+
+    @staticmethod
+    def _build_design_repair_prompt() -> str:
+        return """
+Your previous reply did not return a valid design bundle JSON object.
+
+Do not read more files.
+Do not call any tools.
+Based on the requirement, scenarios, and the evidence you already gathered, return the smallest valid design bundle now.
+
+Return exactly one JSON object in a `json` markdown block with this schema:
+{
+  "subtree_invariants": [],
+  "assembly_boundaries": [],
+  "interfaces": [
+    {
+      "interface_id": "stable explicit id",
+      "reuse": true,
+      "type": "UI/API/FUNC/DB",
+      "name": "logical module name",
+      "description": "purpose",
+      "inputs": ["inputs"],
+      "outputs": ["outputs"],
+      "callers": ["caller interface ids"],
+      "callees": ["callee interface ids"],
+      "responsibility": "what this interface owns",
+      "specification": "brief behavioral contract for this interface",
+      "test_focus": ["what tests should verify for this interface"],
+      "reuse_notes": ["important reuse or extension constraints"],
+      "file_path": "relative file path",
+      "first_line": ""
+    }
+  ]
+}
+
+Rules:
+- Do not keep exploring.
+- `first_line` may be empty if you already know the correct owner file but do not need another read to confirm the exact signature.
+- For leaf nodes, return the minimal executable interface chain.
+"""
 
     @staticmethod
     def _derive_interface_spec(interfaces: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -454,20 +876,42 @@ This is the materialization step of `InterfaceDesigner` for a non-leaf UI-only p
     @staticmethod
     def _build_materialize_followup_prompt(
         node_id: str,
+        dynamic_ctx: str,
         interfaces: list[dict[str, Any]],
         design_mode: str,
     ) -> str:
         return f"""
-### Task
-Continue the same `InterfaceDesigner` session for node `{node_id}`.
-
-You already finished the design bundle. Now materialize the designed interfaces into code.
-{InterfaceDesigner._build_materialize_stage_task(design_mode)}
+### Current Node Context
+Read this first. The current requirement payload below is the authoritative task input for node `{node_id}`.
+{dynamic_ctx}
 
 ### Interfaces
 ```json
 {json.dumps(interfaces, indent=2, ensure_ascii=False)}
 ```
+
+### Working Memory Protocol
+- Maintain a compact progress map with these headings whenever you need to re-orient: `KNOWN_FACTS`, `VERIFIED_REUSE_NO_CHANGE_FILES`, `TARGET_EDIT_FILES`, `OPEN_QUESTIONS`, `INTERFACE_STATUSES`.
+- Use only these interface status values: `pending`, `inspected`, `change_required`, `verified_reuse_no_change`, `implemented`, `blocked`.
+- If a reused interface is already correct, mark it in `VERIFIED_REUSE_NO_CHANGE_FILES` and stop re-reading it.
+- Once every frozen owner file has been read once, the next preferred action is `edit_file` on `TARGET_EDIT_FILES`, not another uncertainty-driven read loop.
+- Before any justified re-read of a previously read frozen owner file, first emit a short progress note with:
+  - `MATERIALIZATION_PROGRESS`
+  - `KNOWN_FACTS:`
+  - `VERIFIED_REUSE_NO_CHANGE_FILES:`
+  - `TARGET_EDIT_FILES:`
+  - `OPEN_QUESTIONS:`
+  - `INTERFACE_STATUSES:`
+  - `RE_READ_REASON:`
+  - `TARGET_FILE:`
+  - `NEXT_ACTION:`
+
+### Task
+This is a fresh materialization step of `InterfaceDesigner` for node `{node_id}`.
+The design bundle is already frozen. Do not redesign interfaces. Do not add parallel interfaces unless an existing frozen interface is impossible to materialize without a tiny supporting helper in the same owner file.
+
+Now materialize the frozen interfaces into code.
+{InterfaceDesigner._build_materialize_stage_task(design_mode)}
 
 Execution rules:
 - This is now a code-writing step.
@@ -476,33 +920,38 @@ Execution rules:
 - For UI code, follow the visual reference's layout hierarchy, section ordering, visible text, alignment, spacing rhythm, and overall composition as closely as the requirement allows.
 - Do not fall back to the starter template look, generic Tailwind composition, or your own preferred layout when the visual reference already specifies one.
 - For every current-node non-UI interface, land the smallest compilable or runnable skeleton that matches the declared responsibility and test intent.
-- Reuse and minimally edit existing files when possible. If a target file already exists, read it first and use `edit_file` unless a full rewrite is clearly simpler and still local.
+- Reuse and minimally edit existing files when possible. If a target file already exists, read it first and use `edit_file`.
+- Do not use `write_file` on an existing file in this step.
 - Preserve the declared file paths and ownership boundaries from the interface list.
 - Call `run_build` once after landing the materialized code.
+- When several reads are independent, batch them in the same turn.
+- If the frozen interfaces are sufficient, stop exploring and start editing.
+- After every frozen owner file has been read once, do not re-read the same owner files from uncertainty alone.
+- If you already know enough to name the smallest target edit file, stop reading and edit it.
 
-When finished, return exactly one JSON array in a `json` markdown block.
-Each item must follow this schema:
-[
-  {{
-    "interface_id": "stable explicit id",
-    "reuse": true,
-    "implemented": true,
-    "type": "UI/API/FUNC/DB",
-    "name": "logical module name",
-    "description": "purpose",
-    "inputs": ["inputs"],
-    "outputs": ["outputs"],
-    "callers": ["caller interface ids"],
-    "callees": ["callee interface ids"],
-    "responsibility": "what this interface owns",
-    "specification": "brief behavioral contract for this interface",
-    "test_focus": ["what tests should verify for this interface"],
-    "reuse_notes": ["important reuse or extension constraints"],
-    "file_path": "relative file path",
-    "first_line": "exact signature or declaration line now present in code"
-  }}
-]
+When finished, return exactly one JSON object in a `json` markdown block with this schema:
+{{
+  "implemented_interface_ids": ["frozen interface ids that were landed"],
+  "modified_files": ["relative file paths modified in this step"],
+  "build_status": "passed|failed|not_run",
+  "notes": "very short summary"
+}}
 """
+
+    @staticmethod
+    def _parse_design_bundle_payload(raw_output: str) -> dict[str, Any]:
+        parsed = InterfaceDesigner._extract_json_object_from_markdown(raw_output) or {}
+        subtree_invariants = InterfaceDesigner._normalize_string_list(parsed.get("subtree_invariants"))
+        assembly_boundaries = InterfaceDesigner._normalize_boundary_items(parsed.get("assembly_boundaries"))
+        interfaces = parsed.get("interfaces")
+        if not isinstance(interfaces, list):
+            interfaces = []
+        interfaces = InterfaceDesigner._enrich_interfaces_with_contracts(interfaces)
+        return {
+            "subtree_invariants": subtree_invariants,
+            "assembly_boundaries": assembly_boundaries,
+            "interfaces": interfaces,
+        }
 
     async def design_bundle(
         self,
@@ -530,6 +979,18 @@ Stop after returning the design bundle JSON for this step. Do not materialize co
 
 Return exactly one JSON object in a `json` markdown block with this schema:
 {{
+  "subtree_invariants": [
+    "shared invariant that child implementations must preserve"
+  ],
+  "assembly_boundaries": [
+    {{
+      "boundary_id": "stable explicit id",
+      "parent_owns": ["route shell / page shell / provider / mount point"],
+      "children_must_own": ["leaf-owned UI/API/FUNC/DB work"],
+      "forbidden_parent_work": ["business logic the parent must not re-implement"],
+      "note": "brief integration rule"
+    }}
+  ],
   "interfaces": [
     {{
       "interface_id": "stable explicit id",
@@ -554,52 +1015,103 @@ Return exactly one JSON object in a `json` markdown block with this schema:
 Rules:
 - Reuse existing interfaces whenever possible.
 - Keep the interface chain minimal and executable.
+- For leaf nodes, `interfaces` are the main output and `subtree_invariants` / `assembly_boundaries` should usually be empty.
+- For non-leaf nodes, `subtree_invariants` and `assembly_boundaries` are the main output; only include `interfaces` when the parent truly owns shell-level code.
 - Include brief contract fields directly on each interface object instead of returning a separate `interface_spec` array.
 - If `<visual_reference>` exists, use it to determine UI structure, major sections, visible copy, and layout ownership for the UI interfaces.
 - Keep the output compact:
 - Keep `responsibility`, `specification`, and `test_focus` brief and concrete.
 - Prefer short phrases over full paragraphs.
+- `first_line` may be empty if the owner file is clear and another read would add little value.
 - Do not write code in this step.
 """
         system_content = self.get_system_prompt()
         if static_ctx:
             system_content = f"{system_content}\n\n{static_ctx}"
-        messages = [
+        design_messages = [
             {"role": "system", "content": system_content},
             {"role": "user", "content": user_prompt},
         ]
         read_tools = [TOOL_REGISTRY[name]["schema"] for name in self.get_tool_names() if name in TOOL_REGISTRY]
-        raw_output, messages = await self.run_from_messages(messages, node_id=node_id, max_steps=12, tools=read_tools)
-        parsed = self._extract_json_object_from_markdown(raw_output) or {}
+        raw_output, design_messages = await self.run_from_messages(
+            design_messages,
+            node_id=node_id,
+            max_steps=12,
+            tools=read_tools,
+        )
+        parsed_payload = self._parse_design_bundle_payload(raw_output)
+        subtree_invariants = parsed_payload["subtree_invariants"]
+        assembly_boundaries = parsed_payload["assembly_boundaries"]
+        interfaces = parsed_payload["interfaces"]
 
-        interfaces = parsed.get("interfaces")
-        if not isinstance(interfaces, list):
-            interfaces = []
-        interfaces = self._enrich_interfaces_with_contracts(interfaces)
+        if not interfaces:
+            design_messages.append({"role": "user", "content": self._build_design_repair_prompt()})
+            repair_output, design_messages = await self.run_from_messages(
+                design_messages,
+                node_id=node_id,
+                max_steps=2,
+                tools=[],
+            )
+            parsed_payload = self._parse_design_bundle_payload(repair_output)
+            subtree_invariants = parsed_payload["subtree_invariants"]
+            assembly_boundaries = parsed_payload["assembly_boundaries"]
+            interfaces = parsed_payload["interfaces"]
+
+        if not interfaces and design_mode != "leaf_full":
+            return {
+                "subtree_invariants": subtree_invariants,
+                "assembly_boundaries": assembly_boundaries,
+                "interfaces": [],
+                "interface_spec": [],
+            }, design_messages
+
+        if not interfaces:
+            return {
+                "subtree_invariants": subtree_invariants,
+                "assembly_boundaries": assembly_boundaries,
+                "interfaces": [],
+                "interface_spec": [],
+            }, design_messages
+
+        interface_spec = self._derive_interface_spec(interfaces)
 
         followup_prompt = self._build_materialize_followup_prompt(
+            node_id=node_id,
+            dynamic_ctx=dynamic_ctx,
+            interfaces=interfaces,
+            design_mode=design_mode,
+        )
+        materialize_messages = [
+            {"role": "system", "content": system_content},
+            {"role": "user", "content": followup_prompt},
+        ]
+        implement_tools = [TOOL_REGISTRY[name]["schema"] for name in self._get_implement_tool_names() if name in TOOL_REGISTRY]
+        previous_guard = self._existing_file_write_guard
+        self._existing_file_write_guard = True
+        self._start_materialization_session(
             node_id=node_id,
             interfaces=interfaces,
             design_mode=design_mode,
         )
-        messages.append({"role": "user", "content": followup_prompt})
-        implement_tools = [TOOL_REGISTRY[name]["schema"] for name in self._get_implement_tool_names() if name in TOOL_REGISTRY]
-        materialize_output, messages = await self.run_from_messages(
-            messages,
-            node_id=node_id,
-            max_steps=50,
-            tools=implement_tools,
-        )
-        final_interfaces = self._extract_json_array_from_markdown(materialize_output)
-        if not final_interfaces:
-            final_interfaces = interfaces
-        final_interfaces = self._enrich_interfaces_with_contracts(final_interfaces)
-        interface_spec = self._derive_interface_spec(final_interfaces)
+        try:
+            _, materialize_messages = await self.run_from_messages(
+                materialize_messages,
+                node_id=node_id,
+                max_steps=50,
+                tools=implement_tools,
+            )
+        finally:
+            self._finish_materialization_session(node_id)
+            self._existing_file_write_guard = previous_guard
+
+        combined_messages = design_messages + materialize_messages[1:]
 
         return {
-            "interfaces": final_interfaces,
+            "subtree_invariants": subtree_invariants,
+            "assembly_boundaries": assembly_boundaries,
+            "interfaces": interfaces,
             "interface_spec": interface_spec,
-        }, messages
+        }, combined_messages
 
     async def converge_non_leaf(
         self,
@@ -666,12 +1178,12 @@ Do only the minimal parent-level assembly needed to connect child capabilities i
             {"role": "user", "content": user_prompt},
         ]
         tools = [TOOL_REGISTRY[name]["schema"] for name in self._get_implement_tool_names() if name in TOOL_REGISTRY]
-        previous_guard = self._non_leaf_existing_write_guard
-        self._non_leaf_existing_write_guard = True
+        previous_guard = self._existing_file_write_guard
+        self._existing_file_write_guard = True
         try:
             result, messages = await self.run_from_messages(messages, node_id=node_id, max_steps=50, tools=tools)
         finally:
-            self._non_leaf_existing_write_guard = previous_guard
+            self._existing_file_write_guard = previous_guard
         return result, messages
 
     async def audit_non_leaf_connectivity(
