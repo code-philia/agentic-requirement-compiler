@@ -56,7 +56,7 @@ class TestDrivenDeveloper(ARCAgent):
     ],
 )}
 
-Land the current test batch by following the structured handoff: `<interfaces>`, `<test_plan>`, `<test_code>`, `<requirement_focus>`, and any provided `<scenarios>` / `<visual_reference>`.
+Land the current test batch by following the structured handoff: `<interfaces>`, `<test_code>`, `<recent_failure_summary>`, `<requirement_focus>`, and any provided `<scenarios>` / `<visual_reference>`.
 
 Rules:
 - Implement the current node's declared contracts first. Do not invent a conflicting contract.
@@ -432,7 +432,7 @@ Read this first. The current requirement payload below is the authoritative task
 {json.dumps(test_files, indent=2)}
 
 **Implementation Strategy**:
-Implement the interfaces of the current node. Use the provided `<interfaces>`, `<test_plan>`, `<test_code>`, and requirement context as the authoritative execution contract. Make the target tests pass without inventing a conflicting contract.
+Implement the interfaces of the current node. Use the provided `<interfaces>`, `<test_code>`, `<recent_failure_summary>`, and requirement context as the authoritative execution contract. Make the target tests pass without inventing a conflicting contract.
 The system will execute exactly this current test batch when you call `run_tests`.
 If the batch fails, do not immediately read files or rerun tests. First output:
 FAILURE_CLASSIFICATION: test_bug | selector_bug | wiring_bug | implementation_bug

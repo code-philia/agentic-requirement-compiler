@@ -68,7 +68,16 @@ class WorkflowPhaseRunner:
 
     def _update_node_session(self, node_id: str, patch: dict[str, Any]) -> dict[str, Any]:
         session = utils.merge_node_session(node_id, patch)
+        if "interfaces" in patch:
+            legacy_removed = False
+            for legacy_key in ("interface_ir", "materialized_interfaces"):
+                if legacy_key in session:
+                    session.pop(legacy_key, None)
+                    legacy_removed = True
+            if legacy_removed:
+                utils.save_node_session(node_id, session)
         context_pipeline.cache.invalidate(node_id, "node_session")
+        context_pipeline.cache.invalidate(node_id, "recent_failure_summary")
         return session
 
     @staticmethod
@@ -112,6 +121,9 @@ class WorkflowPhaseRunner:
                 "dependencies": requirement_data.get("dependencies") or [],
             },
             "test_level": self.test_level,
+            "recent_failure_summary": "",
+            "subtree_invariants": [],
+            "assembly_boundaries": [],
         }
 
     def _build_test_plan(self, tests: list[dict[str, Any]]) -> dict[str, Any]:
@@ -247,7 +259,7 @@ class WorkflowPhaseRunner:
 
         await self.log_cb(
             "InterfaceDesigner",
-            f"Running unified design session for `{design_mode}`: understand, design, specify, and materialize interfaces...",
+            f"Running unified design session for `{design_mode}`: analyze requirement, capture parent constraints, design interfaces, and materialize owned code...",
             None,
             node_id,
         )
@@ -256,10 +268,12 @@ class WorkflowPhaseRunner:
             requirement_data=requirement_data,
             design_mode=design_mode,
         )
+        subtree_invariants = design_bundle.get("subtree_invariants", [])
+        assembly_boundaries = design_bundle.get("assembly_boundaries", [])
         interfaces = design_bundle.get("interfaces", [])
         interface_spec = design_bundle.get("interface_spec", [])
 
-        if not interfaces:
+        if is_leaf and not interfaces:
             await self.log_cb(
                 "InterfaceDesigner",
                 "Unified design session did not return a valid interface JSON array.",
@@ -267,14 +281,21 @@ class WorkflowPhaseRunner:
                 node_id,
             )
             return False
-        if not interface_spec:
-            await self.log_cb(
-                "InterfaceDesigner",
-                "Unified design session did not return a valid interface spec array.",
-                "error",
-                node_id,
-            )
-            return False
+        if interfaces and not interface_spec:
+            interface_spec = [
+                {
+                    "interface_id": str(interface.get("interface_id", "")).strip(),
+                    "type": str(interface.get("type", "")).strip(),
+                    "file_path": str(interface.get("file_path", "")).strip(),
+                    "first_line": str(interface.get("first_line", "")).strip(),
+                    "responsibility": str(interface.get("responsibility", "") or "").strip(),
+                    "specification": str(interface.get("specification", "") or "").strip(),
+                    "test_focus": interface.get("test_focus", []) if isinstance(interface.get("test_focus"), list) else [],
+                    "reuse_notes": interface.get("reuse_notes", []) if isinstance(interface.get("reuse_notes"), list) else [],
+                }
+                for interface in interfaces
+                if isinstance(interface, dict)
+            ]
 
         self._update_node_session(node_id, {"phase_status": {"understand": "completed"}})
         await self.log_cb(
@@ -285,13 +306,15 @@ class WorkflowPhaseRunner:
         )
 
         clear_node_design_artifacts(node_id)
-        self._store_interfaces(node_id, interfaces)
-        upsert_node_contract(node_id, self._build_frozen_node_contract(node_id, requirement_data, interfaces, []))
-        context_pipeline.cache.invalidate_db_layers(node_id)
+        if interfaces:
+            self._store_interfaces(node_id, interfaces)
+            upsert_node_contract(node_id, self._build_frozen_node_contract(node_id, requirement_data, interfaces, []))
+            context_pipeline.cache.invalidate_db_layers(node_id)
         self._update_node_session(
             node_id,
             {
-                "interface_ir": interfaces,
+                "subtree_invariants": subtree_invariants,
+                "assembly_boundaries": assembly_boundaries,
                 "interfaces": interfaces,
                 "interface_spec": interface_spec,
                 "phase_status": {
@@ -302,7 +325,11 @@ class WorkflowPhaseRunner:
         )
         await self.log_cb(
             "InterfaceDesigner",
-            f"Stored {len(interfaces)} interface definition(s) into traceability DB.",
+            (
+                f"Stored {len(interfaces)} interface definition(s) into traceability DB."
+                if interfaces
+                else "Stored non-leaf invariants and assembly boundaries without registering new interfaces."
+            ),
             None,
             node_id,
         )
@@ -328,30 +355,37 @@ class WorkflowPhaseRunner:
         self._update_node_session(
             node_id,
             {
-                "materialized_interfaces": materialized,
                 "interfaces": materialized,
                 "materialized_files": materialized_files,
             },
         )
         await self.log_cb(
             "InterfaceDesigner",
-            f"Materialized {len(interfaces)} interface(s) into code during the unified design session.",
+            (
+                f"Materialized {len(interfaces)} interface(s) into code during the unified design session."
+                if interfaces
+                else "No parent-owned interfaces needed materialization in the unified design session."
+            ),
             None,
             node_id,
         )
 
-        if not is_leaf and design_mode == "non_leaf_ui_only":
+        if not is_leaf:
             self._update_node_session(
                 node_id,
                 {
+                    "execution_mode": "non_leaf_compact",
                     "test_plan": self._build_empty_test_plan(),
                     "test_artifacts": [],
-                    "phase_status": {"test": "skipped"},
+                    "phase_status": {
+                        "test": "skipped",
+                        "implement": "skipped",
+                    },
                 },
             )
             await self.log_cb(
-                "TestGenerator",
-                "Skipping test generation for non-leaf UI-only node.",
+                "Compiler",
+                "Non-leaf node finished at DESIGN with subtree invariants and assembly boundaries. Skipping TestGenerator and TDD.",
                 None,
                 node_id,
             )
@@ -431,10 +465,10 @@ class WorkflowPhaseRunner:
     async def run_implement_phase(self, node_id: str, requirement_data: dict[str, Any]) -> bool:
         is_leaf = not bool(requirement_data.get("children_ids"))
         session = utils.load_node_session(node_id)
-        if not is_leaf and session.get("execution_mode") == "skipped_non_leaf":
+        if not is_leaf and session.get("execution_mode") in {"skipped_non_leaf", "non_leaf_compact"}:
             await self.log_cb(
                 "Compiler",
-                "Skipping IMPLEMENT for non-leaf node because DESIGN marked it as skipped.",
+                "Skipping IMPLEMENT for non-leaf node because DESIGN already completed its compact parent-level work.",
                 None,
                 node_id,
             )
@@ -688,6 +722,7 @@ class WorkflowPhaseRunner:
                             else [f"{test_type} batch still has failing tests and requires another TDD pass."]
                         ),
                     },
+                    "recent_failure_summary": "" if group_passed else self._summarize_batch_output(latest_run_tests_result or ""),
                 },
             )
 

@@ -76,9 +76,83 @@ class ContextPipeline:
         self.max_tests = 20
         self.cache = NodeContextCache()
 
+    @staticmethod
+    def _dedupe_records_by_file_path_keep_latest(
+        records: List[Dict[str, Any]],
+        file_path_key: str = "file_path",
+    ) -> List[Dict[str, Any]]:
+        deduped_reversed: list[Dict[str, Any]] = []
+        seen_paths: set[str] = set()
+
+        for record in reversed(records):
+            normalized_path = str(record.get(file_path_key, "") or "").strip().replace("\\", "/")
+            if not normalized_path:
+                deduped_reversed.append(record)
+                continue
+            if normalized_path in seen_paths:
+                continue
+            seen_paths.add(normalized_path)
+            deduped_reversed.append(record)
+
+        deduped_reversed.reverse()
+        return deduped_reversed
+
+    def _get_inherited_compact_contract(self, node_id: str) -> dict[str, Any]:
+        from utils import load_node_session
+
+        conn = sqlite3.connect(db_module.DB_PATH)
+        cursor = conn.cursor()
+        inherited_invariants: list[str] = []
+        inherited_boundaries: list[dict[str, Any]] = []
+        try:
+            current_id = node_id
+            while current_id:
+                cursor.execute("SELECT parent_id FROM requirements WHERE req_id = ?", (current_id,))
+                row = cursor.fetchone()
+                parent_id = str(row[0]).strip() if row and row[0] else ""
+                if not parent_id:
+                    break
+                session = load_node_session(parent_id)
+                for item in session.get("subtree_invariants") or []:
+                    text = str(item or "").strip()
+                    if text and text not in inherited_invariants:
+                        inherited_invariants.append(text)
+                for raw_boundary in session.get("assembly_boundaries") or []:
+                    if not isinstance(raw_boundary, dict):
+                        continue
+                    boundary = {
+                        "boundary_id": str(raw_boundary.get("boundary_id", "") or "").strip(),
+                        "parent_owns": [
+                            str(item).strip()
+                            for item in (raw_boundary.get("parent_owns") or [])
+                            if str(item).strip()
+                        ],
+                        "children_must_own": [
+                            str(item).strip()
+                            for item in (raw_boundary.get("children_must_own") or [])
+                            if str(item).strip()
+                        ],
+                        "forbidden_parent_work": [
+                            str(item).strip()
+                            for item in (raw_boundary.get("forbidden_parent_work") or [])
+                            if str(item).strip()
+                        ],
+                        "note": str(raw_boundary.get("note", "") or "").strip(),
+                    }
+                    if boundary not in inherited_boundaries and any(boundary.values()):
+                        inherited_boundaries.append(boundary)
+                current_id = parent_id
+        finally:
+            conn.close()
+        return {
+            "inherited_invariants": inherited_invariants,
+            "assembly_boundaries": inherited_boundaries,
+        }
+
     def _build_requirement_focus(self, node_id: str, req_data: Dict[str, Any]) -> str:
         scenarios = req_data.get("scenarios") or []
         visual_reference = req_data.get("visual_reference") or []
+        inherited_contract = self._get_inherited_compact_contract(node_id)
         focus = {
             "req_id": req_data.get("req_id", node_id),
             "name": req_data.get("name", ""),
@@ -87,6 +161,8 @@ class ContextPipeline:
             "children_ids": req_data.get("children_ids", []),
             "scenario_count": len(scenarios),
             "visual_reference_count": len(visual_reference),
+            "inherited_invariants": inherited_contract.get("inherited_invariants", []),
+            "assembly_boundaries": inherited_contract.get("assembly_boundaries", []),
         }
 
         parts = [
@@ -299,6 +375,7 @@ class ContextPipeline:
         interfaces = get_interfaces_by_req_id(node_id)
         if not interfaces:
             return ""
+        interfaces = self._dedupe_records_by_file_path_keep_latest(interfaces)
 
         lines = []
         total = 0
@@ -333,7 +410,7 @@ class ContextPipeline:
             return ""
 
         sections: list[str] = []
-        interfaces = session.get("materialized_interfaces") or session.get("interfaces")
+        interfaces = session.get("interfaces")
         if interfaces:
             sections.append(
                 "<interfaces>\n"
@@ -341,23 +418,21 @@ class ContextPipeline:
                 + "\n</interfaces>"
             )
 
-        test_plan = session.get("test_plan")
-        if test_plan:
-            sections.append(
-                "<test_plan>\n"
-                + json.dumps(test_plan, indent=2, ensure_ascii=False)
-                + "\n</test_plan>"
-            )
-
-        tdd_handoff = session.get("tdd_handoff")
-        if tdd_handoff:
-            sections.append(
-                "<tdd_handoff>\n"
-                + json.dumps(tdd_handoff, indent=2, ensure_ascii=False)
-                + "\n</tdd_handoff>"
-            )
-
         return "\n".join(sections)
+
+    def _get_recent_failure_summary(self, node_id: str) -> str:
+        from utils import load_node_session
+
+        session = load_node_session(node_id)
+        if not session:
+            return ""
+        summary = str(session.get("recent_failure_summary", "") or "").strip()
+        if not summary:
+            handoff = session.get("tdd_handoff") or {}
+            summary = str(handoff.get("last_failed_output_summary", "") or "").strip()
+        if not summary:
+            return ""
+        return "<recent_failure_summary>\n" + summary + "\n</recent_failure_summary>"
 
     def _get_test_code_for_node(
         self,
@@ -372,6 +447,7 @@ class ContextPipeline:
         tests = get_tests_by_req_id(node_id)
         if not tests:
             return ""
+        tests = self._dedupe_records_by_file_path_keep_latest(tests)
 
         normalized_targets = {
             str(path or "").strip().replace("\\", "/")
@@ -540,24 +616,6 @@ class ContextPipeline:
                 )
             if test_code:
                 context_parts.append(test_code)
-            # TDD also needs to know about existing tests (metadata)
-            tests = get_tests_by_req_id(node_id)
-            if target_test_files:
-                normalized_targets = {
-                    str(path or "").strip().replace("\\", "/")
-                    for path in target_test_files
-                    if str(path or "").strip()
-                }
-                tests = [
-                    test for test in tests
-                    if str(test.get("file_path", "")).strip().replace("\\", "/") in normalized_targets
-                ]
-            tests = tests[:self.max_tests]
-            if tests:
-                tests_str = ""
-                for t in tests:
-                    tests_str += f"- [{t['test_id']}] Type: {t['type']} Path: `{t['file_path']}`\n"
-                context_parts.append(f"<existing_tests>\n{tests_str}\n</existing_tests>")
 
         elif agent_type == "TestGenerator":
             # Use preloaded_source if available, otherwise cache the disk read
@@ -570,6 +628,13 @@ class ContextPipeline:
                 )
                 if source_code:
                     context_parts.append(source_code)
+        recent_failure_summary = self.cache.get_or_compute(
+            node_id,
+            "recent_failure_summary",
+            lambda: self._get_recent_failure_summary(node_id),
+        )
+        if recent_failure_summary:
+            context_parts.append(recent_failure_summary)
         return "\n\n".join(context_parts)
 
     def build_agent_context_split(

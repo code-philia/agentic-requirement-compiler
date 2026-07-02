@@ -160,7 +160,7 @@ def get_tdd_guidance() -> str:
             _section(
                 "Fast Codebase Understanding",
                 [
-                    "Start from the current test batch, `<interfaces>`, `<test_plan>`, `<test_code>`, and `<requirement_focus>`.",
+                    "Start from the current test batch, `<interfaces>`, `<test_code>`, `<recent_failure_summary>`, and `<requirement_focus>`.",
                     "Identify one likely owner file and, if needed, one adjacent boundary file before editing.",
                     "Use the prefetched source and test context first; do not rediscover the whole repository unless the current evidence is insufficient.",
                 ],
