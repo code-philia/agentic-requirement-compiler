@@ -24,6 +24,8 @@ SUMMARIZE_THRESHOLD = 0.8  # Level 2: ask LLM to summarize
 MICROCOMPACT_MIN_TOOL_OUTPUT = int(os.environ.get("ARC_MICROCOMPACT_MIN_CHARS", "1000"))
 MICROCOMPACT_KEEP_MESSAGES = int(os.environ.get("ARC_MICROCOMPACT_KEEP_MESSAGES", "10"))
 MODEL_RETRY_COUNT = int(os.environ.get("ARC_MODEL_RETRY_COUNT", "2"))
+EPHEMERAL_GUIDANCE_PREFIX = "<arc_ephemeral_guidance>"
+EPHEMERAL_GUIDANCE_SUFFIX = "</arc_ephemeral_guidance>"
 
 # Required args per mutating tool, validated before dispatch to surface clean errors.
 _REQUIRED_TOOL_ARGS: Dict[str, list] = {
@@ -107,6 +109,43 @@ class ARCAgent:
     ) -> None:
         """Allow subclasses to update state from assistant text before tool-call interception."""
         return None
+
+    def _build_ephemeral_user_message(self, node_id: str | None = None) -> str | None:
+        """Inject a single compact, replaceable memory note before each model call."""
+        return None
+
+    def _should_evict_read_file_results(self) -> bool:
+        return True
+
+    def _apply_ephemeral_user_message(
+        self,
+        messages: List[Dict[str, Any]],
+        node_id: str | None = None,
+    ) -> List[Dict[str, Any]]:
+        filtered_messages: List[Dict[str, Any]] = []
+        for message in messages:
+            content = message.get("content")
+            if (
+                message.get("role") == "user"
+                and isinstance(content, str)
+                and content.startswith(EPHEMERAL_GUIDANCE_PREFIX)
+            ):
+                continue
+            filtered_messages.append(message)
+
+        ephemeral_message = self._build_ephemeral_user_message(node_id=node_id)
+        if ephemeral_message:
+            filtered_messages.append(
+                {
+                    "role": "user",
+                    "content": (
+                        f"{EPHEMERAL_GUIDANCE_PREFIX}\n"
+                        f"{ephemeral_message}\n"
+                        f"{EPHEMERAL_GUIDANCE_SUFFIX}"
+                    ),
+                }
+            )
+        return filtered_messages
 
     def _estimate_context_chars(self, messages: List[Dict[str, Any]]) -> int:
         total = 0
@@ -199,6 +238,39 @@ Output from {tool_name}:
                 )
 
         # Original microcompact: fold old large tool results
+        for msg in messages[2:-MICROCOMPACT_KEEP_MESSAGES]:
+            content = msg.get("content")
+            if (
+                msg.get("role") == "tool"
+                and isinstance(content, str)
+                and len(content) > MICROCOMPACT_MIN_TOOL_OUTPUT
+            ):
+                msg["content"] = (
+                    content[:300]
+                    + "\n\n[Old tool result content cleared to save context]"
+                )
+
+    def _microcompact_messages(self, messages: List[Dict[str, Any]]) -> None:
+        # Keep initial system+user and latest N interactions intact.
+        if len(messages) <= 2 + MICROCOMPACT_KEEP_MESSAGES:
+            return
+
+        if self._should_evict_read_file_results():
+            protected_tail = 4  # Don't touch the last 4 messages
+            for i in range(2, len(messages) - protected_tail):
+                msg = messages[i]
+                content = msg.get("content")
+                if (
+                    msg.get("role") == "tool"
+                    and msg.get("name") == "read_file"
+                    and isinstance(content, str)
+                    and len(content) > 500
+                ):
+                    msg["content"] = (
+                        content[:300]
+                        + "\n\n[read_file result compacted; rely on working memory and only re-read with new evidence]"
+                    )
+
         for msg in messages[2:-MICROCOMPACT_KEEP_MESSAGES]:
             content = msg.get("content")
             if (
@@ -351,6 +423,7 @@ Output from {tool_name}:
 
             # 2. Microcompact: Fold old tool results
             self._microcompact_messages(messages)
+            messages = self._apply_ephemeral_user_message(messages, node_id=node_id)
 
             await self._log(f"Thinking... (Step {step + 1}/{max_steps})", node_id=node_id)
 
