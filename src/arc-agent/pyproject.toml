@@ -39,4 +39,4 @@ include = ["agents", "agents.*", "app_types", "app_types.*", "traceability", "tr
 namespaces = true
 
 [tool.setuptools.package-data]
-templates = ["**/*"]
+templates = ["**/*", "**/.*"]
