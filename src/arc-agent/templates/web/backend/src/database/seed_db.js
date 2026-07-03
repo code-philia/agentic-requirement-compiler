@@ -1,22 +1,26 @@
-const { getDb, initializeDatabase, closeDb } = require('./init_db');
+const { closeDb } = require('./init_db');
+const { withTransaction } = require('./db_runtime');
 
-/**
- * Guide model instructions:
- * 1. Must use INSERT OR IGNORE or INSERT OR REPLACE to prevent errors when running the script repeatedly.
- * 2. Must define UNIQUE constraints (in init_db.js) to support OR IGNORE logic.
- * 3. Insert data according to foreign key dependency order (parent table before child table).
- */
-async function seed() {
-  await initializeDatabase();
-  const db = getDb();
-  db.serialize(() => {
-    // [INSERT OR IGNORE statements added by the model as needed here]
+async function seedDatabase() {
+  return withTransaction(async ({ run, get, all, exec }) => {
+    void run;
+    void get;
+    void all;
+    void exec;
+
+    /**
+     * Guide model instructions:
+     * 1. Use INSERT OR IGNORE / INSERT OR REPLACE / UPSERT semantics so repeated seeding is safe.
+     * 2. Seed parent tables before child tables and keep fixtures minimal.
+     * 3. Reuse this entrypoint from tests and dev scripts instead of duplicating insert logic in many files.
+     * 4. If a test needs DB state, create an isolated test DB with `createTestDatabaseHarness()` from `test_harness.js`,
+     *    seed only the rows needed by that suite, then clean the test DB up in teardown.
+     */
   });
 }
 
-// Support running directly from the terminal: node src/database/seed_db.js
 if (require.main === module) {
-  seed()
+  seedDatabase()
     .then(() => closeDb())
     .catch((error) => {
       console.error('Database seed failed:', error);
@@ -24,4 +28,6 @@ if (require.main === module) {
     });
 }
 
-module.exports = seed;
+module.exports = seedDatabase;
+module.exports.seedDatabase = seedDatabase;
+module.exports.seed = seedDatabase;

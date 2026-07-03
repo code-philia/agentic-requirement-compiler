@@ -616,10 +616,18 @@ class WebAppType(AppTypeHandler):
             "* **Runtime**: Node.js (LTS)\n"
             "* **Framework**: Express.js\n"
             "* **Database**: SQLite3 (`sqlite3` driver, file-based)\n"
+            "* **Database Scaffold**:\n"
+            "  * Runtime bootstrap and schema lifecycle: `backend/src/database/init_db.js`\n"
+            "  * Shared query helpers: `backend/src/database/db_runtime.js`\n"
+            "  * Shared seed entrypoint: `backend/src/database/seed_db.js`\n"
+            "  * Shared test DB harness: `backend/src/database/test_harness.js`\n"
+            "  * Barrel export for reuse: `backend/src/database/index.js`\n"
+            "  * Extend these scaffold files instead of creating one-off DB connection/reset helpers in feature folders.\n"
             "* **Testing**:\n"
             "  * Vitest: Used for backend Unit and Integration testing.\n"
             "  * Supertest: Used with Vitest for API route testing.\n"
             "  * Playwright: Used for End-to-End (E2E) testing, located in `backend/test-e2e`, configured by `backend/playwright.config.js`, and expected to use `process.env.PLAYWRIGHT_BASE_URL`.\n"
+            "  * If a test uses the database, it must create an isolated test DB via the scaffold, prepare test data through the scaffold, and clean the test DB up after the suite finishes.\n"
         )
 
     @classmethod

@@ -2,14 +2,42 @@ const fs = require('fs');
 const path = require('path');
 const sqlite3 = require('sqlite3').verbose();
 
-const dbPath = path.resolve(process.cwd(), 'database.db');
+const DEFAULT_DB_FILENAME = 'database.db';
 
 let db = null;
 let initPromise = null;
+let currentDbPath = resolveDbPath(
+  process.env.ARC_DB_FILE || process.env.DATABASE_FILE || DEFAULT_DB_FILENAME,
+);
+
+function resolveDbPath(inputPath = DEFAULT_DB_FILENAME) {
+  const candidate = String(inputPath || DEFAULT_DB_FILENAME).trim() || DEFAULT_DB_FILENAME;
+  return path.resolve(process.cwd(), candidate);
+}
+
+function ensureDbDirectory(filePath) {
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+}
+
+function getDbPath() {
+  return currentDbPath;
+}
+
+async function setDbPath(nextPath) {
+  const resolvedPath = resolveDbPath(nextPath);
+  if (resolvedPath === currentDbPath) {
+    return currentDbPath;
+  }
+
+  await closeDb();
+  currentDbPath = resolvedPath;
+  return currentDbPath;
+}
 
 function getDb() {
   if (!db) {
-    db = new sqlite3.Database(dbPath);
+    ensureDbDirectory(currentDbPath);
+    db = new sqlite3.Database(currentDbPath);
   }
   return db;
 }
@@ -26,7 +54,13 @@ function runStatement(database, sql) {
   });
 }
 
-async function initializeDatabase() {
+async function initializeDatabase(options = {}) {
+  if (options.dbPath) {
+    await setDbPath(options.dbPath);
+  }
+  if (options.reset) {
+    await resetDatabaseFile();
+  }
   if (initPromise) {
     return initPromise;
   }
@@ -40,6 +74,7 @@ async function initializeDatabase() {
      * 1. Use CREATE TABLE IF NOT EXISTS to create new tables.
      * 2. When adding fields, use ALTER TABLE ... ADD COLUMN ... and guard it with existence checks or tolerant error handling.
      * 3. Keep schema evolution idempotent and centralized in this file.
+     * 4. Reuse `db_runtime.js` for CRUD helpers and `test_harness.js` for test DB lifecycle instead of re-implementing one-off connection logic elsewhere.
      */
   })();
 
@@ -73,21 +108,28 @@ function closeDb() {
   });
 }
 
-async function resetDatabaseFile() {
-  await closeDb();
-  if (fs.existsSync(dbPath)) {
-    fs.rmSync(dbPath, { force: true });
+async function removeDatabaseFile(targetPath = currentDbPath) {
+  const resolvedPath = resolveDbPath(targetPath);
+  if (resolvedPath === currentDbPath) {
+    await closeDb();
+  }
+  if (fs.existsSync(resolvedPath)) {
+    fs.rmSync(resolvedPath, { force: true });
   }
 }
 
-initializeDatabase().catch((error) => {
-  console.error('Database initialization failed:', error);
-});
+async function resetDatabaseFile(targetPath = currentDbPath) {
+  await removeDatabaseFile(targetPath);
+}
 
 module.exports = {
-  dbPath,
+  DEFAULT_DB_FILENAME,
+  resolveDbPath,
+  getDbPath,
+  setDbPath,
   getDb,
   initializeDatabase,
   closeDb,
+  removeDatabaseFile,
   resetDatabaseFile,
 };

@@ -450,9 +450,11 @@ class ContextPipeline:
                 "  - Backend runtime root: backend/",
                 "  - Frontend source root: frontend/src/",
                 "  - Backend source root: backend/src/",
+                "  - Shared database scaffold: backend/src/database/",
                 "  - Backend Vitest tests: backend/tests/...",
                 "  - Frontend Vitest tests: frontend/tests/...",
                 "  - Playwright E2E tests: backend/test-e2e/...",
+                "  - Database-using tests must allocate an isolated test DB through the scaffold instead of pointing at the default runtime database.db file.",
                 "  - Prefer entrypoints, route files, and owner files before broader search.",
             ]
         else:

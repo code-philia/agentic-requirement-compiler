@@ -38,6 +38,7 @@ class TestGenerator(ARCAgent):
 - Frontend Vitest tests stay under `frontend/tests/...`; backend Vitest tests stay under `backend/tests/...`.
 - The only runtime base URL is `{get_web_base_url()}` on port `{get_web_port()}`.
 - Do not invent a separate frontend runtime port.
+- If a test uses the database, reuse `backend/src/database/` and create an isolated test DB through the scaffold instead of pointing tests at the default runtime database.
 """
 
         return f"""{get_compiler_role_guidance(

@@ -63,6 +63,7 @@ Rules:
 - Write the obvious implementation set first, then call `run_tests`.
 - `run_tests` takes no arguments and runs exactly the current batch selected by the system.
 - For features that own a UI -> API -> FUNC -> DB chain, make the real runtime path work. Do not satisfy the tests with sample rows, placeholder panels, mocked success branches, or fallback data that bypasses the owned path.
+- If the feature or tests use the database, extend the scaffold under `backend/src/database/` for runtime queries, seed data, and isolated test databases instead of creating parallel DB lifecycle code.
 - If tests fail, do not immediately read files or rerun tests.
 - First send a short analysis with exactly these headings: `FAILURE_CLASSIFICATION`, `ROOT_CAUSE_HYPOTHESIS`, `TARGET_FILES`.
 - `FAILURE_CLASSIFICATION` must be one of: `test_bug`, `selector_bug`, `wiring_bug`, `implementation_bug`.
