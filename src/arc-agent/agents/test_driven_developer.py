@@ -70,6 +70,8 @@ Rules:
 - Make one minimal contract-preserving fix at a time, then verify again with `run_tests`.
 - For features that own a UI -> API -> FUNC -> DB chain, make the real runtime path work. Do not satisfy the tests with sample rows, placeholder panels, mocked success branches, or fallback data that bypasses the owned path.
 - If the feature or tests use the database, extend the scaffold under `backend/src/database/` for runtime queries, seed data, and isolated test databases instead of creating parallel DB lifecycle code.
+- For Playwright E2E work, debug step by step: last passing browser step -> failing browser step -> frontend render/locator -> frontend API call -> backend route -> database side effect -> post-submit UI assertion.
+- If an E2E or Integration flow depends on persistence, treat missing isolated test DB creation/reset/seed/write/read as a first-class root-cause candidate.
 - Treat missing test discovery, wrong framework, wrong path, or wrong selector strategy as test/content/config problems first, not business-logic problems.
 - Do not fabricate compatibility files, duplicate tests, patch `node_modules`, or move tests just to satisfy discovery.
 - Treat the provided `<interfaces>` block as the source of truth for ownership, responsibility, specification, and test focus.
@@ -691,6 +693,16 @@ Use a simple loop: implement, run `run_tests`, use the latest failing output plu
 If this is an E2E batch, compare the failing Playwright spec with the raw Playwright output before deciding whether the minimal fix is in app code or the test file.
 If this is a Playwright E2E batch, stable selectors may come from `placeholder`, `label`, `name`, or `id`; if repeated visible text is ambiguous, it is valid to add stable local hooks in the implementation and use them in the test.
 If this is an E2E batch, classify the current failure phase first: `startup_or_environment`, `page_entry_or_render`, `locator_resolution`, `submit_runtime_path`, `post_submit_assertion`, or `other`.
+If this is an E2E batch, debug it in this order unless the output already proves an earlier blocker:
+1. Which Playwright step definitely passed last?
+2. Which exact next step failed?
+3. Did the frontend render the expected page, form, and controls for that step?
+4. Is the locator/assertion targeting the correct control using stable hooks such as `placeholder`, `label`, `name`, or `id`?
+5. If submit should happen, does the frontend call the correct API endpoint with the correct payload?
+6. Does the backend route/controller perform the correct DB read/write?
+7. Was an isolated test DB created/reset/seeded, and does it contain the expected data after the API call?
+8. Does the post-submit UI state, message, redirect, or rendered data match what the test asserts?
+If the failing flow depends on persistence and no isolated test DB exists yet, fix that through the existing scaffold before patching around the symptom in UI code.
 When all target tests pass, output "IMPLEMENTED". The system will handle the final build verification after your batch is green.
 """
         system_content = self.get_system_prompt()

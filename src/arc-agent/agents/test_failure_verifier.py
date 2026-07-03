@@ -41,6 +41,8 @@ Rules:
 - For E2E failures, explicitly consider whether locators, visible text expectations, routing assumptions, or environment startup assumptions are stale.
 - For Playwright E2E failures, treat `placeholder`, `label`, `name`, and `id` as valid stable locator sources. If repeated text makes a locator ambiguous, consider whether the implementation should expose stable local hooks instead of forcing text-only matching.
 - For E2E failures, classify the latest failure phase first: `startup_or_environment`, `page_entry_or_render`, `locator_resolution`, `submit_runtime_path`, `post_submit_assertion`, or `other`.
+- For E2E failures, analyze the flow step by step: which Playwright step definitely passed last, which exact next step failed, and what boundary lies between them.
+- For E2E failures involving persistence, explicitly check whether the suite created an isolated test database through the scaffold, whether the expected seed/reset happened, and whether the expected rows actually exist after the API call.
 - Consider environment and setup issues only when the output or config evidence points there.
 - Keep the conclusion light and structured. Do not force the result into a narrow error taxonomy.
 - Return exactly one JSON object in a `json` markdown block.
@@ -107,6 +109,14 @@ Read this first. The current requirement payload below is the authoritative task
 ### Task
 Investigate this failing batch in an isolated verifier-style session.
 You may inspect the failing tests, related owner files, route/layout/provider wiring, and nearby configuration or environment files.
+If this is an E2E batch, use this order unless the output already proves an earlier blocker:
+1. Identify the last confirmed Playwright step that passed.
+2. Identify the exact next step that failed.
+3. Check whether the frontend rendered the expected page state for that step.
+4. Check whether the locator/assertion matches the actual frontend structure and stable hooks.
+5. If submission should happen, check the frontend API call literal and payload shape.
+6. Check the backend route/controller and the DB operation it should trigger.
+7. Check whether an isolated test DB was created/reset/seeded and whether the expected rows exist.
 Do not edit anything. Gather the smallest sufficient evidence set, then return one compact JSON object in a `json` markdown block:
 
 {{
@@ -132,6 +142,7 @@ Rules for the JSON:
 - `failure_phase` is required for E2E batches and optional otherwise.
 - `likely_causes` should usually contain 1-3 items.
 - Every cause must be backed by evidence you actually observed.
+- For E2E batches, make the notes concrete about which step was last confirmed, which step failed, and whether the blocker is in render/locator/API/DB/test-data state.
 - If you suspect the test itself is wrong, say why in requirement-facing terms.
 - If no environment issue is evidenced, keep `environment_notes` empty.
 - Do not append prose after the JSON block.
