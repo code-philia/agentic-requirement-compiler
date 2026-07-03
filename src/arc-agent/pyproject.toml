@@ -30,6 +30,7 @@ py-modules = [
   "arcbench_compat",
   "main",
   "utils",
+  "workflow_phase_utils",
   "workflow_phases",
 ]
 include-package-data = true
