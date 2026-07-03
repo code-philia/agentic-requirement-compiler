@@ -34,6 +34,9 @@ class TestDrivenDeveloper(ARCAgent):
         self._last_verifier_report_text: str = ""
         self._current_test_files: List[str] = []
         self._current_test_type: str = ""
+        self._failure_history: list[dict[str, Any]] = []
+        self._pending_post_verifier_compaction = False
+        self._session_compaction_count = 0
 
     def get_system_prompt(self) -> str:
         return f"""{get_compiler_role_guidance(
@@ -194,10 +197,13 @@ Rules:
             )
             self._last_verifier_report = verifier_report
             self._last_verifier_report_text = self._format_verifier_report(verifier_report)
+            self._append_failure_history_entry(result, verifier_report)
+            self._pending_post_verifier_compaction = True
             self._forced_followup_user_messages.append(self._last_verifier_report_text)
         else:
             self._last_verifier_report = None
             self._last_verifier_report_text = ""
+            self._pending_post_verifier_compaction = False
         return True, result
 
     async def _on_assistant_message_before_tool_calls(
@@ -221,6 +227,31 @@ Rules:
         ):
             return "BUDGET_EXHAUSTED"
         return None
+
+    async def _postprocess_messages_after_tool_call(
+        self,
+        messages: List[Dict[str, Any]],
+        tool_name: str,
+        tool_args: Dict[str, Any],
+        tool_result: str,
+        node_id: str | None = None,
+    ) -> List[Dict[str, Any]]:
+        if tool_name != "run_tests" or not self._pending_post_verifier_compaction:
+            return messages
+
+        self._pending_post_verifier_compaction = False
+        before_tokens = self._estimate_request_tokens(messages)
+        compacted_messages = self._compact_session_after_verifier(messages)
+        after_tokens = self._estimate_request_tokens(compacted_messages)
+        self._session_compaction_count += 1
+        await self._log(
+            (
+                f"Compacted TDD session after verifier completion "
+                f"(#{self._session_compaction_count}, {before_tokens} -> {after_tokens} tokens)."
+            ),
+            node_id=node_id,
+        )
+        return compacted_messages
 
     async def _get_stop_response_before_final(
         self,
@@ -298,6 +329,9 @@ Rules:
         previous_last_result = self._last_run_tests_result
         previous_last_completed_result = self._last_completed_run_tests_result
         previous_has_called_run_tests = self._has_called_run_tests_in_session
+        previous_failure_history = list(self._failure_history)
+        previous_pending_post_verifier_compaction = self._pending_post_verifier_compaction
+        previous_session_compaction_count = self._session_compaction_count
 
         self._run_tests_budget = run_tests_budget
         self._run_tests_usage = run_tests_usage if run_tests_usage is not None else {}
@@ -314,6 +348,9 @@ Rules:
         self._forced_followup_user_messages = []
         self._last_verifier_report = None
         self._last_verifier_report_text = ""
+        self._failure_history = []
+        self._pending_post_verifier_compaction = False
+        self._session_compaction_count = 0
         try:
             return await super().run_from_messages(
                 messages=messages,
@@ -332,6 +369,9 @@ Rules:
             self._last_run_tests_result = previous_last_result
             self._last_completed_run_tests_result = latest_completed_result or previous_last_completed_result
             self._has_called_run_tests_in_session = previous_has_called_run_tests
+            self._failure_history = previous_failure_history
+            self._pending_post_verifier_compaction = previous_pending_post_verifier_compaction
+            self._session_compaction_count = previous_session_compaction_count
 
     def get_last_run_tests_result(self) -> str | None:
         return self._last_completed_run_tests_result
@@ -385,8 +425,130 @@ Rules:
                 f"<forced_file_refresh path=\"{path}\">\n"
                 f"Failed to re-read file automatically: {exc}\n"
                 "</forced_file_refresh>\n"
-                "A previous exact replacement failed. Re-read the file logically before issuing another exact edit."
+            "A previous exact replacement failed. Re-read the file logically before issuing another exact edit."
             )
+
+    def _append_failure_history_entry(
+        self,
+        latest_test_output: str,
+        verifier_report: dict[str, Any],
+    ) -> None:
+        entry = {
+            "attempt": len(self._failure_history) + 1,
+            "test_type": self._current_test_type or "",
+            "test_files": list(self._current_test_files[:4]),
+            "exit_code": self._extract_exit_code(latest_test_output),
+            "fingerprint": self._recent_failure_fingerprints[-1] if self._recent_failure_fingerprints else "",
+            "failure_summary": str(verifier_report.get("failure_summary", "") or "").strip(),
+            "likely_cause_summaries": [
+                str(item.get("summary", "")).strip()
+                for item in (verifier_report.get("likely_causes") or [])[:3]
+                if isinstance(item, dict) and str(item.get("summary", "")).strip()
+            ],
+            "recommended_next_steps": [
+                str(item).strip()
+                for item in (verifier_report.get("recommended_next_steps") or [])[:3]
+                if str(item).strip()
+            ],
+            "latest_test_output_excerpt": self._summarize_test_output(latest_test_output),
+        }
+        self._failure_history.append(entry)
+        self._failure_history = self._failure_history[-6:]
+
+    @staticmethod
+    def _summarize_test_output(tool_result: str, max_lines: int = 20) -> str:
+        lines = [line.rstrip() for line in str(tool_result or "").splitlines() if line.strip()]
+        if not lines:
+            return ""
+        if len(lines) > max_lines:
+            lines = lines[-max_lines:]
+            lines.insert(0, "... [truncated]")
+        return "\n".join(lines)
+
+    @staticmethod
+    def _extract_recent_tool_paths(
+        messages: List[Dict[str, Any]],
+        tool_names: set[str],
+        limit: int = 8,
+    ) -> list[str]:
+        paths: list[str] = []
+        for message in reversed(messages):
+            if message.get("role") != "assistant":
+                continue
+            tool_calls = message.get("tool_calls") or []
+            for tool_call in reversed(tool_calls):
+                function_payload = tool_call.get("function", {}) if isinstance(tool_call, dict) else {}
+                if function_payload.get("name") not in tool_names:
+                    continue
+                try:
+                    args = json.loads(function_payload.get("arguments", "{}"))
+                except Exception:
+                    args = {}
+                path = str(args.get("path", "")).strip()
+                if path and path not in paths:
+                    paths.append(path)
+                if len(paths) >= limit:
+                    return paths
+        return paths
+
+    def _compact_session_after_verifier(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        if len(messages) < 2:
+            return messages
+
+        latest_failure = self._failure_history[-1] if self._failure_history else {}
+        historical_failures = self._failure_history[:-1][-3:]
+        recent_read_files = self._extract_recent_tool_paths(messages, {"read_file"})
+        recent_changed_files = self._extract_recent_tool_paths(
+            messages,
+            {"edit_file", "write_file", "delete_file"},
+        )
+        latest_verifier_report = self._last_verifier_report or {}
+        compact_state = {
+            "task_state": "TDD failure-recovery loop in progress for the current node.",
+            "current_test_type": self._current_test_type or "",
+            "target_test_files": list(self._current_test_files[:6]),
+            "run_tests_usage": (
+                self._run_tests_usage.get("run_tests", 0)
+                if isinstance(self._run_tests_usage, dict)
+                else 0
+            ),
+            "latest_failure": {
+                "attempt": latest_failure.get("attempt"),
+                "fingerprint": latest_failure.get("fingerprint", ""),
+                "failure_summary": latest_failure.get("failure_summary", ""),
+                "likely_cause_summaries": latest_failure.get("likely_cause_summaries", []),
+                "recommended_next_steps": latest_failure.get("recommended_next_steps", []),
+                "latest_test_output_excerpt": latest_failure.get("latest_test_output_excerpt", ""),
+                "verifier_conclusion": latest_verifier_report,
+            },
+            "historical_failure_records": historical_failures,
+            "recent_file_activity": {
+                "read_files": recent_read_files,
+                "changed_files": recent_changed_files,
+            },
+            "next_action": (
+                latest_failure.get("recommended_next_steps", [])[0]
+                if latest_failure.get("recommended_next_steps")
+                else "Read the failing test and the nearest owner file before the next minimal fix."
+            ),
+        }
+        compact_text = (
+            "<tdd_session_compact_state>\n"
+            f"{json.dumps(compact_state, indent=2, ensure_ascii=False)}\n"
+            "</tdd_session_compact_state>"
+        )
+        continue_message = (
+            "Continue from the compact TDD state above. Preserve the initial system prompt and the initial node-context "
+            "user prompt as the source of truth. Treat historical failure records as background only. Prioritize the "
+            "latest failure excerpt plus the verifier conclusion, then inspect only the next directly relevant files "
+            "before making one minimal fix."
+        )
+        return [
+            messages[0],
+            messages[1],
+            {"role": "assistant", "content": compact_text},
+            {"role": "user", "content": continue_message},
+        ]
 
     def build_initial_messages(
         self,

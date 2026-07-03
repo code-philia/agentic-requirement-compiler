@@ -96,6 +96,17 @@ class ARCAgent:
         """Allow subclasses to end the current session after a specific tool result."""
         return None
 
+    async def _postprocess_messages_after_tool_call(
+        self,
+        messages: List[Dict[str, Any]],
+        tool_name: str,
+        tool_args: Dict[str, Any],
+        tool_result: str,
+        node_id: str | None = None,
+    ) -> List[Dict[str, Any]]:
+        """Allow subclasses to compact or rewrite the session after a tool call."""
+        return messages
+
     async def _get_stop_response_before_final(
         self,
         final_response: str,
@@ -637,6 +648,13 @@ Output from {tool_name}:
                         if forced_messages:
                             for forced_message in forced_messages:
                                 messages.append({"role": "user", "content": forced_message})
+                    messages = await self._postprocess_messages_after_tool_call(
+                        messages=messages,
+                        tool_name=tool_name,
+                        tool_args=tool_args,
+                        tool_result=tool_result_str,
+                        node_id=node_id,
+                    )
 
                     stop_response = await self._get_stop_response_after_tool_call(
                         tool_name=tool_name,
