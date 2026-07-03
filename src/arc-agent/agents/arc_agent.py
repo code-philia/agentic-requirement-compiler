@@ -52,6 +52,7 @@ class ARCAgent:
             api_key=os.environ.get("OPENAI_API_KEY"),
             base_url=os.environ.get("OPENAI_BASE_URL"),
         )
+        self._token_encoder = None
 
     async def _log(
         self,
