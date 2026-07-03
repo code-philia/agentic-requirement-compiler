@@ -6,6 +6,7 @@ import re
 from typing import Any, Awaitable, Callable, Dict, List
 from openai import AsyncOpenAI
 from dotenv import load_dotenv
+import tiktoken
 import utils
 from .tools import TOOL_REGISTRY
 
@@ -16,11 +17,9 @@ load_dotenv(dotenv_path=_ENV_FILE, override=False)
 
 # Global Debug Flag
 DEBUG_MODE = int(os.environ.get("ARC_DEBUG", "1"))
-MAX_TOOL_OUTPUT_LENGTH = int(os.environ.get("ARC_MAX_TOOL_OUTPUT_CHARS", "100000"))
-SOFT_CONTEXT_CHARS = int(os.environ.get("ARC_SOFT_CONTEXT_CHARS", "50000"))
-HARD_CONTEXT_CHARS = int(os.environ.get("ARC_HARD_CONTEXT_CHARS", "90000"))
-if HARD_CONTEXT_CHARS < SOFT_CONTEXT_CHARS:
-    HARD_CONTEXT_CHARS = SOFT_CONTEXT_CHARS + 10000
+MAX_TOOL_OUTPUT_LENGTH = int(os.environ.get("ARC_MAX_TOOL_OUTPUT_CHARS", "10000"))
+SOFT_CONTEXT_TOKENS = 60000
+HARD_CONTEXT_TOKENS = 100000
 MICROCOMPACT_MIN_TOOL_OUTPUT = int(os.environ.get("ARC_MICROCOMPACT_MIN_CHARS", "1000"))
 MICROCOMPACT_KEEP_MESSAGES = int(os.environ.get("ARC_MICROCOMPACT_KEEP_MESSAGES", "10"))
 MODEL_RETRY_COUNT = int(os.environ.get("ARC_MODEL_RETRY_COUNT", "2"))
@@ -116,9 +115,6 @@ class ARCAgent:
         """Inject a single compact, replaceable memory note before each model call."""
         return None
 
-    def _should_evict_read_file_results(self) -> bool:
-        return True
-
     def _apply_ephemeral_user_message(
         self,
         messages: List[Dict[str, Any]],
@@ -149,15 +145,50 @@ class ARCAgent:
             )
         return filtered_messages
 
-    def _estimate_context_chars(self, messages: List[Dict[str, Any]]) -> int:
-        total = 0
-        for m in messages:
-            content = m.get("content")
-            if isinstance(content, str):
-                total += len(content)
-            elif content is not None:
-                total += len(str(content))
-        return total
+    def _get_token_encoder(self):
+        if self._token_encoder is not None:
+            return self._token_encoder
+
+        candidate_names: list[str] = []
+        try:
+            self._token_encoder = tiktoken.encoding_for_model(self.model)
+            return self._token_encoder
+        except Exception:
+            pass
+
+        normalized_model = str(self.model or "").lower()
+        if normalized_model.startswith("gpt-5") or normalized_model.startswith("o"):
+            candidate_names.append("o200k_base")
+        candidate_names.extend(["cl100k_base", "o200k_base"])
+
+        for name in candidate_names:
+            try:
+                self._token_encoder = tiktoken.get_encoding(name)
+                return self._token_encoder
+            except Exception:
+                continue
+
+        raise RuntimeError(f"Unable to resolve a tiktoken encoder for model `{self.model}`.")
+
+    def _estimate_request_tokens(
+        self,
+        messages: List[Dict[str, Any]],
+        tools: List | None = None,
+    ) -> int:
+        payload: dict[str, Any] = {
+            "messages": messages,
+        }
+        if tools:
+            payload["tools"] = tools
+            payload["tool_choice"] = "auto"
+
+        serialized = json.dumps(
+            payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            default=str,
+        )
+        return len(self._get_token_encoder().encode(serialized))
 
     def _extract_read_files(self, messages: List[Dict[str, Any]]) -> List[str]:
         """Extract list of files that have been read via read_file tool calls."""
@@ -330,65 +361,16 @@ Output from {tool_name}:
             return raw_output[:MAX_TOOL_OUTPUT_LENGTH]
 
     def _microcompact_messages(self, messages: List[Dict[str, Any]]) -> None:
-        # Keep initial system+user and latest N interactions intact.
+        # Final override: never compact read_file results independently.
+        # File contents stay intact unless full-session structured compaction is triggered.
         if len(messages) <= 2 + MICROCOMPACT_KEEP_MESSAGES:
             return
-
-        # Proactively evict read_file tool results older than 2 steps
-        # These are typically one-shot reads that the LLM already processed
-        protected_tail = 4  # Don't touch the last 4 messages
-        for i in range(2, len(messages) - protected_tail):
-            msg = messages[i]
-            content = msg.get("content")
-            if (
-                msg.get("role") == "tool"
-                and msg.get("name") == "read_file"
-                and isinstance(content, str)
-                and len(content) > 500
-            ):
-                msg["content"] = (
-                    content[:300]
-                    + "\n\n[read_file result evicted — use read_file again if needed]"
-                )
-
-        # Original microcompact: fold old large tool results
-        for msg in messages[2:-MICROCOMPACT_KEEP_MESSAGES]:
-            content = msg.get("content")
-            if (
-                msg.get("role") == "tool"
-                and isinstance(content, str)
-                and len(content) > MICROCOMPACT_MIN_TOOL_OUTPUT
-            ):
-                msg["content"] = (
-                    content[:300]
-                    + "\n\n[Old tool result content cleared to save context]"
-                )
-
-    def _microcompact_messages(self, messages: List[Dict[str, Any]]) -> None:
-        # Keep initial system+user and latest N interactions intact.
-        if len(messages) <= 2 + MICROCOMPACT_KEEP_MESSAGES:
-            return
-
-        if self._should_evict_read_file_results():
-            protected_tail = 4  # Don't touch the last 4 messages
-            for i in range(2, len(messages) - protected_tail):
-                msg = messages[i]
-                content = msg.get("content")
-                if (
-                    msg.get("role") == "tool"
-                    and msg.get("name") == "read_file"
-                    and isinstance(content, str)
-                    and len(content) > 500
-                ):
-                    msg["content"] = (
-                        content[:300]
-                        + "\n\n[read_file result compacted; rely on working memory and only re-read with new evidence]"
-                    )
 
         for msg in messages[2:-MICROCOMPACT_KEEP_MESSAGES]:
             content = msg.get("content")
             if (
                 msg.get("role") == "tool"
+                and msg.get("name") != "read_file"
                 and isinstance(content, str)
                 and len(content) > MICROCOMPACT_MIN_TOOL_OUTPUT
             ):
@@ -480,23 +462,24 @@ Output from {tool_name}:
         step = 0
         while step < max_steps:
             self._microcompact_messages(messages)
-            # Compact opportunistically before each reasoning step.
-            total_chars = self._estimate_context_chars(messages)
+            projected_messages = self._apply_ephemeral_user_message(messages, node_id=node_id)
+            total_tokens = self._estimate_request_tokens(projected_messages, tools=tools)
 
             # Level 1: dedup once the soft budget is exceeded.
-            if total_chars > SOFT_CONTEXT_CHARS:
+            if total_tokens > SOFT_CONTEXT_TOKENS:
                 chars_removed = self._dedup_messages(messages)
                 if chars_removed > 0:
-                    total_chars = self._estimate_context_chars(messages)
+                    projected_messages = self._apply_ephemeral_user_message(messages, node_id=node_id)
+                    total_tokens = self._estimate_request_tokens(projected_messages, tools=tools)
                     await self._log(
-                        f"[Dedup] Removed {chars_removed} chars of duplicate tool results. Context now: {total_chars}",
+                        f"[Dedup] Removed {chars_removed} chars of duplicate tool results. Context now: {total_tokens} tokens.",
                         node_id=node_id,
                     )
 
             # Level 2: replace prior history with a structured compact state at the hard budget.
-            if total_chars > HARD_CONTEXT_CHARS:
+            if total_tokens > HARD_CONTEXT_TOKENS:
                 await self._log(
-                    f"Triggering structured auto-compact (Step {step}, Chars: {total_chars})...",
+                    f"Triggering structured auto-compact (Step {step}, Tokens: {total_tokens})...",
                     node_id=node_id,
                 )
 

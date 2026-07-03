@@ -7,4 +7,5 @@ pydantic
 colorama
 click
 jsonschema
+tiktoken
 httpx[socks]
