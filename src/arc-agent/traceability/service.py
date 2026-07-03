@@ -2,8 +2,6 @@ import json
 from .database import (
     insert_requirement,
     get_requirement_by_id,
-    get_requirement_contract,
-    get_all_requirement_contracts,
     get_interfaces_by_req_id,
     get_tests_by_req_id,
     get_all_requirements,
@@ -37,8 +35,6 @@ def get_traceability_data(req_id: str = "", keyword: str = ""):
     """
     if req_id:
         requirements = [get_requirement_by_id(req_id)] if get_requirement_by_id(req_id) else []
-        requirement_contract = get_requirement_contract(req_id)
-        requirement_contracts = [requirement_contract] if requirement_contract else []
         interfaces = get_interfaces_by_req_id(req_id)
         tests = get_tests_by_req_id(req_id)
         call_edges = get_call_edges_by_req_id(req_id)
@@ -46,7 +42,6 @@ def get_traceability_data(req_id: str = "", keyword: str = ""):
         node_states = [state] if state else []
     else:
         requirements = get_all_requirements()
-        requirement_contracts = get_all_requirement_contracts()
         interfaces = get_all_interfaces()
         tests = get_all_tests()
         call_edges = get_all_call_edges()
@@ -54,7 +49,6 @@ def get_traceability_data(req_id: str = "", keyword: str = ""):
 
     if keyword:
         requirements = [r for r in requirements if r and _contains_keyword(r, keyword)]
-        requirement_contracts = [c for c in requirement_contracts if c and _contains_keyword(c, keyword)]
         interfaces = [i for i in interfaces if _contains_keyword(i, keyword)]
         tests = [t for t in tests if _contains_keyword(t, keyword)]
         call_edges = [e for e in call_edges if _contains_keyword(e, keyword)]
@@ -62,7 +56,6 @@ def get_traceability_data(req_id: str = "", keyword: str = ""):
     
     return {
         "requirements": requirements,
-        "requirement_contracts": requirement_contracts,
         "interfaces": interfaces,
         "tests": tests,
         "call_edges": call_edges,

@@ -33,7 +33,6 @@ def init_db(reset: bool = False):
     cursor.execute('PRAGMA foreign_keys = ON;')
     
     if reset:
-        cursor.execute('DROP TABLE IF EXISTS requirement_contracts')
         cursor.execute('DROP TABLE IF EXISTS node_contracts')
         cursor.execute('DROP TABLE IF EXISTS node_states')
         cursor.execute('DROP TABLE IF EXISTS call_edges')
@@ -118,16 +117,6 @@ def init_db(reset: bool = False):
     )
     ''')
 
-    # 7. Create compiled requirement contracts (frozen from raw requirements before DESIGN)
-    cursor.execute('''
-    CREATE TABLE IF NOT EXISTS requirement_contracts (
-        req_id TEXT PRIMARY KEY,
-        content TEXT,
-        updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
-        FOREIGN KEY(req_id) REFERENCES requirements(req_id)
-    )
-    ''')
-    
     conn.commit()
     conn.close()
 
@@ -713,61 +702,6 @@ def get_all_node_states():
     rows = cursor.fetchall()
     conn.close()
     return [dict(row) for row in rows]
-
-
-"""
-Requirement Contract Record
-"""
-def upsert_requirement_contract(req_id: str, content: dict):
-    """Insert or update a compiled structured requirement contract."""
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-    cursor.execute('''
-    INSERT INTO requirement_contracts (req_id, content, updated_at)
-    VALUES (?, ?, CURRENT_TIMESTAMP)
-    ON CONFLICT(req_id) DO UPDATE SET
-        content=excluded.content,
-        updated_at=CURRENT_TIMESTAMP
-    ''', (req_id, json.dumps(content, ensure_ascii=False)))
-    conn.commit()
-    conn.close()
-
-
-def get_requirement_contract(req_id: str):
-    """Retrieve one compiled structured requirement contract."""
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    cursor = conn.cursor()
-    cursor.execute('SELECT * FROM requirement_contracts WHERE req_id = ?', (req_id,))
-    row = cursor.fetchone()
-    conn.close()
-    if not row:
-        return None
-    data = dict(row)
-    try:
-        data["content"] = json.loads(data["content"]) if data.get("content") else {}
-    except json.JSONDecodeError:
-        data["content"] = {}
-    return data
-
-
-def get_all_requirement_contracts():
-    """Retrieve all compiled structured requirement contracts."""
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    cursor = conn.cursor()
-    cursor.execute('SELECT * FROM requirement_contracts ORDER BY req_id')
-    rows = cursor.fetchall()
-    conn.close()
-    records = []
-    for row in rows:
-        data = dict(row)
-        try:
-            data["content"] = json.loads(data["content"]) if data.get("content") else {}
-        except json.JSONDecodeError:
-            data["content"] = {}
-        records.append(data)
-    return records
 
 
 """

@@ -6,7 +6,6 @@ from typing import Dict, Any, List
 import traceability.database as db_module
 from traceability.database import (
     get_requirement_by_id,
-    get_requirement_contract,
     get_interfaces_by_req_id,
     get_tests_by_req_id,
 )
@@ -292,127 +291,6 @@ class ContextPipeline:
         parts.append("</requirement_focus>")
         return "\n".join(parts)
 
-    def _build_requirement_contract_layer(self, node_id: str) -> str:
-        contract_row = get_requirement_contract(node_id)
-        contract = contract_row.get("content", {}) if isinstance(contract_row, dict) else {}
-        if not contract:
-            return ""
-
-        lineage = contract.get("lineage") or {}
-        signals = contract.get("signals") or {}
-        acceptance = contract.get("acceptance") or {}
-        lint = contract.get("lint") or {}
-
-        payload = {
-            "req_id": contract.get("req_id", node_id),
-            "node_role": contract.get("node_role", ""),
-            "node_type": contract.get("node_type", ""),
-            "parent_id": lineage.get("parent_id", ""),
-            "dependencies": self._limit_string_list(lineage.get("dependencies") or [], limit=8, item_limit=120),
-            "children_ids": self._limit_string_list(lineage.get("children_ids") or [], limit=12, item_limit=80),
-            "routes": [
-                {
-                    "value": item.get("value", ""),
-                    "surface": item.get("surface", ""),
-                }
-                for item in (signals.get("routes") or [])[:10]
-                if isinstance(item, dict)
-            ],
-            "api_endpoints": [
-                {
-                    "method": item.get("method", ""),
-                    "path": item.get("path", ""),
-                }
-                for item in (signals.get("api_endpoints") or [])[:10]
-                if isinstance(item, dict)
-            ],
-            "visible_text": [
-                {
-                    "text": item.get("text", ""),
-                    "kind": item.get("kind", ""),
-                }
-                for item in (signals.get("visible_text") or [])[:18]
-                if isinstance(item, dict)
-            ],
-            "form_fields": [
-                {
-                    "label": item.get("label", ""),
-                    "placeholder": item.get("placeholder", ""),
-                }
-                for item in (signals.get("form_fields") or [])[:12]
-                if isinstance(item, dict)
-            ],
-            "messages": [
-                {
-                    "text": item.get("text", ""),
-                    "kind": item.get("kind", ""),
-                }
-                for item in (signals.get("messages") or [])[:12]
-                if isinstance(item, dict)
-            ],
-            "state_keys": [
-                item.get("key", "")
-                for item in (signals.get("state_keys") or [])[:10]
-                if isinstance(item, dict)
-            ],
-            "domain_terms": [
-                item.get("term", "")
-                for item in (signals.get("domain_terms") or [])[:16]
-                if isinstance(item, dict)
-            ],
-            "auth_flags": self._limit_string_list(signals.get("auth_flags") or [], limit=10, item_limit=80),
-            "must_statements": self._limit_string_list(acceptance.get("must_statements") or [], limit=10, item_limit=220),
-            "forbidden_shortcuts": self._limit_string_list(acceptance.get("forbidden_shortcuts") or [], limit=10, item_limit=220),
-            "lint_warnings": self._limit_string_list(lint.get("warnings") or [], limit=8, item_limit=220),
-        }
-
-        ancestor_payload: dict[str, Any] = {
-            "ancestor_ids": self._limit_string_list(lineage.get("ancestor_ids") or [], limit=8, item_limit=80),
-            "inherited_routes": [],
-            "inherited_auth_flags": [],
-            "inherited_visible_text": [],
-        }
-        inherited_routes: list[str] = []
-        inherited_auth_flags: list[str] = []
-        inherited_visible_text: list[dict[str, str]] = []
-        for ancestor_id in lineage.get("ancestor_ids") or []:
-            ancestor_row = get_requirement_contract(str(ancestor_id))
-            ancestor_contract = ancestor_row.get("content", {}) if isinstance(ancestor_row, dict) else {}
-            if not ancestor_contract:
-                continue
-            ancestor_signals = ancestor_contract.get("signals") or {}
-            for route in ancestor_signals.get("routes") or []:
-                if isinstance(route, dict):
-                    value = str(route.get("value", "")).strip()
-                    if value and value not in inherited_routes:
-                        inherited_routes.append(value)
-            for flag in ancestor_signals.get("auth_flags") or []:
-                text = str(flag or "").strip()
-                if text and text not in inherited_auth_flags:
-                    inherited_auth_flags.append(text)
-            for item in ancestor_signals.get("visible_text") or []:
-                if not isinstance(item, dict):
-                    continue
-                text = str(item.get("text", "")).strip()
-                kind = str(item.get("kind", "")).strip()
-                if not text:
-                    continue
-                card = {"text": text, "kind": kind}
-                if card not in inherited_visible_text:
-                    inherited_visible_text.append(card)
-        ancestor_payload["inherited_routes"] = inherited_routes[:12]
-        ancestor_payload["inherited_auth_flags"] = inherited_auth_flags[:10]
-        ancestor_payload["inherited_visible_text"] = inherited_visible_text[:16]
-
-        return (
-            "<requirement_contract>\n"
-            + json.dumps(payload, indent=2, ensure_ascii=False)
-            + "\n</requirement_contract>\n"
-            + "<requirement_contract_lineage>\n"
-            + json.dumps(ancestor_payload, indent=2, ensure_ascii=False)
-            + "\n</requirement_contract_lineage>"
-        )
-
     def _get_tech_stack_context(self) -> str:
         """
         Layer 1: Global Context (Tech stack and runtime rules).
@@ -686,9 +564,6 @@ class ContextPipeline:
         requirement_focus = self._build_requirement_focus(node_id, req_data)
         if requirement_focus:
             context_parts.append(requirement_focus)
-        requirement_contract = self._build_requirement_contract_layer(node_id)
-        if requirement_contract:
-            context_parts.append(requirement_contract)
         context_parts.append(self._build_acceptance_gate(node_id, req_data))
 
         # 1. Inject Global Context (cached globally — never changes)

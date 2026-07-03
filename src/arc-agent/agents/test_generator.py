@@ -57,7 +57,7 @@ class TestGenerator(ARCAgent):
 )}
 
 Rules:
-- Tests must cover `<interfaces>`, `<requirement_contract>`, and `<requirement_focus>`.
+- Tests must cover `<interfaces>` and `<requirement_focus>`.
 - Keep granularity coarse: prefer one primary file per layer, or one file per coherent scenario group.
 - Prefer stable contract assertions over incidental DOM structure or implementation details.
 - Treat the provided `<interfaces>` block as the source of truth for responsibility, specification, and test focus.
@@ -173,7 +173,7 @@ Read this first. The current requirement payload below is the authoritative task
 
 Additional rules:
 - Cover the spec, not speculation.
-- Use the provided `<requirement_contract>` plus `<interfaces>` blocks as the authoritative contract for ownership, visible literals, routes, messages, field labels, and test focus.
+- Use the provided requirement context plus `<interfaces>` blocks as the authoritative contract for ownership, visible literals, routes, messages, field labels, and test focus.
 - Prefer one main test file per enabled layer, or one file per coherent scenario group when that is cleaner.
 - Do not write tests that assert parent-owned behavior outside this node's scope.
 - Keep the file count low and stable.
