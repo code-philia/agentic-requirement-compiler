@@ -64,14 +64,12 @@ class ARCWorkflowManager:
         requirement_path: str = "",
         app_type: str = "web",
         web_port: int = 3301,
-        test_level: str = "middle",
         log_cb: Callable[[str, str, str | None, str | None], Awaitable[None] | None] | None = None,
     ):
         self.workspace_path = workspace_path
         self.requirement_path = requirement_path
         self.app_type = normalize_app_type(app_type)
         self.web_port = int(web_port)
-        self.test_level = str(test_level or "middle").strip().lower()
         self.log_cb = log_cb
 
         self.arc_dir = os.path.join(self.workspace_path, ".arc")
@@ -87,7 +85,6 @@ class ARCWorkflowManager:
             workspace_path=self.workspace_path,
             requirement_path=self.requirement_path,
             app_type=self.app_type,
-            test_level=self.test_level,
             interface_designer=self.interface_designer,
             test_generator=self.test_generator,
             test_driven_developer=self.test_driven_developer,

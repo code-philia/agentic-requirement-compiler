@@ -49,7 +49,7 @@ class TestGenerator(ARCAgent):
         "You should minimize file count and keep tests aligned with real ownership boundaries so the implementation stage receives a coherent batch, not scattered fragments.",
     ],
     outputs=[
-        "A compact coverage plan across the selected test layers.",
+        "A compact coverage plan across the required unit, integration, and end-to-end layers, or parent-owned integration and end-to-end validation for non-leaf shell work.",
         "Executable test files with stable assertions and correct placement.",
         "A JSON manifest of the generated test artifacts for the current node.",
     ],
@@ -120,35 +120,36 @@ Rules:
         return False, None
 
     @staticmethod
-    def _build_scope_instruction(design_mode: str, test_type: str) -> str:
+    def _build_scope_instruction(design_mode: str) -> str:
         if design_mode == "non_leaf_ui_only":
             return """
-This non-leaf node is UI-shell-only.
-Do not generate test files. Return an empty JSON array: `[]`.
+This non-leaf node is a parent shell node.
+Generate parent-owned Integration and E2E validation only.
+- Integration covers parent routing, provider composition, child mounting, and shell collaboration boundaries.
+- E2E covers parent-visible user flows and browser smoke validation across mounted child capabilities.
+- Do not generate Unit tests for child business logic from the parent node.
 """
-        if test_type == "All":
+        if design_mode == "non_leaf_full":
             return """
+This non-leaf node owns parent contract design plus parent integration validation.
+Generate parent-owned Integration and E2E coverage in one pass.
+- Integration covers parent routes, layouts, providers, mount points, guards, and shared shell collaboration.
+- E2E covers the parent-visible flows that are explicit in the requirement and scenarios.
+- Integration and E2E must exercise the real mounted chain instead of validating mocked success paths.
+- Do not generate Unit tests for child business logic from the parent node.
+"""
+        return """
 Generate Unit, Integration, and E2E coverage in one pass.
 - Unit covers DB/FUNC contracts.
 - Integration covers API and boundary collaboration.
 - E2E covers the UI flows that are explicit in the requirement and scenarios.
 - Integration and E2E must exercise the real owned chain instead of validating mocked success paths.
 """
-        if test_type == "Unit+Integration":
-            return """
-Generate Unit and Integration coverage in one pass.
-- Unit covers DB/FUNC contracts.
-- Integration covers API and boundary collaboration.
-- Integration should verify real request/handler/persistence behavior where the current node owns that chain.
-- Do not generate E2E tests in this mode.
-"""
-        return f"Generate the `{test_type}` layer for this node."
 
     def build_initial_messages(
         self,
         node_id: str,
         requirement_data: Dict[str, Any],
-        test_type: str = "Unit",
         preloaded_source: str = None,
         design_mode: str = "leaf_full",
     ) -> tuple:
@@ -167,7 +168,7 @@ Read this first. The current requirement payload below is the authoritative task
 {dynamic_ctx}
 
 ### Task
-{self._build_scope_instruction(design_mode, test_type)}
+{self._build_scope_instruction(design_mode)}
 
 Additional rules:
 - Cover the spec, not speculation.
@@ -205,14 +206,12 @@ When finished, output one JSON array in a `json` markdown block:
         self,
         node_id: str,
         requirement_data: Dict[str, Any],
-        test_type: str = "Unit",
         preloaded_source: str = None,
         design_mode: str = "leaf_full",
     ) -> str:
         messages, tools = self.build_initial_messages(
             node_id=node_id,
             requirement_data=requirement_data,
-            test_type=test_type,
             preloaded_source=preloaded_source,
             design_mode=design_mode,
         )

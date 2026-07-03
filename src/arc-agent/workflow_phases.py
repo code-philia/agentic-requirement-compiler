@@ -28,22 +28,16 @@ from utils import extract_json_array_from_markdown, extract_modified_files_from_
 
 TEST_TYPE_ORDER = ["Unit", "Integration", "E2E"]
 DEFAULT_TDD_TEST_BUDGET = 10
-TEST_LEVEL_TO_TYPES = {
-    "light": ["Unit"],
-    "middle": ["Unit", "Integration"],
-    "heavy": ["Unit", "Integration", "E2E"],
-}
 
 
 class WorkflowPhaseRunner:
-    """Run the heavy DESIGN and IMPLEMENT phases while the workflow manager stays lightweight."""
+    """Run the DESIGN and IMPLEMENT phases while the workflow manager stays orchestration-focused."""
 
     def __init__(
         self,
         workspace_path: str,
         requirement_path: str,
         app_type: str,
-        test_level: str,
         interface_designer,
         test_generator,
         test_driven_developer,
@@ -52,8 +46,6 @@ class WorkflowPhaseRunner:
         self.workspace_path = workspace_path
         self.requirement_path = requirement_path
         self.app_type = app_type
-        normalized_test_level = str(test_level or "middle").strip().lower()
-        self.test_level = normalized_test_level if normalized_test_level in TEST_LEVEL_TO_TYPES else "middle"
         self.interface_designer = interface_designer
         self.test_generator = test_generator
         self.test_driven_developer = test_driven_developer
@@ -120,7 +112,6 @@ class WorkflowPhaseRunner:
                 "children_ids": requirement_data.get("children_ids") or [],
                 "dependencies": requirement_data.get("dependencies") or [],
             },
-            "test_level": self.test_level,
             "recent_failure_summary": "",
             "subtree_invariants": [],
             "assembly_boundaries": [],
@@ -158,24 +149,8 @@ class WorkflowPhaseRunner:
             lines.insert(0, "...[truncated]")
         return "\n".join(lines)
 
-    def _build_empty_test_plan(self) -> dict[str, Any]:
-        return {
-            "unit_files": [],
-            "integration_files": [],
-            "e2e_files": [],
-            "test_ids": [],
-        }
-
     def _get_selected_test_types(self) -> list[str]:
-        return list(TEST_LEVEL_TO_TYPES.get(self.test_level, TEST_LEVEL_TO_TYPES["middle"]))
-
-    def _get_test_generation_mode(self) -> str:
-        selected = self._get_selected_test_types()
-        if selected == ["Unit"]:
-            return "Unit"
-        if selected == ["Unit", "Integration"]:
-            return "Unit+Integration"
-        return "All"
+        return list(TEST_TYPE_ORDER)
 
     def _determine_non_leaf_result_state(self, requirement_data: dict[str, Any]) -> str:
         child_ids = [
@@ -189,447 +164,39 @@ class WorkflowPhaseRunner:
                 return "CONVERGED_WITH_FAILED_CHILDREN"
         return "CONVERGED"
 
-    async def _run_non_leaf_shell_test_verification(
+    def _get_non_leaf_gate_failures(self, requirement_data: dict[str, Any]) -> list[str]:
+        blocking: list[str] = []
+        child_ids = [
+            str(child_id).strip()
+            for child_id in (requirement_data.get("children_ids") or [])
+            if str(child_id).strip()
+        ]
+        for child_id in child_ids:
+            child_state = get_node_state(child_id) or {}
+            normalized_state = str(child_state.get("state", "")).strip().upper()
+            if normalized_state not in {"PASSED", "CONVERGED", "CONVERGED_WITH_FAILED_CHILDREN"}:
+                blocking.append(f"{child_id}:{normalized_state or 'UNSEEN'}")
+            elif normalized_state == "CONVERGED_WITH_FAILED_CHILDREN":
+                blocking.append(f"{child_id}:{normalized_state}")
+        return blocking
+
+    @staticmethod
+    def _build_non_leaf_scope_note() -> str:
+        return (
+            "This is a parent integration and validation batch for a non-leaf node. "
+            "You may only edit parent-owned assembly files such as routes, layouts, providers, page containers, "
+            "mount points, guards, and shared shell composition boundaries. Do not re-implement child business logic, "
+            "do not invent fake session/data fallbacks, and do not mask a child failure from the parent shell."
+        )
+
+    async def _run_tdd_batches_for_node(
         self,
         node_id: str,
         tests: list[dict[str, Any]],
-    ) -> tuple[bool, str, dict[str, bool | None]]:
-        aggregated_outputs: list[str] = []
-        merged_statuses: dict[str, bool | None] = {}
-        all_passed = True
-
-        for test_type in TEST_TYPE_ORDER:
-            typed_tests = [test for test in tests if str(test.get("type", "")).strip() == test_type]
-            if not typed_tests:
-                continue
-            test_files = self._collect_test_files(typed_tests)
-            batch_output = await self._run_test_batch_for_agent(node_id=node_id, test_type=test_type, test_files=test_files)
-            batch_passed, batch_statuses = self._map_statuses_from_batch_output(
-                tests=typed_tests,
-                batch_output=batch_output,
-            )
-            merged_statuses.update(batch_statuses)
-            aggregated_outputs.append(f"## {test_type}\n{batch_output}")
-            if not batch_passed:
-                all_passed = False
-
-        return all_passed, "\n\n".join(aggregated_outputs), merged_statuses
-
-    async def run_design_phase(self, node_id: str, requirement_data: dict[str, Any]) -> bool:
-        is_leaf = not bool(requirement_data.get("children_ids"))
-        design_mode = "leaf_full" if is_leaf else self._classify_non_leaf_work(node_id, requirement_data)
-        self._update_node_session(
-            node_id,
-            self._build_base_node_session(
-                node_id=node_id,
-                requirement_data=requirement_data,
-                node_role="leaf" if is_leaf else "non_leaf",
-                design_mode=design_mode,
-            ),
-        )
-
-        if not is_leaf and design_mode == "skip":
-            self._update_node_session(
-                node_id,
-                {
-                    "execution_mode": "skipped_non_leaf",
-                    "reason": "no visual reference and no scenarios",
-                    "phase_status": {
-                        "design": "completed",
-                        "spec": "skipped",
-                        "test": "skipped",
-                        "implement": "skipped",
-                    },
-                },
-            )
-            await self.log_cb(
-                "InterfaceDesigner",
-                "Skipping DESIGN for non-leaf node because it has neither visual reference nor scenarios.",
-                None,
-                node_id,
-            )
-            return True
-
-        await self.interface_designer.parse_and_store_visual_elements(
-            self.workspace_path,
-            os.path.dirname(os.path.abspath(self.requirement_path)),
-            requirement_data,
-        )
-        requirement_data = get_requirement_by_id(node_id) or requirement_data
-
-        await self.log_cb(
-            "InterfaceDesigner",
-            f"Running unified design session for `{design_mode}`: analyze requirement, capture parent constraints, design interfaces, and materialize owned code...",
-            None,
-            node_id,
-        )
-        design_bundle, design_messages = await self.interface_designer.design_bundle(
-            node_id=node_id,
-            requirement_data=requirement_data,
-            design_mode=design_mode,
-        )
-        subtree_invariants = design_bundle.get("subtree_invariants", [])
-        assembly_boundaries = design_bundle.get("assembly_boundaries", [])
-        interfaces = design_bundle.get("interfaces", [])
-        interface_spec = design_bundle.get("interface_spec", [])
-
-        if is_leaf and not interfaces:
-            await self.log_cb(
-                "InterfaceDesigner",
-                "Unified design session did not return a valid interface JSON array.",
-                "error",
-                node_id,
-            )
-            return False
-        if interfaces and not interface_spec:
-            interface_spec = [
-                {
-                    "interface_id": str(interface.get("interface_id", "")).strip(),
-                    "type": str(interface.get("type", "")).strip(),
-                    "file_path": str(interface.get("file_path", "")).strip(),
-                    "first_line": str(interface.get("first_line", "")).strip(),
-                    "responsibility": str(interface.get("responsibility", "") or "").strip(),
-                    "specification": str(interface.get("specification", "") or "").strip(),
-                    "test_focus": interface.get("test_focus", []) if isinstance(interface.get("test_focus"), list) else [],
-                    "reuse_notes": interface.get("reuse_notes", []) if isinstance(interface.get("reuse_notes"), list) else [],
-                }
-                for interface in interfaces
-                if isinstance(interface, dict)
-            ]
-
-        self._update_node_session(node_id, {"phase_status": {"understand": "completed"}})
-        await self.log_cb(
-            "InterfaceDesigner",
-            "Completed unified design session and persisted node session context.",
-            None,
-            node_id,
-        )
-
-        clear_node_design_artifacts(node_id)
-        if interfaces:
-            self._store_interfaces(node_id, interfaces)
-            upsert_node_contract(node_id, self._build_frozen_node_contract(node_id, requirement_data, interfaces, []))
-            context_pipeline.cache.invalidate_db_layers(node_id)
-        self._update_node_session(
-            node_id,
-            {
-                "subtree_invariants": subtree_invariants,
-                "assembly_boundaries": assembly_boundaries,
-                "interfaces": interfaces,
-                "interface_spec": interface_spec,
-                "phase_status": {
-                    "design": "completed",
-                    "spec": "completed",
-                },
-            },
-        )
-        await self.log_cb(
-            "InterfaceDesigner",
-            (
-                f"Stored {len(interfaces)} interface definition(s) into traceability DB."
-                if interfaces
-                else "Stored non-leaf invariants and assembly boundaries without registering new interfaces."
-            ),
-            None,
-            node_id,
-        )
-
-        for interface in interfaces:
-            if not isinstance(interface, dict):
-                continue
-            interface_id = str(interface.get("interface_id", "")).strip()
-            if interface_id:
-                update_interface_implemented(interface_id, True)
-
-        materialized = interfaces
-        materialized_files = extract_modified_files_from_messages(design_messages)
-        if materialized_files:
-            context_pipeline.cache.invalidate_file_layers(node_id)
-            await self.log_cb(
-                "InterfaceDesigner",
-                f"Materialized files: {', '.join(sorted(materialized_files))}",
-                None,
-                node_id,
-            )
-
-        self._update_node_session(
-            node_id,
-            {
-                "interfaces": materialized,
-                "materialized_files": materialized_files,
-            },
-        )
-        await self.log_cb(
-            "InterfaceDesigner",
-            (
-                f"Materialized {len(interfaces)} interface(s) into code during the unified design session."
-                if interfaces
-                else "No parent-owned interfaces needed materialization in the unified design session."
-            ),
-            None,
-            node_id,
-        )
-
-        if not is_leaf:
-            self._update_node_session(
-                node_id,
-                {
-                    "execution_mode": "non_leaf_compact",
-                    "test_plan": self._build_empty_test_plan(),
-                    "test_artifacts": [],
-                    "phase_status": {
-                        "test": "skipped",
-                        "implement": "skipped",
-                    },
-                },
-            )
-            await self.log_cb(
-                "Compiler",
-                "Non-leaf node finished at DESIGN with subtree invariants and assembly boundaries. Skipping TestGenerator and TDD.",
-                None,
-                node_id,
-            )
-            return True
-
-        await self.log_cb(
-            "TestGenerator",
-            "Generating tests from the designed interfaces...",
-            None,
-            node_id,
-        )
-        messages, tools = self.test_generator.build_initial_messages(
-            node_id=node_id,
-            requirement_data=requirement_data,
-            test_type=self._get_test_generation_mode(),
-            design_mode=design_mode,
-        )
-        test_output, test_messages = await self.test_generator.run_from_messages(
-            messages=messages,
-            node_id=node_id,
-            max_steps=30,
-            tools=tools,
-        )
-        tests = extract_json_array_from_markdown(test_output)
-        if not tests:
-            await self.log_cb(
-                "TestGenerator",
-                "DESIGN phase test generation did not return a valid test JSON array.",
-                "error",
-                node_id,
-            )
-            return False
-
-        try:
-            self._store_tests(
-                node_id,
-                tests,
-                is_leaf=is_leaf,
-                allow_non_leaf_shell_tests=False,
-            )
-        except ValueError as exc:
-            await self.log_cb(
-                "TestGenerator",
-                str(exc),
-                "error",
-                node_id,
-            )
-            return False
-        upsert_node_contract(node_id, self._build_frozen_node_contract(node_id, requirement_data, interfaces, tests))
-        context_pipeline.cache.invalidate_file_layers(node_id)
-        context_pipeline.cache.invalidate_db_layers(node_id)
-        self._update_node_session(
-            node_id,
-            {
-                "test_plan": self._build_test_plan(tests),
-                "test_artifacts": tests,
-                "phase_status": {"test": "completed"},
-            },
-        )
-
-        modified_test_files = extract_modified_files_from_messages(test_messages)
-        if modified_test_files:
-            await self.log_cb(
-                "TestGenerator",
-                f"Generated test files: {', '.join(sorted(modified_test_files))}",
-                None,
-                node_id,
-            )
-        await self.log_cb(
-            "TestGenerator",
-            f"Stored {len(tests)} test mapping item(s) into traceability DB.",
-            None,
-            node_id,
-        )
-        return True
-
-    async def run_implement_phase(self, node_id: str, requirement_data: dict[str, Any]) -> bool:
-        is_leaf = not bool(requirement_data.get("children_ids"))
-        session = utils.load_node_session(node_id)
-        if not is_leaf and session.get("execution_mode") in {"skipped_non_leaf", "non_leaf_compact"}:
-            await self.log_cb(
-                "Compiler",
-                "Skipping IMPLEMENT for non-leaf node because DESIGN already completed its compact parent-level work.",
-                None,
-                node_id,
-            )
-            return True
-
-        self._update_node_session(
-            node_id,
-            {
-                "phase_status": {"implement": "in_progress"},
-            },
-        )
-
-        interfaces = get_interfaces_by_req_id(node_id)
-        tests = get_tests_by_req_id(node_id)
-        if not interfaces:
-            await self.log_cb(
-                "TestDrivenDeveloper",
-                "IMPLEMENT phase requires designed interfaces, but none were found.",
-                "error",
-                node_id,
-            )
-            return False
-
-        if not is_leaf:
-            design_mode = str(session.get("design_mode", "")).strip()
-            shell_test_mode = False
-            if design_mode != "non_leaf_full" and tests:
-                await self.log_cb(
-                    "Compiler",
-                    f"Ignoring {len(tests)} stored test record(s) for non-leaf node {node_id}. Non-leaf IMPLEMENT performs only lightweight convergence.",
-                    "warning",
-                    node_id,
-                )
-            if design_mode != "non_leaf_full":
-                convergence_summary = self._build_non_leaf_convergence_summary(node_id, requirement_data)
-                audit_output, audit_messages = await self.interface_designer.audit_non_leaf_connectivity(
-                    node_id=node_id,
-                    interfaces=interfaces,
-                    convergence_summary=convergence_summary,
-                )
-                audit_modified_files = extract_modified_files_from_messages(audit_messages)
-                if audit_modified_files:
-                    context_pipeline.cache.invalidate_file_layers(node_id)
-                audit_says_no_changes = "NO_CHANGES_NEEDED" in (audit_output or "").upper()
-
-                precheck_output = await self._run_non_leaf_build_verification(node_id)
-                precheck_exit_code = parse_test_results(precheck_output).get("exit_code")
-                if audit_says_no_changes and precheck_exit_code == 0:
-                    await self.log_cb(
-                        "Compiler",
-                        "Non-leaf IMPLEMENT audit confirmed the parent shell is already connected. Skipping convergence edits.",
-                        None,
-                        node_id,
-                    )
-                    update_interface_implemented_status(node_id, True)
-                    self._update_node_session(
-                        node_id,
-                        {
-                            "result_state": self._determine_non_leaf_result_state(requirement_data),
-                            "phase_status": {"implement": "completed"},
-                            "tdd_handoff": {
-                                "last_test_type": "non_leaf_convergence",
-                                "last_failed_output_summary": "",
-                                "modified_files": audit_modified_files,
-                                "root_cause_notes": ["Audit reported no changes needed and build verification passed."],
-                            },
-                        },
-                    )
-                    return True
-
-                convergence_output, convergence_messages = await self.interface_designer.converge_non_leaf(
-                    node_id=node_id,
-                    interfaces=interfaces,
-                    convergence_summary=convergence_summary,
-                )
-                modified_files = extract_modified_files_from_messages(convergence_messages)
-                if modified_files:
-                    context_pipeline.cache.invalidate_file_layers(node_id)
-                    await self.log_cb(
-                        "Compiler",
-                        f"Non-leaf convergence modified files: {', '.join(sorted(modified_files))}",
-                        None,
-                        node_id,
-                    )
-                else:
-                    await self.log_cb(
-                        "Compiler",
-                        "Non-leaf convergence completed without code changes.",
-                        None,
-                        node_id,
-                    )
-                build_output = await self._run_non_leaf_build_verification(node_id)
-                build_exit_code = parse_test_results(build_output).get("exit_code")
-                if build_exit_code != 0:
-                    await self.log_cb(
-                        "Compiler",
-                        "Non-leaf convergence build verification failed.",
-                        "error",
-                        node_id,
-                    )
-                    if utils.debug_logger:
-                        utils.debug_logger.log(f"NON_LEAF_BUILD[{node_id}]", build_output)
-                    update_interface_implemented_status(node_id, False)
-                    self._update_node_session(
-                        node_id,
-                        {
-                            "phase_status": {"implement": "failed"},
-                            "tdd_handoff": {
-                                "last_test_type": "non_leaf_convergence",
-                                "last_failed_output_summary": self._summarize_batch_output(build_output),
-                                "modified_files": modified_files,
-                                "root_cause_notes": ["Build verification failed after non-leaf convergence."],
-                            },
-                        },
-                    )
-                    return False
-
-                await self.log_cb(
-                    "Compiler",
-                    "Non-leaf IMPLEMENT completed with lightweight convergence only. Parent-level assembly and build verification passed.",
-                    None,
-                    node_id,
-                )
-                update_interface_implemented_status(node_id, True)
-                self._update_node_session(
-                    node_id,
-                    {
-                        "result_state": self._determine_non_leaf_result_state(requirement_data),
-                        "phase_status": {"implement": "completed"},
-                        "tdd_handoff": {
-                            "last_test_type": "non_leaf_convergence",
-                            "last_failed_output_summary": "",
-                            "modified_files": modified_files,
-                            "root_cause_notes": ["Parent-level convergence passed build verification."],
-                        },
-                    },
-                )
-                return True
-
-        if not tests:
-            await self.log_cb(
-                "TestDrivenDeveloper",
-                "No generated tests were found for this node. Skipping TDD loop and marking the node as passed by definition.",
-                node_id,
-            )
-            update_interface_implemented_status(node_id, True)
-            self._update_node_session(
-                node_id,
-                {
-                    "phase_status": {"implement": "completed"},
-                    "tdd_handoff": {
-                        "last_test_type": "",
-                        "last_failed_output_summary": "",
-                        "modified_files": [],
-                        "root_cause_notes": ["No tests were generated for this node."],
-                    },
-                },
-            )
-            return True
-
-        previous_group_handoff_summary = ""
+        scope_note: str = "",
+        initial_failure_summary: str = "",
+    ) -> bool:
+        previous_group_handoff_summary = initial_failure_summary.strip()
         previous_group_modified_files: list[str] = []
 
         for test_type in self._get_selected_test_types():
@@ -652,6 +219,7 @@ class WorkflowPhaseRunner:
                 test_type=test_type,
                 preloaded_source=context_pipeline.build_incremental_context(node_id, previous_group_modified_files) if previous_group_modified_files else None,
                 previous_failure_summary=previous_group_handoff_summary,
+                scope_note=scope_note,
             )
             implement_output, implement_messages = await self.test_driven_developer.run_from_messages(
                 messages=messages,
@@ -746,8 +314,418 @@ class WorkflowPhaseRunner:
             for test in get_tests_by_req_id(node_id)
             if str(test.get("test_id", "")).strip()
         }
-        final_ok = bool(final_statuses) and all(value is True for value in final_statuses.values())
+        return bool(final_statuses) and all(value is True for value in final_statuses.values())
 
+    async def run_design_phase(self, node_id: str, requirement_data: dict[str, Any]) -> bool:
+        is_leaf = not bool(requirement_data.get("children_ids"))
+        design_mode = "leaf_full" if is_leaf else self._classify_non_leaf_work(node_id, requirement_data)
+        self._update_node_session(
+            node_id,
+            self._build_base_node_session(
+                node_id=node_id,
+                requirement_data=requirement_data,
+                node_role="leaf" if is_leaf else "non_leaf",
+                design_mode=design_mode,
+            ),
+        )
+
+        if not is_leaf and design_mode == "skip":
+            self._update_node_session(
+                node_id,
+                {
+                    "execution_mode": "skipped_non_leaf",
+                    "reason": "no visual reference and no scenarios",
+                    "phase_status": {
+                        "design": "completed",
+                        "spec": "skipped",
+                        "test": "skipped",
+                        "implement": "skipped",
+                    },
+                },
+            )
+            await self.log_cb(
+                "InterfaceDesigner",
+                "Skipping DESIGN for non-leaf node because it has neither visual reference nor scenarios.",
+                None,
+                node_id,
+            )
+            return True
+
+        await self.interface_designer.parse_and_store_visual_elements(
+            self.workspace_path,
+            os.path.dirname(os.path.abspath(self.requirement_path)),
+            requirement_data,
+        )
+        requirement_data = get_requirement_by_id(node_id) or requirement_data
+
+        await self.log_cb(
+            "InterfaceDesigner",
+            f"Running unified design session for `{design_mode}`: analyze requirement, capture parent constraints, design interfaces, and materialize owned code...",
+            None,
+            node_id,
+        )
+        design_bundle, design_messages = await self.interface_designer.design_bundle(
+            node_id=node_id,
+            requirement_data=requirement_data,
+            design_mode=design_mode,
+        )
+        subtree_invariants = design_bundle.get("subtree_invariants", [])
+        assembly_boundaries = design_bundle.get("assembly_boundaries", [])
+        interfaces = design_bundle.get("interfaces", [])
+        interface_spec = design_bundle.get("interface_spec", [])
+
+        if not interfaces:
+            role_label = "leaf" if is_leaf else "non-leaf"
+            await self.log_cb(
+                "InterfaceDesigner",
+                f"Unified design session for the current {role_label} node did not return a valid interface JSON array.",
+                "error",
+                node_id,
+            )
+            return False
+        if interfaces and not interface_spec:
+            interface_spec = [
+                {
+                    "interface_id": str(interface.get("interface_id", "")).strip(),
+                    "type": str(interface.get("type", "")).strip(),
+                    "file_path": str(interface.get("file_path", "")).strip(),
+                    "first_line": str(interface.get("first_line", "")).strip(),
+                    "responsibility": str(interface.get("responsibility", "") or "").strip(),
+                    "specification": str(interface.get("specification", "") or "").strip(),
+                    "test_focus": interface.get("test_focus", []) if isinstance(interface.get("test_focus"), list) else [],
+                    "reuse_notes": interface.get("reuse_notes", []) if isinstance(interface.get("reuse_notes"), list) else [],
+                }
+                for interface in interfaces
+                if isinstance(interface, dict)
+            ]
+
+        self._update_node_session(node_id, {"phase_status": {"understand": "completed"}})
+        await self.log_cb(
+            "InterfaceDesigner",
+            "Completed unified design session and persisted node session context.",
+            None,
+            node_id,
+        )
+
+        clear_node_design_artifacts(node_id)
+        frozen_contract = self._build_frozen_node_contract(node_id, requirement_data, interfaces, [])
+        upsert_node_contract(node_id, frozen_contract)
+        if interfaces:
+            self._store_interfaces(node_id, interfaces)
+            context_pipeline.cache.invalidate_db_layers(node_id)
+        self._update_node_session(
+            node_id,
+            {
+                "subtree_invariants": subtree_invariants,
+                "assembly_boundaries": assembly_boundaries,
+                "parent_contract": frozen_contract if not is_leaf else {},
+                "interfaces": interfaces,
+                "interface_spec": interface_spec,
+                "phase_status": {
+                    "design": "completed",
+                    "spec": "completed",
+                },
+            },
+        )
+        await self.log_cb(
+            "InterfaceDesigner",
+            (
+                f"Stored {len(interfaces)} interface definition(s) into traceability DB."
+                if interfaces
+                else "Stored non-leaf invariants and assembly boundaries without registering new interfaces."
+            ),
+            None,
+            node_id,
+        )
+
+        for interface in interfaces:
+            if not isinstance(interface, dict):
+                continue
+            interface_id = str(interface.get("interface_id", "")).strip()
+            if interface_id:
+                update_interface_implemented(interface_id, True)
+
+        materialized = interfaces
+        materialized_files = extract_modified_files_from_messages(design_messages)
+        if materialized_files:
+            context_pipeline.cache.invalidate_file_layers(node_id)
+            await self.log_cb(
+                "InterfaceDesigner",
+                f"Materialized files: {', '.join(sorted(materialized_files))}",
+                None,
+                node_id,
+            )
+
+        self._update_node_session(
+            node_id,
+            {
+                "interfaces": materialized,
+                "materialized_files": materialized_files,
+            },
+        )
+        await self.log_cb(
+            "InterfaceDesigner",
+            (
+                f"Materialized {len(interfaces)} interface(s) into code during the unified design session."
+                if interfaces
+                else "No parent-owned interfaces needed materialization in the unified design session."
+            ),
+            None,
+            node_id,
+        )
+
+        await self.log_cb(
+            "TestGenerator",
+            (
+                "Generating unit, integration, and end-to-end tests from the designed interfaces..."
+                if is_leaf else
+                "Generating parent integration and end-to-end validation tests from the parent contract and shell interfaces..."
+            ),
+            None,
+            node_id,
+        )
+        messages, tools = self.test_generator.build_initial_messages(
+            node_id=node_id,
+            requirement_data=requirement_data,
+            design_mode=design_mode,
+        )
+        test_output, test_messages = await self.test_generator.run_from_messages(
+            messages=messages,
+            node_id=node_id,
+            max_steps=30,
+            tools=tools,
+        )
+        tests = extract_json_array_from_markdown(test_output)
+        if not tests:
+            await self.log_cb(
+                "TestGenerator",
+                "DESIGN phase test generation did not return a valid test JSON array.",
+                "error",
+                node_id,
+            )
+            return False
+
+        try:
+            self._store_tests(
+                node_id,
+                tests,
+                is_leaf=is_leaf,
+                allow_non_leaf_shell_tests=not is_leaf,
+            )
+        except ValueError as exc:
+            await self.log_cb(
+                "TestGenerator",
+                str(exc),
+                "error",
+                node_id,
+            )
+            return False
+        upsert_node_contract(node_id, self._build_frozen_node_contract(node_id, requirement_data, interfaces, tests))
+        context_pipeline.cache.invalidate_file_layers(node_id)
+        context_pipeline.cache.invalidate_db_layers(node_id)
+        self._update_node_session(
+            node_id,
+            {
+                "execution_mode": "leaf_full" if is_leaf else "non_leaf_parent_contract",
+                "test_plan": self._build_test_plan(tests),
+                "test_artifacts": tests,
+                "phase_status": {"test": "completed"},
+            },
+        )
+
+        modified_test_files = extract_modified_files_from_messages(test_messages)
+        if modified_test_files:
+            await self.log_cb(
+                "TestGenerator",
+                f"Generated test files: {', '.join(sorted(modified_test_files))}",
+                None,
+                node_id,
+            )
+        await self.log_cb(
+            "TestGenerator",
+            f"Stored {len(tests)} test mapping item(s) into traceability DB.",
+            None,
+            node_id,
+        )
+        return True
+
+    async def run_implement_phase(self, node_id: str, requirement_data: dict[str, Any]) -> bool:
+        is_leaf = not bool(requirement_data.get("children_ids"))
+        session = utils.load_node_session(node_id)
+        if not is_leaf and session.get("execution_mode") == "skipped_non_leaf":
+            await self.log_cb(
+                "Compiler",
+                "Skipping IMPLEMENT for non-leaf node because DESIGN skipped this node entirely.",
+                None,
+                node_id,
+            )
+            return True
+
+        self._update_node_session(
+            node_id,
+            {
+                "phase_status": {"implement": "in_progress"},
+            },
+        )
+
+        interfaces = get_interfaces_by_req_id(node_id)
+        tests = get_tests_by_req_id(node_id)
+        if not interfaces:
+            await self.log_cb(
+                "TestDrivenDeveloper",
+                "IMPLEMENT phase requires designed interfaces, but none were found.",
+                "error",
+                node_id,
+            )
+            return False
+
+        if not tests:
+            await self.log_cb(
+                "TestDrivenDeveloper",
+                "No generated tests were found for this node. IMPLEMENT cannot complete without generated test artifacts.",
+                "error",
+                node_id,
+            )
+            self._update_node_session(
+                node_id,
+                {
+                    "phase_status": {"implement": "failed"},
+                    "tdd_handoff": {
+                        "last_test_type": "",
+                        "last_failed_output_summary": "",
+                        "modified_files": [],
+                        "root_cause_notes": ["No tests were generated for this node."],
+                    },
+                },
+            )
+            return False
+
+        if not is_leaf:
+            blocking_children = self._get_non_leaf_gate_failures(requirement_data)
+            if blocking_children:
+                await self.log_cb(
+                    "Compiler",
+                    "Parent done gate failed. Non-leaf IMPLEMENT requires every child node to finish successfully before parent integration validation can pass. Blocking children: "
+                    + ", ".join(blocking_children),
+                    "error",
+                    node_id,
+                )
+                self._update_node_session(
+                    node_id,
+                    {
+                        "phase_status": {"implement": "failed"},
+                        "tdd_handoff": {
+                            "last_test_type": "parent_done_gate",
+                            "last_failed_output_summary": "",
+                            "modified_files": [],
+                            "root_cause_notes": [f"Blocking child states: {', '.join(blocking_children)}"],
+                        },
+                    },
+                )
+                update_interface_implemented_status(node_id, False)
+                return False
+
+            design_mode = str(session.get("design_mode", "")).strip()
+            if design_mode not in {"non_leaf_full", "non_leaf_ui_only"}:
+                await self.log_cb(
+                    "Compiler",
+                    f"Unsupported non-leaf design mode `{design_mode}` for IMPLEMENT.",
+                    "error",
+                    node_id,
+                )
+                self._update_node_session(node_id, {"phase_status": {"implement": "failed"}})
+                return False
+
+            convergence_summary = self._build_non_leaf_convergence_summary(node_id, requirement_data)
+            audit_output, audit_messages = await self.interface_designer.audit_non_leaf_connectivity(
+                node_id=node_id,
+                interfaces=interfaces,
+                convergence_summary=convergence_summary,
+            )
+            audit_modified_files = extract_modified_files_from_messages(audit_messages)
+            if audit_modified_files:
+                context_pipeline.cache.invalidate_file_layers(node_id)
+            audit_says_no_changes = "NO_CHANGES_NEEDED" in (audit_output or "").upper()
+
+            precheck_output = await self._run_non_leaf_build_verification(node_id)
+            precheck_exit_code = parse_test_results(precheck_output).get("exit_code")
+
+            modified_files = list(audit_modified_files)
+            if not audit_says_no_changes or precheck_exit_code != 0:
+                _, convergence_messages = await self.interface_designer.converge_non_leaf(
+                    node_id=node_id,
+                    interfaces=interfaces,
+                    convergence_summary=convergence_summary,
+                )
+                modified_files = extract_modified_files_from_messages(convergence_messages)
+                if modified_files:
+                    context_pipeline.cache.invalidate_file_layers(node_id)
+                    await self.log_cb(
+                        "Compiler",
+                        f"Non-leaf convergence modified files: {', '.join(sorted(modified_files))}",
+                        None,
+                        node_id,
+                    )
+                else:
+                    await self.log_cb(
+                        "Compiler",
+                        "Non-leaf convergence completed without code changes.",
+                        None,
+                        node_id,
+                    )
+                build_output = await self._run_non_leaf_build_verification(node_id)
+                build_exit_code = parse_test_results(build_output).get("exit_code")
+                if build_exit_code != 0:
+                    await self.log_cb(
+                        "Compiler",
+                        "Non-leaf convergence build verification failed.",
+                        "error",
+                        node_id,
+                    )
+                    if utils.debug_logger:
+                        utils.debug_logger.log(f"NON_LEAF_BUILD[{node_id}]", build_output)
+                    update_interface_implemented_status(node_id, False)
+                    self._update_node_session(
+                        node_id,
+                        {
+                            "phase_status": {"implement": "failed"},
+                            "tdd_handoff": {
+                                "last_test_type": "non_leaf_build_verification",
+                                "last_failed_output_summary": self._summarize_batch_output(build_output),
+                                "modified_files": modified_files,
+                                "root_cause_notes": ["Build verification failed after parent integration convergence."],
+                            },
+                        },
+                    )
+                    return False
+            else:
+                await self.log_cb(
+                    "Compiler",
+                    "Non-leaf audit found the parent shell already wired. Proceeding directly to parent integration and browser validation.",
+                    None,
+                    node_id,
+                )
+
+            final_ok = await self._run_tdd_batches_for_node(
+                node_id=node_id,
+                tests=tests,
+                scope_note=self._build_non_leaf_scope_note(),
+                initial_failure_summary=convergence_summary,
+            )
+            update_interface_implemented_status(node_id, final_ok)
+            self._update_node_session(
+                node_id,
+                {
+                    "result_state": self._determine_non_leaf_result_state(requirement_data) if final_ok else "",
+                    "phase_status": {"implement": "completed" if final_ok else "failed"},
+                },
+            )
+            return final_ok
+
+        final_ok = await self._run_tdd_batches_for_node(
+            node_id=node_id,
+            tests=tests,
+        )
         update_interface_implemented_status(node_id, final_ok)
         self._update_node_session(
             node_id,
@@ -762,7 +740,7 @@ class WorkflowPhaseRunner:
 
         await self.log_cb(
             "Compiler",
-            "Running non-leaf convergence build verification...",
+            "Running parent integration build verification...",
             None,
             node_id,
         )
@@ -944,6 +922,9 @@ class WorkflowPhaseRunner:
         canonical_routes: list[str] = []
         shared_shell_targets: list[str] = []
         provider_hints: list[str] = []
+        navigation_targets: list[str] = []
+        mount_points: list[str] = []
+        data_boundaries: list[str] = []
         auth_expectation = "unspecified"
 
         for interface in interfaces:
@@ -974,6 +955,20 @@ class WorkflowPhaseRunner:
             if "provider" in normalized_path.lower() or "provider" in first_line.lower():
                 if file_path and file_path not in provider_hints:
                     provider_hints.append(file_path)
+
+            lowered_blob = f"{iface_type}\n{first_line}\n{description}\n{file_path}".lower()
+            if any(token in lowered_blob for token in ("route", "navigate", "link", "href", "path")):
+                for candidate in re.findall(r'["\'](/[^"\']+)["\']', f"{first_line}\n{description}"):
+                    if candidate not in navigation_targets:
+                        navigation_targets.append(candidate)
+            if any(token in lowered_blob for token in ("slot", "mount", "outlet", "layout", "container")):
+                marker = file_path or first_line or str(interface.get("name", "")).strip()
+                if marker and marker not in mount_points:
+                    mount_points.append(marker)
+            if any(token in lowered_blob for token in ("context", "provider", "session", "auth", "boundary", "data", "api")):
+                marker = str(interface.get("interface_id", "")).strip() or file_path or first_line
+                if marker and marker not in data_boundaries:
+                    data_boundaries.append(marker)
 
         for test in tests:
             if not isinstance(test, dict):
@@ -1011,6 +1006,9 @@ class WorkflowPhaseRunner:
             "auth_expectation": auth_expectation,
             "provider_hints": provider_hints[:10],
             "shared_shell_targets": shared_shell_targets[:12],
+            "navigation_targets": navigation_targets[:20],
+            "mount_points": mount_points[:20],
+            "data_boundaries": data_boundaries[:20],
             "assembly_scope": (
                 [
                     "app shell",
@@ -1039,6 +1037,9 @@ class WorkflowPhaseRunner:
         shared_shell_targets = contract.get("shared_shell_targets") or []
         provider_hints = contract.get("provider_hints") or []
         canonical_routes = contract.get("canonical_routes") or []
+        navigation_targets = contract.get("navigation_targets") or []
+        mount_points = contract.get("mount_points") or []
+        data_boundaries = contract.get("data_boundaries") or []
         auth_expectation = contract.get("auth_expectation", "")
         if assembly_scope:
             lines.append(f"- Parent assembly scope: {', '.join(assembly_scope)}")
@@ -1048,9 +1049,16 @@ class WorkflowPhaseRunner:
             lines.append(f"- Parent provider hints: {', '.join(provider_hints[:10])}")
         if canonical_routes:
             lines.append(f"- Parent canonical routes: {', '.join(canonical_routes[:12])}")
+        if navigation_targets:
+            lines.append(f"- Parent navigation targets: {', '.join(navigation_targets[:12])}")
+        if mount_points:
+            lines.append(f"- Parent mount points / shell slots: {', '.join(mount_points[:12])}")
+        if data_boundaries:
+            lines.append(f"- Parent data / context boundaries: {', '.join(data_boundaries[:12])}")
         if auth_expectation:
             lines.append(f"- Parent auth expectation: {auth_expectation}")
         lines.append("- Parent convergence must not duplicate providers, invent fake user/session fallbacks, or override child feature semantics.")
+        lines.append("- Parent done gate: the parent only passes after relevant children are landed and parent integration tests plus browser-visible validation pass.")
         for child_id in child_ids:
             child_interfaces = get_interfaces_by_req_id(child_id)
             child_tests = get_tests_by_req_id(child_id)

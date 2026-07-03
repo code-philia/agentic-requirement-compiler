@@ -102,7 +102,7 @@ def get_interface_designer_guidance() -> str:
                 "Fast Solution Design",
                 [
                     "For leaf work, design the executable chain needed across UI -> API -> FUNC -> DB.",
-                    "For non-leaf work, stay at shell boundaries: routes, layouts, providers, page containers, and mount points.",
+                    "For non-leaf work, own parent contract design and parent integration closure at shell boundaries: routes, layouts, providers, page containers, mount points, guards, and shared composition seams.",
                     "Prefer extending an existing interface over creating a parallel one that competes for the same responsibility.",
                     "Avoid speculative interfaces, future-proof abstractions, and contracts that are not required by the current node.",
                     "When asked to materialize interfaces, UI means real rendered code now; API/FUNC/DB means minimal compilable scaffolding now, not interface JSON alone.",

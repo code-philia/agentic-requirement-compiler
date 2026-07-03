@@ -144,9 +144,6 @@ python main.py /path/to/requirement-dir --app-type web --web-port 3301
 # Compile an Android project
 python main.py /path/to/requirement-dir --app-type android
 
-# Choose test generation level
-python main.py /path/to/requirement-dir --test-level heavy
-
 # Clear existing output workspace and recompile
 python main.py /path/to/requirement-dir --output-dir /path/to/output-dir --clear-all
 
@@ -161,7 +158,10 @@ python main.py /path/to/requirement-dir --output-dir /path/to/output-dir --clear
 | `--clear-all` | Clear the output workspace and re-copy the requirement directory before recompiling |
 | `--app-type` | `web` or `android` (default: `web`) |
 | `--web-port` | Web only. Single backend port used to start the website; the backend serves the built frontend on this same port (default: `3000`) |
-| `--test-level` | Test generation level: `light` = Unit only, `middle` = Unit + Integration, `heavy` = Unit + Integration + E2E (default: `middle`) |
+
+ARC always generates and validates the required test coverage for each node:
+- Leaf nodes: Unit, Integration, and E2E tests
+- Non-leaf parent nodes: parent-owned Integration and E2E validation
 
 At startup, ARC copies the entire requirement directory into:
 

@@ -406,6 +406,7 @@ Rules:
         test_type: str,
         preloaded_source: str = None,
         previous_failure_summary: str = "",
+        scope_note: str = "",
     ) -> tuple:
         """Build the [system, user] messages and tools list without calling run().
         Returns (messages, tools) so the caller can use run_from_messages() or continue a session.
@@ -423,12 +424,16 @@ Rules:
         handoff_context = ""
         if previous_failure_summary:
             handoff_context = f"\n### Previous Failure Summary\n{previous_failure_summary}\n"
+        scope_context = ""
+        if scope_note:
+            scope_context = f"\n### Implementation Scope Guard\n{scope_note}\n"
 
         user_prompt = f"""
 ### Current Node Context
 Read this first. The current requirement payload below is the authoritative task input for node `{node_id}`.
 {dynamic_ctx}
 {handoff_context}
+{scope_context}
 
 ### Target Test Files
 {json.dumps(test_files, indent=2)}
@@ -491,6 +496,7 @@ When all target tests pass, output "IMPLEMENTED".
         test_type: str,
         preloaded_source: str = None,
         previous_failure_summary: str = "",
+        scope_note: str = "",
     ) -> str:
         """Backwards-compatible: build initial messages then run a new session."""
         messages, tools = self.build_initial_messages(
@@ -499,6 +505,7 @@ When all target tests pass, output "IMPLEMENTED".
             test_type=test_type,
             preloaded_source=preloaded_source,
             previous_failure_summary=previous_failure_summary,
+            scope_note=scope_note,
         )
         result, _ = await self.run_from_messages(
             messages,

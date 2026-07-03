@@ -742,18 +742,21 @@ This is the design step of `InterfaceDesigner` for a leaf node.
             return """
 This is the design step of `InterfaceDesigner` for a non-leaf node with concrete scenarios.
 - Analyze the current requirement, scenarios, visual reference if present, and the most relevant existing code.
+- Produce a machine-verifiable parent contract, not only prose guidance.
 - Produce subtree-wide invariants that every child implementation must preserve.
 - Produce assembly boundaries that define what the parent shell owns versus what children must implement.
-- Only include parent-owned interfaces when the current non-leaf truly needs shell-level UI, routes, layouts, providers, or mount points.
+- Only include parent-owned interfaces when the current non-leaf truly needs shell-level UI, routes, layouts, providers, guards, slots, props/context exposure, or mount points.
+- Make the parent contract explicit through shell-level interfaces and structured boundaries that describe routes, layouts, providers, slots, navigation entry points, and data boundaries.
 - If the visual reference shows lists, tables, dashboards, schedules, or cards, express them as shell-level presentation structure only, not as copied record content.
 - Do not write code in this stage.
 """
         return """
 This is the design step of `InterfaceDesigner` for a non-leaf UI-only parent node.
 - Analyze the current parent shell and the most relevant existing shared files.
+- Produce a machine-verifiable parent contract, not only prose guidance.
 - Produce subtree-wide invariants that every child implementation must preserve.
 - Produce assembly boundaries that define what the parent shell owns versus what children must implement.
-- If shell-level UI is required, design only parent UI shell interfaces: top-level routes, layouts, providers, mount points, and thin composition boundaries.
+- If shell-level UI is required, design only parent UI shell interfaces: top-level routes, layouts, providers, guards, slots, mount points, and thin composition boundaries.
 - Treat visual reference data regions as layout/style guidance only. Do not turn screenshot values into parent-owned mock content.
 - Do not design API/FUNC/DB interfaces in this mode.
 - Do not write code in this stage.
@@ -772,14 +775,15 @@ This is the materialization step of `InterfaceDesigner` for a leaf node.
         if design_mode == "non_leaf_full":
             return """
 This is the materialization step of `InterfaceDesigner` for a non-leaf node with concrete scenarios.
-- Materialize the current node's interfaces into code using the same full-chain discipline as a leaf node.
-- For UI interfaces, land real UI code now.
-- If the UI shows fetched or persisted data, wire the real owned runtime path or explicit loading/empty/error states. Do not hardcode sample records to make the page look complete.
-- For non-UI interfaces, land the smallest compilable or runnable skeleton that matches the declared responsibility and test intent.
+- Materialize the parent-owned contract and page shell into code now.
+- Land the parent shell interfaces for routes, layouts, providers, guards, slots, mount points, and shared composition boundaries.
+- Do not implement child business logic here.
+- If the parent shell shows fetched or persisted data, wire the real parent-owned runtime path or explicit loading/empty/error states. Do not hardcode sample records to make the page look complete.
+- For non-UI shell interfaces, land the smallest compilable or runnable skeleton that matches the declared responsibility and test intent.
 """
         return """
 This is the materialization step of `InterfaceDesigner` for a non-leaf UI-only parent node.
-- Materialize only the parent shell interfaces for routes, layouts, providers, mount points, and composition boundaries.
+- Materialize only the parent shell interfaces for routes, layouts, providers, guards, slots, mount points, and composition boundaries.
 - Do not expand into API/FUNC/DB work in this mode.
 """
 
@@ -1059,7 +1063,7 @@ Rules:
 - Reuse existing interfaces whenever possible.
 - Keep the interface chain minimal and executable.
 - For leaf nodes, `interfaces` are the main output and `subtree_invariants` / `assembly_boundaries` should usually be empty.
-- For non-leaf nodes, `subtree_invariants` and `assembly_boundaries` are the main output; only include `interfaces` when the parent truly owns shell-level code.
+- For non-leaf nodes, `subtree_invariants` and `assembly_boundaries` are the main output, but still include parent-owned shell interfaces whenever the parent owns routes, layouts, providers, guards, slots, mount points, or shared composition code.
 - Include brief contract fields directly on each interface object instead of returning a separate `interface_spec` array.
 - If `<visual_reference>` exists, use it to determine UI structure, major sections, stable chrome copy, data presentation style, and layout ownership for the UI interfaces.
 - Do not copy screenshot-specific row values, names, metrics, or business records into interface specs, seeded mock payloads, or fake default UI data.
