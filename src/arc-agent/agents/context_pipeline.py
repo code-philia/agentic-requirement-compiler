@@ -127,22 +127,6 @@ class ContextPipeline:
             items.append(text)
         return items
 
-    def _limit_boundary_list(self, values: List[Dict[str, Any]], limit: int = 4) -> List[Dict[str, Any]]:
-        result: list[Dict[str, Any]] = []
-        for raw in values[:limit]:
-            if not isinstance(raw, dict):
-                continue
-            result.append(
-                {
-                    "boundary_id": str(raw.get("boundary_id", "") or "").strip(),
-                    "parent_owns": self._limit_string_list(raw.get("parent_owns") or [], limit=4),
-                    "children_must_own": self._limit_string_list(raw.get("children_must_own") or [], limit=4),
-                    "forbidden_parent_work": self._limit_string_list(raw.get("forbidden_parent_work") or [], limit=4),
-                    "note": self._truncate_text(raw.get("note", ""), 200),
-                }
-            )
-        return result
-
     def _build_acceptance_gate(self, node_id: str, req_data: Dict[str, Any]) -> str:
         scenarios = req_data.get("scenarios") or []
         visual_reference = req_data.get("visual_reference") or []
@@ -193,62 +177,9 @@ class ContextPipeline:
         deduped_reversed.reverse()
         return deduped_reversed
 
-    def _get_inherited_compact_contract(self, node_id: str) -> dict[str, Any]:
-        from utils import load_node_session
-
-        conn = sqlite3.connect(db_module.DB_PATH)
-        cursor = conn.cursor()
-        inherited_invariants: list[str] = []
-        inherited_boundaries: list[dict[str, Any]] = []
-        try:
-            current_id = node_id
-            while current_id:
-                cursor.execute("SELECT parent_id FROM requirements WHERE req_id = ?", (current_id,))
-                row = cursor.fetchone()
-                parent_id = str(row[0]).strip() if row and row[0] else ""
-                if not parent_id:
-                    break
-                session = load_node_session(parent_id)
-                for item in session.get("subtree_invariants") or []:
-                    text = str(item or "").strip()
-                    if text and text not in inherited_invariants:
-                        inherited_invariants.append(text)
-                for raw_boundary in session.get("assembly_boundaries") or []:
-                    if not isinstance(raw_boundary, dict):
-                        continue
-                    boundary = {
-                        "boundary_id": str(raw_boundary.get("boundary_id", "") or "").strip(),
-                        "parent_owns": [
-                            str(item).strip()
-                            for item in (raw_boundary.get("parent_owns") or [])
-                            if str(item).strip()
-                        ],
-                        "children_must_own": [
-                            str(item).strip()
-                            for item in (raw_boundary.get("children_must_own") or [])
-                            if str(item).strip()
-                        ],
-                        "forbidden_parent_work": [
-                            str(item).strip()
-                            for item in (raw_boundary.get("forbidden_parent_work") or [])
-                            if str(item).strip()
-                        ],
-                        "note": str(raw_boundary.get("note", "") or "").strip(),
-                    }
-                    if boundary not in inherited_boundaries and any(boundary.values()):
-                        inherited_boundaries.append(boundary)
-                current_id = parent_id
-        finally:
-            conn.close()
-        return {
-            "inherited_invariants": inherited_invariants,
-            "assembly_boundaries": inherited_boundaries,
-        }
-
     def _build_requirement_focus(self, node_id: str, req_data: Dict[str, Any]) -> str:
         scenarios = req_data.get("scenarios") or []
         visual_reference = req_data.get("visual_reference") or []
-        inherited_contract = self._get_inherited_compact_contract(node_id)
         focus = {
             "req_id": req_data.get("req_id", node_id),
             "name": req_data.get("name", ""),
@@ -257,15 +188,6 @@ class ContextPipeline:
             "children_ids": req_data.get("children_ids", []),
             "scenario_count": len(scenarios),
             "visual_reference_count": len(visual_reference),
-            "inherited_invariants": self._limit_string_list(
-                inherited_contract.get("inherited_invariants", []),
-                limit=6,
-                item_limit=180,
-            ),
-            "assembly_boundaries": self._limit_boundary_list(
-                inherited_contract.get("assembly_boundaries", []),
-                limit=4,
-            ),
         }
 
         parts = [

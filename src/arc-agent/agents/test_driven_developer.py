@@ -653,7 +653,7 @@ When all target tests pass, output "IMPLEMENTED". The system will handle the fin
         result, _ = await self.run_from_messages(
             messages,
             node_id=node_id,
-            max_steps=100,
+            max_steps=50,
             tools=tools,
         )
         return result

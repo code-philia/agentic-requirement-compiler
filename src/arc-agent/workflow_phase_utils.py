@@ -44,8 +44,6 @@ def build_base_node_session(
             "dependencies": requirement_data.get("dependencies") or [],
         },
         "recent_failure_summary": "",
-        "subtree_invariants": [],
-        "assembly_boundaries": [],
     }
 
 

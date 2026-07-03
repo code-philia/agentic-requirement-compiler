@@ -67,14 +67,19 @@ class WorkflowPhaseRunner:
 
     def _update_node_session(self, node_id: str, patch: dict[str, Any]) -> dict[str, Any]:
         session = utils.merge_node_session(node_id, patch)
-        if "interfaces" in patch:
-            legacy_removed = False
-            for legacy_key in ("interface_ir", "materialized_interfaces"):
-                if legacy_key in session:
-                    session.pop(legacy_key, None)
-                    legacy_removed = True
-            if legacy_removed:
-                utils.save_node_session(node_id, session)
+        deprecated_keys = (
+            "interface_ir",
+            "materialized_interfaces",
+            "subtree_invariants",
+            "assembly_boundaries",
+        )
+        removed_deprecated = False
+        for deprecated_key in deprecated_keys:
+            if deprecated_key in session:
+                session.pop(deprecated_key, None)
+                removed_deprecated = True
+        if removed_deprecated:
+            utils.save_node_session(node_id, session)
         context_pipeline.cache.invalidate(node_id, "node_session")
         context_pipeline.cache.invalidate(node_id, "recent_failure_summary")
         return session
@@ -116,7 +121,7 @@ class WorkflowPhaseRunner:
             implement_output, implement_messages = await self.test_driven_developer.run_from_messages(
                 messages=messages,
                 node_id=node_id,
-                max_steps=100,
+                max_steps=50,
                 tools=tools,
                 run_tests_budget=DEFAULT_TDD_TEST_BUDGET,
                 run_tests_usage=run_tests_usage,
@@ -297,8 +302,6 @@ class WorkflowPhaseRunner:
             requirement_data=requirement_data,
             design_mode=design_mode,
         )
-        subtree_invariants = design_bundle.get("subtree_invariants", [])
-        assembly_boundaries = design_bundle.get("assembly_boundaries", [])
         interfaces = design_bundle.get("interfaces", [])
 
         if not interfaces:
@@ -322,8 +325,6 @@ class WorkflowPhaseRunner:
         self._update_node_session(
             node_id,
             {
-                "subtree_invariants": subtree_invariants,
-                "assembly_boundaries": assembly_boundaries,
                 "interfaces": interfaces,
                 "phase_status": {
                     "design": "completed",
@@ -334,11 +335,7 @@ class WorkflowPhaseRunner:
         
         await self.log_cb(
             "InterfaceDesigner",
-            (
-                f"Stored {len(interfaces)} interface definition(s) into traceability DB."
-                if interfaces
-                else "Stored non-leaf invariants and assembly boundaries without registering new interfaces."
-            ),
+            f"Stored {len(interfaces)} interface definition(s) into traceability DB.",
             None,
             node_id,
         )

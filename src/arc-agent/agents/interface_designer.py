@@ -626,7 +626,6 @@ For each data-bearing area (table/list/cards/calendar/chart/schedule):
         "Across this node's lifecycle, your job is to first understand the requirement, then explore the most relevant codebase evidence, then land the owned UI code or interface code, and finally summarize the result as strict structured interfaces when the task is a design-bundle call.",
         "For leaf nodes, that usually means a minimal executable chain across UI -> API -> FUNC -> DB.",
         "For non-leaf nodes, that usually means only parent shell assembly such as routes, layouts, providers, containers, and mount points.",
-        "When a non-design maintenance prompt asks for a narrower task such as convergence or audit, still follow the explicit task boundary from the user prompt.",
     ],
     outputs=[
         "A compact understanding of the current node grounded in the requirement and existing codebase.",
@@ -640,7 +639,7 @@ Rules:
 - Respect `<requirement_focus>`, `<scenarios>`, `<visual_reference>`, and the declared interface ownership.
 - If the requirement names exact UI ids or resource ids, keep them exact.
 - For leaf work, design the smallest complete chain needed across UI -> API -> FUNC -> DB.
-- For non-leaf work, stay at parent UI shell scope: routes, layouts, providers, page containers, mount points, and thin composition boundaries.
+- For non-leaf work, stay at parent UI shell scope: routes, layouts, providers, page containers, mount points, and thin composition files.
 - When visual reference shows business records or data values, treat them as display examples only. Do not convert them into seeded implementation data, fallback arrays, or interface-level mock payloads.
 - In a design-bundle call, first understand and inspect, then write code, then return the final strict structured interface bundle.
 - In a design-only call, do not write code files.
@@ -736,28 +735,23 @@ This is the design step of `InterfaceDesigner` for a leaf node.
 - Reuse existing interfaces whenever possible, and only add the minimum new contracts needed to land the feature.
 - For each interface, include brief contract fields that say what responsibility it owns and how that interface should be tested.
 - If the UI contains data-bearing regions, design them as runtime-driven surfaces backed by the owned chain, not as hardcoded example content from the reference image.
-- Keep subtree invariants and assembly boundaries empty unless the current leaf must restate a hard inherited constraint.
 - Do not write code in this stage.
 """
         if design_mode == "non_leaf_full":
             return """
 This is the design step of `InterfaceDesigner` for a non-leaf node with concrete scenarios.
 - Analyze the current requirement, scenarios, visual reference if present, and the most relevant existing code.
-- Produce a machine-verifiable parent contract, not only prose guidance.
-- Produce subtree-wide invariants that every child implementation must preserve.
-- Produce assembly boundaries that define what the parent shell owns versus what children must implement.
+- Produce a machine-verifiable parent contract through explicit parent-owned interfaces, not only prose guidance.
 - Only include parent-owned interfaces when the current non-leaf truly needs shell-level UI, routes, layouts, providers, guards, slots, props/context exposure, or mount points.
-- Make the parent contract explicit through shell-level interfaces and structured boundaries that describe routes, layouts, providers, slots, navigation entry points, and data boundaries.
+- Make the parent contract explicit through shell-level interfaces that describe routes, layouts, providers, slots, navigation entry points, and data handoff points.
 - If the visual reference shows lists, tables, dashboards, schedules, or cards, express them as shell-level presentation structure only, not as copied record content.
 - Do not write code in this stage.
 """
         return """
 This is the design step of `InterfaceDesigner` for a non-leaf UI-only parent node.
 - Analyze the current parent shell and the most relevant existing shared files.
-- Produce a machine-verifiable parent contract, not only prose guidance.
-- Produce subtree-wide invariants that every child implementation must preserve.
-- Produce assembly boundaries that define what the parent shell owns versus what children must implement.
-- If shell-level UI is required, design only parent UI shell interfaces: top-level routes, layouts, providers, guards, slots, mount points, and thin composition boundaries.
+- Produce a machine-verifiable parent contract through explicit parent-owned interfaces, not only prose guidance.
+- If shell-level UI is required, design only parent UI shell interfaces: top-level routes, layouts, providers, guards, slots, mount points, and thin composition files.
 - Treat visual reference data regions as layout/style guidance only. Do not turn screenshot values into parent-owned mock content.
 - Do not design API/FUNC/DB interfaces in this mode.
 - Do not write code in this stage.
@@ -777,14 +771,14 @@ This is the materialization step of `InterfaceDesigner` for a leaf node.
             return """
 This is the materialization step of `InterfaceDesigner` for a non-leaf node with concrete scenarios.
 - Materialize the parent-owned contract and page shell into code now.
-- Land the parent shell interfaces for routes, layouts, providers, guards, slots, mount points, and shared composition boundaries.
+- Land the parent shell interfaces for routes, layouts, providers, guards, slots, mount points, and shared composition files.
 - Do not implement child business logic here.
 - If the parent shell shows fetched or persisted data, wire the real parent-owned runtime path or explicit loading/empty/error states. Do not hardcode sample records to make the page look complete.
 - For non-UI shell interfaces, land the smallest compilable or runnable skeleton that matches the declared responsibility and test intent.
 """
         return """
 This is the materialization step of `InterfaceDesigner` for a non-leaf UI-only parent node.
-- Materialize only the parent shell interfaces for routes, layouts, providers, guards, slots, mount points, and composition boundaries.
+- Materialize only the parent shell interfaces for routes, layouts, providers, guards, slots, mount points, and composition files.
 - Do not expand into API/FUNC/DB work in this mode.
 """
 
@@ -797,29 +791,6 @@ This is the materialization step of `InterfaceDesigner` for a non-leaf UI-only p
             text = str(raw or "").strip()
             if text and text not in items:
                 items.append(text)
-        return items
-
-    @classmethod
-    def _normalize_boundary_items(cls, value: Any) -> list[dict[str, Any]]:
-        if not isinstance(value, list):
-            return []
-        items: list[dict[str, Any]] = []
-        for raw in value:
-            if not isinstance(raw, dict):
-                continue
-            parent_owns = cls._normalize_string_list(raw.get("parent_owns"))
-            children_must_own = cls._normalize_string_list(raw.get("children_must_own"))
-            forbidden_parent_work = cls._normalize_string_list(raw.get("forbidden_parent_work"))
-            note = str(raw.get("note", "") or "").strip()
-            item = {
-                "boundary_id": str(raw.get("boundary_id", "") or "").strip(),
-                "parent_owns": parent_owns,
-                "children_must_own": children_must_own,
-                "forbidden_parent_work": forbidden_parent_work,
-                "note": note,
-            }
-            if any(item.values()):
-                items.append(item)
         return items
 
     @staticmethod
@@ -845,7 +816,7 @@ This is the materialization step of `InterfaceDesigner` for a non-leaf UI-only p
             raw_test_focus = merged.get("test_focus")
             if not isinstance(raw_test_focus, list) or not raw_test_focus:
                 raw_test_focus = [
-                    "Verify the interface is reachable at the declared boundary.",
+                    "Verify the interface is reachable from its declared callers or entrypoints.",
                     "Verify the primary observable behavior described by the requirement.",
                 ]
             merged["test_focus"] = [str(item).strip() for item in raw_test_focus if str(item).strip()]
@@ -870,8 +841,6 @@ Based on the requirement, scenarios, and the evidence you already gathered, retu
 
 Return exactly one JSON object in a `json` markdown block with this schema:
 {
-  "subtree_invariants": [],
-  "assembly_boundaries": [],
   "interfaces": [
     {
       "interface_id": "stable explicit id",
@@ -914,7 +883,7 @@ Read this first. The current requirement payload below is the authoritative task
 ### Task
 This is a single-session design-bundle call of `InterfaceDesigner` for node `{node_id}`.
 Work in this order:
-1. Understand the requirement, scenarios, visual reference, and ownership boundaries.
+1. Understand the requirement, scenarios, visual reference, and parent/child ownership.
 2. Explore only the most relevant existing code and reusable interfaces.
 3. Land the owned UI code or interface code for this node in the same session.
 4. Return the final strict structured design bundle JSON.
@@ -945,18 +914,6 @@ Execution rules:
 
 When finished, return exactly one JSON object in a `json` markdown block with this schema:
 {{
-  "subtree_invariants": [
-    "shared invariant that child implementations must preserve"
-  ],
-  "assembly_boundaries": [
-    {{
-      "boundary_id": "stable explicit id",
-      "parent_owns": ["route shell / page shell / provider / mount point"],
-      "children_must_own": ["leaf-owned UI/API/FUNC/DB work"],
-      "forbidden_parent_work": ["business logic the parent must not re-implement"],
-      "note": "brief integration rule"
-    }}
-  ],
   "interfaces": [
     {{
       "interface_id": "stable explicit id",
@@ -981,8 +938,7 @@ When finished, return exactly one JSON object in a `json` markdown block with th
 Rules for the returned JSON:
 - Reuse existing interfaces whenever possible.
 - Keep the interface chain minimal and executable.
-- For leaf nodes, `interfaces` are the main output and `subtree_invariants` / `assembly_boundaries` should usually be empty.
-- For non-leaf nodes, `subtree_invariants` and `assembly_boundaries` are the main output, but still include parent-owned shell interfaces whenever the parent owns routes, layouts, providers, guards, slots, mount points, or shared composition code.
+- For non-leaf nodes, make the parent contract explicit through parent-owned shell interfaces whenever the parent owns routes, layouts, providers, guards, slots, mount points, or shared composition code.
 - Include brief contract fields directly on each interface object instead of returning a separate `interface_spec` array.
 - If `<visual_reference>` exists, use it to determine UI structure, major sections, stable chrome copy, data presentation style, and layout ownership for the UI interfaces.
 - Do not copy screenshot-specific row values, names, metrics, or business records into interface specs, seeded mock payloads, or fake default UI data.
@@ -996,15 +952,11 @@ Rules for the returned JSON:
     @staticmethod
     def _parse_design_bundle_payload(raw_output: str) -> dict[str, Any]:
         parsed = InterfaceDesigner._extract_json_object_from_markdown(raw_output) or {}
-        subtree_invariants = InterfaceDesigner._normalize_string_list(parsed.get("subtree_invariants"))
-        assembly_boundaries = InterfaceDesigner._normalize_boundary_items(parsed.get("assembly_boundaries"))
         interfaces = parsed.get("interfaces")
         if not isinstance(interfaces, list):
             interfaces = []
         interfaces = InterfaceDesigner._enrich_interfaces_with_contracts(interfaces)
         return {
-            "subtree_invariants": subtree_invariants,
-            "assembly_boundaries": assembly_boundaries,
             "interfaces": interfaces,
         }
 
@@ -1049,8 +1001,6 @@ Rules for the returned JSON:
             self._existing_file_write_guard = previous_guard
 
         parsed_payload = self._parse_design_bundle_payload(raw_output)
-        subtree_invariants = parsed_payload["subtree_invariants"]
-        assembly_boundaries = parsed_payload["assembly_boundaries"]
         interfaces = parsed_payload["interfaces"]
 
         if not interfaces:
@@ -1062,150 +1012,9 @@ Rules for the returned JSON:
                 tools=[],
             )
             parsed_payload = self._parse_design_bundle_payload(repair_output)
-            subtree_invariants = parsed_payload["subtree_invariants"]
-            assembly_boundaries = parsed_payload["assembly_boundaries"]
             interfaces = parsed_payload["interfaces"]
 
         return {
-            "subtree_invariants": subtree_invariants,
-            "assembly_boundaries": assembly_boundaries,
             "interfaces": interfaces,
         }, design_messages
 
-    async def converge_non_leaf(
-        self,
-        node_id: str,
-        interfaces: List[Dict[str, Any]],
-        convergence_summary: str,
-        preloaded_source: str = None,
-    ) -> tuple:
-        from .context_pipeline import context_pipeline
-        from .tools import TOOL_REGISTRY
-
-        static_ctx, dynamic_ctx = context_pipeline.build_agent_context_split(
-            node_id=node_id,
-            agent_type=self.agent_name,
-            preloaded_source=preloaded_source,
-        )
-        iface_summaries = []
-        for iface in interfaces:
-            iface_summaries.append(
-                f"- [{iface.get('interface_id')}] Type: {iface.get('type')} "
-                f"File: `{iface.get('file_path', 'TBD')}` "
-                f"Name: {iface.get('name', '')} "
-                f"Desc: {iface.get('description', '')}"
-            )
-
-        user_prompt = f"""
-### Current Node Context
-Read this first. The current requirement payload below is the authoritative task input for node `{node_id}`.
-{dynamic_ctx}
-
-### Convergence Summary
-{convergence_summary}
-
-### Parent Interfaces To Converge ({len(interfaces)} total)
-{chr(10).join(iface_summaries)}
-
-### Interfaces
-```json
-{json.dumps(interfaces, indent=2, ensure_ascii=False)}
-```
-
-This is a non-leaf convergence task.
-Do only the minimal parent-level assembly needed to connect child capabilities into one coherent subsystem.
-- First prefer a no-op outcome: if the current parent shell is already connected and builds successfully, make no code changes.
-- Treat the provided child convergence summary as the source of truth for what child nodes already implemented and verified.
-- Treat the provided interface list and current requirement context as the parent assembly contract.
-- Do NOT create new parent-layer implementation files in this phase.
-- Prefer editing only existing parent-level shells, route containers, layout frames, shared provider composition points, and child mounting boundaries.
-- If a target file already exists, read it first and use `edit_file` for minimal changes.
-- Base your work on concrete child outputs: their implemented interfaces, landed files, and current pass/fail state.
-- Do NOT re-implement child business logic in the parent.
-- Do NOT create broad new feature code unless required for system connectivity.
-- Do NOT introduce new auth semantics, fake user/session fallbacks, duplicate providers, or conflicting route ownership in the parent.
-- Do NOT overwrite child feature behavior from the parent. Parent code may only mount, connect, guard, or expose child capabilities.
-- If a child still has failing tests, avoid masking that failure in the parent. Only add the minimum parent wiring that remains valid.
-- If repair is required, edit only the smallest set of existing shared files, then call `run_build` once.
-- When the parent-level convergence is complete and the build passes, output exactly `IMPLEMENTED`.
-"""
-        system_content = self.get_system_prompt()
-        if static_ctx:
-            system_content = f"{system_content}\n\n{static_ctx}"
-        messages = [
-            {"role": "system", "content": system_content},
-            {"role": "user", "content": user_prompt},
-        ]
-        tools = [TOOL_REGISTRY[name]["schema"] for name in self._get_implement_tool_names() if name in TOOL_REGISTRY]
-        previous_guard = self._existing_file_write_guard
-        self._existing_file_write_guard = True
-        try:
-            result, messages = await self.run_from_messages(messages, node_id=node_id, max_steps=50, tools=tools)
-        finally:
-            self._existing_file_write_guard = previous_guard
-        return result, messages
-
-    async def audit_non_leaf_connectivity(
-        self,
-        node_id: str,
-        interfaces: List[Dict[str, Any]],
-        convergence_summary: str,
-        preloaded_source: str = None,
-    ) -> tuple[str, list]:
-        from .context_pipeline import context_pipeline
-        from .tools import TOOL_REGISTRY
-
-        static_ctx, dynamic_ctx = context_pipeline.build_agent_context_split(
-            node_id=node_id,
-            agent_type=self.agent_name,
-            preloaded_source=preloaded_source,
-        )
-        iface_summaries = []
-        for iface in interfaces:
-            iface_summaries.append(
-                f"- [{iface.get('interface_id')}] Type: {iface.get('type')} "
-                f"File: `{iface.get('file_path', 'TBD')}` "
-                f"Name: {iface.get('name', '')} "
-                f"Desc: {iface.get('description', '')}"
-            )
-
-        user_prompt = f"""
-### Current Node Context
-Read this first. The current requirement payload below is the authoritative task input for node `{node_id}`.
-{dynamic_ctx}
-
-### Convergence Summary
-{convergence_summary}
-
-### Parent Interfaces To Audit ({len(interfaces)} total)
-{chr(10).join(iface_summaries)}
-
-### Interfaces
-```json
-{json.dumps(interfaces, indent=2, ensure_ascii=False)}
-```
-
-This is a read-only non-leaf connectivity audit.
-Your job is to inspect the current parent shell and child outputs, then decide whether parent-level code changes are actually necessary.
-- Read the relevant existing shared shell files, routes, app entrypoints, providers, facades, and composition roots.
-- Use the provided interface list and current requirement context as the source of truth for allowed parent assembly scope.
-- Verify whether the child capabilities are already mounted and connected coherently.
-- Prefer a no-op result when the subsystem is already connected.
-- Treat duplicate providers, fake auth/session fallbacks in parent shells, and parent-owned route conflicts as `CHANGES_REQUIRED`.
-- Do NOT write or edit files in this audit.
-- Do NOT invent new parent-layer implementation files.
-
-Output exactly one of:
-- `NO_CHANGES_NEEDED`
-- `CHANGES_REQUIRED`
-"""
-        system_content = self.get_system_prompt()
-        if static_ctx:
-            system_content = f"{system_content}\n\n{static_ctx}"
-        messages = [
-            {"role": "system", "content": system_content},
-            {"role": "user", "content": user_prompt},
-        ]
-        tools = [TOOL_REGISTRY[name]["schema"] for name in self.get_tool_names() if name in TOOL_REGISTRY]
-        result, messages = await self.run_from_messages(messages, node_id=node_id, max_steps=12, tools=tools)
-        return result, messages
