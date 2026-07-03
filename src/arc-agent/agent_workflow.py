@@ -5,8 +5,15 @@ from typing import Any, Awaitable, Callable
 
 from arcbench_compat import emit_requirement_state, resolve_traceability_db_path
 from app_types import create_app_type_handler, normalize_app_type
+from requirement_contracts import compile_requirement_contract_bundle
 from traceability import store_all_requirement
-from traceability.database import get_requirement_by_id, init_db, set_db_path, upsert_node_state
+from traceability.database import (
+    get_requirement_by_id,
+    init_db,
+    set_db_path,
+    upsert_node_state,
+    upsert_requirement_contract,
+)
 from utils import (
     build_commit_message,
     ensure_arc_gitignore,
@@ -219,6 +226,24 @@ class ARCWorkflowManager:
 
         await self.log_cb("Compiler", "Persisting requirement tree and preparing processing queue...")
         store_all_requirement(requirement_tree)
+        contract_bundle = compile_requirement_contract_bundle(requirement_tree)
+        for req_id in contract_bundle.get("node_order", []):
+            contract = contract_bundle.get("contracts", {}).get(req_id)
+            if contract:
+                upsert_requirement_contract(req_id, contract)
+        write_json_file(
+            os.path.join(self.arc_dir, "requirement_contracts.json"),
+            contract_bundle,
+        )
+        contract_summary = contract_bundle.get("summary", {}) if isinstance(contract_bundle, dict) else {}
+        await self.log_cb(
+            "Compiler",
+            (
+                "Compiled structured requirement contracts "
+                f"for {contract_summary.get('node_count', 0)} node(s) "
+                f"with {contract_summary.get('warning_count', 0)} warning(s)."
+            ),
+        )
 
         queue_state = self._load_or_create_processing_queue(requirement_tree)
         self._recover_interrupted_queue(queue_state)

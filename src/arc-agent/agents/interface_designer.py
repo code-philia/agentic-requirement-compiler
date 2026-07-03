@@ -637,7 +637,7 @@ For each data-bearing area (table/list/cards/calendar/chart/schedule):
 
 Rules:
 - Reuse existing interfaces before inventing new ones.
-- Respect `<requirement_focus>`, `<scenarios>`, `<visual_reference>`, and the declared interface ownership.
+- Respect `<requirement_contract>`, `<requirement_focus>`, `<scenarios>`, `<visual_reference>`, and the declared interface ownership.
 - If the requirement names exact UI ids or resource ids, keep them exact.
 - For leaf work, design the smallest complete chain needed across UI -> API -> FUNC -> DB.
 - For non-leaf work, stay at parent UI shell scope: routes, layouts, providers, page containers, mount points, and thin composition boundaries.
