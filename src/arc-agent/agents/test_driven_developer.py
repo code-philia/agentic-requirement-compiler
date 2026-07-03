@@ -3,6 +3,7 @@ import re
 import os
 from typing import List, Dict, Any, Awaitable, Callable
 from .arc_agent import ARCAgent
+from .test_failure_verifier import TestFailureVerifier
 from .prompt_sections import (
     get_common_session_guidance,
     get_compiler_role_guidance,
@@ -15,6 +16,7 @@ class TestDrivenDeveloper(ARCAgent):
             agent_name="TestDrivenDeveloper",
             log_cb=log_cb
         )
+        self.failure_verifier = TestFailureVerifier(log_cb)
         self._run_tests_budget: int | None = None
         self._run_tests_usage: Dict[str, int] | None = None
         self._stop_on_test_budget_exhausted = False
@@ -28,17 +30,10 @@ class TestDrivenDeveloper(ARCAgent):
         self._edit_read_required_paths: set[str] = set()
         self._recent_failure_fingerprints: list[str] = []
         self._forced_followup_user_messages: list[str] = []
-        self._needs_failure_analysis = False
-
-    @staticmethod
-    def _has_required_failure_analysis_headers(text: str) -> bool:
-        normalized = str(text or "").upper()
-        required_headers = [
-            "FAILURE_CLASSIFICATION",
-            "ROOT_CAUSE_HYPOTHESIS",
-            "TARGET_FILES",
-        ]
-        return all(header in normalized for header in required_headers)
+        self._last_verifier_report: dict[str, Any] | None = None
+        self._last_verifier_report_text: str = ""
+        self._current_test_files: List[str] = []
+        self._current_test_type: str = ""
 
     def get_system_prompt(self) -> str:
         return f"""{get_compiler_role_guidance(
@@ -65,12 +60,9 @@ Rules:
 - The node is only done after the current batch passes and the code remains buildable under final system verification.
 - For features that own a UI -> API -> FUNC -> DB chain, make the real runtime path work. Do not satisfy the tests with sample rows, placeholder panels, mocked success branches, or fallback data that bypasses the owned path.
 - If the feature or tests use the database, extend the scaffold under `backend/src/database/` for runtime queries, seed data, and isolated test databases instead of creating parallel DB lifecycle code.
-- If tests fail, do not immediately read files or rerun tests.
-- First send a short analysis with exactly these headings: `FAILURE_CLASSIFICATION`, `ROOT_CAUSE_HYPOTHESIS`, `TARGET_FILES`.
-- `FAILURE_CLASSIFICATION` must be one of: `test_bug`, `selector_bug`, `wiring_bug`, `implementation_bug`.
-- `ROOT_CAUSE_HYPOTHESIS` must be a concrete, falsifiable explanation tied to the latest failing output.
-- `TARGET_FILES` must list the failing test file first, then at most two directly relevant code/config files.
-- After that analysis: use `grep` to locate symbols, selectors, routes, or ownership boundaries; use `read_file` to confirm the current implementation text; use `edit_file` or `write_file` to make the smallest fix; use `run_tests` only to verify the hypothesis.
+- After a failed `run_tests`, the system may inject an independent failure-analysis report from a separate verifier-style session. Use that report as high-priority debugging evidence until direct file evidence disproves it.
+- After a failed `run_tests`, do not immediately thrash through broad reads or reruns. Start from the latest failing output plus any injected verifier report, then inspect only the next directly relevant files.
+- Use `grep` to locate symbols, selectors, routes, or ownership boundaries; use `read_file` to confirm the current implementation text; use `edit_file` or `write_file` to make the smallest fix; use `run_tests` only to verify the hypothesis.
 - Make the smallest contract-preserving fix before the next test run.
 - Treat missing test discovery, wrong framework, wrong path, or wrong selector strategy as test/content/config problems first, not business-logic problems.
 - Do not fabricate compatibility files, duplicate tests, patch `node_modules`, or move tests just to satisfy discovery.
@@ -125,16 +117,6 @@ Rules:
         tool_args: Dict[str, Any],
         node_id: str | None = None,
     ) -> tuple[bool, Any]:
-        if self._needs_failure_analysis and tool_name in {"read_file", "run_tests"}:
-            return True, (
-                "Blocked by failure-analysis gate. The latest run_tests failed, so before any further `read_file` or "
-                "`run_tests` you must first send a short analysis message with exactly these headings:\n"
-                "FAILURE_CLASSIFICATION: test_bug | selector_bug | wiring_bug | implementation_bug\n"
-                "ROOT_CAUSE_HYPOTHESIS: one concrete falsifiable explanation tied to the latest failing output\n"
-                "TARGET_FILES: failing test file first, then at most two directly relevant files\n"
-                "Then use `grep` if needed, `read_file` to confirm, and `run_tests` only after a minimal fix."
-            )
-
         if tool_name == "execute_command":
             raw_command = str(tool_args.get("command", "")).strip()
             if raw_command in self._rejected_execute_commands:
@@ -212,7 +194,17 @@ Rules:
         self._last_completed_run_tests_result = result
         self._last_run_tests_exit_code = self._extract_exit_code(result)
         self._record_failure_fingerprint(result)
-        self._needs_failure_analysis = self._last_run_tests_exit_code not in (None, 0)
+        if self._last_run_tests_exit_code not in (None, 0):
+            verifier_report = await self._run_failure_verifier_session(
+                node_id=node_id,
+                latest_test_output=result,
+            )
+            self._last_verifier_report = verifier_report
+            self._last_verifier_report_text = self._format_verifier_report(verifier_report)
+            self._forced_followup_user_messages.append(self._last_verifier_report_text)
+        else:
+            self._last_verifier_report = None
+            self._last_verifier_report_text = ""
         return True, result
 
     async def _on_assistant_message_before_tool_calls(
@@ -220,7 +212,7 @@ Rules:
         assistant_text: str,
         node_id: str | None = None,
     ) -> None:
-        self._update_failure_analysis_state(assistant_text)
+        return None
 
     async def _get_stop_response_after_tool_call(
         self,
@@ -242,8 +234,6 @@ Rules:
         final_response: str,
         node_id: str | None = None,
     ) -> str | None:
-        self._update_failure_analysis_state(final_response)
-
         if (
             self._has_called_run_tests_in_session
             and self._last_run_tests_exit_code is not None
@@ -325,11 +315,12 @@ Rules:
         self._last_run_tests_result = None
         self._last_completed_run_tests_result = None
         self._has_called_run_tests_in_session = False
-        self._needs_failure_analysis = False
         self._rejected_execute_commands = set()
         self._edit_read_required_paths = set()
         self._recent_failure_fingerprints = []
         self._forced_followup_user_messages = []
+        self._last_verifier_report = None
+        self._last_verifier_report_text = ""
         try:
             return await super().run_from_messages(
                 messages=messages,
@@ -351,6 +342,9 @@ Rules:
 
     def get_last_run_tests_result(self) -> str | None:
         return self._last_completed_run_tests_result
+
+    def get_last_verifier_report(self) -> str:
+        return self._last_verifier_report_text
 
     def notify_edit_failure(self, path: str, tool_result: str) -> None:
         if not path or not isinstance(tool_result, str):
@@ -414,6 +408,8 @@ Rules:
         Returns (messages, tools) so the caller can use run_from_messages() or continue a session.
         """
         from .context_pipeline import context_pipeline
+        self._current_test_files = list(test_files)
+        self._current_test_type = str(test_type or "").strip()
 
         # 1. Use the new Context Pipeline to build layered context for the TDD Agent
         static_ctx, dynamic_ctx = context_pipeline.build_agent_context_split(
@@ -446,11 +442,7 @@ The system will execute exactly this current test batch when you call `run_tests
 Treat the provided requirement context and `<interfaces>` as the source for explicit routes, visible text, field labels, placeholders, messages, API literals, and auth semantics unless the current test file proves they need repair.
 Do not optimize for mocked green tests if the requirement expects a real runtime data flow. Prefer fixing the app code so the owned request, persistence, and render path actually works.
 Your immediate goal is simple: implement the current node interfaces, make this batch pass, and leave the project in a buildable state for final verification.
-If the batch fails, do not immediately read files or rerun tests. First output:
-FAILURE_CLASSIFICATION: test_bug | selector_bug | wiring_bug | implementation_bug
-ROOT_CAUSE_HYPOTHESIS: one concrete falsifiable explanation
-TARGET_FILES: failing test file first, then at most two directly relevant files
-Only after that analysis may you use `grep` to locate symbols, `read_file` to confirm the hypothesis, and `run_tests` to verify a minimal fix.
+If the batch fails, the system may inject an independent verifier-style failure report. Use it first, then inspect only the next directly relevant files before the next edit or rerun.
 After each file read, reassess whether you already found the cause or whether you still need another directly related file.
 If this is an E2E batch, compare the failing Playwright spec with the raw Playwright output before deciding whether the minimal fix is in app code or the test file.
 When all target tests pass, output "IMPLEMENTED". The system will handle the final build verification after your batch is green.
@@ -486,12 +478,6 @@ When all target tests pass, output "IMPLEMENTED". The system will handle the fin
         if len(self._recent_failure_fingerprints) < 2:
             return False
         return self._recent_failure_fingerprints[-1] == self._recent_failure_fingerprints[-2]
-
-    def _update_failure_analysis_state(self, assistant_text: str) -> None:
-        if not self._needs_failure_analysis:
-            return
-        if self._has_required_failure_analysis_headers(assistant_text):
-            self._needs_failure_analysis = False
 
     async def implement(
         self,
@@ -531,3 +517,58 @@ When all target tests pass, output "IMPLEMENTED". The system will handle the fin
                 except ValueError:
                     return None
         return None
+
+    async def _run_failure_verifier_session(
+        self,
+        node_id: str | None,
+        latest_test_output: str,
+    ) -> dict[str, Any]:
+        node_label = node_id or "UNKNOWN_NODE"
+        await self._log(
+            "Launching independent failure-analysis session for the latest failing test batch.",
+            node_id=node_id,
+            agent_name="TestFailureVerifier",
+        )
+        messages, tools = self.failure_verifier.build_initial_messages(
+            node_id=node_label,
+            test_files=self._current_test_files,
+            test_type=self._current_test_type or "Unknown",
+            latest_test_output=latest_test_output,
+        )
+        report_text, _ = await self.failure_verifier.run_from_messages(
+            messages=messages,
+            node_id=node_id,
+            max_steps=18,
+            tools=tools,
+        )
+        parsed = self._extract_json_object(report_text or "")
+        if isinstance(parsed, dict):
+            return parsed
+        return {
+            "failure_summary": "Independent failure analysis returned non-JSON output.",
+            "likely_causes": [
+                {
+                    "summary": "Unable to parse verifier result cleanly.",
+                    "evidence": ["Raw verifier output was not valid JSON."],
+                    "repair_options": ["Review the latest failing output and the failing test file directly."],
+                }
+            ],
+            "requirement_alignment_notes": [],
+            "test_asset_notes": [],
+            "environment_notes": [],
+            "implementation_notes": [],
+            "recommended_next_steps": ["Read the failing test file, then inspect the nearest owner implementation file."],
+            "confidence": "low",
+        }
+
+    @staticmethod
+    def _format_verifier_report(report: dict[str, Any]) -> str:
+        return (
+            "<independent_failure_analysis>\n"
+            "A separate read-only failure-analysis session has completed.\n"
+            "Use this report as high-priority debugging context until direct file evidence disproves it.\n"
+            "```json\n"
+            f"{json.dumps(report, indent=2, ensure_ascii=False)}\n"
+            "```\n"
+            "</independent_failure_analysis>"
+        )

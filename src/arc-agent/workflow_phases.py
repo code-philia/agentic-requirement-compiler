@@ -131,6 +131,7 @@ class WorkflowPhaseRunner:
             context_pipeline.cache.invalidate_file_layers(node_id)
             self._store_new_interfaces_from_tdd_output(node_id, implement_output)
             latest_run_tests_result = self.test_driven_developer.get_last_run_tests_result()
+            latest_verifier_report = self.test_driven_developer.get_last_verifier_report()
             modified_files = extract_modified_files_from_messages(implement_messages)
 
             if "IMPLEMENTED" not in (implement_output or "").upper():
@@ -161,6 +162,17 @@ class WorkflowPhaseRunner:
                 )
 
             update_test_pass_statuses(group_statuses)
+            failure_summary = ""
+            if not group_passed:
+                raw_failure_summary = summarize_batch_output(latest_run_tests_result or "")
+                failure_summary = latest_verifier_report.strip() or raw_failure_summary
+                if latest_verifier_report.strip() and raw_failure_summary:
+                    failure_summary = (
+                        latest_verifier_report.strip()
+                        + "\n\n<latest_test_output_excerpt>\n"
+                        + raw_failure_summary
+                        + "\n</latest_test_output_excerpt>"
+                    )
             previous_group_handoff_summary = build_group_handoff_summary(
                 node_id=node_id,
                 test_type=test_type,
@@ -173,7 +185,7 @@ class WorkflowPhaseRunner:
                 {
                     "tdd_handoff": {
                         "last_test_type": test_type,
-                        "last_failed_output_summary": "" if group_passed else summarize_batch_output(latest_run_tests_result or ""),
+                        "last_failed_output_summary": "" if group_passed else failure_summary,
                         "modified_files": modified_files,
                         "root_cause_notes": (
                             [f"{test_type} batch passed from the latest run_tests result."]
@@ -181,7 +193,7 @@ class WorkflowPhaseRunner:
                             else [f"{test_type} batch still has failing tests and requires another TDD pass."]
                         ),
                     },
-                    "recent_failure_summary": "" if group_passed else summarize_batch_output(latest_run_tests_result or ""),
+                    "recent_failure_summary": "" if group_passed else failure_summary,
                 },
             )
 

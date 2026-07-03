@@ -598,7 +598,7 @@ class ContextPipeline:
                 )
                 if source_code:
                     context_parts.append(source_code)
-        elif agent_type == "TestDrivenDeveloper":
+        elif agent_type in {"TestDrivenDeveloper", "TestFailureVerifier"}:
             # TDD needs both source code AND test code pre-injected with larger budgets
             if preloaded_source:
                 context_parts.append(preloaded_source)
