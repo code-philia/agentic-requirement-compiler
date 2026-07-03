@@ -5,7 +5,6 @@ from typing import Any
 from agents.tools.cli_tools import parse_test_results
 from traceability.database import (
     get_interfaces_by_req_id,
-    get_node_contract,
     get_node_state,
     get_tests_by_req_id,
 )
@@ -34,17 +33,14 @@ def classify_non_leaf_work(requirement_data: dict[str, Any]) -> str:
 def build_base_node_session(
     node_id: str,
     requirement_data: dict[str, Any],
-    node_role: str,
     design_mode: str,
 ) -> dict[str, Any]:
     return {
         "node_id": node_id,
-        "node_role": node_role,
         "design_mode": design_mode,
         "phase_status": {
             "understand": "pending",
             "design": "pending",
-            "spec": "pending",
             "test": "pending",
             "implement": "pending",
         },
@@ -163,14 +159,6 @@ def build_group_handoff_summary(
         f"- Tests passed in previous group: {', '.join(passed_tests[:12]) if passed_tests else 'none'}",
         f"- Remaining failing tests from previous group: {', '.join(failed_tests[:12]) if failed_tests else 'none'}",
     ]
-    contract_row = get_node_contract(node_id)
-    contract = contract_row.get("content", {}) if isinstance(contract_row, dict) else {}
-    canonical_routes = contract.get("canonical_routes") or []
-    if canonical_routes:
-        summary_lines.append(f"- Canonical routes for this node: {', '.join(canonical_routes[:10])}")
-    auth_expectation = contract.get("auth_expectation", "")
-    if auth_expectation:
-        summary_lines.append(f"- Auth expectation: {auth_expectation}")
     return "\n".join(summary_lines)
 
 
@@ -254,7 +242,6 @@ def build_frozen_node_contract(
 
     return {
         "req_id": node_id,
-        "node_role": "leaf" if is_leaf else "non_leaf",
         "children_ids": requirement_data.get("children_ids") or [],
         "interface_count": len(interface_summaries),
         "interfaces": interface_summaries,
@@ -295,32 +282,7 @@ def build_non_leaf_convergence_summary(node_id: str, requirement_data: dict[str,
         "- This parent node should converge child capabilities into one coherent subsystem.",
         "- Use concrete child outputs as assembly inputs: implemented interfaces, landed files, passed tests, and remaining failures.",
     ]
-    contract_row = get_node_contract(node_id)
-    contract = contract_row.get("content", {}) if isinstance(contract_row, dict) else {}
-    assembly_scope = contract.get("assembly_scope") or []
-    shared_shell_targets = contract.get("shared_shell_targets") or []
-    provider_hints = contract.get("provider_hints") or []
-    canonical_routes = contract.get("canonical_routes") or []
-    navigation_targets = contract.get("navigation_targets") or []
-    mount_points = contract.get("mount_points") or []
-    data_boundaries = contract.get("data_boundaries") or []
-    auth_expectation = contract.get("auth_expectation", "")
-    if assembly_scope:
-        lines.append(f"- Parent assembly scope: {', '.join(assembly_scope)}")
-    if shared_shell_targets:
-        lines.append(f"- Parent shared shell targets: {', '.join(shared_shell_targets[:10])}")
-    if provider_hints:
-        lines.append(f"- Parent provider hints: {', '.join(provider_hints[:10])}")
-    if canonical_routes:
-        lines.append(f"- Parent canonical routes: {', '.join(canonical_routes[:12])}")
-    if navigation_targets:
-        lines.append(f"- Parent navigation targets: {', '.join(navigation_targets[:12])}")
-    if mount_points:
-        lines.append(f"- Parent mount points / shell slots: {', '.join(mount_points[:12])}")
-    if data_boundaries:
-        lines.append(f"- Parent data / context boundaries: {', '.join(data_boundaries[:12])}")
-    if auth_expectation:
-        lines.append(f"- Parent auth expectation: {auth_expectation}")
+
     lines.append("- Parent convergence must not duplicate providers, invent fake user/session fallbacks, or override child feature semantics.")
     lines.append("- Parent done gate: the parent only passes after relevant children are landed and parent integration tests plus browser-visible validation pass.")
     for child_id in child_ids:

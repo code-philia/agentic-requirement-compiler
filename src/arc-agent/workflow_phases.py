@@ -15,7 +15,6 @@ from traceability.database import (
     insert_call_edge,
     insert_interface,
     insert_test,
-    upsert_node_contract,
     update_interface_implemented,
     update_interface_implemented_status,
     update_interface_req_ids,
@@ -247,7 +246,6 @@ class WorkflowPhaseRunner:
             build_base_node_session(
                 node_id=node_id,
                 requirement_data=requirement_data,
-                node_role="leaf" if is_leaf else "non_leaf",
                 design_mode=design_mode,
             ),
         )
@@ -260,7 +258,6 @@ class WorkflowPhaseRunner:
                     "reason": "no visual reference and no scenarios",
                     "phase_status": {
                         "design": "completed",
-                        "spec": "skipped",
                         "test": "skipped",
                         "implement": "skipped",
                     },
@@ -332,7 +329,6 @@ class WorkflowPhaseRunner:
 
         clear_node_design_artifacts(node_id)
         frozen_contract = build_frozen_node_contract(node_id, requirement_data, interfaces, [])
-        upsert_node_contract(node_id, frozen_contract)
         if interfaces:
             self._store_interfaces(node_id, interfaces)
             context_pipeline.cache.invalidate_db_layers(node_id)
@@ -345,8 +341,7 @@ class WorkflowPhaseRunner:
                 "interfaces": interfaces,
                 "interface_spec": interface_spec,
                 "phase_status": {
-                    "design": "completed",
-                    "spec": "completed",
+                    "design": "completed"
                 },
             },
         )
@@ -443,7 +438,6 @@ class WorkflowPhaseRunner:
                 node_id,
             )
             return False
-        upsert_node_contract(node_id, build_frozen_node_contract(node_id, requirement_data, interfaces, tests))
         context_pipeline.cache.invalidate_file_layers(node_id)
         context_pipeline.cache.invalidate_db_layers(node_id)
         self._update_node_session(
