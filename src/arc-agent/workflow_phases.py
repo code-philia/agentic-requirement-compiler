@@ -24,7 +24,6 @@ from utils import extract_json_array_from_markdown, extract_modified_files_from_
 from workflow_phase_utils import (
     DEFAULT_TDD_TEST_BUDGET,
     build_base_node_session,
-    build_frozen_node_contract,
     build_group_handoff_summary,
     build_non_leaf_convergence_summary,
     build_non_leaf_scope_note,
@@ -250,6 +249,8 @@ class WorkflowPhaseRunner:
             ),
         )
 
+        # ---------------- Interface design ----------------
+
         if not is_leaf and design_mode == "skip":
             self._update_node_session(
                 node_id,
@@ -280,7 +281,7 @@ class WorkflowPhaseRunner:
 
         await self.log_cb(
             "InterfaceDesigner",
-            f"Running unified design session for `{design_mode}`: analyze requirement, capture parent constraints, design interfaces, and materialize owned code...",
+            f"Running unified design session for `{design_mode}`: understand requirement, explore codebase, materialize owned code, and return structured interfaces...",
             None,
             node_id,
         )
@@ -292,7 +293,6 @@ class WorkflowPhaseRunner:
         subtree_invariants = design_bundle.get("subtree_invariants", [])
         assembly_boundaries = design_bundle.get("assembly_boundaries", [])
         interfaces = design_bundle.get("interfaces", [])
-        interface_spec = design_bundle.get("interface_spec", [])
 
         if not interfaces:
             role_label = "leaf" if is_leaf else "non-leaf"
@@ -303,48 +303,28 @@ class WorkflowPhaseRunner:
                 node_id,
             )
             return False
-        if interfaces and not interface_spec:
-            interface_spec = [
-                {
-                    "interface_id": str(interface.get("interface_id", "")).strip(),
-                    "type": str(interface.get("type", "")).strip(),
-                    "file_path": str(interface.get("file_path", "")).strip(),
-                    "first_line": str(interface.get("first_line", "")).strip(),
-                    "responsibility": str(interface.get("responsibility", "") or "").strip(),
-                    "specification": str(interface.get("specification", "") or "").strip(),
-                    "test_focus": interface.get("test_focus", []) if isinstance(interface.get("test_focus"), list) else [],
-                    "reuse_notes": interface.get("reuse_notes", []) if isinstance(interface.get("reuse_notes"), list) else [],
-                }
-                for interface in interfaces
-                if isinstance(interface, dict)
-            ]
-
-        self._update_node_session(node_id, {"phase_status": {"understand": "completed"}})
-        await self.log_cb(
-            "InterfaceDesigner",
-            "Completed unified design session and persisted node session context.",
-            None,
-            node_id,
-        )
 
         clear_node_design_artifacts(node_id)
-        frozen_contract = build_frozen_node_contract(node_id, requirement_data, interfaces, [])
         if interfaces:
             self._store_interfaces(node_id, interfaces)
-            context_pipeline.cache.invalidate_db_layers(node_id)
+
+        materialized_files = extract_modified_files_from_messages(design_messages)
+        if materialized_files:
+            context_pipeline.cache.invalidate_file_layers(node_id)
+
         self._update_node_session(
             node_id,
             {
                 "subtree_invariants": subtree_invariants,
                 "assembly_boundaries": assembly_boundaries,
-                "parent_contract": frozen_contract if not is_leaf else {},
                 "interfaces": interfaces,
-                "interface_spec": interface_spec,
                 "phase_status": {
-                    "design": "completed"
+                    "design": "completed",
                 },
+                "materialized_files": materialized_files,
             },
         )
+        
         await self.log_cb(
             "InterfaceDesigner",
             (
@@ -356,42 +336,7 @@ class WorkflowPhaseRunner:
             node_id,
         )
 
-        for interface in interfaces:
-            if not isinstance(interface, dict):
-                continue
-            interface_id = str(interface.get("interface_id", "")).strip()
-            if interface_id:
-                update_interface_implemented(interface_id, True)
-
-        materialized = interfaces
-        materialized_files = extract_modified_files_from_messages(design_messages)
-        if materialized_files:
-            context_pipeline.cache.invalidate_file_layers(node_id)
-            await self.log_cb(
-                "InterfaceDesigner",
-                f"Materialized files: {', '.join(sorted(materialized_files))}",
-                None,
-                node_id,
-            )
-
-        self._update_node_session(
-            node_id,
-            {
-                "interfaces": materialized,
-                "materialized_files": materialized_files,
-            },
-        )
-        await self.log_cb(
-            "InterfaceDesigner",
-            (
-                f"Materialized {len(interfaces)} interface(s) into code during the unified design session."
-                if interfaces
-                else "No parent-owned interfaces needed materialization in the unified design session."
-            ),
-            None,
-            node_id,
-        )
-
+        # ---------------- Test generation ----------------
         await self.log_cb(
             "TestGenerator",
             (
@@ -443,7 +388,7 @@ class WorkflowPhaseRunner:
         self._update_node_session(
             node_id,
             {
-                "execution_mode": "leaf_full" if is_leaf else "non_leaf_parent_contract",
+                "execution_mode": "leaf_full" if is_leaf else "non_leaf_parent_shell",
                 "test_plan": build_test_plan(tests),
                 "test_artifacts": tests,
                 "phase_status": {"test": "completed"},

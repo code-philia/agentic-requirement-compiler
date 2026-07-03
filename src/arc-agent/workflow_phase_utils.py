@@ -39,7 +39,6 @@ def build_base_node_session(
         "node_id": node_id,
         "design_mode": design_mode,
         "phase_status": {
-            "understand": "pending",
             "design": "pending",
             "test": "pending",
             "implement": "pending",

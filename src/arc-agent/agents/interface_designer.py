@@ -623,15 +623,15 @@ For each data-bearing area (table/list/cards/calendar/chart/schedule):
     role_name="InterfaceDesigner",
     stage_name="interface design and materialization workflow",
     mission=[
-        "Across this node's lifecycle, your job is to understand the current node, identify the smallest correct ownership boundaries, and declare the interface chain this node needs.",
+        "Across this node's lifecycle, your job is to first understand the requirement, then explore the most relevant codebase evidence, then land the owned UI code or interface code, and finally summarize the result as strict structured interfaces when the task is a design-bundle call.",
         "For leaf nodes, that usually means a minimal executable chain across UI -> API -> FUNC -> DB.",
         "For non-leaf nodes, that usually means only parent shell assembly such as routes, layouts, providers, containers, and mount points.",
-        "You may later be asked to materialize the frozen interface bundle into code, but in any single call you must do only the subtask explicitly assigned in the user prompt.",
+        "When a non-design maintenance prompt asks for a narrower task such as convergence or audit, still follow the explicit task boundary from the user prompt.",
     ],
     outputs=[
         "A compact understanding of the current node grounded in the requirement and existing codebase.",
         "A minimal interface set with clear ownership, file paths, reuse decisions, and brief contract fields.",
-        "When the assigned subtask is materialization, landed code for current-node UI and scaffolding for current-node non-UI interfaces.",
+        "Landed code for current-node UI and scaffolding for current-node non-UI interfaces when the call requires implementation work.",
     ],
 )}
 
@@ -642,11 +642,12 @@ Rules:
 - For leaf work, design the smallest complete chain needed across UI -> API -> FUNC -> DB.
 - For non-leaf work, stay at parent UI shell scope: routes, layouts, providers, page containers, mount points, and thin composition boundaries.
 - When visual reference shows business records or data values, treat them as display examples only. Do not convert them into seeded implementation data, fallback arrays, or interface-level mock payloads.
+- In a design-bundle call, first understand and inspect, then write code, then return the final strict structured interface bundle.
 - In a design-only call, do not write code files.
-- In a materialization call, treat the provided interfaces as the frozen contract unless the user prompt explicitly asks for a repair.
-- In a materialization call, UI interfaces owned by the current node must be implemented as real UI code, not left as empty stubs.
-- In a materialization call, do not rely on hardcoded sample rows, screenshot-derived values, fake success payloads, or fallback data to make the owned feature appear complete.
-- In a materialization call, non-UI interfaces owned by the current node must be landed as minimal compilable code skeletons or stubs aligned with the declared contract fields.
+- In a frozen-contract materialization call, treat the provided interfaces as the contract unless the user prompt explicitly asks for a repair.
+- In any implementation-bearing call, UI interfaces owned by the current node must be implemented as real UI code, not left as empty stubs.
+- In any implementation-bearing call, do not rely on hardcoded sample rows, screenshot-derived values, fake success payloads, or fallback data to make the owned feature appear complete.
+- In any implementation-bearing call, non-UI interfaces owned by the current node must be landed as minimal compilable code skeletons or stubs aligned with the declared contract fields.
 - Prefer extending existing files with minimal edits over creating parallel files.
 - Maintain compact working memory while materializing: `KNOWN_FACTS`, `VERIFIED_REUSE_NO_CHANGE_FILES`, `TARGET_EDIT_FILES`, `OPEN_QUESTIONS`, and per-interface status.
 - Use only these interface status values when you need to reason explicitly about progress: `pending`, `inspected`, `change_required`, `verified_reuse_no_change`, `implemented`, `blocked`.
@@ -864,6 +865,7 @@ Your previous reply did not return a valid design bundle JSON object.
 
 Do not read more files.
 Do not call any tools.
+Do not make more code changes.
 Based on the requirement, scenarios, and the evidence you already gathered, return the smallest valid design bundle now.
 
 Return exactly one JSON object in a `json` markdown block with this schema:
@@ -897,31 +899,11 @@ Rules:
 - For leaf nodes, return the minimal executable interface chain.
 """
 
-    @staticmethod
-    def _derive_interface_spec(interfaces: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        derived: list[dict[str, Any]] = []
-        for interface in interfaces:
-            if not isinstance(interface, dict):
-                continue
-            derived.append(
-                {
-                    "interface_id": str(interface.get("interface_id", "")).strip(),
-                    "type": str(interface.get("type", "")).strip(),
-                    "file_path": str(interface.get("file_path", "")).strip(),
-                    "first_line": str(interface.get("first_line", "")).strip(),
-                    "responsibility": str(interface.get("responsibility", "") or "").strip(),
-                    "specification": str(interface.get("specification", "") or "").strip(),
-                    "test_focus": interface.get("test_focus", []) if isinstance(interface.get("test_focus"), list) else [],
-                    "reuse_notes": interface.get("reuse_notes", []) if isinstance(interface.get("reuse_notes"), list) else [],
-                }
-            )
-        return derived
-
-    @staticmethod
-    def _build_materialize_followup_prompt(
+    @classmethod
+    def _build_unified_design_bundle_prompt(
+        cls,
         node_id: str,
         dynamic_ctx: str,
-        interfaces: list[dict[str, Any]],
         design_mode: str,
     ) -> str:
         return f"""
@@ -929,36 +911,23 @@ Rules:
 Read this first. The current requirement payload below is the authoritative task input for node `{node_id}`.
 {dynamic_ctx}
 
-### Interfaces
-```json
-{json.dumps(interfaces, indent=2, ensure_ascii=False)}
-```
-
-### Working Memory Protocol
-- Maintain a compact progress map with these headings whenever you need to re-orient: `KNOWN_FACTS`, `VERIFIED_REUSE_NO_CHANGE_FILES`, `TARGET_EDIT_FILES`, `OPEN_QUESTIONS`, `INTERFACE_STATUSES`.
-- Use only these interface status values: `pending`, `inspected`, `change_required`, `verified_reuse_no_change`, `implemented`, `blocked`.
-- If a reused interface is already correct, mark it in `VERIFIED_REUSE_NO_CHANGE_FILES` and stop re-reading it.
-- Once every frozen owner file has been read once, the next preferred action is `edit_file` on `TARGET_EDIT_FILES`, not another uncertainty-driven read loop.
-- Before any justified re-read of a previously read frozen owner file, first emit a short progress note with:
-  - `MATERIALIZATION_PROGRESS`
-  - `KNOWN_FACTS:`
-  - `VERIFIED_REUSE_NO_CHANGE_FILES:`
-  - `TARGET_EDIT_FILES:`
-  - `OPEN_QUESTIONS:`
-  - `INTERFACE_STATUSES:`
-  - `RE_READ_REASON:`
-  - `TARGET_FILE:`
-  - `NEXT_ACTION:`
-
 ### Task
-This is a fresh materialization step of `InterfaceDesigner` for node `{node_id}`.
-The design bundle is already frozen. Do not redesign interfaces. Do not add parallel interfaces unless an existing frozen interface is impossible to materialize without a tiny supporting helper in the same owner file.
+This is a single-session design-bundle call of `InterfaceDesigner` for node `{node_id}`.
+Work in this order:
+1. Understand the requirement, scenarios, visual reference, and ownership boundaries.
+2. Explore only the most relevant existing code and reusable interfaces.
+3. Land the owned UI code or interface code for this node in the same session.
+4. Return the final strict structured design bundle JSON.
 
-Now materialize the frozen interfaces into code.
-{InterfaceDesigner._build_materialize_stage_task(design_mode)}
+### Phase 1: Design guidance
+{cls._build_design_stage_task(design_mode).strip()}
+
+### Phase 2: Materialization guidance
+{cls._build_materialize_stage_task(design_mode).strip()}
 
 Execution rules:
-- This is now a code-writing step.
+- This is a code-writing session, but your final response must be only the strict structured design bundle JSON.
+- First understand and inspect the most relevant evidence, then edit code, then summarize the landed interfaces.
 - If `<visual_reference>` exists, it is a primary UI contract for this node.
 - For every current-node UI interface, land real UI code now. Do not leave TODO-only shells, placeholder divs, or interface-only JSON.
 - For UI code, follow the visual reference's layout hierarchy, section ordering, stable chrome text, alignment, spacing rhythm, and overall composition as closely as the requirement allows.
@@ -967,64 +936,14 @@ Execution rules:
 - For data-bearing UI regions, bind to the owned runtime data flow when this node owns it. Otherwise, implement explicit empty/loading/error states instead of hardcoded records or fallback arrays.
 - Do not introduce screenshot-derived sample rows, hardcoded fallback payloads, fake success messages detached from real writes, or placeholder-only panels just to satisfy visual expectations or tests.
 - For every current-node non-UI interface, land the smallest compilable or runnable skeleton that matches the declared responsibility and test intent.
+- The final `interfaces` array is the source of truth for ownership, file paths, reuse decisions, and contract fields. Make the returned bundle consistent with the landed code.
 - Reuse and minimally edit existing files when possible. If a target file already exists, read it first and use `edit_file`.
 - Do not use `write_file` on an existing file in this step.
-- Preserve the declared file paths and ownership boundaries from the interface list.
-- Call `run_build` once after landing the materialized code.
+- Call `run_build` once after landing code when you made code changes.
 - When several reads are independent, batch them in the same turn.
-- If the frozen interfaces are sufficient, stop exploring and start editing.
-- After every frozen owner file has been read once, do not re-read the same owner files from uncertainty alone.
 - If you already know enough to name the smallest target edit file, stop reading and edit it.
 
 When finished, return exactly one JSON object in a `json` markdown block with this schema:
-{{
-  "implemented_interface_ids": ["frozen interface ids that were landed"],
-  "modified_files": ["relative file paths modified in this step"],
-  "build_status": "passed|failed|not_run",
-  "notes": "very short summary"
-}}
-"""
-
-    @staticmethod
-    def _parse_design_bundle_payload(raw_output: str) -> dict[str, Any]:
-        parsed = InterfaceDesigner._extract_json_object_from_markdown(raw_output) or {}
-        subtree_invariants = InterfaceDesigner._normalize_string_list(parsed.get("subtree_invariants"))
-        assembly_boundaries = InterfaceDesigner._normalize_boundary_items(parsed.get("assembly_boundaries"))
-        interfaces = parsed.get("interfaces")
-        if not isinstance(interfaces, list):
-            interfaces = []
-        interfaces = InterfaceDesigner._enrich_interfaces_with_contracts(interfaces)
-        return {
-            "subtree_invariants": subtree_invariants,
-            "assembly_boundaries": assembly_boundaries,
-            "interfaces": interfaces,
-        }
-
-    async def design_bundle(
-        self,
-        node_id: str,
-        requirement_data: dict[str, Any],
-        design_mode: str = "leaf_full",
-        preloaded_source: str = None,
-    ) -> tuple[dict[str, Any], list]:
-        from .context_pipeline import context_pipeline
-        from .tools import TOOL_REGISTRY
-
-        static_ctx, dynamic_ctx = context_pipeline.build_agent_context_split(
-            node_id=node_id,
-            agent_type=self.agent_name,
-            preloaded_source=preloaded_source,
-        )
-        user_prompt = f"""
-### Current Node Context
-Read this first. The current requirement payload below is the authoritative task input for node `{node_id}`.
-{dynamic_ctx}
-
-### Task
-{self._build_design_stage_task(design_mode)}
-Stop after returning the design bundle JSON for this step. Do not materialize code yet.
-
-Return exactly one JSON object in a `json` markdown block with this schema:
 {{
   "subtree_invariants": [
     "shared invariant that child implementations must preserve"
@@ -1059,7 +978,7 @@ Return exactly one JSON object in a `json` markdown block with this schema:
   ]
 }}
 
-Rules:
+Rules for the returned JSON:
 - Reuse existing interfaces whenever possible.
 - Keep the interface chain minimal and executable.
 - For leaf nodes, `interfaces` are the main output and `subtree_invariants` / `assembly_boundaries` should usually be empty.
@@ -1067,12 +986,48 @@ Rules:
 - Include brief contract fields directly on each interface object instead of returning a separate `interface_spec` array.
 - If `<visual_reference>` exists, use it to determine UI structure, major sections, stable chrome copy, data presentation style, and layout ownership for the UI interfaces.
 - Do not copy screenshot-specific row values, names, metrics, or business records into interface specs, seeded mock payloads, or fake default UI data.
-- Keep the output compact:
+- Keep the output compact.
 - Keep `responsibility`, `specification`, and `test_focus` brief and concrete.
 - Prefer short phrases over full paragraphs.
 - `first_line` may be empty if the owner file is clear and another read would add little value.
-- Do not write code in this step.
+- Your final response must be the JSON bundle only. Do not append prose after it.
 """
+
+    @staticmethod
+    def _parse_design_bundle_payload(raw_output: str) -> dict[str, Any]:
+        parsed = InterfaceDesigner._extract_json_object_from_markdown(raw_output) or {}
+        subtree_invariants = InterfaceDesigner._normalize_string_list(parsed.get("subtree_invariants"))
+        assembly_boundaries = InterfaceDesigner._normalize_boundary_items(parsed.get("assembly_boundaries"))
+        interfaces = parsed.get("interfaces")
+        if not isinstance(interfaces, list):
+            interfaces = []
+        interfaces = InterfaceDesigner._enrich_interfaces_with_contracts(interfaces)
+        return {
+            "subtree_invariants": subtree_invariants,
+            "assembly_boundaries": assembly_boundaries,
+            "interfaces": interfaces,
+        }
+
+    async def design_bundle(
+        self,
+        node_id: str,
+        requirement_data: dict[str, Any],
+        design_mode: str = "leaf_full",
+        preloaded_source: str = None,
+    ) -> tuple[dict[str, Any], list]:
+        from .context_pipeline import context_pipeline
+        from .tools import TOOL_REGISTRY
+
+        static_ctx, dynamic_ctx = context_pipeline.build_agent_context_split(
+            node_id=node_id,
+            agent_type=self.agent_name,
+            preloaded_source=preloaded_source,
+        )
+        user_prompt = self._build_unified_design_bundle_prompt(
+            node_id=node_id,
+            dynamic_ctx=dynamic_ctx,
+            design_mode=design_mode,
+        )
         system_content = self.get_system_prompt()
         if static_ctx:
             system_content = f"{system_content}\n\n{static_ctx}"
@@ -1080,13 +1035,19 @@ Rules:
             {"role": "system", "content": system_content},
             {"role": "user", "content": user_prompt},
         ]
-        read_tools = [TOOL_REGISTRY[name]["schema"] for name in self.get_tool_names() if name in TOOL_REGISTRY]
-        raw_output, design_messages = await self.run_from_messages(
-            design_messages,
-            node_id=node_id,
-            max_steps=12,
-            tools=read_tools,
-        )
+        implement_tools = [TOOL_REGISTRY[name]["schema"] for name in self._get_implement_tool_names() if name in TOOL_REGISTRY]
+        previous_guard = self._existing_file_write_guard
+        self._existing_file_write_guard = True
+        try:
+            raw_output, design_messages = await self.run_from_messages(
+                design_messages,
+                node_id=node_id,
+                max_steps=50,
+                tools=implement_tools,
+            )
+        finally:
+            self._existing_file_write_guard = previous_guard
+
         parsed_payload = self._parse_design_bundle_payload(raw_output)
         subtree_invariants = parsed_payload["subtree_invariants"]
         assembly_boundaries = parsed_payload["assembly_boundaries"]
@@ -1105,61 +1066,11 @@ Rules:
             assembly_boundaries = parsed_payload["assembly_boundaries"]
             interfaces = parsed_payload["interfaces"]
 
-        if not interfaces and design_mode != "leaf_full":
-            return {
-                "subtree_invariants": subtree_invariants,
-                "assembly_boundaries": assembly_boundaries,
-                "interfaces": [],
-                "interface_spec": [],
-            }, design_messages
-
-        if not interfaces:
-            return {
-                "subtree_invariants": subtree_invariants,
-                "assembly_boundaries": assembly_boundaries,
-                "interfaces": [],
-                "interface_spec": [],
-            }, design_messages
-
-        interface_spec = self._derive_interface_spec(interfaces)
-
-        followup_prompt = self._build_materialize_followup_prompt(
-            node_id=node_id,
-            dynamic_ctx=dynamic_ctx,
-            interfaces=interfaces,
-            design_mode=design_mode,
-        )
-        materialize_messages = [
-            {"role": "system", "content": system_content},
-            {"role": "user", "content": followup_prompt},
-        ]
-        implement_tools = [TOOL_REGISTRY[name]["schema"] for name in self._get_implement_tool_names() if name in TOOL_REGISTRY]
-        previous_guard = self._existing_file_write_guard
-        self._existing_file_write_guard = True
-        self._start_materialization_session(
-            node_id=node_id,
-            interfaces=interfaces,
-            design_mode=design_mode,
-        )
-        try:
-            _, materialize_messages = await self.run_from_messages(
-                materialize_messages,
-                node_id=node_id,
-                max_steps=50,
-                tools=implement_tools,
-            )
-        finally:
-            self._finish_materialization_session(node_id)
-            self._existing_file_write_guard = previous_guard
-
-        combined_messages = design_messages + materialize_messages[1:]
-
         return {
             "subtree_invariants": subtree_invariants,
             "assembly_boundaries": assembly_boundaries,
             "interfaces": interfaces,
-            "interface_spec": interface_spec,
-        }, combined_messages
+        }, design_messages
 
     async def converge_non_leaf(
         self,
