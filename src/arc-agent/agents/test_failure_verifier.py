@@ -39,6 +39,8 @@ Rules:
 - Prefer direct evidence over speculation. If you lack proof, say that confidence is limited.
 - Check whether the failing test still matches the requirement and interfaces before blaming the implementation.
 - For E2E failures, explicitly consider whether locators, visible text expectations, routing assumptions, or environment startup assumptions are stale.
+- For Playwright E2E failures, treat `placeholder`, `label`, `name`, and `id` as valid stable locator sources. If repeated text makes a locator ambiguous, consider whether the implementation should expose stable local hooks instead of forcing text-only matching.
+- For E2E failures, classify the latest failure phase first: `startup_or_environment`, `page_entry_or_render`, `locator_resolution`, `submit_runtime_path`, `post_submit_assertion`, or `other`.
 - Consider environment and setup issues only when the output or config evidence points there.
 - Keep the conclusion light and structured. Do not force the result into a narrow error taxonomy.
 - Return exactly one JSON object in a `json` markdown block.
@@ -114,6 +116,7 @@ You may inspect the failing tests, related owner files, route/layout/provider wi
 Do not edit anything. Gather the smallest sufficient evidence set, then return one compact JSON object in a `json` markdown block:
 
 {{
+  "failure_phase": "startup_or_environment|page_entry_or_render|locator_resolution|submit_runtime_path|post_submit_assertion|other",
   "failure_summary": "one short grounded summary",
   "likely_causes": [
     {{
@@ -132,6 +135,7 @@ Do not edit anything. Gather the smallest sufficient evidence set, then return o
 
 Rules for the JSON:
 - Keep it compact.
+- `failure_phase` is required for E2E batches and optional otherwise.
 - `likely_causes` should usually contain 1-3 items.
 - Every cause must be backed by evidence you actually observed.
 - If you suspect the test itself is wrong, say why in requirement-facing terms.
@@ -172,4 +176,3 @@ Rules for the JSON:
         ]
         tools = [TOOL_REGISTRY[name]["schema"] for name in self.get_tool_names() if name in TOOL_REGISTRY]
         return messages, tools
-

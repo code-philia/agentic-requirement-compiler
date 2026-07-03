@@ -179,7 +179,8 @@ Additional rules:
 - Keep the file count low and stable.
 - For persisted or fetched data flows, write at least one test that would fail if the implementation used hardcoded sample data, mock API payloads, or placeholder panels instead of the real runtime chain.
 - For owned web happy paths, prefer real API handlers and real DB-backed state in Integration/E2E tests; only mock systems outside this node's ownership boundary.
-- For E2E selectors, prefer requirement-visible text first, then stable local selectors, then role, and use id only as a last fallback.
+- For Playwright E2E selectors, prefer the most stable requirement-aligned locator available from `placeholder`, `label`, `name`, or `id`; use visible text or role only when they are clearly unique in the rendered page.
+- If repeated text would make the E2E locator ambiguous, add stable local hooks such as `id`, `name`, or explicit label associations in the implementation and use them in the test.
 
 When finished, output one JSON array in a `json` markdown block:
 [

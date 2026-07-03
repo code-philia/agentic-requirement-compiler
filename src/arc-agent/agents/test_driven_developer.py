@@ -35,6 +35,9 @@ class TestDrivenDeveloper(ARCAgent):
         self._current_test_files: List[str] = []
         self._current_test_type: str = ""
         self._failure_history: list[dict[str, Any]] = []
+        self._failure_attempt_counter = 0
+        self._active_failure_phase: str = ""
+        self._archived_failure_phase_summaries: list[dict[str, Any]] = []
         self._pending_post_verifier_compaction = False
         self._session_compaction_count = 0
 
@@ -330,6 +333,9 @@ Rules:
         previous_last_completed_result = self._last_completed_run_tests_result
         previous_has_called_run_tests = self._has_called_run_tests_in_session
         previous_failure_history = list(self._failure_history)
+        previous_failure_attempt_counter = self._failure_attempt_counter
+        previous_active_failure_phase = self._active_failure_phase
+        previous_archived_failure_phase_summaries = list(self._archived_failure_phase_summaries)
         previous_pending_post_verifier_compaction = self._pending_post_verifier_compaction
         previous_session_compaction_count = self._session_compaction_count
 
@@ -349,6 +355,9 @@ Rules:
         self._last_verifier_report = None
         self._last_verifier_report_text = ""
         self._failure_history = []
+        self._failure_attempt_counter = 0
+        self._active_failure_phase = ""
+        self._archived_failure_phase_summaries = []
         self._pending_post_verifier_compaction = False
         self._session_compaction_count = 0
         try:
@@ -370,6 +379,9 @@ Rules:
             self._last_completed_run_tests_result = latest_completed_result or previous_last_completed_result
             self._has_called_run_tests_in_session = previous_has_called_run_tests
             self._failure_history = previous_failure_history
+            self._failure_attempt_counter = previous_failure_attempt_counter
+            self._active_failure_phase = previous_active_failure_phase
+            self._archived_failure_phase_summaries = previous_archived_failure_phase_summaries
             self._pending_post_verifier_compaction = previous_pending_post_verifier_compaction
             self._session_compaction_count = previous_session_compaction_count
 
@@ -433,12 +445,15 @@ Rules:
         latest_test_output: str,
         verifier_report: dict[str, Any],
     ) -> None:
+        failure_phase = self._determine_failure_phase(latest_test_output, verifier_report)
+        self._failure_attempt_counter += 1
         entry = {
-            "attempt": len(self._failure_history) + 1,
+            "attempt": self._failure_attempt_counter,
             "test_type": self._current_test_type or "",
             "test_files": list(self._current_test_files[:4]),
             "exit_code": self._extract_exit_code(latest_test_output),
             "fingerprint": self._recent_failure_fingerprints[-1] if self._recent_failure_fingerprints else "",
+            "failure_phase": failure_phase,
             "failure_summary": str(verifier_report.get("failure_summary", "") or "").strip(),
             "likely_cause_summaries": [
                 str(item.get("summary", "")).strip()
@@ -452,6 +467,18 @@ Rules:
             ],
             "latest_test_output_excerpt": self._summarize_test_output(latest_test_output),
         }
+        if self._current_test_type == "E2E":
+            if self._active_failure_phase and failure_phase and failure_phase != self._active_failure_phase:
+                archived = self._summarize_failure_phase(self._active_failure_phase, self._failure_history)
+                if archived:
+                    self._archived_failure_phase_summaries.append(archived)
+                    self._archived_failure_phase_summaries = self._archived_failure_phase_summaries[-2:]
+                self._failure_history = []
+            self._active_failure_phase = failure_phase or self._active_failure_phase
+            self._failure_history.append(entry)
+            self._failure_history = self._failure_history[-2:]
+            return
+
         self._failure_history.append(entry)
         self._failure_history = self._failure_history[-6:]
 
@@ -496,7 +523,7 @@ Rules:
             return messages
 
         latest_failure = self._failure_history[-1] if self._failure_history else {}
-        historical_failures = self._failure_history[:-1][-3:]
+        historical_failures = self._build_compact_historical_records()
         recent_read_files = self._extract_recent_tool_paths(messages, {"read_file"})
         recent_changed_files = self._extract_recent_tool_paths(
             messages,
@@ -515,6 +542,7 @@ Rules:
             "latest_failure": {
                 "attempt": latest_failure.get("attempt"),
                 "fingerprint": latest_failure.get("fingerprint", ""),
+                "failure_phase": latest_failure.get("failure_phase", ""),
                 "failure_summary": latest_failure.get("failure_summary", ""),
                 "likely_cause_summaries": latest_failure.get("likely_cause_summaries", []),
                 "recommended_next_steps": latest_failure.get("recommended_next_steps", []),
@@ -540,7 +568,7 @@ Rules:
         continue_message = (
             "Continue from the compact TDD state above. Preserve the initial system prompt and the initial node-context "
             "user prompt as the source of truth. Treat historical failure records as background only. Prioritize the "
-            "latest failure excerpt plus the verifier conclusion, then inspect only the next directly relevant files "
+            "latest failure excerpt plus the verifier conclusion, focus on the current E2E failure phase when present, then inspect only the next directly relevant files "
             "before making one minimal fix."
         )
         return [
@@ -598,6 +626,8 @@ Treat the provided requirement context and `<interfaces>` as the source for expl
 Do not optimize for mocked green tests if the requirement expects a real runtime data flow. Prefer fixing the app code so the owned request, persistence, and render path actually works.
 Use a simple loop: implement, run `run_tests`, use the latest failing output plus any injected verifier report, inspect the next directly relevant files, make one minimal fix, then rerun.
 If this is an E2E batch, compare the failing Playwright spec with the raw Playwright output before deciding whether the minimal fix is in app code or the test file.
+If this is a Playwright E2E batch, stable selectors may come from `placeholder`, `label`, `name`, or `id`; if repeated visible text is ambiguous, it is valid to add stable local hooks in the implementation and use them in the test.
+If this is an E2E batch, classify the current failure phase first: `startup_or_environment`, `page_entry_or_render`, `locator_resolution`, `submit_runtime_path`, `post_submit_assertion`, or `other`.
 When all target tests pass, output "IMPLEMENTED". The system will handle the final build verification after your batch is green.
 """
         system_content = self.get_system_prompt()
@@ -696,8 +726,11 @@ When all target tests pass, output "IMPLEMENTED". The system will handle the fin
         )
         parsed = self._extract_json_object(report_text or "")
         if isinstance(parsed, dict):
+            if self._current_test_type == "E2E" and not str(parsed.get("failure_phase", "")).strip():
+                parsed["failure_phase"] = self._classify_e2e_failure_phase(latest_test_output)
             return parsed
         return {
+            "failure_phase": self._classify_e2e_failure_phase(latest_test_output) if self._current_test_type == "E2E" else "",
             "failure_summary": "Independent failure analysis returned non-JSON output.",
             "likely_causes": [
                 {
@@ -725,3 +758,104 @@ When all target tests pass, output "IMPLEMENTED". The system will handle the fin
             "```\n"
             "</independent_failure_analysis>"
         )
+
+    def _determine_failure_phase(
+        self,
+        latest_test_output: str,
+        verifier_report: dict[str, Any],
+    ) -> str:
+        if self._current_test_type != "E2E":
+            return ""
+        report_phase = str(verifier_report.get("failure_phase", "") or "").strip()
+        if report_phase:
+            return report_phase
+        return self._classify_e2e_failure_phase(latest_test_output)
+
+    @staticmethod
+    def _classify_e2e_failure_phase(latest_test_output: str) -> str:
+        text = str(latest_test_output or "")
+        lowered = text.lower()
+
+        if (
+            "frontend build failed before e2e startup" in lowered
+            or "failed to start backend server for e2e testing" in lowered
+            or "failed to start grouped e2e execution" in lowered
+        ):
+            return "startup_or_environment"
+
+        if (
+            "strict mode violation" in lowered
+            or "waiting for getby" in lowered
+            or "expect(locator)" in lowered
+            or "locator resolved to" in lowered
+            or "getbylabel(" in lowered
+            or "getbyplaceholder(" in lowered
+        ):
+            return "locator_resolution"
+
+        if (
+            "tohaveurl(/\\/reserve" in lowered
+            or "tohaveurl(/\\/login" in lowered
+            or "tohaveurl(/\\/dashboard" in lowered
+            or "getbytext('email is already registered.')" in lowered
+            or "getbytext('passwords do not match.')" in lowered
+            or "getbytext('please fill in all required fields.')" in lowered
+            or "received string:  \"http://127.0.0.1:3000/register\"" in lowered
+        ):
+            return "post_submit_assertion"
+
+        if (
+            "page.goto(" in lowered
+            or "net::err" in lowered
+            or "tohaveurl(/\\/register" in lowered
+        ):
+            return "page_entry_or_render"
+
+        if (
+            "post /api/" in lowered
+            or "status 500" in lowered
+            or "status 400" in lowered
+            or "status 409" in lowered
+            or "request failed" in lowered
+        ):
+            return "submit_runtime_path"
+
+        return "other"
+
+    def _summarize_failure_phase(
+        self,
+        phase: str,
+        entries: list[dict[str, Any]],
+    ) -> dict[str, Any] | None:
+        if not entries:
+            return None
+        latest = entries[-1]
+        fingerprints = [
+            str(item.get("fingerprint", "")).strip()
+            for item in entries
+            if str(item.get("fingerprint", "")).strip()
+        ]
+        return {
+            "phase_summary": True,
+            "failure_phase": phase,
+            "attempts": [entries[0].get("attempt"), latest.get("attempt")],
+            "fingerprints": fingerprints[-2:],
+            "failure_summary": latest.get("failure_summary", ""),
+            "likely_cause_summaries": latest.get("likely_cause_summaries", [])[:2],
+        }
+
+    def _build_compact_historical_records(self) -> list[dict[str, Any]]:
+        records: list[dict[str, Any]] = []
+        records.extend(self._archived_failure_phase_summaries[-1:])
+        if self._failure_history[:-1]:
+            previous = self._failure_history[-2]
+            records.append(
+                {
+                    "attempt": previous.get("attempt"),
+                    "failure_phase": previous.get("failure_phase", ""),
+                    "fingerprint": previous.get("fingerprint", ""),
+                    "failure_summary": previous.get("failure_summary", ""),
+                    "likely_cause_summaries": previous.get("likely_cause_summaries", [])[:2],
+                }
+            )
+        return records[-2:]
