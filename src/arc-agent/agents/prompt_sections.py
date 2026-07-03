@@ -191,10 +191,11 @@ def get_tdd_guidance() -> str:
                 ],
             ),
             _section(
-                "Error Localization",
+                "Failure Recovery Loop",
                 [
                     "Use the latest `run_tests` output as the source of truth.",
-                    "Classify the failure, state a falsifiable root-cause hypothesis, and name the target files before new reads or reruns.",
+                    "After a failed `run_tests`, start from the injected independent failure-analysis report if present, then confirm or disprove it with the next directly relevant files.",
+                    "Do not broad-scan or rerun immediately after a failure. Read the failing test and the nearest owner or boundary files first, then make one minimal fix.",
                     "If the same failure repeats, assume the current hypothesis is wrong or incomplete and change the evidence plan explicitly.",
                     "For SQLite-backed backend tests on Windows, check database teardown first: a failing unlink/remove usually means the connection was never closed. Prefer fixing the scaffold teardown helpers or test harness usage over patching around the symptom.",
                 ],

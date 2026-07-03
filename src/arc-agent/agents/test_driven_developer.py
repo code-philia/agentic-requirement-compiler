@@ -58,21 +58,14 @@ Rules:
 - Write the obvious implementation set first, then call `run_tests`.
 - `run_tests` takes no arguments and runs exactly the current batch selected by the system.
 - The node is only done after the current batch passes and the code remains buildable under final system verification.
+- After a failed `run_tests`, use the latest failing output plus any injected independent failure-analysis report, then inspect only the next directly relevant files before the next edit or rerun.
+- Make one minimal contract-preserving fix at a time, then verify again with `run_tests`.
 - For features that own a UI -> API -> FUNC -> DB chain, make the real runtime path work. Do not satisfy the tests with sample rows, placeholder panels, mocked success branches, or fallback data that bypasses the owned path.
 - If the feature or tests use the database, extend the scaffold under `backend/src/database/` for runtime queries, seed data, and isolated test databases instead of creating parallel DB lifecycle code.
-- After a failed `run_tests`, the system may inject an independent failure-analysis report from a separate verifier-style session. Use that report as high-priority debugging evidence until direct file evidence disproves it.
-- After a failed `run_tests`, do not immediately thrash through broad reads or reruns. Start from the latest failing output plus any injected verifier report, then inspect only the next directly relevant files.
-- Use `grep` to locate symbols, selectors, routes, or ownership boundaries; use `read_file` to confirm the current implementation text; use `edit_file` or `write_file` to make the smallest fix; use `run_tests` only to verify the hypothesis.
-- Make the smallest contract-preserving fix before the next test run.
 - Treat missing test discovery, wrong framework, wrong path, or wrong selector strategy as test/content/config problems first, not business-logic problems.
 - Do not fabricate compatibility files, duplicate tests, patch `node_modules`, or move tests just to satisfy discovery.
 - Treat the provided `<interfaces>` block as the source of truth for ownership, responsibility, specification, and test focus.
 - If the requirement includes fetched or persisted data, assume the intended success condition is a real write/read or request/render loop unless the contract explicitly says otherwise.
-- Tool workflow:
-- `grep` is for finding symbols, selectors, route ownership, and likely edit locations.
-- `read_file` is for confirming the exact current implementation in files you already know are relevant.
-- `run_tests` is only for verifying a concrete hypothesis after a minimal change.
-- Avoid broad rescans, unrelated diagnostics, and repeated cached reads without a new hypothesis.
 - Return exactly `IMPLEMENTED` only after the latest `run_tests` result passes with exit code 0 and the implemented path is not relying on obvious sample-data or placeholder-only shortcuts for the owned flow.
 
 {get_common_session_guidance()}
@@ -441,9 +434,7 @@ Implement the interfaces of the current node. Use the provided `<acceptance_gate
 The system will execute exactly this current test batch when you call `run_tests`.
 Treat the provided requirement context and `<interfaces>` as the source for explicit routes, visible text, field labels, placeholders, messages, API literals, and auth semantics unless the current test file proves they need repair.
 Do not optimize for mocked green tests if the requirement expects a real runtime data flow. Prefer fixing the app code so the owned request, persistence, and render path actually works.
-Your immediate goal is simple: implement the current node interfaces, make this batch pass, and leave the project in a buildable state for final verification.
-If the batch fails, the system may inject an independent verifier-style failure report. Use it first, then inspect only the next directly relevant files before the next edit or rerun.
-After each file read, reassess whether you already found the cause or whether you still need another directly related file.
+Use a simple loop: implement, run `run_tests`, use the latest failing output plus any injected verifier report, inspect the next directly relevant files, make one minimal fix, then rerun.
 If this is an E2E batch, compare the failing Playwright spec with the raw Playwright output before deciding whether the minimal fix is in app code or the test file.
 When all target tests pass, output "IMPLEMENTED". The system will handle the final build verification after your batch is green.
 """
@@ -500,7 +491,7 @@ When all target tests pass, output "IMPLEMENTED". The system will handle the fin
         result, _ = await self.run_from_messages(
             messages,
             node_id=node_id,
-            max_steps=75,
+            max_steps=100,
             tools=tools,
         )
         return result

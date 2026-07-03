@@ -116,7 +116,7 @@ class WorkflowPhaseRunner:
             implement_output, implement_messages = await self.test_driven_developer.run_from_messages(
                 messages=messages,
                 node_id=node_id,
-                max_steps=75,
+                max_steps=100,
                 tools=tools,
                 run_tests_budget=DEFAULT_TDD_TEST_BUDGET,
                 run_tests_usage=run_tests_usage,
