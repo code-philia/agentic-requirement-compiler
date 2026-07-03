@@ -4,6 +4,7 @@ const path = require('path');
 const {
   getDbPath,
   setDbPath,
+  resolveDbPath,
   initializeDatabase,
   closeDb,
   resetDatabaseFile,
@@ -39,11 +40,34 @@ function removeDirIfEmpty(dirPath) {
   }
 }
 
-function createTestDatabaseHarness(options = {}) {
+function createHarnessConfig(options = {}) {
+  const preserveDatabaseOnCleanup = options.preserveDatabaseOnCleanup === true;
+  const explicitDbPath = typeof options.dbPath === 'string' && options.dbPath.trim()
+    ? resolveDbPath(options.dbPath)
+    : '';
+
+  if (explicitDbPath) {
+    return {
+      dbPath: explicitDbPath,
+      rootDir: path.dirname(explicitDbPath),
+      preserveDatabaseOnCleanup,
+      removeRootDirWhenEmpty: false,
+    };
+  }
+
   const label = sanitizeLabel(options.label);
   const rootDir = path.resolve(process.cwd(), options.rootDir || DEFAULT_TEST_DB_ROOT);
   const uniqueSuffix = `${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
-  const dbPath = path.join(rootDir, `${label}-${uniqueSuffix}.sqlite`);
+  return {
+    dbPath: path.join(rootDir, `${label}-${uniqueSuffix}.sqlite`),
+    rootDir,
+    preserveDatabaseOnCleanup,
+    removeRootDirWhenEmpty: true,
+  };
+}
+
+function createTestDatabaseHarness(options = {}) {
+  const { dbPath, rootDir, preserveDatabaseOnCleanup, removeRootDirWhenEmpty } = createHarnessConfig(options);
 
   let previousDbPath = null;
   let active = false;
@@ -99,7 +123,9 @@ function createTestDatabaseHarness(options = {}) {
 
   async function cleanup() {
     await closeDb();
-    await resetDatabaseFile(dbPath);
+    if (!preserveDatabaseOnCleanup) {
+      await resetDatabaseFile(dbPath);
+    }
     active = false;
 
     const restorePath = previousDbPath;
@@ -109,7 +135,9 @@ function createTestDatabaseHarness(options = {}) {
       await setDbPath(restorePath);
     }
 
-    removeDirIfEmpty(rootDir);
+    if (removeRootDirWhenEmpty) {
+      removeDirIfEmpty(rootDir);
+    }
   }
 
   return {
@@ -121,7 +149,16 @@ function createTestDatabaseHarness(options = {}) {
   };
 }
 
+function createRuntimeDatabaseHarness(options = {}) {
+  return createTestDatabaseHarness({
+    ...options,
+    dbPath: options.dbPath || process.env.ARC_DB_FILE || process.env.DATABASE_FILE || 'database.db',
+    preserveDatabaseOnCleanup: options.preserveDatabaseOnCleanup !== false,
+  });
+}
+
 module.exports = {
   DEFAULT_TEST_DB_ROOT,
   createTestDatabaseHarness,
+  createRuntimeDatabaseHarness,
 };

@@ -347,6 +347,16 @@ async def _build_frontend_dist(workspace_path: str) -> tuple[bool, str]:
     )
 
 
+async def _prepare_e2e_database(workspace_path: str) -> tuple[bool, str]:
+    backend_path = os.path.join(workspace_path, "backend")
+    prepare_output = await _execute_web_test_command(
+        "npm run db:prepare:e2e",
+        cwd=backend_path,
+        timeout=60.0,
+    )
+    return _extract_exit_code(prepare_output) == 0, prepare_output
+
+
 async def _start_backend_runtime(workspace_path: str) -> tuple[asyncio.subprocess.Process | None, str]:
     backend_path = os.path.join(workspace_path, "backend")
     start_command = _resolve_backend_start_command(backend_path)
@@ -451,6 +461,7 @@ class WebAppType(AppTypeHandler):
             return str(exc)
         backend_process = None
         frontend_build_output = ""
+        database_prepare_output = ""
         backend_start_command = ""
 
         if normalized_type == "e2e":
@@ -462,12 +473,22 @@ class WebAppType(AppTypeHandler):
                     f"=== Frontend Build ===\n{frontend_build_output}",
                 )
 
+            database_ready, database_prepare_output = await _prepare_e2e_database(self.workspace_path)
+            if not database_ready:
+                return _prepend_test_execution_header(
+                    execution,
+                    "E2E database preparation failed before backend startup.\n\n"
+                    f"=== Frontend Build ===\n{frontend_build_output}\n\n"
+                    f"=== Database Prepare ===\n{database_prepare_output}",
+                )
+
             backend_process, backend_start_command = await _start_backend_runtime(self.workspace_path)
             if backend_process is None:
                 return _prepend_test_execution_header(
                     execution,
                     "Failed to start backend server for E2E testing.\n\n"
                     f"=== Frontend Build ===\n{frontend_build_output}\n\n"
+                    f"=== Database Prepare ===\n{database_prepare_output}\n\n"
                     f"=== Backend Runtime Error ===\n{backend_start_command}\n",
                 )
 
@@ -476,6 +497,7 @@ class WebAppType(AppTypeHandler):
             if normalized_type == "e2e":
                 result = (
                     f"=== Frontend Build ===\n{frontend_build_output}\n\n"
+                    f"=== Database Prepare ===\n{database_prepare_output}\n\n"
                     f"=== Backend Runtime ===\nCommand: {backend_start_command}\n"
                     f"Port: {get_web_port()}\n\n{result}"
                 )
@@ -553,6 +575,15 @@ class WebAppType(AppTypeHandler):
                 f"=== Frontend Build ===\n{frontend_build_output}",
             )
 
+        database_ready, database_prepare_output = await _prepare_e2e_database(self.workspace_path)
+        if not database_ready:
+            return _prepend_group_execution_header(
+                execution,
+                "E2E database preparation failed before backend startup.\n\n"
+                f"=== Frontend Build ===\n{frontend_build_output}\n\n"
+                f"=== Database Prepare ===\n{database_prepare_output}",
+            )
+
         backend_process = None
         backend_start_command = ""
         try:
@@ -560,7 +591,10 @@ class WebAppType(AppTypeHandler):
             if backend_process is None:
                 return _prepend_group_execution_header(
                     execution,
-                    f"Exit Code: 1\nSTDERR:\n{backend_start_command}\n",
+                    "Exit Code: 1\n\n"
+                    f"=== Frontend Build ===\n{frontend_build_output}\n\n"
+                    f"=== Database Prepare ===\n{database_prepare_output}\n\n"
+                    f"STDERR:\n{backend_start_command}\n",
                 )
 
             playwright_command = "npx playwright test"
@@ -577,6 +611,7 @@ class WebAppType(AppTypeHandler):
             body = (
                 f"Exit Code: {playwright_exit_code}\n\n"
                 f"=== Frontend Build ===\n{frontend_build_output}\n\n"
+                f"=== Database Prepare ===\n{database_prepare_output}\n\n"
                 f"=== Backend Runtime ===\nCommand: {backend_start_command}\n"
                 f"Port: {get_web_port()}\n\n"
                 f"{playwright_result}"

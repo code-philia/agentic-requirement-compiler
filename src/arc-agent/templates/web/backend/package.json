@@ -7,6 +7,7 @@
     "dev": "nodemon src/index.js",
     "start": "node src/index.js",
     "db:seed": "node src/database/seed_db.js",
+    "db:prepare:e2e": "node src/database/prepare_e2e.js",
     "test": "vitest run --config vitest.config.js",
     "test:watch": "vitest --config vitest.config.js",
     "test:e2e": "playwright test",
