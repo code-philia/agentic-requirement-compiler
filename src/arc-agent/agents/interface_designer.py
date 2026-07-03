@@ -11,6 +11,7 @@ from urllib.parse import urlparse
 import requests
 
 from .arc_agent import ARCAgent
+from .codebase_explorer import CodebaseExplorer
 from .prompt_sections import (
     get_common_session_guidance,
     get_compiler_role_guidance,
@@ -28,6 +29,7 @@ class InterfaceDesigner(ARCAgent):
             agent_name="InterfaceDesigner",
             log_cb=log_cb,
         )
+        self.codebase_explorer = CodebaseExplorer(log_cb)
         self._existing_file_write_guard = False
         self._materialization_state_by_node: dict[str, dict[str, Any]] = {}
 
@@ -868,17 +870,57 @@ Rules:
 - For leaf nodes, return the minimal executable interface chain.
 """
 
+    @staticmethod
+    def _build_design_explorer_task(design_mode: str) -> str:
+        if design_mode == "leaf_full":
+            return (
+                "Localize the smallest existing owner-file set needed for a leaf requirement that may span "
+                "UI, API, FUNC, and DB. Identify the most likely existing route/page/component files, runtime "
+                "boundary files, reusable interfaces, and the few files most likely to be edited."
+            )
+        if design_mode == "non_leaf_full":
+            return (
+                "Localize the smallest parent-shell owner-file set for a non-leaf requirement with concrete scenarios. "
+                "Prioritize routes, layouts, providers, guards, mount points, shared composition files, and adjacent "
+                "contracts the parent likely owns or must extend."
+            )
+        return (
+            "Localize the smallest parent UI shell owner-file set for a non-leaf requirement driven mainly by visual "
+            "or structural constraints. Prioritize routes, layouts, providers, mount points, and top-level page shells."
+        )
+
+    async def _run_design_codebase_explorer(
+        self,
+        node_id: str,
+        design_mode: str,
+        preloaded_source: str | None = None,
+    ) -> dict[str, Any]:
+        focus_hints = [
+            f"Design mode: {design_mode}",
+            "Prefer existing owner files over inventing parallel files.",
+            "Surface the most likely edit targets and the next few high-value reads.",
+        ]
+        return await self.codebase_explorer.explore(
+            node_id=node_id,
+            task_brief=self._build_design_explorer_task(design_mode),
+            focus_hints=focus_hints,
+            preloaded_source=preloaded_source,
+            max_steps=8,
+        )
+
     @classmethod
     def _build_unified_design_bundle_prompt(
         cls,
         node_id: str,
         dynamic_ctx: str,
         design_mode: str,
+        explorer_context: str = "",
     ) -> str:
         return f"""
 ### Current Node Context
 Read this first. The current requirement payload below is the authoritative task input for node `{node_id}`.
 {dynamic_ctx}
+{explorer_context}
 
 ### Task
 This is a single-session design-bundle call of `InterfaceDesigner` for node `{node_id}`.
@@ -896,6 +938,7 @@ Work in this order:
 
 Execution rules:
 - This is a code-writing session, but your final response must be only the strict structured design bundle JSON.
+- If `<codebase_explorer_report>` exists, use it as the initial file-localization map and only expand beyond it when direct evidence is missing or contradicted.
 - First understand and inspect the most relevant evidence, then edit code, then summarize the landed interfaces.
 - If `<visual_reference>` exists, it is a primary UI contract for this node.
 - For every current-node UI interface, land real UI code now. Do not leave TODO-only shells, placeholder divs, or interface-only JSON.
@@ -975,10 +1018,19 @@ Rules for the returned JSON:
             agent_type=self.agent_name,
             preloaded_source=preloaded_source,
         )
+        explorer_report = await self._run_design_codebase_explorer(
+            node_id=node_id,
+            design_mode=design_mode,
+            preloaded_source=preloaded_source,
+        )
+        explorer_context = ""
+        if explorer_report:
+            explorer_context = "\n" + CodebaseExplorer.format_report_block(explorer_report) + "\n"
         user_prompt = self._build_unified_design_bundle_prompt(
             node_id=node_id,
             dynamic_ctx=dynamic_ctx,
             design_mode=design_mode,
+            explorer_context=explorer_context,
         )
         system_content = self.get_system_prompt()
         if static_ctx:

@@ -3,6 +3,7 @@ import re
 import os
 from typing import List, Dict, Any, Awaitable, Callable
 from .arc_agent import ARCAgent
+from .codebase_explorer import CodebaseExplorer
 from .test_failure_verifier import TestFailureVerifier
 from .prompt_sections import (
     get_common_session_guidance,
@@ -16,6 +17,7 @@ class TestDrivenDeveloper(ARCAgent):
             agent_name="TestDrivenDeveloper",
             log_cb=log_cb
         )
+        self.codebase_explorer = CodebaseExplorer(log_cb)
         self.failure_verifier = TestFailureVerifier(log_cb)
         self._run_tests_budget: int | None = None
         self._run_tests_usage: Dict[str, int] | None = None
@@ -578,6 +580,61 @@ Rules:
             {"role": "user", "content": continue_message},
         ]
 
+    @staticmethod
+    def _build_initial_explorer_task(test_type: str) -> str:
+        if test_type == "E2E":
+            return (
+                "Localize the smallest implementation-owner, route, page, API, runtime-boundary, and relevant "
+                "test/setup file set for the current E2E batch. Prioritize the most likely edit targets and the next "
+                "few files worth reading before the main TDD loop starts."
+            )
+        if test_type == "Integration":
+            return (
+                "Localize the smallest implementation-owner, boundary, and setup files for the current Integration "
+                "test batch. Prioritize the most likely edit targets and the next few files worth reading."
+            )
+        return (
+            "Localize the smallest implementation-owner and adjacent boundary files for the current Unit test batch. "
+            "Prioritize the most likely edit targets and the next few files worth reading."
+        )
+
+    async def _run_initial_codebase_explorer(
+        self,
+        node_id: str,
+        test_files: List[str],
+        test_type: str,
+        preloaded_source: str | None = None,
+        previous_failure_summary: str = "",
+        scope_note: str = "",
+    ) -> dict[str, Any]:
+        extra_context_parts: list[str] = []
+        if test_files:
+            extra_context_parts.append(
+                "Target test files:\n" + json.dumps(test_files, indent=2, ensure_ascii=False)
+            )
+        if previous_failure_summary.strip():
+            extra_context_parts.append(
+                "Previous failure handoff:\n" + previous_failure_summary.strip()
+            )
+        if scope_note.strip():
+            extra_context_parts.append(
+                "Implementation scope guard:\n" + scope_note.strip()
+            )
+        focus_hints = [
+            f"Current test type: {test_type}",
+            "Prefer current-node owner files and the nearest failing boundary files.",
+            "Surface the most likely edit targets before the TDD session starts editing.",
+        ]
+        return await self.codebase_explorer.explore(
+            node_id=node_id,
+            task_brief=self._build_initial_explorer_task(test_type),
+            focus_hints=focus_hints,
+            preloaded_source=preloaded_source,
+            target_test_files=test_files,
+            extra_context="\n\n".join(extra_context_parts),
+            max_steps=8,
+        )
+
     def build_initial_messages(
         self,
         node_id: str,
@@ -586,6 +643,7 @@ Rules:
         preloaded_source: str = None,
         previous_failure_summary: str = "",
         scope_note: str = "",
+        explorer_report: dict[str, Any] | None = None,
     ) -> tuple:
         """Build the [system, user] messages and tools list without calling run().
         Returns (messages, tools) so the caller can use run_from_messages() or continue a session.
@@ -608,11 +666,15 @@ Rules:
         scope_context = ""
         if scope_note:
             scope_context = f"\n### Implementation Scope Guard\n{scope_note}\n"
+        explorer_context = ""
+        if explorer_report:
+            explorer_context = "\n" + CodebaseExplorer.format_report_block(explorer_report) + "\n"
 
         user_prompt = f"""
 ### Current Node Context
 Read this first. The current requirement payload below is the authoritative task input for node `{node_id}`.
 {dynamic_ctx}
+{explorer_context}
 {handoff_context}
 {scope_context}
 
@@ -622,6 +684,7 @@ Read this first. The current requirement payload below is the authoritative task
 **Implementation Strategy**:
 Implement the interfaces of the current node. Use the provided `<acceptance_gate>`, `<interfaces>`, `<test_file_cards>`, `<recent_failure_summary>`, and requirement context as the authoritative execution contract. Make the target tests pass without inventing a conflicting contract.
 The system will execute exactly this current test batch when you call `run_tests`.
+If `<codebase_explorer_report>` exists, use it as the initial file-localization map and only expand beyond it when direct evidence is missing or contradicted.
 Treat the provided requirement context and `<interfaces>` as the source for explicit routes, visible text, field labels, placeholders, messages, API literals, and auth semantics unless the current test file proves they need repair.
 Do not optimize for mocked green tests if the requirement expects a real runtime data flow. Prefer fixing the app code so the owned request, persistence, and render path actually works.
 Use a simple loop: implement, run `run_tests`, use the latest failing output plus any injected verifier report, inspect the next directly relevant files, make one minimal fix, then rerun.
@@ -640,6 +703,33 @@ When all target tests pass, output "IMPLEMENTED". The system will handle the fin
         from .tools import TOOL_REGISTRY
         tools = [TOOL_REGISTRY[n]["schema"] for n in self.get_tool_names() if n in TOOL_REGISTRY]
         return messages, tools
+
+    async def build_initial_messages_with_explorer(
+        self,
+        node_id: str,
+        test_files: List[str],
+        test_type: str,
+        preloaded_source: str = None,
+        previous_failure_summary: str = "",
+        scope_note: str = "",
+    ) -> tuple:
+        explorer_report = await self._run_initial_codebase_explorer(
+            node_id=node_id,
+            test_files=test_files,
+            test_type=test_type,
+            preloaded_source=preloaded_source,
+            previous_failure_summary=previous_failure_summary,
+            scope_note=scope_note,
+        )
+        return self.build_initial_messages(
+            node_id=node_id,
+            test_files=test_files,
+            test_type=test_type,
+            preloaded_source=preloaded_source,
+            previous_failure_summary=previous_failure_summary,
+            scope_note=scope_note,
+            explorer_report=explorer_report,
+        )
 
     def _record_failure_fingerprint(self, tool_result: str) -> None:
         exit_code = self._extract_exit_code(tool_result)
@@ -672,7 +762,7 @@ When all target tests pass, output "IMPLEMENTED". The system will handle the fin
         scope_note: str = "",
     ) -> str:
         """Backwards-compatible: build initial messages then run a new session."""
-        messages, tools = self.build_initial_messages(
+        messages, tools = await self.build_initial_messages_with_explorer(
             node_id=node_id,
             test_files=test_files,
             test_type=test_type,

@@ -64,6 +64,7 @@ def get_common_session_guidance() -> str:
         [
             "The user prompt begins with the current node payload and its dynamic context. Read that block first before interpreting the rest of the prompt.",
             "Start from `<requirement_focus>` and the prefetched node context. Treat explicit requirement text, scenarios, visual analysis, interfaces, and test handoff artifacts as stronger evidence than generic repo priors.",
+            "If `<codebase_explorer_report>` is present, use its likely owner files, reuse candidates, and next reads as your first localization pass unless direct file evidence disproves it.",
             "Prefer reusing existing interfaces and code before creating new boundaries.",
             "If you modify a reused interface or shared boundary, check the likely impact first.",
             "Before acting, form a compact working map: target behavior, likely owner files, reuse candidates, and hard constraints.",
@@ -76,6 +77,24 @@ def get_common_session_guidance() -> str:
     )
 
 
+def get_codebase_explorer_guidance() -> str:
+    return "\n\n".join(
+        [
+            _section(
+                "Exploration Strategy",
+                [
+                    "Solve file localization, not general understanding. Stop once the caller can safely continue with a small evidence set.",
+                    "Prefer this search ladder: prefetched file cards and interface relations -> targeted `glob` or `grep` in a known subtree -> `read_file` on 1-4 high-value files.",
+                    "Use `find_interface_impacts` when a reused boundary may be shared across nodes.",
+                    "When ownership is still unclear, inspect entrypoints, route files, providers, layouts, top-level pages, and test setup before leaf implementation files.",
+                    "Avoid broad repository rescans and repeated reads from uncertainty alone.",
+                ],
+            ),
+            get_using_your_tools_guidance(),
+        ]
+    )
+
+
 def get_interface_designer_guidance() -> str:
     return "\n\n".join(
         [
@@ -83,6 +102,7 @@ def get_interface_designer_guidance() -> str:
                 "Fast Codebase Understanding",
                 [
                     "Start from `<acceptance_gate>`, `<requirement_focus>`, `<scenarios>`, `<visual_reference>`, and the prefetched source file cards.",
+                    "If `<codebase_explorer_report>` exists, use it to localize route, page, layout, provider, API, and domain owners before doing your own additional search.",
                     "Identify existing route, page, layout, provider, API, and domain owners before inventing new interfaces.",
                     "If ownership is unclear, inspect entrypoints, route files, and top-level containers before reading leaf implementation details.",
                 ],
@@ -120,6 +140,7 @@ def get_test_generator_guidance() -> str:
                 "Fast Codebase Understanding",
                 [
                     "Start from `<acceptance_gate>`, `<interfaces>`, `<requirement_focus>`, `<scenarios>`, and source file cards. Treat them as the contract to test.",
+                    "If `<codebase_explorer_report>` exists, start from its localized owner files, nearby tests, and setup files before launching new searches.",
                     "Inspect existing test patterns near the owner files before inventing new test structure, fixtures, or selector strategy.",
                     "Prefer one primary file per layer or one file per coherent scenario group.",
                 ],
@@ -169,6 +190,7 @@ def get_tdd_guidance() -> str:
                 "Fast Codebase Understanding",
                 [
                     "Start from the current test batch, `<acceptance_gate>`, `<interfaces>`, `<test_file_cards>`, `<recent_failure_summary>`, and `<requirement_focus>`.",
+                    "If `<codebase_explorer_report>` exists, treat it as the initial file-localization map and only expand beyond it when direct evidence is missing or contradicted.",
                     "Identify one likely owner file and, if needed, one adjacent boundary file before editing.",
                     "Use the prefetched source and test file cards first; do not rediscover the whole repository unless the current evidence is insufficient.",
                 ],
