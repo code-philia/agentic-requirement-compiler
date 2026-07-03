@@ -4,7 +4,6 @@ from typing import Any, Awaitable, Callable
 
 import utils
 from agents.context_pipeline import context_pipeline
-from agents.tools.cli_tools import parse_test_results
 from app_types import create_app_type_handler
 from traceability.database import (
     clear_node_design_artifacts,
@@ -25,14 +24,10 @@ from workflow_phase_utils import (
     DEFAULT_TDD_TEST_BUDGET,
     build_base_node_session,
     build_group_handoff_summary,
-    build_non_leaf_convergence_summary,
-    build_non_leaf_scope_note,
     build_test_plan,
     canonicalize_test_id,
     classify_non_leaf_work,
     collect_test_files,
-    determine_non_leaf_result_state,
-    get_non_leaf_gate_failures,
     get_selected_test_types,
     map_statuses_from_batch_output,
     merge_req_ids,
@@ -414,9 +409,8 @@ class WorkflowPhaseRunner:
     # ----- Implementation phase -----
 
     async def run_implement_phase(self, node_id: str, requirement_data: dict[str, Any]) -> bool:
-        is_leaf = not bool(requirement_data.get("children_ids"))
         session = utils.load_node_session(node_id)
-        if not is_leaf and session.get("execution_mode") == "skipped_non_leaf":
+        if session.get("execution_mode") == "skipped_non_leaf":
             await self.log_cb(
                 "Compiler",
                 "Skipping IMPLEMENT for non-leaf node because DESIGN skipped this node entirely.",
@@ -438,179 +432,93 @@ class WorkflowPhaseRunner:
             await self.log_cb(
                 "TestDrivenDeveloper",
                 "IMPLEMENT phase requires designed interfaces, but none were found.",
-                "error",
+                "warning",
                 node_id,
             )
-            return False
 
         if not tests:
             await self.log_cb(
                 "TestDrivenDeveloper",
                 "No generated tests were found for this node. IMPLEMENT cannot complete without generated test artifacts.",
-                "error",
+                "warning",
                 node_id,
             )
-            self._update_node_session(
-                node_id,
-                {
-                    "phase_status": {"implement": "failed"},
-                    "tdd_handoff": {
-                        "last_test_type": "",
-                        "last_failed_output_summary": "",
-                        "modified_files": [],
-                        "root_cause_notes": ["No tests were generated for this node."],
-                    },
-                },
-            )
-            return False
-
-        if not is_leaf:
-            blocking_children = get_non_leaf_gate_failures(requirement_data)
-            if blocking_children:
-                await self.log_cb(
-                    "Compiler",
-                    "Parent done gate failed. Non-leaf IMPLEMENT requires every child node to finish successfully before parent integration validation can pass. Blocking children: "
-                    + ", ".join(blocking_children),
-                    "error",
-                    node_id,
-                )
-                self._update_node_session(
-                    node_id,
-                    {
-                        "phase_status": {"implement": "failed"},
-                        "tdd_handoff": {
-                            "last_test_type": "parent_done_gate",
-                            "last_failed_output_summary": "",
-                            "modified_files": [],
-                            "root_cause_notes": [f"Blocking child states: {', '.join(blocking_children)}"],
-                        },
-                    },
-                )
-                update_interface_implemented_status(node_id, False)
-                return False
-
-            design_mode = str(session.get("design_mode", "")).strip()
-            if design_mode not in {"non_leaf_full", "non_leaf_ui_only"}:
-                await self.log_cb(
-                    "Compiler",
-                    f"Unsupported non-leaf design mode `{design_mode}` for IMPLEMENT.",
-                    "error",
-                    node_id,
-                )
-                self._update_node_session(node_id, {"phase_status": {"implement": "failed"}})
-                return False
-
-            convergence_summary = build_non_leaf_convergence_summary(node_id, requirement_data)
-            audit_output, audit_messages = await self.interface_designer.audit_non_leaf_connectivity(
-                node_id=node_id,
-                interfaces=interfaces,
-                convergence_summary=convergence_summary,
-            )
-            audit_modified_files = extract_modified_files_from_messages(audit_messages)
-            if audit_modified_files:
-                context_pipeline.cache.invalidate_file_layers(node_id)
-            audit_says_no_changes = "NO_CHANGES_NEEDED" in (audit_output or "").upper()
-
-            precheck_output = await self._run_non_leaf_build_verification(node_id)
-            precheck_exit_code = parse_test_results(precheck_output).get("exit_code")
-
-            modified_files = list(audit_modified_files)
-            if not audit_says_no_changes or precheck_exit_code != 0:
-                _, convergence_messages = await self.interface_designer.converge_non_leaf(
-                    node_id=node_id,
-                    interfaces=interfaces,
-                    convergence_summary=convergence_summary,
-                )
-                modified_files = extract_modified_files_from_messages(convergence_messages)
-                if modified_files:
-                    context_pipeline.cache.invalidate_file_layers(node_id)
-                    await self.log_cb(
-                        "Compiler",
-                        f"Non-leaf convergence modified files: {', '.join(sorted(modified_files))}",
-                        None,
-                        node_id,
-                    )
-                else:
-                    await self.log_cb(
-                        "Compiler",
-                        "Non-leaf convergence completed without code changes.",
-                        None,
-                        node_id,
-                    )
-                build_output = await self._run_non_leaf_build_verification(node_id)
-                build_exit_code = parse_test_results(build_output).get("exit_code")
-                if build_exit_code != 0:
-                    await self.log_cb(
-                        "Compiler",
-                        "Non-leaf convergence build verification failed.",
-                        "error",
-                        node_id,
-                    )
-                    if utils.debug_logger:
-                        utils.debug_logger.log(f"NON_LEAF_BUILD[{node_id}]", build_output)
-                    update_interface_implemented_status(node_id, False)
-                    self._update_node_session(
-                        node_id,
-                        {
-                            "phase_status": {"implement": "failed"},
-                            "tdd_handoff": {
-                                "last_test_type": "non_leaf_build_verification",
-                                "last_failed_output_summary": summarize_batch_output(build_output),
-                                "modified_files": modified_files,
-                                "root_cause_notes": ["Build verification failed after parent integration convergence."],
-                            },
-                        },
-                    )
-                    return False
-            else:
-                await self.log_cb(
-                    "Compiler",
-                    "Non-leaf audit found the parent shell already wired. Proceeding directly to parent integration and browser validation.",
-                    None,
-                    node_id,
-                )
-
-            final_ok = await self._run_tdd_batches_for_node(
-                node_id=node_id,
-                tests=tests,
-                scope_note=build_non_leaf_scope_note(),
-                initial_failure_summary=convergence_summary,
-            )
-            update_interface_implemented_status(node_id, final_ok)
-            self._update_node_session(
-                node_id,
-                {
-                    "result_state": determine_non_leaf_result_state(requirement_data) if final_ok else "",
-                    "phase_status": {"implement": "completed" if final_ok else "failed"},
-                },
-            )
-            return final_ok
 
         final_ok = await self._run_tdd_batches_for_node(
             node_id=node_id,
             tests=tests,
         )
-        update_interface_implemented_status(node_id, final_ok)
+        if not final_ok:
+            update_interface_implemented_status(node_id, False)
+            self._update_node_session(
+                node_id,
+                {
+                    "phase_status": {"implement": "failed"},
+                },
+            )
+            return False
+
+        build_output = await self._run_build_verification(node_id)
+        if not self._build_verification_passed(build_output):
+            await self.log_cb(
+                "Compiler",
+                "Implementation build verification failed.",
+                "error",
+                node_id,
+            )
+            if utils.debug_logger:
+                utils.debug_logger.log(f"BUILD_VERIFICATION[{node_id}]", build_output)
+            update_interface_implemented_status(node_id, False)
+            self._update_node_session(
+                node_id,
+                {
+                    "phase_status": {"implement": "failed"},
+                    "recent_failure_summary": summarize_batch_output(build_output),
+                    "tdd_handoff": {
+                        "last_test_type": "build_verification",
+                        "last_failed_output_summary": summarize_batch_output(build_output),
+                        "modified_files": [],
+                        "root_cause_notes": ["Build verification failed after the node test batches passed."],
+                    },
+                },
+            )
+            return False
+
+        update_interface_implemented_status(node_id, True)
         self._update_node_session(
             node_id,
             {
-                "phase_status": {"implement": "completed" if final_ok else "failed"},
+                "phase_status": {"implement": "completed"},
+                "recent_failure_summary": "",
             },
         )
-        return final_ok
+        return True
 
     # ----- Persistence and execution helpers -----
 
-    async def _run_non_leaf_build_verification(self, node_id: str) -> str:
+    async def _run_build_verification(self, node_id: str) -> str:
         from agents.tools.cli_tools import run_build_impl
 
         await self.log_cb(
             "Compiler",
-            "Running parent integration build verification...",
+            "Running build verification for the current node...",
             None,
             node_id,
         )
         return await run_build_impl()
+
+    @staticmethod
+    def _build_verification_passed(build_output: str) -> bool:
+        exit_codes: list[int] = []
+        for line in (build_output or "").splitlines():
+            stripped = line.strip()
+            if not stripped.startswith("Exit Code:"):
+                continue
+            try:
+                exit_codes.append(int(stripped.split("Exit Code:", 1)[1].strip()))
+            except ValueError:
+                return False
+        return bool(exit_codes) and all(code == 0 for code in exit_codes)
 
     def _store_new_interfaces_from_tdd_output(self, node_id: str, implement_output: str) -> None:
         interfaces = extract_json_array_from_markdown(implement_output)
