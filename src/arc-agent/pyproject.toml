@@ -27,8 +27,8 @@ arc-agent = "arc_agent_cli:main"
 py-modules = [
   "agent_workflow",
   "arc_agent_cli",
-  "arcbench_compat",
   "main",
+  "runtime_sdk",
   "utils",
   "workflow_phase_utils",
   "workflow_phases",
@@ -37,7 +37,7 @@ include-package-data = true
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["agents", "agents.*", "app_types", "app_types.*", "traceability", "traceability.*", "templates", "templates.*"]
+include = ["agents", "agents.*", "app_types", "app_types.*", "arcbench_agent_runtime", "arcbench_agent_runtime.*", "traceability", "traceability.*", "templates", "templates.*"]
 namespaces = true
 
 [tool.setuptools.package-data]
