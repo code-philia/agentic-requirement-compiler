@@ -42,6 +42,7 @@ Rules:
 - For E2E failures involving persistence, explicitly check whether the suite created an isolated test database through the scaffold, whether the expected seed/reset happened, and whether the expected rows actually exist after the API call.
 - Consider environment and setup issues only when the output or config evidence points there.
 - Keep the conclusion light and structured. Do not force the result into a narrow error taxonomy.
+- In addition to causes, identify the smallest first repair goal and the most likely next edit/read targets when the evidence is strong enough.
 - Return exactly one JSON object in a `json` markdown block.
 
 {get_common_session_guidance()}
@@ -126,6 +127,8 @@ Do not edit anything. Gather the smallest sufficient evidence set, then return o
 {{
   "failure_phase": "startup_or_environment|page_entry_or_render|locator_resolution|submit_runtime_path|post_submit_assertion|other",
   "failure_summary": "one short grounded summary",
+  "single_fix_goal": "the smallest closed-loop fix to try first",
+  "likely_edit_targets": ["path/to/file"],
   "likely_causes": [
     {{
       "summary": "most likely cause",
@@ -144,6 +147,8 @@ Do not edit anything. Gather the smallest sufficient evidence set, then return o
 Rules for the JSON:
 - Keep it compact.
 - `failure_phase` is required for E2E batches and optional otherwise.
+- `single_fix_goal` should describe one smallest first repair, not a broad refactor plan.
+- `likely_edit_targets` should usually contain 0-4 concrete file paths when you have direct evidence.
 - `likely_causes` should usually contain 1-3 items.
 - Every cause must be backed by evidence you actually observed.
 - For E2E batches, make the notes concrete about which step was last confirmed, which step failed, and whether the blocker is in render/locator/API/DB/test-data state.

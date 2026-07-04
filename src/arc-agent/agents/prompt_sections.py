@@ -218,10 +218,10 @@ def get_tdd_guidance() -> str:
                 [
                     "Use the latest `run_tests` output as the source of truth.",
                     "After a failed `run_tests`, start from the injected independent failure-analysis report if present, then confirm or disprove it with the next directly relevant files.",
-                    "Turn each verifier handoff into exactly one active repair focus: current fingerprint, one smallest fix goal, and one small target file cluster.",
+                    "Treat each verifier handoff as a lightweight diagnosis of the current failing issue. Prioritize the latest issue first, and treat older failures as background unless the same fingerprint is still present.",
                     "Do not broad-scan or rerun immediately after a failure. Read the failing test and the nearest owner or boundary files first, then make one minimal fix.",
                     "If the same failure repeats, assume the current hypothesis is wrong or incomplete and change the evidence plan explicitly instead of patching neighboring files from inertia.",
-                    "When a failure fingerprint stays stable after an edit, prefer the smallest closed-loop fix in the focused file cluster, or escalate one layer outward to boundary wiring or runner/test environment.",
+                    "When a failure fingerprint stays stable after an edit, prefer replacing the hypothesis or escalating one layer outward to boundary wiring or runner/test environment instead of drifting across neighboring files.",
                     "For E2E failures, first classify the current failure phase before changing code: `startup_or_environment`, `page_entry_or_render`, `locator_resolution`, `submit_runtime_path`, `post_submit_assertion`, or `other`.",
                     "For Playwright E2E failures, reason step by step: identify the last confirmed Playwright step that passed, identify the exact next step that failed, and only debug that boundary first.",
                     "For `page_entry_or_render`, check route entry, page render, required visible text, and whether the expected form or container actually mounted.",

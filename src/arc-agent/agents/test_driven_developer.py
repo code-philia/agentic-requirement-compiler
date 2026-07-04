@@ -3,7 +3,6 @@ import re
 import os
 from typing import List, Dict, Any, Awaitable, Callable
 from .arc_agent import ARCAgent
-from .codebase_explorer import CodebaseExplorer
 from .test_failure_verifier import TestFailureVerifier
 from .prompt_sections import (
     get_common_session_guidance,
@@ -67,6 +66,7 @@ Rules:
 - The node is only done after the current batch passes and the code remains buildable under final system verification.
 - After a failed `run_tests`, use the latest failing output plus any injected independent failure-analysis report, then inspect only the next directly relevant files before the next edit or rerun.
 - Make one minimal contract-preserving fix at a time, then verify again with `run_tests`.
+- If the same failure fingerprint repeats after an edit, do not keep editing neighboring files in the same layer from momentum alone. Replace the hypothesis or escalate one layer outward using the evidence: implementation -> boundary wiring -> runner/test environment.
 - For features that own a UI -> API -> FUNC -> DB chain, make the real runtime path work. Do not satisfy the tests with sample rows, placeholder panels, mocked success branches, or fallback data that bypasses the owned path.
 - If the feature or tests use the database, extend the scaffold under `backend/src/database/` for runtime queries, seed data, and isolated test databases instead of creating parallel DB lifecycle code.
 - For Playwright E2E work, debug step by step: last passing browser step -> failing browser step -> frontend render/locator -> frontend API call -> backend route -> database side effect -> post-submit UI assertion.
@@ -142,9 +142,7 @@ Rules:
                     f"Do NOT retry from stale memory. Use the freshly injected file content below and issue a new minimal edit.\n\n"
                     f"{forced_context}"
                 )
-            return False, None
-
-        if tool_name == "read_file":
+        elif tool_name == "read_file":
             path = str(tool_args.get("path", "")).strip()
             if path:
                 self._edit_read_required_paths.discard(path)
@@ -212,12 +210,34 @@ Rules:
             self._pending_post_verifier_compaction = False
         return True, result
 
-    async def _on_assistant_message_before_tool_calls(
-        self,
-        assistant_text: str,
-        node_id: str | None = None,
-    ) -> None:
-        return None
+    def _build_ephemeral_user_message(self, node_id: str | None = None) -> str | None:
+        latest_failure = self._failure_history[-1] if self._failure_history else None
+        if not latest_failure:
+            return None
+
+        historical_failures = self._build_compact_historical_records()
+        historical_failures = [
+            item
+            for item in historical_failures
+            if str(item.get("fingerprint", "")).strip() != str(latest_failure.get("fingerprint", "")).strip()
+        ]
+        lines = [
+            "### Current Failure Priority",
+            "- Treat the latest failure as the active problem to fix. Historical failures are background only unless the same fingerprint is still present.",
+            f"- Current fingerprint: {latest_failure.get('fingerprint', '') or 'unknown'}",
+            f"- Current failure phase: {latest_failure.get('failure_phase', '') or 'n/a'}",
+            f"- Current failure summary: {latest_failure.get('failure_summary', '') or 'Read the latest failing output and verifier report first.'}",
+        ]
+        next_steps = latest_failure.get("recommended_next_steps") or []
+        if next_steps:
+            lines.append(f"- Current suggested next step: {next_steps[0]}")
+        if historical_failures:
+            lines.append("- Historical background:")
+            for item in historical_failures[-2:]:
+                lines.append(
+                    f"  - [{item.get('failure_phase', '') or 'n/a'}] {item.get('failure_summary', '') or item.get('fingerprint', '')}"
+                )
+        return "\n".join(lines)
 
     async def _get_stop_response_after_tool_call(
         self,
@@ -571,8 +591,8 @@ Rules:
         continue_message = (
             "Continue from the compact TDD state above. Preserve the initial system prompt and the initial node-context "
             "user prompt as the source of truth. Treat historical failure records as background only. Prioritize the "
-            "latest failure excerpt plus the verifier conclusion, focus on the current E2E failure phase when present, then inspect only the next directly relevant files "
-            "before making one minimal fix."
+            "latest failure excerpt plus the verifier conclusion. Focus on the currently detected issue first, then make one minimal fix. "
+            "If the same fingerprint repeats again, replace the hypothesis or escalate one layer outward instead of editing nearby files from inertia."
         )
         return [
             messages[0],
@@ -628,6 +648,10 @@ The system will execute exactly this current test batch when you call `run_tests
 Treat the provided requirement context and `<interfaces>` as the source for explicit routes, visible text, field labels, placeholders, messages, API literals, and auth semantics unless the current test file proves they need repair.
 Do not optimize for mocked green tests if the requirement expects a real runtime data flow. Prefer fixing the app code so the owned request, persistence, and render path actually works.
 Use a simple loop: implement, run `run_tests`, use the latest failing output plus any injected verifier report, inspect the next directly relevant files, make one minimal fix, then rerun.
+After verifier handoff, prioritize the currently detected issue first. Treat older failures as background unless the same fingerprint is still present.
+Explore broadly enough to cover the real failing layer before editing. If the batch evidence points to setup, runtime env, DB harness, startup, or shared wiring, inspect those files before touching nearby business code.
+Run exploration in rounds: batch independent `grep`/`glob`/`list_directory` calls, then batch the highest-value `read_file` calls, then summarize what you learned before continuing.
+After each exploration round, include these headings in plain text: `KNOWN_FACTS`, `FILES_READ`, `MISSING_EVIDENCE`, `NEXT_READS`, `EXPLORATION_DONE`.
 If this is an E2E batch, compare the failing Playwright spec with the raw Playwright output before deciding whether the minimal fix is in app code or the test file.
 If this is a Playwright E2E batch, stable selectors may come from `placeholder`, `label`, `name`, or `id`; if repeated visible text is ambiguous, it is valid to add stable local hooks in the implementation and use them in the test.
 If this is an E2E batch, classify the current failure phase first: `startup_or_environment`, `page_entry_or_render`, `locator_resolution`, `submit_runtime_path`, `post_submit_assertion`, or `other`.
@@ -685,7 +709,7 @@ When all target tests pass, output "IMPLEMENTED". The system will handle the fin
         scope_note: str = "",
     ) -> str:
         """Backwards-compatible: build initial messages then run a new session."""
-        messages, tools = await self.build_initial_messages_with_explorer(
+        messages, tools = self.build_initial_messages(
             node_id=node_id,
             test_files=test_files,
             test_type=test_type,
@@ -745,6 +769,8 @@ When all target tests pass, output "IMPLEMENTED". The system will handle the fin
         return {
             "failure_phase": self._classify_e2e_failure_phase(latest_test_output) if self._current_test_type == "E2E" else "",
             "failure_summary": "Independent failure analysis returned non-JSON output.",
+            "single_fix_goal": "Read the failing test file, then inspect the nearest owner implementation file.",
+            "likely_edit_targets": list(self._current_test_files[:2]),
             "likely_causes": [
                 {
                     "summary": "Unable to parse verifier result cleanly.",

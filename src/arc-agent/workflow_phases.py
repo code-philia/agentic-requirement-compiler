@@ -351,7 +351,7 @@ class WorkflowPhaseRunner:
             None,
             node_id,
         )
-        messages, tools = await self.test_generator.build_initial_messages_with_explorer(
+        messages, tools = self.test_generator.build_initial_messages(
             node_id=node_id,
             requirement_data=requirement_data,
             design_mode=design_mode,
