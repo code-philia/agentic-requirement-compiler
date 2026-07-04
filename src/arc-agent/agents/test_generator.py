@@ -174,9 +174,6 @@ Read this first. The current requirement payload below is the authoritative task
 Additional rules:
 - Cover the spec, not speculation.
 - Use the provided requirement context plus `<interfaces>` blocks as the authoritative contract for ownership, visible literals, routes, messages, field labels, and test focus.
-- Explore broadly enough to cover owner files, existing test patterns, setup files, and runtime scaffolds before writing tests. Do not assume the nearest test file pattern is sufficient if the feature depends on DB, auth, or startup wiring.
-- Run exploration in rounds: batch independent `grep`/`glob`/`list_directory` calls, then batch the highest-value `read_file` calls, then summarize what you learned before continuing.
-- After each exploration round, include these headings in plain text: `KNOWN_FACTS`, `FILES_READ`, `MISSING_EVIDENCE`, `NEXT_READS`, `EXPLORATION_DONE`.
 - Prefer one main test file per enabled layer, or one file per coherent scenario group when that is cleaner.
 - Do not write tests that assert parent-owned behavior outside this node's scope.
 - Keep the file count low and stable.

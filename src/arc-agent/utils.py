@@ -450,6 +450,27 @@ class PromptDumpLogger:
                     lines.append(json.dumps(content, indent=2, ensure_ascii=False))
                     lines.append("```")
 
+                tool_calls = message.get("tool_calls", [])
+                if tool_calls:
+                    lines.append("")
+                    lines.append("#### tool_calls")
+                    for call_index, tool_call in enumerate(tool_calls, start=1):
+                        if not isinstance(tool_call, dict):
+                            continue
+                        function_payload = tool_call.get("function", {}) or {}
+                        tool_name = str(function_payload.get("name", "") or "")
+                        tool_args = function_payload.get("arguments", "")
+                        lines.append("")
+                        lines.append(f"- Tool Call {call_index}: `{tool_name or 'unknown'}`")
+                        if isinstance(tool_args, str):
+                            lines.append("```json")
+                            lines.append(tool_args)
+                            lines.append("```")
+                        else:
+                            lines.append("```json")
+                            lines.append(json.dumps(tool_args, indent=2, ensure_ascii=False))
+                            lines.append("```")
+
             # lines.extend(["", "## Tools", "```json", json.dumps(tools, indent=2, ensure_ascii=False), "```"])
             # lines.extend(["", "## Full Request JSON", "```json", json.dumps(payload, indent=2, ensure_ascii=False), "```"])
             with open(path, "w", encoding="utf-8") as file:

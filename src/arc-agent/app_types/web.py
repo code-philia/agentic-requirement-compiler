@@ -69,18 +69,6 @@ async def _execute_web_test_command(
     except Exception as exc:
         return f"Execution failed: {str(exc)}"
 
-
-def _format_test_result(stdout: str, stderr: str, exit_code: int) -> str:
-    result = f"Exit Code: {exit_code}\n"
-    if stdout:
-        result += f"STDOUT:\n{stdout}\n"
-    if stderr:
-        result += f"STDERR:\n{stderr}\n"
-    if len(result) > 4000:
-        result = result[:2000] + "\n...[OUTPUT TRUNCATED]...\n" + result[-2000:]
-    return result
-
-
 def _extract_exit_code(command_output: str) -> int | None:
     for line in (command_output or "").splitlines():
         stripped = line.strip()

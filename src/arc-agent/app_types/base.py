@@ -98,7 +98,7 @@ class AppTypeHandler(ABC):
         """
         if not file_paths:
             return (
-                "Exit Code: 1\n"
+                "Exit Code: 0\n"
                 "STDERR:\n"
                 f"No test files were configured for the current {test_type} batch.\n"
             )

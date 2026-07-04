@@ -658,22 +658,6 @@ Treat the provided requirement context and `<interfaces>` as the source for expl
 Do not optimize for mocked green tests if the requirement expects a real runtime data flow. Prefer fixing the app code so the owned request, persistence, and render path actually works.
 Use a simple loop: implement, run `run_tests`, use the latest failing output plus any injected verifier report, inspect the next directly relevant files, make one minimal fix, then rerun.
 After verifier handoff, prioritize the currently detected issue first. Treat older failures as background unless the same fingerprint is still present.
-Explore broadly enough to cover the real failing layer before editing. If the batch evidence points to setup, runtime env, DB harness, startup, or shared wiring, inspect those files before touching nearby business code.
-Run exploration in rounds: batch independent `grep`/`glob`/`list_directory` calls, then batch the highest-value `read_file` calls, then summarize what you learned before continuing.
-After each exploration round, include these headings in plain text: `KNOWN_FACTS`, `FILES_READ`, `MISSING_EVIDENCE`, `NEXT_READS`, `EXPLORATION_DONE`.
-If this is an E2E batch, compare the failing Playwright spec with the raw Playwright output before deciding whether the minimal fix is in app code or the test file.
-If this is a Playwright E2E batch, stable selectors may come from `placeholder`, `label`, `name`, or `id`; if repeated visible text is ambiguous, it is valid to add stable local hooks in the implementation and use them in the test.
-If this is an E2E batch, classify the current failure phase first: `startup_or_environment`, `page_entry_or_render`, `locator_resolution`, `submit_runtime_path`, `post_submit_assertion`, or `other`.
-If this is an E2E batch, debug it in this order unless the output already proves an earlier blocker:
-1. Which Playwright step definitely passed last?
-2. Which exact next step failed?
-3. Did the frontend render the expected page, form, and controls for that step?
-4. Is the locator/assertion targeting the correct control using stable hooks such as `placeholder`, `label`, `name`, or `id`?
-5. If submit should happen, does the frontend call the correct API endpoint with the correct payload?
-6. Does the backend route/controller perform the correct DB read/write?
-7. Was an isolated test DB created/reset/seeded, and does it contain the expected data after the API call?
-8. Does the post-submit UI state, message, redirect, or rendered data match what the test asserts?
-If the failing flow depends on persistence and no isolated test DB exists yet, fix that through the existing scaffold before patching around the symptom in UI code.
 When all target tests pass, output "IMPLEMENTED". The system will handle the final build verification after your batch is green.
 """
         system_content = self.get_system_prompt()

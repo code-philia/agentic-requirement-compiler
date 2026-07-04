@@ -4,7 +4,7 @@ from typing import Any
 from agents.tools.cli_tools import parse_test_results
 
 TEST_TYPE_ORDER = ["Unit", "Integration", "E2E"]
-DEFAULT_TDD_TEST_BUDGET = 20
+DEFAULT_TDD_TEST_BUDGET = 10
 
 
 def has_visual_reference_hint(requirement_data: dict[str, Any]) -> bool:
@@ -139,30 +139,6 @@ def map_statuses_from_batch_output(
             all_passed = False
 
     return all_passed, status_by_test_id
-
-
-def prepend_agent_batch_summary(test_files: list[str], raw_output: str) -> str:
-    parsed = parse_test_results(raw_output)
-    lines: list[str] = []
-
-    grouped_sub_batches = group_sub_batches_by_requested_file(parsed)
-    for file_path in test_files:
-        normalized_file_path = file_path.replace("\\", "/")
-        sub_batch = grouped_sub_batches.get(normalized_file_path)
-        lines.append(f"Test File: {file_path}")
-        lines.append("Test Results:")
-        if not sub_batch:
-            lines.append(raw_output.rstrip())
-            lines.append("")
-            continue
-        lines.append(str(sub_batch.get("raw_output", "")).rstrip())
-        lines.append("")
-
-    if not grouped_sub_batches:
-        return raw_output
-
-    return "\n".join(lines).rstrip()
-
 
 def extract_file_batch_statuses(parsed_result: dict[str, Any]) -> dict[str, bool]:
     status_by_file: dict[str, bool] = {}

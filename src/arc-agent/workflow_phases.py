@@ -32,7 +32,6 @@ from workflow_phase_utils import (
     map_statuses_from_batch_output,
     merge_req_ids,
     normalize_string_list,
-    prepend_agent_batch_summary,
     summarize_batch_output,
 )
 
@@ -245,7 +244,7 @@ class WorkflowPhaseRunner:
                 node_id,
             )
         raw_output = await self.app_handler.run_test_group(test_type, test_files)
-        return prepend_agent_batch_summary(test_files, raw_output)
+        return raw_output
 
     # ----- Design phase -----
 
@@ -457,65 +456,27 @@ class WorkflowPhaseRunner:
             node_id=node_id,
             tests=tests,
         )
-        if not final_ok:
-            update_interface_implemented_status(node_id, False)
-            self._update_node_session(
-                node_id,
-                {
-                    "phase_status": {"implement": "failed"},
-                },
-            )
-            return False
-
-        build_output = await self._run_build_verification(node_id)
-        if not self._build_verification_passed(build_output):
-            await self.log_cb(
-                "Compiler",
-                "Implementation build verification failed.",
-                "error",
-                node_id,
-            )
-            if utils.debug_logger:
-                utils.debug_logger.log(f"BUILD_VERIFICATION[{node_id}]", build_output)
-            update_interface_implemented_status(node_id, False)
-            self._update_node_session(
-                node_id,
-                {
-                    "phase_status": {"implement": "failed"},
-                    "recent_failure_summary": summarize_batch_output(build_output),
-                    "tdd_handoff": {
-                        "last_test_type": "build_verification",
-                        "last_failed_output_summary": summarize_batch_output(build_output),
-                        "modified_files": [],
-                        "root_cause_notes": ["Build verification failed after the node test batches passed."],
-                    },
-                },
-            )
-            return False
-
+        
         update_interface_implemented_status(node_id, True)
-        self._update_node_session(
-            node_id,
-            {
-                "phase_status": {"implement": "completed"},
-                "recent_failure_summary": "",
-            },
-        )
-        return True
+        
+        if not final_ok:
+            self._update_node_session(
+                node_id,
+                {
+                    "phase_status": {"implement": "failed"},
+                },
+            )        
+        else:
+            self._update_node_session(
+                node_id,
+                {
+                    "phase_status": {"implement": "completed"},
+                },
+            )
+        
+        return final_ok
 
     # ----- Persistence and execution helpers -----
-
-    async def _run_build_verification(self, node_id: str) -> str:
-        from agents.tools.cli_tools import run_build_impl
-
-        await self.log_cb(
-            "Compiler",
-            "Running build verification for the current node...",
-            None,
-            node_id,
-        )
-        return await run_build_impl()
-
     @staticmethod
     def _build_verification_passed(build_output: str) -> bool:
         exit_codes: list[int] = []

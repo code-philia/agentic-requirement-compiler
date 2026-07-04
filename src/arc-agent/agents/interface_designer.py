@@ -896,9 +896,6 @@ Work in this order:
 
 Execution rules:
 - This is a code-writing session, but your final response must be only the strict structured design bundle JSON.
-- Explore broadly enough to find the real ownership layer before editing. If the obvious leaf file does not fully explain the task, inspect entrypoints, routes, layouts, providers, reusable APIs, DB scaffolds, and nearby tests or setup files.
-- Run exploration in rounds: batch independent `grep`/`glob`/`list_directory` calls, then batch the highest-value `read_file` calls, then summarize what you learned before continuing.
-- After each exploration round, include these headings in plain text: `KNOWN_FACTS`, `FILES_READ`, `MISSING_EVIDENCE`, `NEXT_READS`, `EXPLORATION_DONE`.
 - First understand and inspect the most relevant evidence, then edit code, then summarize the landed interfaces.
 - If `<visual_reference>` exists, it is a primary UI contract for this node.
 - For every current-node UI interface, land real UI code now. Do not leave TODO-only shells, placeholder divs, or interface-only JSON.
@@ -912,7 +909,6 @@ Execution rules:
 - Reuse and minimally edit existing files when possible. If a target file already exists, read it first and use `edit_file`.
 - Do not use `write_file` on an existing file in this step.
 - Call `run_build` once after landing code when you made code changes.
-- When several reads are independent, batch them in the same turn.
 - If you already know enough to name the smallest target edit file, stop reading and edit it.
 
 When finished, return exactly one JSON object in a `json` markdown block with this schema:
