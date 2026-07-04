@@ -228,9 +228,14 @@ Rules:
             f"- Current failure phase: {latest_failure.get('failure_phase', '') or 'n/a'}",
             f"- Current failure summary: {latest_failure.get('failure_summary', '') or 'Read the latest failing output and verifier report first.'}",
         ]
-        next_steps = latest_failure.get("recommended_next_steps") or []
-        if next_steps:
-            lines.append(f"- Current suggested next step: {next_steps[0]}")
+        repair_suggestions = [
+            str(item).strip()
+            for item in (latest_failure.get("repair_suggestions") or [])[:3]
+            if str(item).strip()
+        ]
+        if repair_suggestions:
+            lines.append("- Current repair suggestions:")
+            lines.extend(f"  - {item}" for item in repair_suggestions)
         if historical_failures:
             lines.append("- Historical background:")
             for item in historical_failures[-2:]:
@@ -483,9 +488,9 @@ Rules:
                 for item in (verifier_report.get("likely_causes") or [])[:3]
                 if isinstance(item, dict) and str(item.get("summary", "")).strip()
             ],
-            "recommended_next_steps": [
+            "repair_suggestions": [
                 str(item).strip()
-                for item in (verifier_report.get("recommended_next_steps") or [])[:3]
+                for item in (verifier_report.get("repair_suggestions") or [])[:3]
                 if str(item).strip()
             ],
             "latest_test_output_excerpt": self._summarize_test_output(latest_test_output),
@@ -568,7 +573,7 @@ Rules:
                 "failure_phase": latest_failure.get("failure_phase", ""),
                 "failure_summary": latest_failure.get("failure_summary", ""),
                 "likely_cause_summaries": latest_failure.get("likely_cause_summaries", []),
-                "recommended_next_steps": latest_failure.get("recommended_next_steps", []),
+                "repair_suggestions": latest_failure.get("repair_suggestions", []),
                 "latest_test_output_excerpt": latest_failure.get("latest_test_output_excerpt", ""),
                 "verifier_conclusion": latest_verifier_report,
             },
@@ -578,8 +583,8 @@ Rules:
                 "changed_files": recent_changed_files,
             },
             "next_action": (
-                latest_failure.get("recommended_next_steps", [])[0]
-                if latest_failure.get("recommended_next_steps")
+                latest_failure.get("repair_suggestions", [])[0]
+                if latest_failure.get("repair_suggestions")
                 else "Read the failing test and the nearest owner file before the next minimal fix."
             ),
         }
@@ -738,6 +743,45 @@ When all target tests pass, output "IMPLEMENTED". The system will handle the fin
                     return None
         return None
 
+    @staticmethod
+    def _normalize_verifier_report(report: dict[str, Any]) -> dict[str, Any]:
+        normalized_causes: list[dict[str, Any]] = []
+        for item in (report.get("likely_causes") or [])[:3]:
+            if not isinstance(item, dict):
+                continue
+            summary = str(item.get("summary", "") or "").strip()
+            if not summary:
+                continue
+            evidence = [
+                str(entry).strip()
+                for entry in (item.get("evidence") or [])[:3]
+                if str(entry).strip()
+            ]
+            normalized_causes.append(
+                {
+                    "summary": summary,
+                    "evidence": evidence,
+                }
+            )
+
+        repair_suggestions = [
+            str(item).strip()
+            for item in (report.get("repair_suggestions") or [])[:3]
+            if str(item).strip()
+        ]
+        if not repair_suggestions:
+            repair_suggestions = [
+                "Read the failing test file and the nearest owner implementation file.",
+                "Confirm the current failing boundary with direct file evidence before the next edit.",
+            ]
+
+        return {
+            "failure_phase": str(report.get("failure_phase", "") or "").strip(),
+            "failure_summary": str(report.get("failure_summary", "") or "").strip(),
+            "likely_causes": normalized_causes,
+            "repair_suggestions": repair_suggestions,
+        }
+
     async def _run_failure_verifier_session(
         self,
         node_id: str | None,
@@ -763,28 +807,24 @@ When all target tests pass, output "IMPLEMENTED". The system will handle the fin
         )
         parsed = self._extract_json_object(report_text or "")
         if isinstance(parsed, dict):
-            if self._current_test_type == "E2E" and not str(parsed.get("failure_phase", "")).strip():
-                parsed["failure_phase"] = self._classify_e2e_failure_phase(latest_test_output)
-            return parsed
-        return {
+            normalized = self._normalize_verifier_report(parsed)
+            if self._current_test_type == "E2E" and not normalized["failure_phase"]:
+                normalized["failure_phase"] = self._classify_e2e_failure_phase(latest_test_output)
+            return normalized
+        return self._normalize_verifier_report({
             "failure_phase": self._classify_e2e_failure_phase(latest_test_output) if self._current_test_type == "E2E" else "",
             "failure_summary": "Independent failure analysis returned non-JSON output.",
-            "single_fix_goal": "Read the failing test file, then inspect the nearest owner implementation file.",
-            "likely_edit_targets": list(self._current_test_files[:2]),
             "likely_causes": [
                 {
                     "summary": "Unable to parse verifier result cleanly.",
                     "evidence": ["Raw verifier output was not valid JSON."],
-                    "repair_options": ["Review the latest failing output and the failing test file directly."],
                 }
             ],
-            "requirement_alignment_notes": [],
-            "test_asset_notes": [],
-            "environment_notes": [],
-            "implementation_notes": [],
-            "recommended_next_steps": ["Read the failing test file, then inspect the nearest owner implementation file."],
-            "confidence": "low",
-        }
+            "repair_suggestions": [
+                "Read the failing test file and the nearest owner implementation file.",
+                "Confirm the current failing boundary with direct file evidence before the next edit.",
+            ],
+        })
 
     @staticmethod
     def _format_verifier_report(report: dict[str, Any]) -> str:

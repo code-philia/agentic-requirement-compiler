@@ -25,15 +25,15 @@ class TestFailureVerifier(ARCAgent):
     ],
     outputs=[
         "A compact explanation of the most likely failure causes grounded in direct evidence.",
-        "Notes on whether the failure more likely comes from test logic, locator/assertion drift, environment/setup drift, or implementation behavior, without forcing a rigid taxonomy.",
-        "Concrete next repair options and the next files the main TDD session should inspect or edit.",
+        "An indication of the current failure phase when the batch is E2E.",
+        "A list of concrete repair suggestions for the main TDD session.",
     ],
 )}
 
 Rules:
 - This is a read-only evidence session. Do not modify files.
 - Start from the provided node context, target test code, and latest failing output.
-- Prefer direct evidence over speculation. If you lack proof, say that confidence is limited.
+- Prefer direct evidence over speculation. If you lack proof, say so briefly in the cause summary or evidence.
 - Check whether the failing test still matches the requirement and interfaces before blaming the implementation.
 - For E2E failures, explicitly consider whether locators, visible text expectations, routing assumptions, or environment startup assumptions are stale.
 - For Playwright E2E failures, treat `placeholder`, `label`, `name`, and `id` as valid stable locator sources. If repeated text makes a locator ambiguous, consider whether the implementation should expose stable local hooks instead of forcing text-only matching.
@@ -42,7 +42,6 @@ Rules:
 - For E2E failures involving persistence, explicitly check whether the suite created an isolated test database through the scaffold, whether the expected seed/reset happened, and whether the expected rows actually exist after the API call.
 - Consider environment and setup issues only when the output or config evidence points there.
 - Keep the conclusion light and structured. Do not force the result into a narrow error taxonomy.
-- In addition to causes, identify the smallest first repair goal and the most likely next edit/read targets when the evidence is strong enough.
 - Return exactly one JSON object in a `json` markdown block.
 
 {get_common_session_guidance()}
@@ -127,33 +126,26 @@ Do not edit anything. Gather the smallest sufficient evidence set, then return o
 {{
   "failure_phase": "startup_or_environment|page_entry_or_render|locator_resolution|submit_runtime_path|post_submit_assertion|other",
   "failure_summary": "one short grounded summary",
-  "single_fix_goal": "the smallest closed-loop fix to try first",
-  "likely_edit_targets": ["path/to/file"],
   "likely_causes": [
     {{
       "summary": "most likely cause",
-      "evidence": ["direct evidence"],
-      "repair_options": ["likely repair path"]
+      "evidence": ["direct evidence"]
     }}
   ],
-  "requirement_alignment_notes": ["whether the test still matches the requirement/interfaces"],
-  "test_asset_notes": ["locator/assertion/setup concerns if any"],
-  "environment_notes": ["environment or startup concerns if any"],
-  "implementation_notes": ["implementation or wiring concerns if any"],
-  "recommended_next_steps": ["what the main TDD session should do next"],
-  "confidence": "low|medium|high"
+  "repair_suggestions": [
+    "first concrete repair step",
+    "second concrete repair step if needed"
+  ]
 }}
 
 Rules for the JSON:
 - Keep it compact.
 - `failure_phase` is required for E2E batches and optional otherwise.
-- `single_fix_goal` should describe one smallest first repair, not a broad refactor plan.
-- `likely_edit_targets` should usually contain 0-4 concrete file paths when you have direct evidence.
 - `likely_causes` should usually contain 1-3 items.
 - Every cause must be backed by evidence you actually observed.
+- `repair_suggestions` should usually contain 1-3 concrete repair steps, ordered from highest-value first.
 - For E2E batches, make the notes concrete about which step was last confirmed, which step failed, and whether the blocker is in render/locator/API/DB/test-data state.
 - If you suspect the test itself is wrong, say why in requirement-facing terms.
-- If no environment issue is evidenced, keep `environment_notes` empty.
 - Do not append prose after the JSON block.
 """
 
