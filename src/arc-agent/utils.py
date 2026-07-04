@@ -436,10 +436,33 @@ class PromptDumpLogger:
                 "",
                 "## Messages",
             ]
+            tool_call_map = {}
             for index, message in enumerate(messages, start=1):
                 role = str(message.get("role", "unknown"))
                 lines.append("")
                 lines.append(f"### {index}. `{role}`")
+                if role == "tool":
+                    tool_call_id = str(message.get("tool_call_id", "") or "")
+                    tool_name = str(message.get("name", "") or "")
+                    if tool_call_id:
+                        lines.append(f"- Tool Call ID: `{tool_call_id}`")
+                    if tool_name:
+                        lines.append(f"- Tool Name: `{tool_name}`")
+                    linked_call = tool_call_map.get(tool_call_id)
+                    if linked_call:
+                        linked_name = str(linked_call.get("name", "") or "")
+                        linked_args = linked_call.get("arguments", "")
+                        if linked_name and linked_name != tool_name:
+                            lines.append(f"- Linked Tool Use Name: `{linked_name}`")
+                        lines.append("- Linked Tool Use Arguments:")
+                        if isinstance(linked_args, str):
+                            lines.append("```json")
+                            lines.append(linked_args)
+                            lines.append("```")
+                        else:
+                            lines.append("```json")
+                            lines.append(json.dumps(linked_args, indent=2, ensure_ascii=False))
+                            lines.append("```")
                 content = message.get("content", "")
                 if isinstance(content, str):
                     lines.append("```text")
@@ -457,11 +480,19 @@ class PromptDumpLogger:
                     for call_index, tool_call in enumerate(tool_calls, start=1):
                         if not isinstance(tool_call, dict):
                             continue
+                        tool_call_id = str(tool_call.get("id", "") or "")
                         function_payload = tool_call.get("function", {}) or {}
                         tool_name = str(function_payload.get("name", "") or "")
                         tool_args = function_payload.get("arguments", "")
+                        if tool_call_id:
+                            tool_call_map[tool_call_id] = {
+                                "name": tool_name,
+                                "arguments": tool_args,
+                            }
                         lines.append("")
                         lines.append(f"- Tool Call {call_index}: `{tool_name or 'unknown'}`")
+                        if tool_call_id:
+                            lines.append(f"  ID: `{tool_call_id}`")
                         if isinstance(tool_args, str):
                             lines.append("```json")
                             lines.append(tool_args)

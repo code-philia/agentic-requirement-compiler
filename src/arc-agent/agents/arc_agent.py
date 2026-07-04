@@ -456,7 +456,7 @@ Output from {tool_name}:
                     display_result = display_result[:500] + f"\n... [result truncated, total {len(tool_result_str)} chars]"
                 await self._log(f"Tool `{tool_name}` result:\n{display_result}", node_id=node_id)
             if utils.debug_logger:
-                utils.debug_logger.log(f"TOOL_RESULT[{tool_name}]", tool_result_str)
+                utils.debug_logger.log(f"TOOL_RESULT[{tool_name}#{tool_call_id}]", tool_result_str)
 
         messages.append({
             "role": "tool",
