@@ -5,6 +5,7 @@ import sys
 import asyncio
 import subprocess
 import signal
+import hashlib
 
 from typing import Awaitable, Callable
 
@@ -28,7 +29,12 @@ async def run_npm_install(target_dir: str, log_cb: Callable[..., Awaitable[None]
         await log_cb("System", f"NPM install error: {str(exc)}")
 
 
-async def _execute_web_test_command(command: str, cwd: str, timeout: float = 60.0) -> str:
+async def _execute_web_test_command(
+    command: str,
+    cwd: str,
+    timeout: float = 60.0,
+    extra_env: dict[str, str] | None = None,
+) -> str:
     process = None
     try:
         process = await asyncio.create_subprocess_shell(
@@ -41,6 +47,7 @@ async def _execute_web_test_command(command: str, cwd: str, timeout: float = 60.
                 "PYTHONIOENCODING": "utf-8",
                 "JAVA_TOOL_OPTIONS": "-Dfile.encoding=UTF-8",
                 **build_web_runtime_env(),
+                **(extra_env or {}),
             },
         )
         stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=timeout)
@@ -586,6 +593,26 @@ def _resolve_backend_start_command(backend_path: str) -> str | None:
     return None
 
 
+def _slugify_identifier(value: str) -> str:
+    normalized = re.sub(r"[^a-z0-9]+", "-", str(value or "").strip().lower()).strip("-")
+    return normalized or "playwright-e2e"
+
+
+def _build_e2e_runtime_env(workspace_path: str, targets: list[str]) -> dict[str, str]:
+    normalized_targets = [target.replace("\\", "/").strip() for target in targets if target and str(target).strip()]
+    suite_label = _slugify_identifier("-".join(normalized_targets) or "playwright-e2e")
+    suite_hash = hashlib.sha1("\n".join(normalized_targets or ["playwright-e2e"]).encode("utf-8")).hexdigest()[:10]
+    backend_path = os.path.join(workspace_path, "backend")
+    e2e_db_root = os.path.join(backend_path, ".arc-test-db")
+    e2e_db_path = os.path.abspath(os.path.join(e2e_db_root, f"{suite_label}-{suite_hash}.sqlite"))
+    return {
+        **build_web_runtime_env(),
+        "ARC_DB_FILE": e2e_db_path,
+        "ARC_E2E_DB_PATH": e2e_db_path,
+        "ARC_E2E_DB_LABEL": suite_label,
+    }
+
+
 async def _build_frontend_dist(workspace_path: str) -> tuple[bool, str]:
     frontend_path = os.path.join(workspace_path, "frontend")
     frontend_build_output = await _execute_web_test_command(
@@ -608,17 +635,21 @@ async def _build_frontend_dist(workspace_path: str) -> tuple[bool, str]:
     )
 
 
-async def _prepare_e2e_database(workspace_path: str) -> tuple[bool, str]:
+async def _prepare_e2e_database(workspace_path: str, runtime_env: dict[str, str]) -> tuple[bool, str]:
     backend_path = os.path.join(workspace_path, "backend")
     prepare_output = await _execute_web_test_command(
         "npm run db:prepare:e2e",
         cwd=backend_path,
         timeout=60.0,
+        extra_env=runtime_env,
     )
     return _extract_exit_code(prepare_output) == 0, prepare_output
 
 
-async def _start_backend_runtime(workspace_path: str) -> tuple[asyncio.subprocess.Process | None, str, str, str]:
+async def _start_backend_runtime(
+    workspace_path: str,
+    runtime_env: dict[str, str],
+) -> tuple[asyncio.subprocess.Process | None, str, str, str]:
     backend_path = os.path.join(workspace_path, "backend")
     start_command = _resolve_backend_start_command(backend_path)
     if not start_command:
@@ -644,7 +675,7 @@ async def _start_backend_runtime(workspace_path: str) -> tuple[asyncio.subproces
             stderr=asyncio.subprocess.DEVNULL,
             env={
                 **os.environ,
-                **build_web_runtime_env(),
+                **runtime_env,
             },
         )
     except Exception as exc:
@@ -746,9 +777,14 @@ class WebAppType(AppTypeHandler):
         backend_startup_detail = ""
         backend_instance_fingerprint = ""
         backend_cleanup_note = ""
+        e2e_runtime_env: dict[str, str] = {}
         result_body = ""
 
         if normalized_type == "e2e":
+            e2e_runtime_env = _build_e2e_runtime_env(
+                self.workspace_path,
+                [execution.get("resolved_test_file", "")],
+            )
             build_ok, frontend_build_output = await _build_frontend_dist(self.workspace_path)
             if not build_ok:
                 return _prepend_test_execution_header(
@@ -757,12 +793,16 @@ class WebAppType(AppTypeHandler):
                     f"=== Frontend Build ===\n{frontend_build_output}",
                 )
 
-            database_ready, database_prepare_output = await _prepare_e2e_database(self.workspace_path)
+            database_ready, database_prepare_output = await _prepare_e2e_database(
+                self.workspace_path,
+                e2e_runtime_env,
+            )
             if not database_ready:
                 return _prepend_test_execution_header(
                     execution,
                     "E2E database preparation failed before backend startup.\n\n"
                     f"=== Frontend Build ===\n{frontend_build_output}\n\n"
+                    f"=== E2E Runtime Env ===\nDB Path: {e2e_runtime_env.get('ARC_E2E_DB_PATH', 'unknown')}\n\n"
                     f"=== Database Prepare ===\n{database_prepare_output}",
                 )
 
@@ -771,22 +811,29 @@ class WebAppType(AppTypeHandler):
                 backend_start_command,
                 backend_startup_detail,
                 backend_instance_fingerprint,
-            ) = await _start_backend_runtime(self.workspace_path)
+            ) = await _start_backend_runtime(self.workspace_path, e2e_runtime_env)
             if backend_process is None:
                 return _prepend_test_execution_header(
                     execution,
                     "Failed to start backend server for E2E testing.\n\n"
                     f"=== Frontend Build ===\n{frontend_build_output}\n\n"
                     f"=== Database Prepare ===\n{database_prepare_output}\n\n"
+                    f"=== E2E Runtime Env ===\nDB Path: {e2e_runtime_env.get('ARC_E2E_DB_PATH', 'unknown')}\n\n"
                     f"=== Backend Runtime Command ===\n{backend_start_command or 'Unavailable'}\n\n"
                     f"=== Backend Runtime Error ===\n{backend_startup_detail or 'No startup detail recorded.'}\n",
                 )
 
         try:
-            result_body = await _execute_web_test_command(execution["command"], cwd=execution["working_directory"])
+            result_body = await _execute_web_test_command(
+                execution["command"],
+                cwd=execution["working_directory"],
+                extra_env=e2e_runtime_env if normalized_type == "e2e" else None,
+            )
             if normalized_type == "e2e":
                 result_body = (
                     f"=== Frontend Build ===\n{frontend_build_output}\n\n"
+                    f"=== E2E Runtime Env ===\nDB Path: {e2e_runtime_env.get('ARC_E2E_DB_PATH', 'unknown')}\n"
+                    f"DB Label: {e2e_runtime_env.get('ARC_E2E_DB_LABEL', 'unknown')}\n\n"
                     f"=== Database Prepare ===\n{database_prepare_output}\n\n"
                     f"=== Backend Runtime ===\nCommand: {backend_start_command}\n"
                     f"Port: {get_web_port()}\n"
@@ -881,12 +928,20 @@ class WebAppType(AppTypeHandler):
                 f"=== Frontend Build ===\n{frontend_build_output}",
             )
 
-        database_ready, database_prepare_output = await _prepare_e2e_database(self.workspace_path)
+        e2e_runtime_env = _build_e2e_runtime_env(
+            self.workspace_path,
+            execution.get("resolved_targets", []),
+        )
+        database_ready, database_prepare_output = await _prepare_e2e_database(
+            self.workspace_path,
+            e2e_runtime_env,
+        )
         if not database_ready:
             return _prepend_group_execution_header(
                 execution,
                 "E2E database preparation failed before backend startup.\n\n"
                 f"=== Frontend Build ===\n{frontend_build_output}\n\n"
+                f"=== E2E Runtime Env ===\nDB Path: {e2e_runtime_env.get('ARC_E2E_DB_PATH', 'unknown')}\n\n"
                 f"=== Database Prepare ===\n{database_prepare_output}",
             )
 
@@ -902,13 +957,14 @@ class WebAppType(AppTypeHandler):
                 backend_start_command,
                 backend_startup_detail,
                 backend_instance_fingerprint,
-            ) = await _start_backend_runtime(self.workspace_path)
+            ) = await _start_backend_runtime(self.workspace_path, e2e_runtime_env)
             if backend_process is None:
                 return _prepend_group_execution_header(
                     execution,
                     "Exit Code: 1\n\n"
                     f"=== Frontend Build ===\n{frontend_build_output}\n\n"
                     f"=== Database Prepare ===\n{database_prepare_output}\n\n"
+                    f"=== E2E Runtime Env ===\nDB Path: {e2e_runtime_env.get('ARC_E2E_DB_PATH', 'unknown')}\n\n"
                     f"=== Backend Runtime Command ===\n{backend_start_command or 'Unavailable'}\n\n"
                     f"STDERR:\n{backend_startup_detail or 'No startup detail recorded.'}\n",
                 )
@@ -920,6 +976,7 @@ class WebAppType(AppTypeHandler):
                 playwright_command,
                 cwd=execution["working_directory"],
                 timeout=120.0,
+                extra_env=e2e_runtime_env,
             )
             playwright_exit_code = _extract_exit_code(playwright_result)
             if playwright_exit_code is None:
@@ -927,6 +984,8 @@ class WebAppType(AppTypeHandler):
             body = (
                 f"Exit Code: {playwright_exit_code}\n\n"
                 f"=== Frontend Build ===\n{frontend_build_output}\n\n"
+                f"=== E2E Runtime Env ===\nDB Path: {e2e_runtime_env.get('ARC_E2E_DB_PATH', 'unknown')}\n"
+                f"DB Label: {e2e_runtime_env.get('ARC_E2E_DB_LABEL', 'unknown')}\n\n"
                 f"=== Database Prepare ===\n{database_prepare_output}\n\n"
                 f"=== Backend Runtime ===\nCommand: {backend_start_command}\n"
                 f"Port: {get_web_port()}\n\n"
