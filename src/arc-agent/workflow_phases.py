@@ -5,20 +5,7 @@ from typing import Any, Awaitable, Callable
 import utils
 from agents.context_pipeline import context_pipeline
 from app_types import create_app_type_handler
-from traceability.database import (
-    clear_node_design_artifacts,
-    get_requirement_by_id,
-    get_interface_by_id,
-    get_interfaces_by_req_id,
-    get_tests_by_req_id,
-    insert_call_edge,
-    insert_interface,
-    insert_test,
-    update_interface_implemented,
-    update_interface_implemented_status,
-    update_interface_req_ids,
-    update_test_pass_statuses,
-)
+from runtime_sdk import get_runtime
 from utils import extract_json_array_from_markdown, extract_modified_files_from_messages
 from workflow_phase_utils import (
     DEFAULT_TDD_TEST_BUDGET,
@@ -63,6 +50,10 @@ class WorkflowPhaseRunner:
             interface_designer=interface_designer,
             log_cb=log_cb,
         )
+
+    @property
+    def traceability(self):
+        return get_runtime().traceability
 
     def _update_node_session(self, node_id: str, patch: dict[str, Any]) -> dict[str, Any]:
         session = utils.merge_node_session(node_id, patch)
@@ -165,7 +156,7 @@ class WorkflowPhaseRunner:
                     node_id,
                 )
 
-            update_test_pass_statuses(group_statuses)
+            self.traceability.set_test_pass_statuses(group_statuses)
             failure_summary = ""
             if not group_passed:
                 raw_failure_summary = summarize_batch_output(latest_run_tests_result or "")
@@ -218,7 +209,7 @@ class WorkflowPhaseRunner:
 
         final_statuses = {
             str(test.get("test_id", "")).strip(): test.get("passed")
-            for test in get_tests_by_req_id(node_id)
+            for test in self.traceability.list_tests(req_id=node_id)
             if str(test.get("test_id", "")).strip()
         }
         return bool(final_statuses) and all(value is True for value in final_statuses.values())
@@ -288,7 +279,7 @@ class WorkflowPhaseRunner:
             os.path.dirname(os.path.abspath(self.requirement_path)),
             requirement_data,
         )
-        requirement_data = get_requirement_by_id(node_id) or requirement_data
+        requirement_data = self.traceability.get_requirement(node_id) or requirement_data
 
         await self.log_cb(
             "InterfaceDesigner",
@@ -313,7 +304,7 @@ class WorkflowPhaseRunner:
             )
             return False
 
-        clear_node_design_artifacts(node_id)
+        self.traceability.clear_node_design_artifacts(node_id)
         if interfaces:
             self._store_interfaces(node_id, interfaces)
 
@@ -434,8 +425,8 @@ class WorkflowPhaseRunner:
             },
         )
 
-        interfaces = get_interfaces_by_req_id(node_id)
-        tests = get_tests_by_req_id(node_id)
+        interfaces = self.traceability.list_interfaces(req_id=node_id)
+        tests = self.traceability.list_tests(req_id=node_id)
         if not interfaces:
             await self.log_cb(
                 "TestDrivenDeveloper",
@@ -457,7 +448,10 @@ class WorkflowPhaseRunner:
             tests=tests,
         )
         
-        update_interface_implemented_status(node_id, True)
+        for interface in interfaces:
+            interface_id = str(interface.get("interface_id") or "").strip()
+            if interface_id:
+                self.traceability.set_interface_implemented(interface_id, True)
         
         if not final_ok:
             self._update_node_session(
@@ -507,19 +501,19 @@ class WorkflowPhaseRunner:
                 continue
 
             reuse = bool(interface.get("reuse"))
-            existing = get_interface_by_id(interface_id)
+            existing = self.traceability.get_interface(interface_id)
             req_ids = merge_req_ids(existing, node_id)
 
             if reuse and existing:
-                update_interface_req_ids(interface_id, node_id)
+                self.traceability.update_interface_fields(interface_id, req_ids=req_ids)
             else:
-                insert_interface(
+                self.traceability.upsert_interface(
                     interface_id=interface_id,
                     req_ids=req_ids,
                     type=str(interface.get("type", "")).strip(),
                     content=json.dumps(interface, ensure_ascii=False),
-                    file_path=str(interface.get("file_path", "")).strip(),
-                    first_line=str(interface.get("first_line", "")).strip(),
+                    file_path=str(interface.get("file_path", "")).strip() or None,
+                    first_line=str(interface.get("first_line", "")).strip() or None,
                     implemented=bool(existing.get("implemented")) if existing else False,
                     callers=normalize_string_list(interface.get("callers")),
                     callees=normalize_string_list(interface.get("callees")),
@@ -577,24 +571,24 @@ class WorkflowPhaseRunner:
                 )
             generated_ids.add(test_id)
 
-            insert_test(
+            self.traceability.upsert_test(
                 test_id=test_id,
                 req_id=node_id,
                 interface_ids=normalize_string_list(test.get("interface_ids")),
                 type=test_type,
-                file_path=file_path,
-                first_line=str(test.get("first_line", "")).strip(),
+                file_path=file_path or None,
+                first_line=str(test.get("first_line", "")).strip() or None,
                 passed=None,
             )
 
     def _register_interface_edges(self, node_id: str, interface_id: str, interface: dict[str, Any]) -> None:
         for caller_id in normalize_string_list(interface.get("callers")):
-            caller = get_interface_by_id(caller_id)
+            caller = self.traceability.get_interface(caller_id)
             if not caller:
                 continue
             for source_req_id in caller.get("req_ids", []):
                 if source_req_id and source_req_id != node_id:
-                    insert_call_edge(
+                    self.traceability.insert_call_edge(
                         source_req_id=source_req_id,
                         target_req_id=node_id,
                         from_interface_id=caller_id,
@@ -603,12 +597,12 @@ class WorkflowPhaseRunner:
                     )
 
         for callee_id in normalize_string_list(interface.get("callees")):
-            callee = get_interface_by_id(callee_id)
+            callee = self.traceability.get_interface(callee_id)
             if not callee:
                 continue
             for target_req_id in callee.get("req_ids", []):
                 if target_req_id and target_req_id != node_id:
-                    insert_call_edge(
+                    self.traceability.insert_call_edge(
                         source_req_id=node_id,
                         target_req_id=target_req_id,
                         from_interface_id=interface_id,

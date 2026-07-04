@@ -10,13 +10,13 @@ from urllib.parse import urlparse
 
 import requests
 
+from runtime_sdk import get_runtime
 from .arc_agent import ARCAgent
 from .prompt_sections import (
     get_common_session_guidance,
     get_compiler_role_guidance,
     get_interface_designer_guidance,
 )
-from traceability.database import update_requirement_visuals
 from utils import read_json_file, write_json_file
 
 
@@ -609,7 +609,10 @@ For each data-bearing area (table/list/cards/calendar/chart/schedule):
             self._save_visual_cache(workspace_path, visual_cache)
 
         if visual_references:
-            update_requirement_visuals(req_id, visual_references)
+            get_runtime().traceability.update_requirement_fields(
+                req_id,
+                visual_reference=visual_references,
+            )
             if self.log_cb:
                 await self.log_cb(
                     "System",

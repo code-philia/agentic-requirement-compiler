@@ -4,7 +4,7 @@ import os
 import re
 import shutil
 
-from traceability.database import get_all_requirements
+from runtime_sdk import get_runtime
 from utils import set_android_package
 
 from .base import AppTypeHandler
@@ -204,9 +204,9 @@ class AndroidAppType(AppTypeHandler):
                 all_reqs = flatten(data)
             except Exception as exc:
                 await self.log_cb("System", f"Failed to read requirements from YAML: {str(exc)}. Trying DB fallback.")
-                all_reqs = get_all_requirements()
+                all_reqs = get_runtime().traceability.list_requirements()
         else:
-            all_reqs = get_all_requirements()
+            all_reqs = get_runtime().traceability.list_requirements()
 
         desc_texts = []
         for req in all_reqs:

@@ -1,14 +1,12 @@
 import os
 import re
 import json
-import sqlite3
 from typing import Dict, Any, List
-import traceability.database as db_module
-from traceability.database import (
-    get_requirement_by_id,
-    get_interfaces_by_req_id,
-    get_tests_by_req_id,
-)
+from runtime_sdk import get_runtime
+
+
+def _store():
+    return get_runtime().traceability
 
 class NodeContextCache:
     """Caches static context layers for a node across agent phases.
@@ -276,40 +274,19 @@ class ContextPipeline:
         """
         Fetch interfaces from parent, children, and dependencies to provide integration context.
         """
-        conn = sqlite3.connect(db_module.DB_PATH)
-        conn.row_factory = sqlite3.Row
-        cursor = conn.cursor()
-        
-        cursor.execute('SELECT parent_id, children_ids, dependencies FROM requirements WHERE req_id = ?', (node_id,))
-        node_row = cursor.fetchone()
-        
+        node_row = _store().get_requirement(node_id)
         if not node_row:
-            conn.close()
             return []
             
         target_nodes = set()
-        if node_row['parent_id']:
-            target_nodes.add(node_row['parent_id'])
-            
-        try:
-            children = json.loads(node_row['children_ids']) if node_row['children_ids'] else []
-            target_nodes.update(children)
-        except: pass
-        
-        try:
-            deps = json.loads(node_row['dependencies']) if node_row['dependencies'] else []
-            target_nodes.update(deps)
-        except: pass
+        if node_row.get("parent_id"):
+            target_nodes.add(node_row["parent_id"])
+        target_nodes.update(node_row.get("children_ids") or [])
+        target_nodes.update(node_row.get("dependencies") or [])
         
         related_interfaces = []
         for n_id in target_nodes:
-            # Exact match in JSON array to avoid req_1 matching req_10
-            search_term = f'%"{n_id}"%'
-            cursor.execute('SELECT * FROM interfaces WHERE req_ids LIKE ?', (search_term,))
-            for row in cursor.fetchall():
-                related_interfaces.append(dict(row))
-                
-        conn.close()
+            related_interfaces.extend(_store().list_interfaces(req_id=str(n_id or "").strip()))
         unique = {}
         for iface in related_interfaces:
             unique[iface.get("interface_id")] = iface
@@ -318,7 +295,7 @@ class ContextPipeline:
     def _get_source_code_for_interfaces(self, node_id: str, max_files: int | None = None,
                                          max_chars_per_file: int = 2000, total_budget: int = 15000) -> str:
         """Build candidate source file cards instead of injecting full file contents."""
-        interfaces = get_interfaces_by_req_id(node_id)
+        interfaces = _store().list_interfaces(req_id=node_id)
         if not interfaces:
             return ""
         interfaces = self._dedupe_records_by_file_path_keep_latest(interfaces)
@@ -397,7 +374,7 @@ class ContextPipeline:
         target_test_files: list[str] | None = None,
     ) -> str:
         """Build candidate test file cards instead of injecting full test contents."""
-        tests = get_tests_by_req_id(node_id)
+        tests = [item for item in _store().list_tests(req_id=node_id) if item is not None]
         if not tests:
             return ""
         tests = self._dedupe_records_by_file_path_keep_latest(tests)
@@ -480,7 +457,7 @@ class ContextPipeline:
         Uses NodeContextCache to avoid redundant I/O across phases.
         If preloaded_source is provided, uses it instead of re-reading source files from disk.
         """
-        req_data = get_requirement_by_id(node_id)
+        req_data = _store().get_requirement(node_id)
         if not req_data:
             return f"<error>Requirement node {node_id} not found in database.</error>"
 

@@ -3,22 +3,13 @@ import os
 import shutil
 from typing import Any, Awaitable, Callable
 
-from arcbench_compat import emit_requirement_state, resolve_traceability_db_path
 from app_types import create_app_type_handler, normalize_app_type
+from runtime_sdk import configure_runtime
 from traceability import store_all_requirement
-from traceability.database import (
-    get_requirement_by_id,
-    init_db,
-    set_db_path,
-    upsert_node_state,
-)
 from utils import (
     build_commit_message,
-    ensure_arc_gitignore,
     load_requirements,
     read_json_file,
-    run_git_commit,
-    run_git_init,
     set_app_type,
     set_web_port,
     set_workspace_root,
@@ -79,6 +70,7 @@ class ARCWorkflowManager:
 
         self.arc_dir = os.path.join(self.workspace_path, ".arc")
         self.queue_path = os.path.join(self.arc_dir, QUEUE_FILENAME)
+        self.runtime = None
 
         set_web_port(self.web_port)
 
@@ -137,10 +129,16 @@ class ARCWorkflowManager:
         set_app_type(self.app_type)
         set_web_port(self.web_port)
 
-        db_path = resolve_traceability_db_path(os.path.join(self.arc_dir, "traceability.db"))
+        db_path = os.environ.get("ARCBENCH_TRACEABILITY_DB_PATH", "").strip() or os.path.join(
+            self.arc_dir,
+            "traceability.db",
+        )
         await self.log_cb("System", f"Initializing traceability database at {db_path}...")
-        set_db_path(db_path)
-        init_db()
+        self.runtime = configure_runtime(
+            project_dir=self.workspace_path,
+            traceability_db_path=db_path,
+        )
+        self.runtime.traceability.init_db()
 
         app_handler = create_app_type_handler(
             workspace_path=self.workspace_path,
@@ -154,10 +152,8 @@ class ARCWorkflowManager:
             return False
 
         await self.log_cb("System", "Full-stack workspace initialized completely.")
-        gitignore_path = ensure_arc_gitignore(self.workspace_path)
         await self.log_cb("System", "Initializing Git repository...")
-
-        await run_git_init(self.workspace_path, self.log_cb)
+        self.runtime.git.ensure_repo(create_initial_commit=True)
         return True
 
     async def prepare_resume_context(self) -> None:
@@ -165,10 +161,16 @@ class ARCWorkflowManager:
         set_app_type(self.app_type)
         set_web_port(self.web_port)
 
-        db_path = resolve_traceability_db_path(os.path.join(self.arc_dir, "traceability.db"))
+        db_path = os.environ.get("ARCBENCH_TRACEABILITY_DB_PATH", "").strip() or os.path.join(
+            self.arc_dir,
+            "traceability.db",
+        )
         await self.log_cb("System", f"Reusing existing traceability database at {db_path}...")
-        set_db_path(db_path)
-        init_db()
+        self.runtime = configure_runtime(
+            project_dir=self.workspace_path,
+            traceability_db_path=db_path,
+        )
+        self.runtime.traceability.init_db()
 
     async def start_compilation(
         self,
@@ -241,7 +243,7 @@ class ARCWorkflowManager:
 
             node_id = task["node_id"]
             phase = task["phase"]
-            requirement_data = get_requirement_by_id(node_id) or {}
+            requirement_data = self.runtime.traceability.get_requirement(node_id) or {}
 
             task["status"] = TASK_RUNNING
             queue_state["last_task_id"] = task["task_id"]
@@ -256,10 +258,10 @@ class ARCWorkflowManager:
                 self._set_node_state(queue_state["node_states"], node_id, new_state)
                 self._save_processing_queue(queue_state)
                 if phase == PHASE_DESIGN:
-                    emit_requirement_state(node_id, "design", "completed")
+                    self.runtime.events.mark_design_done(node_id)
                 else:
-                    emit_requirement_state(node_id, "implement", "completed")
-                    emit_requirement_state(node_id, "test", "passed")
+                    self.runtime.events.mark_implementation_done(node_id)
+                    self.runtime.events.mark_test_passed(node_id)
                 await self._commit_phase_checkpoint(node_id, phase, requirement_data)
                 await self.log_cb("Compiler", f"{phase} completed for node {node_id}.", None, node_id)
             else:
@@ -268,9 +270,9 @@ class ARCWorkflowManager:
                 self._mark_remaining_node_tasks_failed(queue_state, node_id)
                 self._save_processing_queue(queue_state)
                 if phase == PHASE_DESIGN:
-                    emit_requirement_state(node_id, "design", "failed")
+                    self.runtime.events.emit_requirement_state(node_id, "design", "failed")
                 if phase == PHASE_IMPLEMENT:
-                    emit_requirement_state(node_id, "test", "failed")
+                    self.runtime.events.mark_test_failed(node_id)
                 await self._commit_phase_checkpoint(node_id, f"{phase}-FAILED", requirement_data)
                 await self.log_cb("Compiler", f"{phase} failed for node {node_id}.", "error", node_id)
                 await self.log_cb(
@@ -392,7 +394,7 @@ class ARCWorkflowManager:
         return await self._run_implement_phase(node_id)
 
     async def _run_design_phase(self, node_id: str) -> bool:
-        requirement_data = get_requirement_by_id(node_id)
+        requirement_data = self.runtime.traceability.get_requirement(node_id)
         if not requirement_data:
             await self.log_cb("System", f"Requirement node {node_id} not found in database.", "error", node_id)
             return False
@@ -400,7 +402,7 @@ class ARCWorkflowManager:
         return await self.phase_runner.run_design_phase(node_id, requirement_data)
 
     async def _run_implement_phase(self, node_id: str) -> bool:
-        requirement_data = get_requirement_by_id(node_id)
+        requirement_data = self.runtime.traceability.get_requirement(node_id)
         if not requirement_data:
             await self.log_cb("System", f"Requirement node {node_id} not found in database.", "error", node_id)
             return False
@@ -414,7 +416,9 @@ class ARCWorkflowManager:
     async def _commit_phase_checkpoint(self, node_id: str, phase: str, requirement_data: dict[str, Any]) -> None:
         commit_message = build_commit_message(node_id, phase, requirement_data)
         await self.log_cb("Compiler", f"Running git checkpoint for {phase} on node {node_id}...", None, node_id)
-        await run_git_commit(self.workspace_path, commit_message, self.log_cb)
+        committed = self.runtime.git.commit(commit_message)
+        if not committed:
+            await self.log_cb("Compiler", "No file changes detected for this checkpoint.", None, node_id)
 
     def _resolve_completed_node_state(self, node_id: str, phase: str) -> str:
         if phase == PHASE_DESIGN:
@@ -429,7 +433,7 @@ class ARCWorkflowManager:
 
     def _set_node_state(self, node_states: dict[str, str], node_id: str, state: str) -> None:
         node_states[node_id] = state
-        upsert_node_state(node_id, state)
+        self.runtime.traceability.upsert_node_state(node_id, state)
 
     def _build_compile_result(self, queue_state: dict[str, Any]) -> dict[str, Any]:
         failed_nodes = sorted(

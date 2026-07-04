@@ -10,9 +10,13 @@ import copy
 
 from typing import Awaitable, Callable, Optional, Dict, List, Any
 from colorama import Fore, Style, init as colorama_init
-from traceability.database import get_interfaces_by_req_id, get_requirement_by_id
+from runtime_sdk import get_runtime
 
 colorama_init()
+
+
+def _store():
+    return get_runtime().traceability
 
 # ======================================================================================
 #                                Runtime Context
@@ -152,7 +156,7 @@ def extract_json_array_from_markdown(raw_output: str) -> list[dict[str, Any]] | 
 
 
 def build_dependency_context(node_id: str) -> str:
-    req = get_requirement_by_id(node_id)
+    req = _store().get_requirement(node_id)
     if not req:
         return "No dependency information available."
 
@@ -171,14 +175,14 @@ def build_dependency_context(node_id: str) -> str:
     ]
 
     for dep_id in deps:
-        dep_req = get_requirement_by_id(dep_id)
+        dep_req = _store().get_requirement(dep_id)
         if not dep_req:
             continue
 
         lines.append(f"#### Dependency Requirement Node: [{dep_id}]")
         lines.append(f"Description: {dep_req.get('description', 'N/A')}")
 
-        dep_ifaces = get_interfaces_by_req_id(dep_id)
+        dep_ifaces = _store().list_interfaces(req_id=dep_id)
         if dep_ifaces:
             lines.append("Available Interfaces from this Dependency:")
             for iface in dep_ifaces:
@@ -513,11 +517,6 @@ _spinner = Spinner()
 debug_logger: Optional[DebugLogger] = None
 prompt_dump_logger: Optional[PromptDumpLogger] = None
 
-ARC_GITIGNORE_START = "# ARC_MANAGED_START"
-ARC_GITIGNORE_END = "# ARC_MANAGED_END"
-DEFAULT_GIT_USER_NAME = "ARC Agent"
-DEFAULT_GIT_USER_EMAIL = "arc-agent@local.invalid"
-
 _AGENT_COLORS = {
     "System": Fore.WHITE,
     "RequirementLoader": Fore.YELLOW,
@@ -534,67 +533,6 @@ _STATUS_COLORS = {
     "completed": Fore.GREEN,
     "error": Fore.RED,
 }
-
-
-def _get_git_identity() -> tuple[str, str]:
-    user_name = (
-        os.environ.get("ARC_GIT_USER_NAME")
-        or os.environ.get("GIT_AUTHOR_NAME")
-        or os.environ.get("GIT_COMMITTER_NAME")
-        or DEFAULT_GIT_USER_NAME
-    ).strip()
-    user_email = (
-        os.environ.get("ARC_GIT_USER_EMAIL")
-        or os.environ.get("GIT_AUTHOR_EMAIL")
-        or os.environ.get("GIT_COMMITTER_EMAIL")
-        or DEFAULT_GIT_USER_EMAIL
-    ).strip()
-    return user_name, user_email
-
-
-def _build_git_env() -> dict[str, str]:
-    env = os.environ.copy()
-    user_name, user_email = _get_git_identity()
-    env["GIT_AUTHOR_NAME"] = user_name
-    env["GIT_AUTHOR_EMAIL"] = user_email
-    env["GIT_COMMITTER_NAME"] = user_name
-    env["GIT_COMMITTER_EMAIL"] = user_email
-    return env
-
-
-async def _run_git_command(
-    args: list[str],
-    cwd: str,
-    env: dict[str, str] | None = None,
-) -> tuple[int, str, str]:
-    process = await asyncio.create_subprocess_exec(
-        *args,
-        cwd=cwd,
-        env=env,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
-    stdout, stderr = await process.communicate()
-    return process.returncode, stdout.decode(), stderr.decode()
-
-
-async def _configure_git_identity(target_dir: str) -> tuple[bool, str]:
-    user_name, user_email = _get_git_identity()
-    code, _, stderr = await _run_git_command(
-        ["git", "config", "user.name", user_name],
-        cwd=target_dir,
-    )
-    if code != 0:
-        return False, stderr
-
-    code, _, stderr = await _run_git_command(
-        ["git", "config", "user.email", user_email],
-        cwd=target_dir,
-    )
-    if code != 0:
-        return False, stderr
-
-    return True, f"{user_name} <{user_email}>"
 
 
 def init_debug_logger(project_path: str, reset_existing: bool = True) -> str:
@@ -722,117 +660,6 @@ def format_cli_log(agent: str, message: str, status: str = None, node_id: str = 
         return f"{node_prefix}{_STATUS_COLORS[status]}[{status}]{Style.RESET_ALL} {_AGENT_COLORS.get(agent, Fore.WHITE)}[{agent}]{Style.RESET_ALL} {message}"
 
     return f"{node_prefix}{_AGENT_COLORS.get(agent, Fore.WHITE)}[{agent}]{Style.RESET_ALL} {message}"
-
-
-# ======================================================================================
-#                                   Git commands
-# ======================================================================================
-
-async def run_git_init(target_dir: str, log_cb: Callable[..., Awaitable[None]]):
-    try:
-        git_env = _build_git_env()
-
-        code, _, stderr = await _run_git_command(["git", "init"], cwd=target_dir, env=git_env)
-        if code != 0:
-            await log_cb("System", f"Git init failed: {stderr}")
-            return
-
-        configured, identity_message = await _configure_git_identity(target_dir)
-        if not configured:
-            await log_cb("System", f"Git identity configuration failed: {identity_message}")
-            return
-
-        await log_cb("System", f"Using git identity: {identity_message}")
-
-        code, _, stderr = await _run_git_command(["git", "add", "."], cwd=target_dir, env=git_env)
-        if code != 0:
-            await log_cb("System", f"Git add failed during init: {stderr}")
-            return
-
-        code, _, stderr = await _run_git_command(
-            ["git", "commit", "-m", "init"],
-            cwd=target_dir,
-            env=git_env,
-        )
-
-        if code == 0:
-            await log_cb("System", f"Git initialized and committed 'init' in {target_dir}")
-        else:
-            await log_cb("System", f"Git init/commit failed: {stderr}")
-    except Exception as exc:
-        await log_cb("System", f"Git init error: {str(exc)}")
-
-def ensure_arc_gitignore(project_path: str) -> str:
-    gitignore_path = os.path.join(project_path, ".gitignore")
-    managed_block = "\n".join(
-        [
-            ARC_GITIGNORE_START,
-            "backend/node_modules/",
-            "frontend/node_modules/",
-            "backend/coverage/",
-            "frontend/dist/",
-            "frontend/dist-ssr/",
-            "*.db",
-            ".env",
-            "!.arc/",
-            "!.arc/**",
-            ".arc/debug.log",
-            ARC_GITIGNORE_END,
-        ]
-    )
-
-    old_content = ""
-    if os.path.exists(gitignore_path):
-        with open(gitignore_path, "r", encoding="utf-8") as file:
-            old_content = file.read()
-
-    start = old_content.find(ARC_GITIGNORE_START)
-    end = old_content.find(ARC_GITIGNORE_END)
-    if start != -1 and end != -1 and end > start:
-        before = old_content[:start].rstrip()
-        after = old_content[end + len(ARC_GITIGNORE_END):].lstrip()
-        merged = ""
-        if before:
-            merged += before + "\n\n"
-        merged += managed_block
-        if after:
-            merged += "\n\n" + after
-        content = merged.strip() + "\n"
-    elif old_content.strip():
-        content = old_content.rstrip() + "\n\n" + managed_block + "\n"
-    else:
-        content = managed_block + "\n"
-
-    with open(gitignore_path, "w", encoding="utf-8") as file:
-        file.write(content)
-    return gitignore_path
-
-
-async def run_git_commit(target_dir: str, message: str, log_cb: Callable[..., Awaitable[None]]):
-    try:
-        git_env = _build_git_env()
-
-        code, _, stderr = await _run_git_command(["git", "add", "."], cwd=target_dir, env=git_env)
-        if code != 0:
-            await log_cb("System", f"Git add failed: {stderr}")
-            return
-
-        code, stdout_text, stderr_text = await _run_git_command(
-            ["git", "commit", "-m", message],
-            cwd=target_dir,
-            env=git_env,
-        )
-
-        if code == 0:
-            await log_cb("System", f"Git commit success: '{message}'")
-            return
-
-        if "nothing to commit" in stdout_text or "nothing to commit" in stderr_text:
-            await log_cb("System", "Git commit skipped (nothing to commit).")
-        else:
-            await log_cb("System", f"Git commit failed: {stderr_text}")
-    except Exception as exc:
-        await log_cb("System", f"Git commit error: {str(exc)}")
 
 
 def build_commit_message(node_id: str, phase: str, requirement_data: dict) -> str:
