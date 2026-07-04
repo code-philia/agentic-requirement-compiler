@@ -87,6 +87,10 @@ Rules:
                 "execute_command", "run_tests", "run_build", "search_interfaces_by_keyword", "search_interfaces_by_relation", "get_node_relations"]
 
     @staticmethod
+    def _compact_json(value: Any) -> str:
+        return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+
+    @staticmethod
     def _validate_execute_command(command: str) -> str | None:
         normalized = re.sub(r"\s+", " ", str(command or "").strip()).lower()
         if not normalized:
@@ -590,7 +594,7 @@ Rules:
         }
         compact_text = (
             "<tdd_session_compact_state>\n"
-            f"{json.dumps(compact_state, indent=2, ensure_ascii=False)}\n"
+            f"{self._compact_json(compact_state)}\n"
             "</tdd_session_compact_state>"
         )
         continue_message = (
@@ -645,7 +649,7 @@ Read this first. The current requirement payload below is the authoritative task
 {scope_context}
 
 ### Target Test Files
-{json.dumps(test_files, indent=2)}
+{self._compact_json(test_files)}
 
 **Implementation Strategy**:
 Implement the interfaces of the current node. Use the provided `<acceptance_gate>`, `<interfaces>`, `<test_file_cards>`, `<recent_failure_summary>`, and requirement context as the authoritative execution contract. Make the target tests pass without inventing a conflicting contract.
@@ -833,7 +837,7 @@ When all target tests pass, output "IMPLEMENTED". The system will handle the fin
             "A separate read-only failure-analysis session has completed.\n"
             "Use this report as high-priority debugging context until direct file evidence disproves it.\n"
             "```json\n"
-            f"{json.dumps(report, indent=2, ensure_ascii=False)}\n"
+            f"{TestDrivenDeveloper._compact_json(report)}\n"
             "```\n"
             "</independent_failure_analysis>"
         )

@@ -27,6 +27,16 @@ EPHEMERAL_GUIDANCE_PREFIX = "<arc_ephemeral_guidance>"
 EPHEMERAL_GUIDANCE_SUFFIX = "</arc_ephemeral_guidance>"
 COMPACT_STATE_PREFIX = "<arc_compact_state>"
 COMPACT_STATE_SUFFIX = "</arc_compact_state>"
+PARALLEL_READONLY_TOOLS = {
+    "read_file",
+    "list_directory",
+    "glob",
+    "grep",
+    "search_interfaces_by_keyword",
+    "search_interfaces_by_relation",
+    "find_interface_impacts",
+    "get_node_relations",
+}
 
 # Required args per mutating tool, validated before dispatch to surface clean errors.
 _REQUIRED_TOOL_ARGS: Dict[str, list] = {
@@ -317,7 +327,7 @@ class ARCAgent:
         compact_state.setdefault("target_files", read_files[:8])
         compact_text = (
             f"{COMPACT_STATE_PREFIX}\n"
-            f"{json.dumps(compact_state, indent=2, ensure_ascii=False)}\n"
+            f"{self._compact_json_for_prompt(compact_state)}\n"
             f"{COMPACT_STATE_SUFFIX}"
         )
         return [
@@ -371,6 +381,131 @@ Output from {tool_name}:
         except Exception as e:
             # If summarization fails, fall back to truncated raw output
             return raw_output[:MAX_TOOL_OUTPUT_LENGTH]
+
+    @staticmethod
+    def _truncate_tool_args_for_log(tool_name: str, tool_args: Dict[str, Any]) -> str:
+        args_str = json.dumps(tool_args, indent=2, ensure_ascii=False)
+        if tool_name == "write_file" and len(args_str) > 500:
+            return args_str[:500] + f"\n... [args truncated, total {len(args_str)} chars]"
+        if len(args_str) > 1000:
+            return args_str[:1000] + f"\n... [args truncated, total {len(args_str)} chars]"
+        return args_str
+
+    async def _dispatch_tool_call(
+        self,
+        tool_name: str,
+        tool_args: Dict[str, Any],
+        allowed_tool_names: set[str],
+        node_id: str | None = None,
+    ) -> Any:
+        _missing = [
+            p for p in _REQUIRED_TOOL_ARGS.get(tool_name, [])
+            if p not in tool_args
+        ]
+        if _missing:
+            return (
+                f"Tool call error: `{tool_name}` is missing required argument(s): "
+                f"{', '.join(_missing)}. Re-issue the call with all required arguments."
+            )
+
+        intercepted, intercepted_result = await self._intercept_tool_call(
+            tool_name=tool_name,
+            tool_args=tool_args,
+            node_id=node_id,
+        )
+        if intercepted:
+            return intercepted_result
+
+        if tool_name not in TOOL_REGISTRY or tool_name not in allowed_tool_names:
+            return f"Error: Tool '{tool_name}' not permitted or not found."
+
+        tool_func = TOOL_REGISTRY[tool_name]["func"]
+        try:
+            return await tool_func(**tool_args)
+        except Exception as e:
+            return f"Tool execution error: {str(e)}"
+
+    async def _finalize_tool_result(
+        self,
+        messages: List[Dict[str, Any]],
+        tool_call_id: str,
+        tool_name: str,
+        tool_args: Dict[str, Any],
+        tool_result: Any,
+        node_id: str | None = None,
+    ) -> tuple[List[Dict[str, Any]], str | None]:
+        tool_result_str = str(tool_result)
+
+        if tool_name in ("run_build", "run_tests") and len(tool_result_str) > MAX_TOOL_OUTPUT_LENGTH:
+            exit_code_match = re.search(r'Exit Code:\s*(\d+)', tool_result_str)
+            if exit_code_match and exit_code_match.group(1) != "0":
+                tool_result_str = await self._summarize_tool_error(tool_name, tool_result_str)
+
+        if len(tool_result_str) > MAX_TOOL_OUTPUT_LENGTH:
+            tool_result_str = tool_result_str[:MAX_TOOL_OUTPUT_LENGTH] + "\n... [Output truncated due to length. Please use grep or narrow your search.]"
+
+        if DEBUG_MODE:
+            if tool_name == "read_file":
+                await self._log(
+                    f"Tool `read_file` result: {len(tool_result_str)} chars (content not shown)",
+                    node_id=node_id,
+                )
+            else:
+                display_result = tool_result_str
+                if len(display_result) > 500:
+                    display_result = display_result[:500] + f"\n... [result truncated, total {len(tool_result_str)} chars]"
+                await self._log(f"Tool `{tool_name}` result:\n{display_result}", node_id=node_id)
+            if utils.debug_logger:
+                utils.debug_logger.log(f"TOOL_RESULT[{tool_name}]", tool_result_str)
+
+        messages.append({
+            "role": "tool",
+            "tool_call_id": tool_call_id,
+            "name": tool_name,
+            "content": tool_result_str,
+        })
+
+        if tool_name == "edit_file" and hasattr(self, "notify_edit_failure"):
+            try:
+                self.notify_edit_failure(str(tool_args.get("path", "")).strip(), tool_result_str)
+            except Exception:
+                pass
+        if hasattr(self, "drain_forced_followup_user_messages"):
+            try:
+                forced_messages = self.drain_forced_followup_user_messages()
+            except Exception:
+                forced_messages = []
+            if forced_messages:
+                for forced_message in forced_messages:
+                    messages.append({"role": "user", "content": forced_message})
+        messages = await self._postprocess_messages_after_tool_call(
+            messages=messages,
+            tool_name=tool_name,
+            tool_args=tool_args,
+            tool_result=tool_result_str,
+            node_id=node_id,
+        )
+
+        stop_response = await self._get_stop_response_after_tool_call(
+            tool_name=tool_name,
+            tool_args=tool_args,
+            tool_result=tool_result_str,
+            node_id=node_id,
+        )
+        if stop_response is not None:
+            await self._log("Agent session stopped by tool policy.", node_id=node_id)
+        return messages, stop_response
+
+    @staticmethod
+    def _parse_tool_call_args(tool_call) -> Dict[str, Any]:
+        try:
+            return json.loads(tool_call.function.arguments)
+        except json.JSONDecodeError:
+            return {}
+
+    @staticmethod
+    def _compact_json_for_prompt(value: Any) -> str:
+        return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
 
     def _microcompact_messages(self, messages: List[Dict[str, Any]]) -> None:
         # Final override: never compact read_file results independently.
@@ -554,117 +689,87 @@ Output from {tool_name}:
                     assistant_text=message.content or "",
                     node_id=node_id,
                 )
-
-                for tool_call in message.tool_calls:
+                tool_calls = list(message.tool_calls)
+                index = 0
+                while index < len(tool_calls):
+                    tool_call = tool_calls[index]
                     tool_name = tool_call.function.name
+                    tool_args = self._parse_tool_call_args(tool_call)
+                    await self._log(
+                        f"Calling tool: `{tool_name}` with args: {self._truncate_tool_args_for_log(tool_name, tool_args)}",
+                        node_id=node_id,
+                    )
 
-                    try:
-                        tool_args = json.loads(tool_call.function.arguments)
-                    except json.JSONDecodeError:
-                        tool_args = {}
-
-                    # Log tool call with args (truncate write_file content)
-                    args_str = json.dumps(tool_args, indent=2, ensure_ascii=False)
-                    if tool_name == "write_file" and len(args_str) > 500:
-                        args_str = args_str[:500] + f"\n... [args truncated, total {len(args_str)} chars]"
-                    elif len(args_str) > 1000:
-                        args_str = args_str[:1000] + f"\n... [args truncated, total {len(args_str)} chars]"
-                    await self._log(f"Calling tool: `{tool_name}` with args: {args_str}", node_id=node_id)
-
-                    # Validate required args for mutating tools before dispatch
-                    _missing = [
-                        p for p in _REQUIRED_TOOL_ARGS.get(tool_name, [])
-                        if p not in tool_args
-                    ]
-                    if _missing:
-                        tool_result = (
-                            f"Tool call error: `{tool_name}` is missing required argument(s): "
-                            f"{', '.join(_missing)}. Re-issue the call with all required arguments."
-                        )
-                    else:
-                        intercepted, intercepted_result = await self._intercept_tool_call(
+                    is_parallel_batch = (
+                        tool_name in PARALLEL_READONLY_TOOLS
+                        and tool_name in allowed_tool_names
+                    )
+                    if not is_parallel_batch:
+                        tool_result = await self._dispatch_tool_call(
                             tool_name=tool_name,
                             tool_args=tool_args,
+                            allowed_tool_names=allowed_tool_names,
                             node_id=node_id,
                         )
-                        if intercepted:
-                            tool_result = intercepted_result
-                        else:
-                            if tool_name in TOOL_REGISTRY and tool_name in allowed_tool_names:
-                                tool_func = TOOL_REGISTRY[tool_name]["func"]
-                                try:
-                                    tool_result = await tool_func(**tool_args)
-                                except Exception as e:
-                                    tool_result = f"Tool execution error: {str(e)}"
-                            else:
-                                tool_result = f"Error: Tool '{tool_name}' not permitted or not found."
+                        messages, stop_response = await self._finalize_tool_result(
+                            messages=messages,
+                            tool_call_id=tool_call.id,
+                            tool_name=tool_name,
+                            tool_args=tool_args,
+                            tool_result=tool_result,
+                            node_id=node_id,
+                        )
+                        if stop_response is not None:
+                            return stop_response, messages
+                        index += 1
+                        continue
 
-                    # 3. Tool Output Budget: Summarize long error outputs, then truncate
-                    tool_result_str = str(tool_result)
-
-                    # Summarize very long build/test outputs; otherwise keep raw output intact.
-                    if tool_name in ("run_build", "run_tests") and len(tool_result_str) > MAX_TOOL_OUTPUT_LENGTH:
-                        exit_code_match = re.search(r'Exit Code:\s*(\d+)', tool_result_str)
-                        if exit_code_match and exit_code_match.group(1) != "0":
-                            tool_result_str = await self._summarize_tool_error(tool_name, tool_result_str)
-
-                    if len(tool_result_str) > MAX_TOOL_OUTPUT_LENGTH:
-                        tool_result_str = tool_result_str[:MAX_TOOL_OUTPUT_LENGTH] + "\n... [Output truncated due to length. Please use grep or narrow your search.]"
-
-                    if DEBUG_MODE:
-                        # Log tool result: skip read_file content, truncate others
-                        if tool_name == "read_file":
+                    batch_calls = []
+                    while index < len(tool_calls):
+                        candidate = tool_calls[index]
+                        candidate_name = candidate.function.name
+                        if (
+                            candidate_name not in PARALLEL_READONLY_TOOLS
+                            or candidate_name not in allowed_tool_names
+                        ):
+                            break
+                        candidate_args = self._parse_tool_call_args(candidate)
+                        if batch_calls:
                             await self._log(
-                                f"Tool `read_file` result: {len(tool_result_str)} chars (content not shown)",
+                                f"Calling tool: `{candidate_name}` with args: {self._truncate_tool_args_for_log(candidate_name, candidate_args)}",
                                 node_id=node_id,
                             )
-                        else:
-                            display_result = tool_result_str
-                            if len(display_result) > 500:
-                                display_result = display_result[:500] + f"\n... [result truncated, total {len(tool_result_str)} chars]"
-                            await self._log(f"Tool `{tool_name}` result:\n{display_result}", node_id=node_id)
-                        # Full tool output to debug log file (never truncated)
-                        if utils.debug_logger:
-                            utils.debug_logger.log(f"TOOL_RESULT[{tool_name}]", tool_result_str)
+                        batch_calls.append((candidate, candidate_name, candidate_args))
+                        index += 1
 
-                    # Return the result back to the LLM
-                    messages.append({
-                        "role": "tool",
-                        "tool_call_id": tool_call.id,
-                        "name": tool_name,
-                        "content": tool_result_str
-                    })
+                    if len(batch_calls) > 1:
+                        await self._log(
+                            f"Executing {len(batch_calls)} read-only tool calls in parallel.",
+                            node_id=node_id,
+                        )
 
-                    if tool_name == "edit_file" and hasattr(self, "notify_edit_failure"):
-                        try:
-                            self.notify_edit_failure(str(tool_args.get("path", "")).strip(), tool_result_str)
-                        except Exception:
-                            pass
-                    if hasattr(self, "drain_forced_followup_user_messages"):
-                        try:
-                            forced_messages = self.drain_forced_followup_user_messages()
-                        except Exception:
-                            forced_messages = []
-                        if forced_messages:
-                            for forced_message in forced_messages:
-                                messages.append({"role": "user", "content": forced_message})
-                    messages = await self._postprocess_messages_after_tool_call(
-                        messages=messages,
-                        tool_name=tool_name,
-                        tool_args=tool_args,
-                        tool_result=tool_result_str,
-                        node_id=node_id,
-                    )
+                    batch_tasks = [
+                        self._dispatch_tool_call(
+                            tool_name=batch_name,
+                            tool_args=batch_args,
+                            allowed_tool_names=allowed_tool_names,
+                            node_id=node_id,
+                        )
+                        for _, batch_name, batch_args in batch_calls
+                    ]
+                    batch_results = await asyncio.gather(*batch_tasks)
 
-                    stop_response = await self._get_stop_response_after_tool_call(
-                        tool_name=tool_name,
-                        tool_args=tool_args,
-                        tool_result=tool_result_str,
-                        node_id=node_id,
-                    )
-                    if stop_response is not None:
-                        await self._log("Agent session stopped by tool policy.", node_id=node_id)
-                        return stop_response, messages
+                    for (batch_call, batch_name, batch_args), batch_result in zip(batch_calls, batch_results):
+                        messages, stop_response = await self._finalize_tool_result(
+                            messages=messages,
+                            tool_call_id=batch_call.id,
+                            tool_name=batch_name,
+                            tool_args=batch_args,
+                            tool_result=batch_result,
+                            node_id=node_id,
+                        )
+                        if stop_response is not None:
+                            return stop_response, messages
 
                 step += 1
                 continue

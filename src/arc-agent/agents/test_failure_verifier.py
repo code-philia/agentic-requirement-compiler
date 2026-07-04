@@ -14,6 +14,10 @@ class TestFailureVerifier(ARCAgent):
     def __init__(self, log_cb=None):
         super().__init__(agent_name="TestFailureVerifier", log_cb=log_cb)
 
+    @staticmethod
+    def _compact_json(value: Any) -> str:
+        return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+
     def get_system_prompt(self) -> str:
         return f"""{get_compiler_role_guidance(
     role_name="TestFailureVerifier",
@@ -92,7 +96,7 @@ Rules:
         latest_test_output: str,
         target_test_code: str,
     ) -> str:
-        serialized_files = json.dumps(test_files, indent=2, ensure_ascii=False)
+        serialized_files = TestFailureVerifier._compact_json(test_files)
         return f"""
 ### Current Node Context
 Read this first. The current requirement payload below is the authoritative task input for node `{node_id}`.

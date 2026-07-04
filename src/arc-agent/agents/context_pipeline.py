@@ -83,6 +83,10 @@ class ContextPipeline:
         return value[:limit].rstrip() + "... [truncated]"
 
     @staticmethod
+    def _compact_json(value: Any) -> str:
+        return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+
+    @staticmethod
     def _normalize_step_keyword(step: Dict[str, Any]) -> str:
         return str(step.get("keyword") or step.get("type") or "").strip().upper()
 
@@ -154,7 +158,7 @@ class ContextPipeline:
                 "placeholder-only panels presented as complete features",
             ],
         }
-        return "<acceptance_gate>\n" + json.dumps(gate, indent=2, ensure_ascii=False) + "\n</acceptance_gate>"
+        return "<acceptance_gate>\n" + self._compact_json(gate) + "\n</acceptance_gate>"
 
     @staticmethod
     def _dedupe_records_by_file_path_keep_latest(
@@ -192,7 +196,7 @@ class ContextPipeline:
 
         parts = [
             "<requirement_focus>",
-            json.dumps(focus, indent=2, ensure_ascii=False),
+            self._compact_json(focus),
         ]
 
         if scenarios:
@@ -201,13 +205,13 @@ class ContextPipeline:
                 for scenario in scenarios
             ]
             parts.append("<scenarios>")
-            parts.append(json.dumps(scenario_payload, indent=2, ensure_ascii=False))
+            parts.append(self._compact_json(scenario_payload))
             parts.append("</scenarios>")
 
         if visual_reference:
             visual_payload = self._build_visual_digest(visual_reference)
             parts.append("<visual_reference>")
-            parts.append(json.dumps(visual_payload, indent=2, ensure_ascii=False))
+            parts.append(self._compact_json(visual_payload))
             parts.append("</visual_reference>")
 
         parts.append("</requirement_focus>")
@@ -350,7 +354,7 @@ class ContextPipeline:
 
         if not cards:
             return ""
-        return "<source_file_cards>\n" + json.dumps(cards, indent=2, ensure_ascii=False) + "\n</source_file_cards>"
+        return "<source_file_cards>\n" + self._compact_json(cards) + "\n</source_file_cards>"
 
     def _get_node_session_layers(self, node_id: str) -> str:
         from utils import load_node_session
@@ -364,7 +368,7 @@ class ContextPipeline:
         if interfaces:
             sections.append(
                 "<interfaces>\n"
-                + json.dumps(interfaces, indent=2, ensure_ascii=False)
+                + self._compact_json(interfaces)
                 + "\n</interfaces>"
             )
 
@@ -430,7 +434,7 @@ class ContextPipeline:
 
         if not cards:
             return ""
-        return "<test_file_cards>\n" + json.dumps(cards, indent=2, ensure_ascii=False) + "\n</test_file_cards>"
+        return "<test_file_cards>\n" + self._compact_json(cards) + "\n</test_file_cards>"
 
     def _format_interface(self, iface: Dict, agent_type: str) -> str:
         """Format interface data differently based on agent focus."""
