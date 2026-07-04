@@ -64,7 +64,6 @@ def get_common_session_guidance() -> str:
         [
             "The user prompt begins with the current node payload and its dynamic context. Read that block first before interpreting the rest of the prompt.",
             "Start from `<requirement_focus>` and the prefetched node context. Treat explicit requirement text, scenarios, visual analysis, interfaces, and test handoff artifacts as stronger evidence than generic repo priors.",
-            "If `<codebase_explorer_report>` is present, use its likely owner files, reuse candidates, and next reads as your first localization pass unless direct file evidence disproves it.",
             "Prefer reusing existing interfaces and code before creating new boundaries.",
             "If you modify a reused interface or shared boundary, check the likely impact first.",
             "Before acting, form a compact working map: target behavior, likely owner files, reuse candidates, and hard constraints.",
@@ -77,21 +76,17 @@ def get_common_session_guidance() -> str:
     )
 
 
-def get_codebase_explorer_guidance() -> str:
-    return "\n\n".join(
+def get_exploration_round_guidance() -> str:
+    return _section(
+        "Exploration Loop",
         [
-            _section(
-                "Exploration Strategy",
-                [
-                    "Solve file localization, not general understanding. Stop once the caller can safely continue with a small evidence set.",
-                    "Prefer this search ladder: prefetched file cards and interface relations -> targeted `glob` or `grep` in a known subtree -> `read_file` on 1-4 high-value files.",
-                    "Use `find_interface_impacts` when a reused boundary may be shared across nodes.",
-                    "When ownership is still unclear, inspect entrypoints, route files, providers, layouts, top-level pages, and test setup before leaf implementation files.",
-                    "Avoid broad repository rescans and repeated reads from uncertainty alone.",
-                ],
-            ),
-            get_using_your_tools_guidance(),
-        ]
+            "Explore broadly enough to cover the real failure or ownership layer. Do not assume the answer is in the obvious leaf file before checking adjacent boundaries, setup, and runtime wiring.",
+            "Use exploration rounds. In one round, batch independent `grep`, `glob`, `list_directory`, and relation-search calls to narrow the search space, then batch the highest-value `read_file` calls.",
+            "After each exploration round, pause and summarize with these exact headings in plain text before continuing: `KNOWN_FACTS`, `FILES_READ`, `MISSING_EVIDENCE`, `NEXT_READS`, `EXPLORATION_DONE`.",
+            "Set `EXPLORATION_DONE: yes` only when you can name the likely target files or the next concrete change with evidence. Otherwise set `EXPLORATION_DONE: no` and continue with only the next missing evidence.",
+            "If the evidence points above app-code ownership, expand to route wiring, shared providers, test setup, DB harness, startup scripts, runtime env, or runner/config files before editing business code.",
+            "Avoid repeated reads from uncertainty alone. Prefer one wider search round, then one focused read round, then a summary decision.",
+        ],
     )
 
 
@@ -102,7 +97,6 @@ def get_interface_designer_guidance() -> str:
                 "Fast Codebase Understanding",
                 [
                     "Start from `<acceptance_gate>`, `<requirement_focus>`, `<scenarios>`, `<visual_reference>`, and the prefetched source file cards.",
-                    "If `<codebase_explorer_report>` exists, use it to localize route, page, layout, provider, API, and domain owners before doing your own additional search.",
                     "Identify existing route, page, layout, provider, API, and domain owners before inventing new interfaces.",
                     "If ownership is unclear, inspect entrypoints, route files, and top-level containers before reading leaf implementation details.",
                 ],
@@ -128,6 +122,7 @@ def get_interface_designer_guidance() -> str:
                     "When asked to materialize interfaces, UI means real rendered code now; API/FUNC/DB means minimal compilable scaffolding now, not interface JSON alone.",
                 ],
             ),
+            get_exploration_round_guidance(),
             get_using_your_tools_guidance(),
         ]
     )
@@ -140,7 +135,6 @@ def get_test_generator_guidance() -> str:
                 "Fast Codebase Understanding",
                 [
                     "Start from `<acceptance_gate>`, `<interfaces>`, `<requirement_focus>`, `<scenarios>`, and source file cards. Treat them as the contract to test.",
-                    "If `<codebase_explorer_report>` exists, start from its localized owner files, nearby tests, and setup files before launching new searches.",
                     "Inspect existing test patterns near the owner files before inventing new test structure, fixtures, or selector strategy.",
                     "Prefer one primary file per layer or one file per coherent scenario group.",
                 ],
@@ -181,6 +175,7 @@ def get_test_generator_guidance() -> str:
                     "For file-based SQLite tests on Windows, never delete `database.db` while a connection may still be open. Prefer the scaffold teardown helpers such as `createTestDatabaseHarness().cleanup()`, `closeDb()`, or `resetDatabaseFile()` and call them in teardown before removing files.",
                 ],
             ),
+            get_exploration_round_guidance(),
             get_using_your_tools_guidance(),
         ]
     )
@@ -193,9 +188,8 @@ def get_tdd_guidance() -> str:
                 "Fast Codebase Understanding",
                 [
                     "Start from the current test batch, `<acceptance_gate>`, `<interfaces>`, `<test_file_cards>`, `<recent_failure_summary>`, and `<requirement_focus>`.",
-                    "If `<codebase_explorer_report>` exists, treat it as the initial file-localization map and only expand beyond it when direct evidence is missing or contradicted.",
                     "Identify one likely owner file and, if needed, one adjacent boundary file before editing.",
-                    "Use the prefetched source and test file cards first; do not rediscover the whole repository unless the current evidence is insufficient.",
+                    "Use the prefetched source and test file cards first, but expand to setup, harness, runtime, and config files as soon as the failure evidence points there.",
                 ],
             ),
             _section(
@@ -224,8 +218,10 @@ def get_tdd_guidance() -> str:
                 [
                     "Use the latest `run_tests` output as the source of truth.",
                     "After a failed `run_tests`, start from the injected independent failure-analysis report if present, then confirm or disprove it with the next directly relevant files.",
+                    "Turn each verifier handoff into exactly one active repair focus: current fingerprint, one smallest fix goal, and one small target file cluster.",
                     "Do not broad-scan or rerun immediately after a failure. Read the failing test and the nearest owner or boundary files first, then make one minimal fix.",
-                    "If the same failure repeats, assume the current hypothesis is wrong or incomplete and change the evidence plan explicitly.",
+                    "If the same failure repeats, assume the current hypothesis is wrong or incomplete and change the evidence plan explicitly instead of patching neighboring files from inertia.",
+                    "When a failure fingerprint stays stable after an edit, prefer the smallest closed-loop fix in the focused file cluster, or escalate one layer outward to boundary wiring or runner/test environment.",
                     "For E2E failures, first classify the current failure phase before changing code: `startup_or_environment`, `page_entry_or_render`, `locator_resolution`, `submit_runtime_path`, `post_submit_assertion`, or `other`.",
                     "For Playwright E2E failures, reason step by step: identify the last confirmed Playwright step that passed, identify the exact next step that failed, and only debug that boundary first.",
                     "For `page_entry_or_render`, check route entry, page render, required visible text, and whether the expected form or container actually mounted.",
@@ -237,6 +233,7 @@ def get_tdd_guidance() -> str:
                     "For SQLite-backed backend tests on Windows, check database teardown first: a failing unlink/remove usually means the connection was never closed. Prefer fixing the scaffold teardown helpers or test harness usage over patching around the symptom.",
                 ],
             ),
+            get_exploration_round_guidance(),
             get_using_your_tools_guidance(),
         ]
     )

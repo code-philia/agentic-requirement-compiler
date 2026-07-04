@@ -2,20 +2,17 @@ import json
 import os
 from typing import Any, Dict, List
 
-from .codebase_explorer import CodebaseExplorer
+from .arc_agent import ARCAgent
 from .prompt_sections import (
-    get_codebase_explorer_guidance,
     get_common_session_guidance,
     get_compiler_role_guidance,
+    get_exploration_round_guidance,
 )
 
 
-class TestFailureVerifier(CodebaseExplorer):
+class TestFailureVerifier(ARCAgent):
     def __init__(self, log_cb=None):
-        super().__init__(
-            log_cb=log_cb,
-            agent_name="TestFailureVerifier",
-        )
+        super().__init__(agent_name="TestFailureVerifier", log_cb=log_cb)
 
     def get_system_prompt(self) -> str:
         return f"""{get_compiler_role_guidance(
@@ -49,14 +46,21 @@ Rules:
 
 {get_common_session_guidance()}
 
-{get_codebase_explorer_guidance()}
+{get_exploration_round_guidance()}
 """
 
     def get_tool_names(self) -> List[str]:
-        tool_names = list(super().get_tool_names())
-        if "run_build" not in tool_names:
-            tool_names.append("run_build")
-        return tool_names
+        return [
+            "read_file",
+            "list_directory",
+            "glob",
+            "grep",
+            "search_interfaces_by_keyword",
+            "search_interfaces_by_relation",
+            "find_interface_impacts",
+            "get_node_relations",
+            "run_build",
+        ]
 
     @staticmethod
     def _read_target_test_code(test_files: list[str], max_chars_per_file: int = 4000, max_files: int = 3) -> str:

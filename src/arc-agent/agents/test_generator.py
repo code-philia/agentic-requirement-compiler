@@ -1,7 +1,6 @@
 from typing import Any, Dict, List
 
 from .arc_agent import ARCAgent
-from .codebase_explorer import CodebaseExplorer
 from .prompt_sections import (
     get_common_session_guidance,
     get_compiler_role_guidance,
@@ -15,7 +14,6 @@ class TestGenerator(ARCAgent):
             agent_name="TestGenerator",
             log_cb=log_cb,
         )
-        self.codebase_explorer = CodebaseExplorer(log_cb)
         self._soft_read_guard: dict[str, int] = {}
         self._new_evidence_since_read = True
 
@@ -149,49 +147,12 @@ Generate Unit, Integration, and E2E coverage in one pass.
 - Integration and E2E must exercise the real owned chain instead of validating mocked success paths.
 """
 
-    @staticmethod
-    def _build_explorer_task(design_mode: str) -> str:
-        if design_mode == "non_leaf_ui_only":
-            return (
-                "Localize the smallest parent-shell source files, setup files, and existing test patterns needed "
-                "to write parent-owned Integration and E2E coverage for the current node."
-            )
-        if design_mode == "non_leaf_full":
-            return (
-                "Localize the smallest parent-owned source files, route/layout/provider boundaries, and nearby "
-                "test/setup files needed to generate Integration and E2E validation for the current node."
-            )
-        return (
-            "Localize the smallest existing source, setup, and adjacent test-pattern files needed to generate "
-            "Unit, Integration, and E2E coverage for the current leaf node."
-        )
-
-    async def _run_generation_codebase_explorer(
-        self,
-        node_id: str,
-        preloaded_source: str | None = None,
-        design_mode: str = "leaf_full",
-    ) -> dict[str, Any]:
-        focus_hints = [
-            f"Design mode: {design_mode}",
-            "Surface existing test patterns, setup files, and the most natural target test locations.",
-            "Prefer low file count and contract-aligned test ownership.",
-        ]
-        return await self.codebase_explorer.explore(
-            node_id=node_id,
-            task_brief=self._build_explorer_task(design_mode),
-            focus_hints=focus_hints,
-            preloaded_source=preloaded_source,
-            max_steps=8,
-        )
-
     def build_initial_messages(
         self,
         node_id: str,
         requirement_data: Dict[str, Any],
         preloaded_source: str = None,
         design_mode: str = "leaf_full",
-        explorer_report: dict[str, Any] | None = None,
     ) -> tuple:
         from .context_pipeline import context_pipeline
         from .tools import TOOL_REGISTRY
@@ -201,23 +162,21 @@ Generate Unit, Integration, and E2E coverage in one pass.
             agent_type=self.agent_name,
             preloaded_source=preloaded_source,
         )
-        explorer_context = ""
-        if explorer_report:
-            explorer_context = "\n" + CodebaseExplorer.format_report_block(explorer_report) + "\n"
 
         user_prompt = f"""
 ### Current Node Context
 Read this first. The current requirement payload below is the authoritative task input for node `{node_id}`.
 {dynamic_ctx}
-{explorer_context}
 
 ### Task
 {self._build_scope_instruction(design_mode)}
 
 Additional rules:
-- If `<codebase_explorer_report>` exists, use it as the initial localization map for source owners, existing test patterns, and setup files before launching new search.
 - Cover the spec, not speculation.
 - Use the provided requirement context plus `<interfaces>` blocks as the authoritative contract for ownership, visible literals, routes, messages, field labels, and test focus.
+- Explore broadly enough to cover owner files, existing test patterns, setup files, and runtime scaffolds before writing tests. Do not assume the nearest test file pattern is sufficient if the feature depends on DB, auth, or startup wiring.
+- Run exploration in rounds: batch independent `grep`/`glob`/`list_directory` calls, then batch the highest-value `read_file` calls, then summarize what you learned before continuing.
+- After each exploration round, include these headings in plain text: `KNOWN_FACTS`, `FILES_READ`, `MISSING_EVIDENCE`, `NEXT_READS`, `EXPLORATION_DONE`.
 - Prefer one main test file per enabled layer, or one file per coherent scenario group when that is cleaner.
 - Do not write tests that assert parent-owned behavior outside this node's scope.
 - Keep the file count low and stable.
@@ -250,26 +209,6 @@ When finished, output one JSON array in a `json` markdown block:
         tools = [TOOL_REGISTRY[name]["schema"] for name in self.get_tool_names() if name in TOOL_REGISTRY]
         return messages, tools
 
-    async def build_initial_messages_with_explorer(
-        self,
-        node_id: str,
-        requirement_data: Dict[str, Any],
-        preloaded_source: str = None,
-        design_mode: str = "leaf_full",
-    ) -> tuple:
-        explorer_report = await self._run_generation_codebase_explorer(
-            node_id=node_id,
-            preloaded_source=preloaded_source,
-            design_mode=design_mode,
-        )
-        return self.build_initial_messages(
-            node_id=node_id,
-            requirement_data=requirement_data,
-            preloaded_source=preloaded_source,
-            design_mode=design_mode,
-            explorer_report=explorer_report,
-        )
-
     async def generate_tests(
         self,
         node_id: str,
@@ -277,7 +216,7 @@ When finished, output one JSON array in a `json` markdown block:
         preloaded_source: str = None,
         design_mode: str = "leaf_full",
     ) -> str:
-        messages, tools = await self.build_initial_messages_with_explorer(
+        messages, tools = self.build_initial_messages(
             node_id=node_id,
             requirement_data=requirement_data,
             preloaded_source=preloaded_source,
