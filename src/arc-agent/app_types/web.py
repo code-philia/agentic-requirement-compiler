@@ -95,7 +95,7 @@ def _normalize_backend_test_path(file_path: str) -> str:
 
 def _is_valid_web_e2e_test_path(file_path: str) -> bool:
     normalized = (file_path or "").strip().replace("\\", "/").lstrip("./")
-    return normalized.startswith("backend/test-e2e/") and normalized.endswith((".spec.js", ".spec.jsx", ".spec.ts", ".spec.tsx"))
+    return normalized.startswith("backend/test-e2e/") and normalized.endswith((".js", ".jsx", ".ts", ".tsx"))
 
 
 def _is_valid_web_vitest_test_path(file_path: str) -> bool:
@@ -703,7 +703,7 @@ class WebAppType(AppTypeHandler):
             )
         if normalized_type == "e2e" and not _is_valid_web_e2e_test_path(file_path):
             return (
-                "Web E2E tests must live under `backend/test-e2e/...` and use a Playwright spec filename. "
+                "Web E2E tests must live under `backend/test-e2e/...` and use a JavaScript or TypeScript source filename. "
                 f"Received: {file_path}"
             )
         return None
