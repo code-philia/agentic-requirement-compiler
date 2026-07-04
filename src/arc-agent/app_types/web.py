@@ -1,7 +1,10 @@
 import re
 import os
 import json
+import sys
 import asyncio
+import subprocess
+import signal
 
 from typing import Awaitable, Callable
 
@@ -284,21 +287,279 @@ async def _wait_for_tcp_server_shutdown(host: str, port: int, timeout: float = 1
     return False
 
 
-async def _terminate_process(process: asyncio.subprocess.Process | None, *, port: int | None = None) -> None:
-    if process is None or process.returncode is not None:
+def _list_port_owner_pids(port: int) -> list[int]:
+    normalized_port = str(int(port))
+    pids: set[int] = set()
+
+    try:
+        if os.name == "nt":
+            result = subprocess.run(
+                ["netstat", "-ano", "-p", "tcp"],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                check=False,
+            )
+            output = (result.stdout or "") + "\n" + (result.stderr or "")
+            for line in output.splitlines():
+                parts = line.split()
+                if len(parts) < 5:
+                    continue
+                protocol, local_address, _, state, pid_text = parts[:5]
+                if protocol.upper() != "TCP":
+                    continue
+                if state.upper() != "LISTENING":
+                    continue
+                if not local_address.endswith(f":{normalized_port}"):
+                    continue
+                try:
+                    pid = int(pid_text)
+                except ValueError:
+                    continue
+                if pid > 0:
+                    pids.add(pid)
+        else:
+            result = subprocess.run(
+                ["lsof", "-ti", f"TCP:{normalized_port}", "-sTCP:LISTEN"],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                check=False,
+            )
+            for line in (result.stdout or "").splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    pid = int(line)
+                except ValueError:
+                    continue
+                if pid > 0:
+                    pids.add(pid)
+    except Exception:
+        return []
+
+    current_pid = os.getpid()
+    return sorted(pid for pid in pids if pid != current_pid)
+
+
+def _read_linux_process_cwd(pid: int) -> str:
+    try:
+        return os.readlink(f"/proc/{pid}/cwd")
+    except Exception:
+        return ""
+
+
+def _read_unix_process_ps(pid: int) -> dict[str, str]:
+    try:
+        result = subprocess.run(
+            ["ps", "-p", str(pid), "-o", "ppid=", "-o", "comm=", "-o", "args="],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            check=False,
+        )
+        line = (result.stdout or "").strip()
+        match = re.match(r"^\s*(\d+)\s+(\S+)\s+(.*)$", line)
+        if not match:
+            return {}
+        return {
+            "ppid": match.group(1).strip(),
+            "name": match.group(2).strip(),
+            "command": match.group(3).strip(),
+        }
+    except Exception:
+        return {}
+
+
+def _read_macos_process_cwd(pid: int) -> str:
+    try:
+        result = subprocess.run(
+            ["lsof", "-a", "-p", str(pid), "-d", "cwd", "-Fn"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            check=False,
+        )
+        for line in (result.stdout or "").splitlines():
+            if line.startswith("n"):
+                return line[1:].strip()
+    except Exception:
+        return ""
+    return ""
+
+
+def _read_windows_process_info(pid: int) -> dict[str, str]:
+    powershell_candidates = [
+        ["powershell", "-NoProfile", "-Command"],
+        ["pwsh", "-NoProfile", "-Command"],
+    ]
+    script = (
+        f'$p = Get-CimInstance Win32_Process -Filter "ProcessId = {pid}"; '
+        'if ($p) { '
+        'Write-Output ("PPID=" + [string]$p.ParentProcessId); '
+        'Write-Output ("NAME=" + [string]$p.Name); '
+        'Write-Output ("EXE=" + [string]$p.ExecutablePath); '
+        'Write-Output ("CMD=" + [string]$p.CommandLine); '
+        '}'
+    )
+    for prefix in powershell_candidates:
+        try:
+            result = subprocess.run(
+                [*prefix, script],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                check=False,
+            )
+        except Exception:
+            continue
+
+        info: dict[str, str] = {}
+        for line in (result.stdout or "").splitlines():
+            if "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            info[key.strip().lower()] = value.strip()
+        if info:
+            return info
+    return {}
+
+
+def _get_process_fingerprint(pid: int) -> dict[str, str]:
+    info: dict[str, str] = {"pid": str(pid)}
+
+    if os.name == "nt":
+        windows_info = _read_windows_process_info(pid)
+        info["ppid"] = windows_info.get("ppid", "")
+        info["name"] = windows_info.get("name", "")
+        info["exe"] = windows_info.get("exe", "")
+        info["command"] = windows_info.get("cmd", "")
+        info["cwd"] = ""
+        return info
+
+    unix_info = _read_unix_process_ps(pid)
+    info["ppid"] = unix_info.get("ppid", "")
+    info["name"] = unix_info.get("name", "")
+    info["command"] = unix_info.get("command", "")
+    info["exe"] = ""
+    if sys.platform.startswith("linux"):
+        info["cwd"] = _read_linux_process_cwd(pid)
+    elif sys.platform == "darwin":
+        info["cwd"] = _read_macos_process_cwd(pid)
+    else:
+        info["cwd"] = ""
+    return info
+
+
+def _format_backend_instance_fingerprint(*, launcher_pid: int | None, port: int) -> str:
+    owner_pids = _list_port_owner_pids(port)
+    fingerprint_pids: list[int] = []
+    if launcher_pid and launcher_pid > 0:
+        fingerprint_pids.append(launcher_pid)
+    fingerprint_pids.extend(pid for pid in owner_pids if pid not in fingerprint_pids)
+
+    lines = [
+        f"Platform: {sys.platform}",
+        f"Launcher PID: {launcher_pid if launcher_pid and launcher_pid > 0 else 'unknown'}",
+        f"Port Owner PID(s): {', '.join(str(pid) for pid in owner_pids) if owner_pids else 'none detected'}",
+    ]
+    if launcher_pid and launcher_pid > 0 and launcher_pid not in owner_pids:
+        lines.append(
+            "Note: launcher PID does not own the port directly. This is expected when `npm` or a shell spawns the actual backend child process."
+        )
+
+    for pid in fingerprint_pids:
+        info = _get_process_fingerprint(pid)
+        lines.extend(
+            [
+                f"- PID {pid}",
+                f"  PPID: {info.get('ppid') or 'unknown'}",
+                f"  Name: {info.get('name') or 'unknown'}",
+                f"  Executable: {info.get('exe') or 'unknown'}",
+                f"  Command: {info.get('command') or 'unknown'}",
+                f"  CWD: {info.get('cwd') or 'unavailable'}",
+            ]
+        )
+
+    return "\n".join(lines)
+
+
+async def _force_kill_pid(pid: int) -> None:
+    if pid <= 0 or pid == os.getpid():
         return
 
     try:
-        process.terminate()
-        await asyncio.wait_for(process.wait(), timeout=5.0)
+        if os.name == "nt":
+            process = await asyncio.create_subprocess_exec(
+                "taskkill",
+                "/PID",
+                str(pid),
+                "/T",
+                "/F",
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+            await process.communicate()
+            return
+        os.kill(pid, signal.SIGKILL)
     except Exception:
+        return
+
+
+async def _force_release_port(port: int) -> list[int]:
+    killed_pids: list[int] = []
+    for pid in _list_port_owner_pids(port):
+        await _force_kill_pid(pid)
+        killed_pids.append(pid)
+    return killed_pids
+
+
+async def _ensure_port_released(port: int, *, context: str, timeout: float = 5.0) -> str:
+    if await _wait_for_tcp_server_shutdown("127.0.0.1", port, timeout=timeout):
+        return f"{context}: port {port} is released."
+
+    owners_before_force = _list_port_owner_pids(port)
+    killed_pids = await _force_release_port(port)
+
+    if await _wait_for_tcp_server_shutdown("127.0.0.1", port, timeout=10.0):
+        if killed_pids:
+            return (
+                f"{context}: force-released port {port} by terminating PID(s) "
+                f"{', '.join(str(pid) for pid in killed_pids)}."
+            )
+        return f"{context}: port {port} is released."
+
+    owners_after_force = _list_port_owner_pids(port)
+    raise RuntimeError(
+        f"{context}: port {port} is still occupied after forced cleanup. "
+        f"Owners before force: {owners_before_force or 'unknown'}. "
+        f"Killed: {killed_pids or 'none'}. "
+        f"Remaining owners: {owners_after_force or 'unknown'}."
+    )
+
+
+async def _terminate_process(process: asyncio.subprocess.Process | None, *, port: int | None = None) -> str:
+    if process is not None and process.returncode is None:
         try:
-            process.kill()
-            await process.wait()
+            process.terminate()
+            await asyncio.wait_for(process.wait(), timeout=5.0)
         except Exception:
-            pass
-    if port is not None:
-        await _wait_for_tcp_server_shutdown("127.0.0.1", port, timeout=10.0)
+            try:
+                process.kill()
+                await process.wait()
+            except Exception:
+                pass
+
+    if port is None:
+        return "No port cleanup required."
+
+    return await _ensure_port_released(port, context="Backend runtime cleanup")
 
 
 def _read_package_scripts(package_dir: str) -> dict[str, str]:
@@ -357,14 +618,23 @@ async def _prepare_e2e_database(workspace_path: str) -> tuple[bool, str]:
     return _extract_exit_code(prepare_output) == 0, prepare_output
 
 
-async def _start_backend_runtime(workspace_path: str) -> tuple[asyncio.subprocess.Process | None, str]:
+async def _start_backend_runtime(workspace_path: str) -> tuple[asyncio.subprocess.Process | None, str, str, str]:
     backend_path = os.path.join(workspace_path, "backend")
     start_command = _resolve_backend_start_command(backend_path)
     if not start_command:
-        return None, (
+        return None, "", (
             "Backend package.json must define `start` or `dev` so the backend can host "
             "the built frontend on the single web port."
+        ), ""
+
+    try:
+        startup_cleanup_note = await _ensure_port_released(
+            get_web_port(),
+            context="Pre-start port cleanup",
+            timeout=1.0,
         )
+    except RuntimeError as exc:
+        return None, start_command, str(exc), ""
 
     try:
         backend_process = await asyncio.create_subprocess_shell(
@@ -378,17 +648,27 @@ async def _start_backend_runtime(workspace_path: str) -> tuple[asyncio.subproces
             },
         )
     except Exception as exc:
-        return None, f"Failed to start backend runtime with `{start_command}`: {str(exc)}"
+        return None, start_command, f"Failed to start backend runtime with `{start_command}`: {str(exc)}", ""
 
     server_ready = await _wait_for_tcp_server("127.0.0.1", get_web_port(), timeout=20.0)
     if not server_ready:
-        await _terminate_process(backend_process, port=get_web_port())
-        return None, (
+        cleanup_note = ""
+        try:
+            cleanup_note = await _terminate_process(backend_process, port=get_web_port())
+        except Exception as cleanup_exc:
+            cleanup_note = f"Backend runtime cleanup after failed startup also failed: {cleanup_exc}"
+        return None, start_command, (
             f"Failed to start backend runtime with `{start_command}` on port {get_web_port()} "
-            "within 20 seconds."
-        )
+            "within 20 seconds.\n"
+            f"{startup_cleanup_note}\n"
+            f"{cleanup_note}"
+        ), ""
 
-    return backend_process, start_command
+    instance_fingerprint = _format_backend_instance_fingerprint(
+        launcher_pid=backend_process.pid,
+        port=get_web_port(),
+    )
+    return backend_process, start_command, startup_cleanup_note, instance_fingerprint
 
 
 class WebAppType(AppTypeHandler):
@@ -463,6 +743,10 @@ class WebAppType(AppTypeHandler):
         frontend_build_output = ""
         database_prepare_output = ""
         backend_start_command = ""
+        backend_startup_detail = ""
+        backend_instance_fingerprint = ""
+        backend_cleanup_note = ""
+        result_body = ""
 
         if normalized_type == "e2e":
             build_ok, frontend_build_output = await _build_frontend_dist(self.workspace_path)
@@ -482,28 +766,50 @@ class WebAppType(AppTypeHandler):
                     f"=== Database Prepare ===\n{database_prepare_output}",
                 )
 
-            backend_process, backend_start_command = await _start_backend_runtime(self.workspace_path)
+            (
+                backend_process,
+                backend_start_command,
+                backend_startup_detail,
+                backend_instance_fingerprint,
+            ) = await _start_backend_runtime(self.workspace_path)
             if backend_process is None:
                 return _prepend_test_execution_header(
                     execution,
                     "Failed to start backend server for E2E testing.\n\n"
                     f"=== Frontend Build ===\n{frontend_build_output}\n\n"
                     f"=== Database Prepare ===\n{database_prepare_output}\n\n"
-                    f"=== Backend Runtime Error ===\n{backend_start_command}\n",
+                    f"=== Backend Runtime Command ===\n{backend_start_command or 'Unavailable'}\n\n"
+                    f"=== Backend Runtime Error ===\n{backend_startup_detail or 'No startup detail recorded.'}\n",
                 )
 
         try:
-            result = await _execute_web_test_command(execution["command"], cwd=execution["working_directory"])
+            result_body = await _execute_web_test_command(execution["command"], cwd=execution["working_directory"])
             if normalized_type == "e2e":
-                result = (
+                result_body = (
                     f"=== Frontend Build ===\n{frontend_build_output}\n\n"
                     f"=== Database Prepare ===\n{database_prepare_output}\n\n"
                     f"=== Backend Runtime ===\nCommand: {backend_start_command}\n"
-                    f"Port: {get_web_port()}\n\n{result}"
+                    f"Port: {get_web_port()}\n"
+                    f"Startup Cleanup: {backend_startup_detail or 'No startup cleanup note recorded.'}\n\n"
+                    f"=== Backend Instance Fingerprint ===\n{backend_instance_fingerprint or 'No backend instance fingerprint recorded.'}\n\n"
+                    f"{result_body}"
                 )
-            return _prepend_test_execution_header(execution, result)
         finally:
-            await _terminate_process(backend_process, port=get_web_port())
+            if normalized_type == "e2e":
+                try:
+                    backend_cleanup_note = await _terminate_process(backend_process, port=get_web_port())
+                except Exception as cleanup_exc:
+                    backend_cleanup_note = f"Backend runtime cleanup failed: {cleanup_exc}"
+
+        if normalized_type == "e2e":
+            result_body = (
+                f"{result_body}\n\n"
+                f"=== Backend Runtime Cleanup ===\n{backend_cleanup_note or 'No cleanup note recorded.'}"
+            )
+            if "Backend runtime cleanup failed:" in backend_cleanup_note and "Exit Code: 0" in result_body:
+                result_body = result_body.replace("Exit Code: 0", "Exit Code: 1", 1)
+
+        return _prepend_test_execution_header(execution, result_body)
 
     async def run_test_group(self, test_type: str, file_paths: list[str]) -> str:
         normalized_type = (test_type or "").strip().lower()
@@ -586,15 +892,25 @@ class WebAppType(AppTypeHandler):
 
         backend_process = None
         backend_start_command = ""
+        backend_startup_detail = ""
+        backend_instance_fingerprint = ""
+        backend_cleanup_note = ""
+        body = ""
         try:
-            backend_process, backend_start_command = await _start_backend_runtime(self.workspace_path)
+            (
+                backend_process,
+                backend_start_command,
+                backend_startup_detail,
+                backend_instance_fingerprint,
+            ) = await _start_backend_runtime(self.workspace_path)
             if backend_process is None:
                 return _prepend_group_execution_header(
                     execution,
                     "Exit Code: 1\n\n"
                     f"=== Frontend Build ===\n{frontend_build_output}\n\n"
                     f"=== Database Prepare ===\n{database_prepare_output}\n\n"
-                    f"STDERR:\n{backend_start_command}\n",
+                    f"=== Backend Runtime Command ===\n{backend_start_command or 'Unavailable'}\n\n"
+                    f"STDERR:\n{backend_startup_detail or 'No startup detail recorded.'}\n",
                 )
 
             playwright_command = "npx playwright test"
@@ -614,13 +930,25 @@ class WebAppType(AppTypeHandler):
                 f"=== Database Prepare ===\n{database_prepare_output}\n\n"
                 f"=== Backend Runtime ===\nCommand: {backend_start_command}\n"
                 f"Port: {get_web_port()}\n\n"
+                f"Startup Cleanup: {backend_startup_detail or 'No startup cleanup note recorded.'}\n\n"
+                f"=== Backend Instance Fingerprint ===\n{backend_instance_fingerprint or 'No backend instance fingerprint recorded.'}\n\n"
                 f"{playwright_result}"
             )
-            return _prepend_group_execution_header(execution, body)
         except Exception as exc:
             return f"Failed to start grouped E2E execution: {str(exc)}"
         finally:
-            await _terminate_process(backend_process, port=get_web_port())
+            try:
+                backend_cleanup_note = await _terminate_process(backend_process, port=get_web_port())
+            except Exception as cleanup_exc:
+                backend_cleanup_note = f"Backend runtime cleanup failed: {cleanup_exc}"
+
+        body = (
+            f"{body}\n\n"
+            f"=== Backend Runtime Cleanup ===\n{backend_cleanup_note or 'No cleanup note recorded.'}"
+        )
+        if "Backend runtime cleanup failed:" in backend_cleanup_note and "Exit Code: 0" in body:
+            body = body.replace("Exit Code: 0", "Exit Code: 1", 1)
+        return _prepend_group_execution_header(execution, body)
 
     @classmethod
     def build_stack_block(cls) -> str:
