@@ -22,12 +22,14 @@ class AgentRuntime:
         project_dir: str | None = None,
         runner_events_path: str | None = None,
         traceability_db_path: str | None = None,
+        traceability_snapshot_path: str | None = None,
         demo_test_status_path: str | None = None,
     ) -> "AgentRuntime":
         paths = RuntimePaths.from_env(
             project_dir=project_dir,
             runner_events_path=runner_events_path,
             traceability_db_path=traceability_db_path,
+            traceability_snapshot_path=traceability_snapshot_path,
             demo_test_status_path=demo_test_status_path,
         )
         paths.ensure_parent_dirs()

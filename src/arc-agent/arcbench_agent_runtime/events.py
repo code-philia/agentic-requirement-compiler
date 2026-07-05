@@ -15,7 +15,7 @@ class EventClient:
     def __init__(self, paths: RuntimePaths) -> None:
         self.paths = paths
 
-    def emit_requirement_state(self, node_id: str, phase: str, status: str, message: str | None = None) -> None:
+    def _emit_requirement_state(self, node_id: str, phase: str, status: str, message: str | None = None) -> None:
         normalized_node_id = str(node_id or "").strip()
         if not normalized_node_id:
             return
@@ -32,18 +32,18 @@ class EventClient:
         )
 
     def mark_design_done(self, node_id: str, message: str | None = None) -> None:
-        self.emit_requirement_state(node_id, "design", "completed", message)
+        self._emit_requirement_state(node_id, "design", "completed", message)
 
     def mark_implementation_done(self, node_id: str, message: str | None = None) -> None:
-        self.emit_requirement_state(node_id, "implement", "completed", message)
+        self._emit_requirement_state(node_id, "implement", "completed", message)
 
     def mark_test_passed(self, node_id: str, message: str | None = None) -> None:
-        self.emit_requirement_state(node_id, "test", "passed", message)
+        self._emit_requirement_state(node_id, "test", "passed", message)
 
     def mark_test_failed(self, node_id: str, message: str | None = None) -> None:
-        self.emit_requirement_state(node_id, "test", "failed", message)
+        self._emit_requirement_state(node_id, "test", "failed", message)
 
-    def emit_runner_state(self, state: str, message: str | None = None) -> None:
+    def _emit_runner_state(self, state: str, message: str | None = None) -> None:
         append_jsonl(
             self.paths.runner_events_path,
             {
@@ -54,12 +54,27 @@ class EventClient:
             },
         )
 
-    def emit_traceability_event(self, payload: dict[str, Any]) -> None:
+    def mark_run_started(self, message: str | None = None) -> None:
+        self._emit_runner_state("running", message)
+
+    def mark_run_completed(self, message: str | None = None) -> None:
+        self._emit_runner_state("completed", message)
+
+    def mark_run_failed(self, message: str | None = None) -> None:
+        self._emit_runner_state("failed", message)
+
+    def mark_run_paused(self, message: str | None = None) -> None:
+        self._emit_runner_state("paused", message)
+
+    def mark_run_resumed(self, message: str | None = None) -> None:
+        self._emit_runner_state("resumed", message)
+
+    def _emit_traceability_event(self, payload: dict[str, Any]) -> None:
         normalized = dict(payload)
         normalized.setdefault("timestamp", utc_timestamp())
         append_jsonl(self.paths.runner_events_path, normalized)
 
-    def emit_refresh_signal(
+    def _emit_refresh_signal(
         self,
         *,
         reason: str,
@@ -85,6 +100,21 @@ class EventClient:
                     "preview": bool(preview),
                 },
             },
+        )
+
+    def notify_traceability_changed(self, reason: str) -> None:
+        self._emit_refresh_signal(
+            reason=reason,
+            submission=True,
+            traceability_selected=True,
+            traceability_all=True,
+        )
+
+    def notify_commit_history_changed(self, reason: str, *, preview: bool = False) -> None:
+        self._emit_refresh_signal(
+            reason=reason,
+            commit_history=True,
+            preview=preview,
         )
 
     def read_demo_test_status_payload(self) -> dict[str, Any]:
@@ -114,12 +144,7 @@ class EventClient:
         else:
             payload["tests"].pop(normalized_test_id, None)
         self.write_demo_test_status_payload(payload)
-        self.emit_refresh_signal(
-            reason="demo_test_status_updated",
-            submission=True,
-            traceability_selected=True,
-            traceability_all=True,
-        )
+        self.notify_traceability_changed("demo_test_status_updated")
 
     def set_demo_test_statuses(self, status_by_test_id: dict[str, str | None]) -> None:
         if not status_by_test_id:
@@ -135,12 +160,7 @@ class EventClient:
             else:
                 payload["tests"].pop(normalized_test_id, None)
         self.write_demo_test_status_payload(payload)
-        self.emit_refresh_signal(
-            reason="demo_test_statuses_updated",
-            submission=True,
-            traceability_selected=True,
-            traceability_all=True,
-        )
+        self.notify_traceability_changed("demo_test_statuses_updated")
 
     def clear_demo_test_statuses(self, test_ids: list[str]) -> None:
         if not test_ids:
@@ -151,12 +171,7 @@ class EventClient:
             if normalized_test_id:
                 payload["tests"].pop(normalized_test_id, None)
         self.write_demo_test_status_payload(payload)
-        self.emit_refresh_signal(
-            reason="demo_test_statuses_cleared",
-            submission=True,
-            traceability_selected=True,
-            traceability_all=True,
-        )
+        self.notify_traceability_changed("demo_test_statuses_cleared")
 
     def set_demo_requirement_status(self, req_id: str, status: str | None) -> None:
         normalized_req_id = str(req_id or "").strip()
@@ -169,9 +184,4 @@ class EventClient:
         else:
             payload["requirements"].pop(normalized_req_id, None)
         self.write_demo_test_status_payload(payload)
-        self.emit_refresh_signal(
-            reason="demo_requirement_status_updated",
-            submission=True,
-            traceability_selected=True,
-            traceability_all=True,
-        )
+        self.notify_traceability_changed("demo_requirement_status_updated")

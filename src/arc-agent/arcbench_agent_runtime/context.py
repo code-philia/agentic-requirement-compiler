@@ -7,6 +7,7 @@ from pathlib import Path
 
 DEFAULT_RUNNER_EVENTS_PATH = "/workspace/artifacts/runner-events.jsonl"
 DEFAULT_TRACEABILITY_DB_PATH = "/workspace/artifacts/traceability.db"
+DEFAULT_TRACEABILITY_SNAPSHOT_PATH = "/workspace/artifacts/traceability.snapshot.json"
 DEFAULT_DEMO_TEST_STATUS_PATH = "/workspace/artifacts/demo-test-statuses.json"
 DEFAULT_PROJECT_DIR = "/workspace/template"
 
@@ -20,11 +21,21 @@ def _resolve_demo_status_path(runner_events_path: Path, traceability_db_path: Pa
     return traceability_db_path.parent / "demo-test-statuses.json"
 
 
+def _resolve_traceability_snapshot_path(traceability_db_path: Path) -> Path:
+    env_value = os.environ.get("ARCBENCH_TRACEABILITY_SNAPSHOT_PATH", "").strip()
+    if env_value:
+        return Path(env_value)
+    if traceability_db_path.parent:
+        return traceability_db_path.parent / "traceability.snapshot.json"
+    return Path(DEFAULT_TRACEABILITY_SNAPSHOT_PATH)
+
+
 @dataclass(frozen=True)
 class RuntimePaths:
     project_dir: Path
     runner_events_path: Path
     traceability_db_path: Path
+    traceability_snapshot_path: Path
     demo_test_status_path: Path
 
     @classmethod
@@ -34,6 +45,7 @@ class RuntimePaths:
         project_dir: str | os.PathLike[str] | None = None,
         runner_events_path: str | os.PathLike[str] | None = None,
         traceability_db_path: str | os.PathLike[str] | None = None,
+        traceability_snapshot_path: str | os.PathLike[str] | None = None,
         demo_test_status_path: str | os.PathLike[str] | None = None,
     ) -> "RuntimePaths":
         resolved_runner_events = Path(
@@ -54,6 +66,9 @@ class RuntimePaths:
             or os.environ.get("ARCBENCH_TEMPLATE_DIR", "").strip()
             or DEFAULT_PROJECT_DIR
         )
+        resolved_snapshot = Path(traceability_snapshot_path) if traceability_snapshot_path else _resolve_traceability_snapshot_path(
+            resolved_traceability_db,
+        )
         resolved_demo_status = Path(demo_test_status_path) if demo_test_status_path else _resolve_demo_status_path(
             resolved_runner_events,
             resolved_traceability_db,
@@ -62,6 +77,7 @@ class RuntimePaths:
             project_dir=resolved_project_dir,
             runner_events_path=resolved_runner_events,
             traceability_db_path=resolved_traceability_db,
+            traceability_snapshot_path=resolved_snapshot,
             demo_test_status_path=resolved_demo_status,
         )
 
@@ -69,4 +85,5 @@ class RuntimePaths:
         self.project_dir.mkdir(parents=True, exist_ok=True)
         self.runner_events_path.parent.mkdir(parents=True, exist_ok=True)
         self.traceability_db_path.parent.mkdir(parents=True, exist_ok=True)
+        self.traceability_snapshot_path.parent.mkdir(parents=True, exist_ok=True)
         self.demo_test_status_path.parent.mkdir(parents=True, exist_ok=True)

@@ -123,15 +123,15 @@ class GitClient:
             self.run(["init"])
         user_name, user_email = self.configure_identity()
         self.ensure_arc_gitignore()
-        self.events.emit_refresh_signal(reason="git_initialized", commit_history=True)
+        self.events.notify_commit_history_changed("git_initialized")
         if create_initial_commit:
             self.run(["add", "."])
             result = self.run(["commit", "-m", "init"], check=False)
             if result.returncode == 0:
-                self.events.emit_refresh_signal(reason="git_init_commit", commit_history=True, preview=True)
+                self.events.notify_commit_history_changed("git_init_commit", preview=True)
             elif "nothing to commit" not in (result.stdout + result.stderr):
                 raise RuntimeError(result.stderr.strip() or result.stdout.strip() or "git init commit failed")
-        self.events.emit_traceability_event(
+        self.events._emit_traceability_event(
             {
                 "type": "signal",
                 "reason": "git_identity_configured",
@@ -157,7 +157,7 @@ class GitClient:
         self.add_all()
         result = self.run(["commit", "-m", message], check=False)
         if result.returncode == 0:
-            self.events.emit_refresh_signal(reason="git_commit", commit_history=True, preview=True)
+            self.events.notify_commit_history_changed("git_commit", preview=True)
             return True
         output = (result.stdout + result.stderr).lower()
         if "nothing to commit" in output:
@@ -167,7 +167,7 @@ class GitClient:
     def rollback_last_commit(self, *, hard: bool = False) -> None:
         args = ["reset", "--hard", "HEAD~1"] if hard else ["reset", "--soft", "HEAD~1"]
         self.run(args)
-        self.events.emit_refresh_signal(reason="git_rollback_last_commit", commit_history=True, preview=True)
+        self.events.notify_commit_history_changed("git_rollback_last_commit", preview=True)
 
     def reset_to_commit(self, commit_oid: str, *, hard: bool = True) -> None:
         normalized = str(commit_oid or "").strip()
@@ -175,15 +175,15 @@ class GitClient:
             raise ValueError("commit_oid is required")
         args = ["reset", "--hard", normalized] if hard else ["reset", "--soft", normalized]
         self.run(args)
-        self.events.emit_refresh_signal(reason="git_reset_to_commit", commit_history=True, preview=True)
+        self.events.notify_commit_history_changed("git_reset_to_commit", preview=True)
 
     def restore_worktree(self) -> None:
         self.run(["reset", "--hard"])
-        self.events.emit_refresh_signal(reason="git_restore_worktree", commit_history=True, preview=True)
+        self.events.notify_commit_history_changed("git_restore_worktree", preview=True)
 
     def clean_untracked(self) -> None:
         self.run(["clean", "-fd"])
-        self.events.emit_refresh_signal(reason="git_clean_untracked", commit_history=True, preview=True)
+        self.events.notify_commit_history_changed("git_clean_untracked", preview=True)
 
     def current_head(self) -> str | None:
         result = self.run(["rev-parse", "HEAD"], check=False)
