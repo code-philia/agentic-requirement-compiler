@@ -1,93 +1,90 @@
 # Contributing to Agentic Requirement Compiler (ARC)
 
-First off, thank you for considering contributing to ARC! It's people like you that make the open-source community such an amazing place to learn, inspire, and create.
+Thanks for contributing to ARC.
 
-## 1. Prerequisites
+ARC is currently best understood as a set of ideas and a framework for requirement-driven software generation. We welcome contributions that extend or sharpen that framework, including:
 
-Before you start, please ensure you have the following set up:
+- new tools or tool integrations
+- new skills or prompting workflows
+- alternative execution pipelines
+- support for different foundation agents or model backends
+- documentation, examples, and research-oriented improvements
 
-* **Python**: Version `[TODO: Insert version, e.g., 3.10+]`.
-* **Package Manager**: We use `[TODO: pip / poetry / uv]` for dependency management.
-* **API Keys**: You will need access to LLM providers (e.g., OpenAI, Anthropic) if you intend to run integration tests.
-    * *Note: For basic logic changes, we provide mocked tests that do not require API keys.*
+## Before You Start
 
-## 2. Development Setup
+Please first check whether a similar issue or pull request already exists.
 
-### Installation
+Useful repository areas:
 
-1.  **Fork and Clone** the repository.
-2.  **Create a Virtual Environment**:
-    ```bash
-    # [TODO: Insert command to create venv]
-    python -m venv venv
-    source venv/bin/activate
-    ```
-3.  **Install Dependencies**:
-    ```bash
-    # [TODO: Insert command to install dev dependencies]
-    pip install -r requirements-dev.txt
-    ```
+- `src/arc-agent/`: current CLI-oriented ARC implementation
+- `src/arc-extension/`: VS Code extension and interactive UI work
+- `README.md`: project overview and research context
 
-### Environment Configuration
+## Submit an Issue
 
-1.  Copy the example environment file: `cp .env.example .env`
-2.  **Important**: Do not commit your `.env` file to version control.
-3.  `[TODO: Explain which specific environment variables are mandatory for local dev]`
+Open an issue when you want to:
 
-## 3. Project Structure Guide
+- report a bug
+- propose a feature
+- discuss a design direction
+- ask a focused implementation question
 
-To help you navigate the codebase:
+When opening an issue, include:
 
-* `src/agents/`: **[TODO: Add description]** Contains individual agent definitions (UI Agent, DB Agent).
-* `src/compiler/`: **[TODO: Add description]** Core logic for parsing requirements and managing the traceability graph.
-* `tests/unit/`: Tests that mock LLM calls (Safe to run often).
-* `tests/integration/`: Tests that make real API calls (Costs money, run sparingly).
+- what you expected
+- what happened instead
+- steps to reproduce, if this is a bug
+- relevant logs, screenshots, or requirement examples
+- your suggested direction, if you already have one
 
-## 4. Testing Policy
+If your change is large, architectural, or research-facing, opening an issue before writing code is strongly preferred.
 
-We use `[TODO: pytest / unittest]` for testing.
+## Submit a Pull Request
 
-### Unit Tests (Mocked)
-All PRs must pass unit tests. These simulate LLM responses and check the logic of the compiler and traceability mapping.
+1. Fork the repository.
+2. Create a feature branch from your fork.
+3. Make the smallest coherent change that solves one problem clearly.
+4. Run the relevant checks for the part you changed.
+5. Update documentation when behavior, workflow, or contribution surface changes.
+6. Open a pull request with a clear description of the change and why it is needed.
+
+Please include in the PR:
+
+- the problem being solved
+- the scope of the change
+- how you validated it
+- screenshots or logs when the change affects the UI, workflow, or traceability behavior
+- links to related issues, if any
+
+## Local Notes
+
+For the Python CLI:
+
 ```bash
-# [TODO: Command to run unit tests]
-pytest tests/unit
-
+cd src/arc-agent
+uv venv
+uv pip install -r requirements.txt
+uv pip install -e .
 ```
 
-### Integration Tests (Live)
-
-**Warning**: These tests consume API tokens.
-Run these only if you are modifying the Prompt Engineering or the interaction logic between agents.
+For the VS Code extension:
 
 ```bash
-# [TODO: Command to run integration tests]
-pytest tests/integration
-
+cd src/arc-extension
+npm install
+npm run compile
+npm run lint
 ```
 
-## 5. Submission Guidelines
+Run the checks that match your change. If you did not run something important, state that clearly in the PR.
 
-### Commit Convention
+## Contribution Style
 
-We follow the **Conventional Commits** specification. This allows us to automatically generate changelogs.
+- Prefer focused PRs over broad mixed changes.
+- Preserve traceability-oriented behavior where possible.
+- Keep docs aligned with code changes.
+- Explain non-obvious design decisions directly in the PR description.
 
-* `feat`: A new feature (e.g., adding a new Agent).
-* `fix`: A bug fix (e.g., fixing a broken traceability link).
-* `docs`: Documentation only changes.
-* `style`: Formatting, missing semi-colons, etc; no code change.
+## Questions
 
-### Pull Requests
-
-1. **Search**: Check if a similar PR already exists.
-2. **Branch**: Create a new branch: `git checkout -b feat/my-new-feature`.
-3. **Traceability Check**: If you modify the compiler, please include a screenshot or log showing that the *Traceability Chain* (Req -> Code) is preserved. `[TODO: explain how to verify this]`.
-4. **Linting**: Ensure your code is formatted correctly using `[TODO: Black / Ruff / Flake8]`.
-
-## 6. Code of Conduct
-
-Please note that this project is released with a [Code of Conduct](https://www.google.com/search?q=CODE_OF_CONDUCT.md). By participating in this project you agree to abide by its terms.
-
-## 7. Questions?
-
-Feel free to open a specific issue tagged `question` or contact `[TODO: Your Email or Discord Link]`.
+If you are unsure whether an idea fits ARC, open an issue first. That is the fastest way to align on direction before implementation.

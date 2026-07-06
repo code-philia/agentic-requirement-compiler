@@ -1,251 +1,271 @@
 # Agentic Requirement Compiler (ARC)
 
-![License](https://img.shields.io/badge/license-MIT-blue.svg)
+<p align="center">
+  ARC treats requirements as compilable artifacts rather than loose prompt context.
+  It turns structured requirement trees into interfaces, tests, code, and an auditable execution trail.
+</p>
 
-> **Turn your requirement documents into running full-stack projects with full traceability.**
+<p align="center">
+  <a href="#news">News</a> &middot;
+  <a href="#what-arc-does">Pipeline</a> &middot;
+  <a href="#getting-started">Getting Started</a> &middot;
+  <a href="#requirement-model">Requirement Model</a> &middot;
+  <a href="#visualization">ARC-Bench</a>
+</p>
 
-## Introduction
+[![License: MIT](https://img.shields.io/badge/License-MIT-0f172a.svg)](LICENSE)
+[![Python 3.11+](https://img.shields.io/badge/Python-3.11%2B-2563eb.svg)](#getting-started)
+[![CLI](https://img.shields.io/badge/Interface-CLI-16a34a.svg)](#cli-usage)
+[![Status](https://img.shields.io/badge/Status-Active%20Build-9333ea.svg)](#news)
 
-**Agentic Requirement Compiler (ARC)** is an open-source tool powered by Multi-Agent Systems (MAS). It parses structured requirement documents and compiles them into executable projects.
+> Instead of asking an LLM to "write an app" from a long prompt, ARC compiles structured requirements through staged agents, test-first generation, and explicit traceability.
 
-Unlike standard code generators, ARC focuses on **Traceability**. It maintains a rigorous chain of custody from the initial requirement node down to the specific lines of code and test cases.
+## News &#x2728;
 
-## Table of Contents
+- <font color="#93b071"><strong>2026-06-25 &middot; Accepted</strong></font> The paper <em>Compiling Large Multi-Modal Requirement Documents into Runnable Software Systems: From an Agentic Test-Driven Perspective</em> was accepted to ISSTA 2026.
+- <font color="#93b071"><strong>2026-07-06 &middot; Released</strong></font> ARC CLI end-to-end v1, the first complete requirement-to-system compilation flow from the command line.
+- <font color="#598f91"><strong>In progress</strong></font> Integrating ARC into the visual web experience for a more interactive development workflow.
+- <font color="#939ca3"><strong>Planned</strong></font> Extend ARC into a VS Code plugin so requirement compilation fits directly into day-to-day coding.
 
-- [Introduction](#introduction)
-- [Key Features](#key-features)
-- [Prerequisites](#prerequisites)
-- [Installation](#installation)
-- [Configuration](#configuration)
-- [Usage](#usage)
-  - [CLI Mode (Recommended)](#cli-mode-recommended)
-- [Target Project Directory Format](#target-project-directory-format)
-- [Requirements YAML Format](#requirements-yaml-format)
-- [Contributing](#contributing)
-- [License](#license)
+## Why ARC
 
-## Key Features
+Most AI coding workflows are still prompt-centric. A model reads a large requirement document, tries to infer structure implicitly, and produces code in one or a few broad passes.
 
-- **Multi-Agent Pipeline**: InterfaceDesigner -> TestGenerator -> TestDrivenDeveloper, with local build verification at each stage
-- **Traceability Database**: SQLite-backed tracking from requirement -> interface -> test -> code
-- **TDD Workflow**: Tests generated first, then code iteratively implemented until tests pass
-- **DAG-Aware**: Non-leaf nodes design shared DB infrastructure; leaf nodes implement full UI/API/FUNC layers
-- **Auto-Compact**: Context window managed automatically to prevent overflow during long agent runs
-- **Debug Logging**: Full LLM responses and tool outputs logged to `.arc/debug.log` in debug mode
-- **Android & Web**: Supports both Android (Java/Room/Gradle) and Web (React/Express/SQLite) project generation
+ARC takes a compiler-oriented view instead:
 
-## Prerequisites
+- Requirements are not just context. They are the source program.
+- Tests are not just verification. They are executable constraints.
+- Traceability is not optional metadata. It is part of the system contract.
 
-- **Python** 3.11+
-- **uv** (Python package manager, [install guide](https://docs.astral.sh/uv/getting-started/installation/))
-- **LLM API Key** (OpenAI-compatible endpoint)
+In practice, ARC models requirements as a structured graph, compiles them through multiple agent stages, and records how each requirement node maps to interfaces, tests, code, and commits.
 
-### Android Projects (additional)
+## What ARC Does
 
-- **JDK 21** (required by Gradle 8.4 + AGP 8.1.4)
-- **Android SDK** with `platforms;android-34` and `build-tools;34.0.0`
-  - Set `ANDROID_SDK_ROOT` environment variable, or install to a default location
+ARC is designed as a requirement-to-system compiler with a staged pipeline:
 
-## Installation
+| Stage | What ARC does |
+| --- | --- |
+| **Structured requirement modeling** | Consumes a hierarchical requirement tree with dependencies, scenarios, and optional multimodal references such as screenshots or design assets. |
+| **Interface design** | Derives explicit interfaces and implementation boundaries before broad code generation begins. |
+| **Test-first generation** | Produces unit, integration, and end-to-end tests from requirement scenarios before implementation. |
+| **Traceability by default** | Records the requirement-to-interface-to-test-to-code chain instead of treating generation as a black box. |
+
+## Getting Started
+
+Use the following setup as a practical baseline. The installation example below uses `uv`.
+
+### Requirements
+
+- [Python 3.11+](https://www.python.org/downloads/)
+- A virtual environment and package manager such as [`uv`](https://docs.astral.sh/uv/getting-started/installation/)
+- An OpenAI-compatible API endpoint and model
+
+Additional requirements for web generation:
+- [Node.js 20+](https://nodejs.org/en/download) with [`pnpm`](https://pnpm.io/installation)
+
+Additional requirements for Android generation:
+- [JDK 21](https://adoptium.net/temurin/releases/)
+- [Android SDK / Android Studio](https://developer.android.com/studio) with `platforms;android-34` and `build-tools;34.0.0`
+
+### Installation
+
+The example below uses `uv`.
 
 ```bash
-# 1. Clone the repository
-git clone https://github.com/your-username/Agentic-Requirement-Compiler.git
-cd Agentic-Requirement-Compiler
+git clone https://github.com/your-org/agentic-requirement-compiler.git
+cd agentic-requirement-compiler/src/arc-agent
 
-# 2. Navigate to the agent source
-cd src/arc-agent
-
-# 3. Create virtual environment and install dependencies
 uv venv
+
+# Activate on Windows PowerShell:
+.venv\Scripts\Activate.ps1
+
+# Activate on Linux / macOS:
+# source .venv/bin/activate
+
+# Install dependencies:
 uv pip install -r requirements.txt
+uv pip install -e .
 ```
 
-## Configuration
+Installing with `-e .` exposes the `arc-agent` CLI entrypoint defined in `pyproject.toml`.
+
+### Configuration
 
 ARC reads configuration in this order:
 
-1. `src/arc-agent/.env` if the file exists
-2. existing system / shell environment variables if `.env` is missing or a variable is not defined there
+1. `src/arc-agent/.env`
+2. Existing shell environment variables
 
-Create a `.env` file in `src/arc-agent/` if you want file-based configuration:
+Minimal `.env` example:
 
-```bash
-# Required: LLM API credentials (OpenAI-compatible)
-OPENAI_API_KEY=your-api-key-here
+```dotenv
+OPENAI_API_KEY=your-api-key
 OPENAI_BASE_URL=https://api.openai.com/v1
-MODEL=your-model-here
+MODEL=your-model
+```
 
-# Optional: Visual model for image analysis (If not set, defaults to the same config as above)
-VISUAL_API_KEY=your-api-key-here
+Optional visual-model and debug configuration:
+
+```dotenv
+VISUAL_API_KEY=your-visual-api-key
 VISUAL_BASE_URL=https://api.openai.com/v1
-VISUAL_MODEL=your-vision-model-here
-
-# Optional: Debug mode (1 = enabled, logs to .arc/debug.log)
+VISUAL_MODEL=your-visual-model
 ARC_DEBUG=1
 ```
 
-If you do not want a `.env` file, you can export the variables in the shell before running ARC.
+### CLI Usage
 
-PowerShell:
-
-```powershell
-$env:OPENAI_API_KEY="your-api-key-here"
-$env:OPENAI_BASE_URL="https://api.openai.com/v1"
-$env:MODEL="your-model-here"
-```
-
-Bash:
-
-```bash
-export OPENAI_API_KEY="your-api-key-here"
-export OPENAI_BASE_URL="https://api.openai.com/v1"
-export MODEL="your-model-here"
-```
-
-### Android SDK Setup
-
-If generating Android projects, ensure the SDK is accessible:
-
-```bash
-# Option A: Set environment variable
-export ANDROID_SDK_ROOT=/path/to/android/sdk
-
-# Option B: Install to a default location (auto-detected)
-# Windows: C:\Users\<user>\AppData\Local\Android\Sdk
-# Linux:   ~/Android/Sdk
-# macOS:   ~/Library/Android/sdk
-```
-
-## Usage
-
-### CLI Mode (Recommended)
-
-Run ARC from `src/arc-agent/main.py`:
-
-```bash
-cd src/arc-agent
-
-# Activate the virtual environment
-# Windows:
-.venv\Scripts\activate
-# Linux/Mac:
-source .venv/bin/activate
-
-# Basic usage: compile from a requirement directory
-python main.py /path/to/requirement-dir --app-type web
-
-# Compile into a specific output workspace
-python main.py /path/to/requirement-dir --output-dir /path/to/output-dir --app-type web
-
-# Compile a web project on a specific single backend port
-python main.py /path/to/requirement-dir --app-type web --web-port 3301
-
-# Compile an Android project
-python main.py /path/to/requirement-dir --app-type android
-
-# Clear existing output workspace and recompile
-python main.py /path/to/requirement-dir --output-dir /path/to/output-dir --clear-all
-
-```
-
-**CLI flags:**
-
-| Flag | Description |
-|------|-------------|
-| `requirement_path` | Requirement directory (positional, required). Must contain `requirements.yaml`; may also contain `reference/` and other assets |
-| `--output-dir` | Output workspace directory. Defaults to `<repo_root>/workspace/run-<timestamp>` |
-| `--clear-all` | Clear the output workspace and re-copy the requirement directory before recompiling |
-| `--app-type` | `web` or `android` (default: `web`) |
-| `--web-port` | Web only. Single backend port used to start the website; the backend serves the built frontend on this same port (default: `3000`) |
-
-ARC always generates and validates the required test coverage for each node:
-- Leaf nodes: Unit, Integration, and E2E tests
-- Non-leaf parent nodes: parent-owned Integration and E2E validation
-
-At startup, ARC copies the entire requirement directory into:
-
-```text
-<output-dir>/requirements/
-```
-
-Compilation then runs inside `output-dir`. If `--clear-all` is not used and `output-dir/.arc/processing_queue.json` already exists, ARC resumes from that workspace instead of resetting it.
-
-## Requirement Directory Format
-
-The positional input is a requirement directory, not an existing project root.
-
-At minimum, ARC expects:
-
-- `<requirement-dir>/requirements.yaml`
-- optional referenced assets such as `<requirement-dir>/reference/...`
+ARC expects a requirement directory containing `requirements.yaml`.
 
 Minimal input layout:
 
 ```text
-my-requirement-dir/
+my-requirement-dir
 |-- requirements.yaml
 `-- reference/
     `-- homepage.png
 ```
 
-## Requirements YAML Format
+Run ARC from the source directory:
 
-The input is a hierarchical DAG of requirements with scenarios and steps:
+```bash
+cd src/arc-agent
+python main.py /path/to/my-requirement-dir --app-type web
+```
+
+Or use the installed CLI:
+
+```bash
+arc-agent /path/to/my-requirement-dir --app-type web
+```
+
+#### CLI arguments
+
+| Argument | Description |
+| --- | --- |
+| `requirement_path` | Requirement directory containing `requirements.yaml` |
+| `--output-dir` | Output workspace directory. Defaults to `<repo_root>/workspace/run-<timestamp>` |
+| `--clear-all` | Clears the output workspace and recopies the requirement input before recompiling |
+| `--app-type` | `web` or `android` |
+| `--web-port` | Backend port for generated web applications |
+
+#### Runtime behavior
+
+- ARC copies the requirement directory into `<output-dir>/requirements/`
+- Compilation executes inside `output-dir`
+- If `--clear-all` is not used and `.arc/processing_queue.json` already exists, ARC resumes from that workspace
+
+## Requirement Model
+
+ARC consumes a hierarchical requirement tree with `FOLDER` and `ATOMIC` nodes, dependency links, and executable scenarios.
+See [example/](example/) for complete examples.
 
 ```yaml
 id: ROOT
-name: My Application
-description: A brief description of the application.
+name: Small Train Ticket Booking System
+type: FOLDER
+description: A small web-based ticket booking system.
 dependencies: []
-scenarios: []
 children:
   - id: REQ-1
-    name: Feature Group
-    description: Description of this feature group.
+    name: Public Homepage and User Authentication
+    type: FOLDER
+    description: Shared public pages, authentication entry points, and session-related behavior.
     dependencies: []
-    scenarios: []
     children:
-      - id: REQ-1-1
-        name: Specific Feature
-        description: Detailed description of what this feature does.
+      - id: REQ-1.1
+        name: User Registration
+        type: ATOMIC
+        description: A visitor can register, and the system creates the account and session after valid submission.
         dependencies: []
         scenarios:
-          - id: REQ-1-1:SCE-0
-            name: Scenario Name
-            prerequisites: []
+          - name: Successfully register a new user
             steps:
-              - action: User clicks button "X"
-                expectation: Result "Y" is displayed.
-  - id: REQ-2
-    name: Another Feature Group
-    description: ...
-    children:
-      - id: REQ-2-1
-        name: Another Feature
-        description: ...
+              - keyword: GIVEN
+                content: The visitor is on a public page and is currently not logged in.
+              - keyword: WHEN
+                content: The user submits valid registration information.
+              - keyword: THEN
+                content: The system creates the new user and moves the UI into an authenticated state.
 ```
 
-**Key fields:**
+At minimum, ARC expects:
 
-| Field | Description |
-|-------|-------------|
-| `id` | Unique node identifier (ROOT, REQ-1, REQ-1-1, etc.) |
-| `name` | Short human-readable name |
-| `description` | Detailed requirement text |
-| `dependencies` | List of node IDs this node depends on |
-| `scenarios` | List of test scenarios with steps |
-| `children` | Sub-requirements (forms a DAG) |
+- `requirements.yaml`
+- optional assets such as `reference/...`
 
+Conceptually, ARC produces three layers of output:
+
+- **Runnable system**: the generated web or Android project
+- **Execution memory**: queue state, debug logs, and intermediate compiler artifacts
+- **Audit trail**: traceability records and git history that explain how requirements became code
+
+This is one of the main differences between ARC and prompt-only code generation: the result is not just an output directory, but a recoverable compilation process.
+
+## Visualization
+
+If you want a visual execution workflow, ARC can also be packaged and uploaded to **ARC-Bench**: [arc-bench.com](https://arc-bench.com). Follow the "Quick Start" instructions to upload a custom agent bundle.
+
+For the current repository layout, the simplest upload path is:
+
+1. Copy the contents of `src/arc-agent/` into your submission bundle root
+2. Keep `main.py`, `requirements.txt` directly under the bundle root
+3. Zip the bundle
+4. Upload it to ARC-Bench as a custom agent
+
+A minimal bundle layout looks like this:
+
+```text
+submission
+|-- main.py
+|-- requirements.txt
+`-- ...
+```
+
+ARC-Bench provides the container runtime, workspace lifecycle, event streaming, and visualization layer. ARC performs the actual requirement-to-project compilation inside that environment.
+
+## Positioning
+
+ARC is not trying to be a generic chat wrapper around an LLM.  
+It is an attempt to make AI software generation more **structured**, **test-constrained**, and **inspectable**.
+
+If you care about:
+
+- turning requirement documents into working systems,
+- making agent execution auditable,
+- connecting tests directly to requirement intent,
+- and keeping generated code understandable after the run,
+
+then ARC is the right abstraction to explore.
+
+## Research Context
+
+ARC is also a research-driven system. It reflects a broader idea:
+
+> software generation becomes more reliable when requirements are structured, tests are generated before implementation, and every transformation step remains inspectable.
+
+That is the technical direction behind ARC's requirement graph modeling, test-first workflow, and traceability design. See  https://arxiv.org/abs/2602.13723
+
+#### Citation
+
+```bibtex
+@article{kong2026arc,
+  author    = {Weiyu Kong and Yun Lin and Xiwen Teoh and Duc-Minh Nguyen and Ruofei Ren and Jiaxin Chang and Haoxu Hu and Haoyu Chen},
+  title     = {Compiling Large Multi-Modal Requirement Documents into Runnable Software Systems: From an Agentic Test-Driven Perspective},
+  booktitle = {Proceedings of the ACM SIGSOFT International Symposium on Software Testing and Analysis},
+  year      = {2026},
+  series    = {ISSTA}
+}
+```
 
 ## Contributing
 
-1. Fork the Project
-2. Create your Feature Branch (`git checkout -b feature/AmazingFeature`)
-3. Commit your Changes (`git commit -m 'Add some AmazingFeature'`)
-4. Push to the Branch (`git push origin feature/AmazingFeature`)
-5. Open a Pull Request
+ARC is currently best understood as a set of ideas and a framework for requirement-driven software generation.
+You are welcome to build on top of it by integrating your own tools, skills, workflows, or even foundation agents.
+
+Contributions are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for how to open an issue or submit a pull request.
 
 ## License
 
-Distributed under the MIT License. See `LICENSE` for more information.
+Distributed under the MIT License. See [LICENSE](LICENSE).
