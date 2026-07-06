@@ -24,7 +24,7 @@ async def run_npm_install(target_dir: str, log_cb: Callable[..., Awaitable[None]
         if process.returncode == 0:
             await log_cb("System", f"NPM install success in {target_dir}")
         else:
-            await log_cb("System", f"NPM install failed in {target_dir}: {stderr.decode()}")
+            await log_cb("System", f"NPM install failed in {target_dir}: dependency installation returned a non-zero exit code.")
     except Exception as exc:
         await log_cb("System", f"NPM install error: {str(exc)}")
 

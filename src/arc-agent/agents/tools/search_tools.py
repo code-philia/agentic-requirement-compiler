@@ -2,6 +2,7 @@ import os
 import re
 import json
 import glob as glob_module
+import itertools
 import aiofiles
 from runtime_sdk import get_runtime
 from utils import get_abs_path
@@ -86,6 +87,22 @@ def _reject_low_value_search(path: str | None, pattern: str, glob: str | None = 
     return None
 
 
+def _expand_brace_pattern(pattern: str) -> list[str]:
+    match = re.search(r"\{([^{}]+)\}", pattern or "")
+    if not match:
+        return [pattern]
+    options = [item.strip() for item in match.group(1).split(",") if item.strip()]
+    if not options:
+        return [pattern]
+    prefix = pattern[:match.start()]
+    suffix = pattern[match.end():]
+    expanded_suffixes = _expand_brace_pattern(suffix)
+    results: list[str] = []
+    for option, expanded_suffix in itertools.product(options, expanded_suffixes):
+        results.append(prefix + option + expanded_suffix)
+    return results
+
+
 async def glob_impl(pattern: str, path: str = None) -> str:
     """
     Fast file pattern matching using glob patterns.
@@ -110,9 +127,12 @@ async def glob_impl(pattern: str, path: str = None) -> str:
         if not os.path.isdir(search_dir):
             return f"Error: Path is not a directory: {path or '.'}"
 
-        # Use glob with recursive support
-        full_pattern = os.path.join(search_dir, pattern)
-        matches = glob_module.glob(full_pattern, recursive=True)
+        # Use glob with recursive support; expand simple brace groups like *.{ts,tsx}
+        matches: list[str] = []
+        for expanded_pattern in _expand_brace_pattern(pattern):
+            full_pattern = os.path.join(search_dir, expanded_pattern)
+            matches.extend(glob_module.glob(full_pattern, recursive=True))
+        matches = list(dict.fromkeys(matches))
 
         # Filter out directories plus skipped build/dependency files
         files = [

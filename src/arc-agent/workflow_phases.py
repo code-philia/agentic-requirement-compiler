@@ -74,6 +74,63 @@ class WorkflowPhaseRunner:
         context_pipeline.cache.invalidate(node_id, "recent_failure_summary")
         return session
 
+    @staticmethod
+    def _build_design_summary_payload(
+        interfaces: list[dict[str, Any]],
+        materialized_files: list[str],
+    ) -> dict[str, Any]:
+        type_counts: dict[str, int] = {}
+        items: list[dict[str, Any]] = []
+        for interface in interfaces:
+            if not isinstance(interface, dict):
+                continue
+            interface_type = str(interface.get("type", "")).strip() or "Unknown"
+            type_counts[interface_type] = type_counts.get(interface_type, 0) + 1
+            items.append(
+                {
+                    "id": str(interface.get("interface_id", "")).strip(),
+                    "type": interface_type,
+                    "path": str(interface.get("file_path", "")).strip(),
+                    "reuse": bool(interface.get("reuse")),
+                    "name": str(interface.get("name", "")).strip(),
+                }
+            )
+        return {
+            "kind": "design",
+            "total": len(items),
+            "type_counts": type_counts,
+            "files": sorted(materialized_files),
+            "items": items,
+        }
+
+    @staticmethod
+    def _build_test_summary_payload(
+        tests: list[dict[str, Any]],
+        generated_files: list[str],
+    ) -> dict[str, Any]:
+        type_counts: dict[str, int] = {}
+        items: list[dict[str, Any]] = []
+        for test in tests:
+            if not isinstance(test, dict):
+                continue
+            test_type = str(test.get("type", "")).strip() or "Unknown"
+            type_counts[test_type] = type_counts.get(test_type, 0) + 1
+            items.append(
+                {
+                    "id": str(test.get("test_id", "")).strip(),
+                    "type": test_type,
+                    "path": str(test.get("file_path", "")).strip(),
+                    "interfaces": normalize_string_list(test.get("interface_ids"))[:3],
+                }
+            )
+        return {
+            "kind": "tests",
+            "total": len(items),
+            "type_counts": type_counts,
+            "files": sorted(generated_files),
+            "items": items,
+        }
+
     # ----- Shared workflow helpers -----
 
     async def _run_tdd_batches_for_node(
@@ -128,6 +185,13 @@ class WorkflowPhaseRunner:
             latest_run_tests_result = self.test_driven_developer.get_last_run_tests_result()
             latest_verifier_report = self.test_driven_developer.get_last_verifier_report()
             modified_files = extract_modified_files_from_messages(implement_messages)
+            if modified_files:
+                await self.log_cb(
+                    "TestDrivenDeveloper",
+                    f"Modified files after {test_type}: {', '.join(sorted(modified_files))}",
+                    None,
+                    node_id,
+                )
 
             if "IMPLEMENTED" not in (implement_output or "").upper():
                 await self.log_cb(
@@ -212,6 +276,19 @@ class WorkflowPhaseRunner:
             for test in self.traceability.list_tests(req_id=node_id)
             if str(test.get("test_id", "")).strip()
         }
+        if final_statuses:
+            passed_count = sum(1 for value in final_statuses.values() if value is True)
+            total_count = len(final_statuses)
+            await self.log_cb(
+                "Compiler",
+                f"Test summary: {passed_count}/{total_count} generated tests passed.",
+                None,
+                node_id,
+            )
+            if passed_count == total_count:
+                await self.log_cb("Compiler", "All generated tests passed.", None, node_id)
+            else:
+                await self.log_cb("Compiler", "Some generated tests are still failing.", "error", node_id)
         return bool(final_statuses) and all(value is True for value in final_statuses.values())
 
     async def _run_test_batch_for_agent(
@@ -311,6 +388,18 @@ class WorkflowPhaseRunner:
         materialized_files = extract_modified_files_from_messages(design_messages)
         if materialized_files:
             context_pipeline.cache.invalidate_file_layers(node_id)
+            await self.log_cb(
+                "InterfaceDesigner",
+                f"Materialized files: {', '.join(sorted(materialized_files))}",
+                None,
+                node_id,
+            )
+        await self.log_cb(
+            "InterfaceDesigner",
+            f"Artifact summary: {json.dumps(self._build_design_summary_payload(interfaces, materialized_files), ensure_ascii=False)}",
+            None,
+            node_id,
+        )
 
         self._update_node_session(
             node_id,
@@ -397,6 +486,12 @@ class WorkflowPhaseRunner:
                 None,
                 node_id,
             )
+        await self.log_cb(
+            "TestGenerator",
+            f"Artifact summary: {json.dumps(self._build_test_summary_payload(tests, modified_test_files), ensure_ascii=False)}",
+            None,
+            node_id,
+        )
         await self.log_cb(
             "TestGenerator",
             f"Stored {len(tests)} test mapping item(s) into traceability DB.",

@@ -16,7 +16,7 @@ _ENV_FILE = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".env"
 load_dotenv(dotenv_path=_ENV_FILE, override=False)
 
 # Global Debug Flag
-DEBUG_MODE = int(os.environ.get("ARC_DEBUG", "1"))
+DEBUG_MODE = int(os.environ.get("ARC_DEBUG", "0"))
 MAX_TOOL_OUTPUT_LENGTH = int(os.environ.get("ARC_MAX_TOOL_OUTPUT_CHARS", "10000"))
 SOFT_CONTEXT_TOKENS = 60000
 HARD_CONTEXT_TOKENS = 100000
@@ -391,6 +391,227 @@ Output from {tool_name}:
             return args_str[:1000] + f"\n... [args truncated, total {len(args_str)} chars]"
         return args_str
 
+    @staticmethod
+    def _build_tool_progress_payload(tool_name: str, tool_args: Dict[str, Any]) -> str:
+        payload = {
+            "tool": tool_name,
+            "args": tool_args,
+        }
+        return json.dumps(payload, ensure_ascii=False)
+
+    @staticmethod
+    def _summarize_tool_result_for_progress(tool_name: str, tool_result: str) -> str:
+        result = str(tool_result or "").strip()
+        if not result:
+            return "completed"
+
+        def compact_path(path: str) -> str:
+            normalized = str(path or "").replace("\\", "/").strip().rstrip("/")
+            if not normalized:
+                return ""
+            parts = [part for part in normalized.split("/") if part]
+            if not parts:
+                return ""
+            if os.path.isabs(normalized):
+                return "/".join(parts[-4:])
+            if len(normalized) <= 56:
+                return normalized
+            return "/".join(parts[-4:])
+
+        def first_nonempty_line(text: str) -> str:
+            for line in text.splitlines():
+                stripped = line.strip()
+                if stripped:
+                    return stripped
+            return ""
+
+        def summarize_error(text: str) -> str:
+            line = first_nonempty_line(text)
+            if line.startswith("Error: Directory not found at "):
+                return f"folder not found: {compact_path(line.split('Error: Directory not found at ', 1)[1])}"
+            if line.startswith("Error: Directory not found: "):
+                return f"folder not found: {compact_path(line.split('Error: Directory not found: ', 1)[1])}"
+            if line.startswith("Error: Path not found: "):
+                return f"path not found: {compact_path(line.split('Error: Path not found: ', 1)[1])}"
+            if line.startswith("Error: File not found at "):
+                return f"file not found: {compact_path(line.split('Error: File not found at ', 1)[1])}"
+            if line.startswith("Error: Path is not a directory: "):
+                return f"not a folder: {compact_path(line.split('Error: Path is not a directory: ', 1)[1])}"
+            if line.startswith("Rejected "):
+                return line
+            return line
+
+        if tool_name == "read_file":
+            if result.startswith("Error"):
+                return summarize_error(result)
+            line_count = len(result.splitlines())
+            first_line = result.splitlines()[0] if result.splitlines() else ""
+            line_match = re.match(r"(\d+)\t", first_line)
+            if line_match and line_count > 0:
+                start_line = int(line_match.group(1))
+                end_line = start_line + line_count - 1
+                return f"opened file ({line_count} lines, {start_line}-{end_line})"
+            return f"opened file ({line_count} lines)"
+
+        if tool_name == "write_file":
+            if result.startswith("Error"):
+                return summarize_error(result)
+            match = re.search(r"written to (.+)$", result)
+            path = compact_path(match.group(1)) if match else ""
+            return f"wrote {path}" if path else "wrote file"
+
+        if tool_name == "edit_file":
+            if result.startswith("Error"):
+                return summarize_error(result)
+            match = re.search(r"Replaced (\d+) occurrence\(s\) in (.+)$", result)
+            if match:
+                count = int(match.group(1))
+                path = compact_path(match.group(2))
+                return f"patched {path} ({count} replacements)" if path else f"patched file ({count} replacements)"
+            match = re.search(r"Replaced 1 occurrence in (.+)$", result)
+            if match:
+                path = compact_path(match.group(1))
+                return f"patched {path} (1 replacement)" if path else "patched file"
+            return "patched file"
+
+        if tool_name == "delete_file":
+            if result.startswith("Error"):
+                return summarize_error(result)
+            match = re.search(r"Deleted file (.+)$", result)
+            path = compact_path(match.group(1)) if match else ""
+            return f"removed {path}" if path else "removed file"
+
+        if tool_name == "list_directory":
+            if result.startswith("Error"):
+                return summarize_error(result)
+            header_match = re.match(r"Contents of (.+?) \(max depth: (\d+)\):", result)
+            entries = [
+                line for line in result.splitlines()
+                if line.strip().startswith("- ")
+            ]
+            if header_match:
+                path = compact_path(header_match.group(1))
+                depth = header_match.group(2)
+                return f"scanned {path}/ ({len(entries)} entries, depth {depth})"
+            return f"scanned folder ({len(entries)} entries)"
+
+        if tool_name == "glob":
+            if result.startswith("Error") or result.startswith("Rejected"):
+                return summarize_error(result)
+            if result.startswith("No files found"):
+                return "found no matching files"
+            files = [
+                line for line in result.splitlines()
+                if line.strip() and not line.startswith("(")
+            ]
+            if not files:
+                return "found no matching files"
+            return f"found {len(files)} matching file(s)"
+
+        if tool_name == "grep":
+            if result.startswith("Error") or result.startswith("Rejected"):
+                return summarize_error(result)
+            if result == "No matches found.":
+                return "no matches found"
+            lines = [
+                line for line in result.splitlines()
+                if line.strip() and not line.startswith("(")
+            ]
+            if not lines:
+                return "search completed"
+            if all(re.match(r"^\d+:", line) for line in lines):
+                file_count = len(lines)
+                total_matches = 0
+                for line in lines:
+                    count_text = line.split(":", 1)[0]
+                    try:
+                        total_matches += int(count_text)
+                    except ValueError:
+                        pass
+                return f"found {total_matches} matches across {file_count} file(s)"
+            file_prefix_matches = [
+                re.match(r"^(.+?):(\d+):", line) for line in lines
+            ]
+            if lines and all(match is not None for match in file_prefix_matches):
+                files = {match.group(1) for match in file_prefix_matches if match}
+                return f"found {len(lines)} matching line(s) in {len(files)} file(s)"
+            return f"matched {len(lines)} file(s)"
+
+        if tool_name == "search_interfaces_by_keyword":
+            if result.startswith("No interfaces found"):
+                return "found no reusable interfaces"
+            if result.startswith("Database search error"):
+                return summarize_error(result)
+            count = len(re.findall(r"^- \*\*ID\*\*:", result, re.MULTILINE))
+            return f"found {count} reusable interface(s)" if count else "reuse search completed"
+
+        if tool_name == "search_interfaces_by_relation":
+            if result.startswith("No related nodes found"):
+                return "found no related interfaces"
+            if result.startswith("Requirement node '") or result.startswith("Database"):
+                return summarize_error(result)
+            interface_count = len(re.findall(r"^- \*\*ID\*\*:", result, re.MULTILINE))
+            node_count = len(re.findall(r"^### Interfaces from Related Node", result, re.MULTILINE))
+            if interface_count:
+                return f"mapped {interface_count} interface(s) across {node_count} related node(s)"
+            return "relation trace completed"
+
+        if tool_name == "find_interface_impacts":
+            if result.startswith("No interfaces found that call"):
+                return "no downstream interface impacts"
+            if result.startswith("Database retrieval error"):
+                return summarize_error(result)
+            count = len(re.findall(r"^- \*\*ID\*\*:", result, re.MULTILINE))
+            return f"found {count} impacted interface(s)" if count else "impact trace completed"
+
+        if tool_name == "get_node_relations":
+            if result.startswith("Requirement node '") or result.startswith("Database retrieval error"):
+                return summarize_error(result)
+            child_match = re.search(r"Children Nodes \((\d+) total\)", result)
+            child_count = int(child_match.group(1)) if child_match else 0
+            has_parent = "Parent Node" in result
+            if has_parent and child_count:
+                return f"loaded graph context (parent + {child_count} child node(s))"
+            if has_parent:
+                return "loaded graph context (parent)"
+            if child_count:
+                return f"loaded graph context ({child_count} child node(s))"
+            return "loaded graph context"
+
+        if tool_name == "execute_command":
+            exit_code_match = re.search(r"Exit Code:\s*(\d+)", result)
+            if exit_code_match:
+                code = int(exit_code_match.group(1))
+                return "command finished successfully" if code == 0 else f"command failed (exit {code})"
+            if result.startswith("Command timed out"):
+                return summarize_error(result)
+            if result.startswith("Execution failed"):
+                return summarize_error(result)
+            return "command completed"
+
+        if tool_name in {"run_build", "run_tests"}:
+            exit_code_match = re.search(r"Exit Code:\s*(\d+)", result)
+            if exit_code_match:
+                code = int(exit_code_match.group(1))
+                if tool_name == "run_build":
+                    return "build passed" if code == 0 else f"build failed (exit {code})"
+                passed = len(re.findall(r"^[\s]*[✓√✔]", result, re.MULTILINE))
+                failed = len(re.findall(r"^[\s]*[✗×✕]", result, re.MULTILINE))
+                if passed or failed:
+                    if code == 0:
+                        return f"tests passed ({passed}/{passed + failed})"
+                    return f"tests failed ({passed} passed, {failed} failed)"
+                requested_files = len(re.findall(r"^- ", result, re.MULTILINE))
+                if code == 0:
+                    return f"tests passed ({requested_files} target file(s))" if requested_files else "tests passed"
+                return f"tests failed (exit {code})"
+            return "build completed" if tool_name == "run_build" else "tests completed"
+
+        first_line = first_nonempty_line(result)
+        if len(first_line) > 90:
+            first_line = first_line[:90] + "..."
+        return first_line or "completed"
+
     async def _dispatch_tool_call(
         self,
         tool_name: str,
@@ -457,6 +678,12 @@ Output from {tool_name}:
                 await self._log(f"Tool `{tool_name}` result:\n{display_result}", node_id=node_id)
             if utils.debug_logger:
                 utils.debug_logger.log(f"TOOL_RESULT[{tool_name}#{tool_call_id}]", tool_result_str)
+        else:
+            await self._log(
+                f"Tool result: {self._summarize_tool_result_for_progress(tool_name, tool_result_str)}",
+                node_id=node_id,
+                agent_name=self.agent_name,
+            )
 
         messages.append({
             "role": "tool",
@@ -696,7 +923,7 @@ Output from {tool_name}:
                     tool_name = tool_call.function.name
                     tool_args = self._parse_tool_call_args(tool_call)
                     await self._log(
-                        f"Calling tool: `{tool_name}` with args: {self._truncate_tool_args_for_log(tool_name, tool_args)}",
+                        f"Calling tool: {self._build_tool_progress_payload(tool_name, tool_args)}",
                         node_id=node_id,
                     )
 
@@ -736,7 +963,7 @@ Output from {tool_name}:
                         candidate_args = self._parse_tool_call_args(candidate)
                         if batch_calls:
                             await self._log(
-                                f"Calling tool: `{candidate_name}` with args: {self._truncate_tool_args_for_log(candidate_name, candidate_args)}",
+                                f"Calling tool: {self._build_tool_progress_payload(candidate_name, candidate_args)}",
                                 node_id=node_id,
                             )
                         batch_calls.append((candidate, candidate_name, candidate_args))

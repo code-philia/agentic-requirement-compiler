@@ -5,10 +5,12 @@ import json
 import mimetypes
 import os
 import re
+import warnings
 from typing import Any, Dict, List
 from urllib.parse import urlparse
 
 import requests
+import urllib3
 
 from runtime_sdk import get_runtime
 from .arc_agent import ARCAgent
@@ -18,6 +20,8 @@ from .prompt_sections import (
     get_interface_designer_guidance,
 )
 from utils import read_json_file, write_json_file
+
+warnings.filterwarnings("ignore", category=urllib3.exceptions.InsecureRequestWarning)
 
 
 class InterfaceDesigner(ARCAgent):
