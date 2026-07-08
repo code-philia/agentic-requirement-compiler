@@ -136,7 +136,7 @@ def extract_json_array_from_markdown(raw_output: str) -> list[dict[str, Any]] | 
     if not raw_output:
         return None
 
-    fenced = re.search(r"```json\s*(.*?)\s*```", raw_output, re.DOTALL | re.IGNORECASE)
+    fenced = re.search(r"```(?:json)?\s*(.*?)\s*```", raw_output, re.DOTALL | re.IGNORECASE)
     candidate = fenced.group(1) if fenced else raw_output
     try:
         data = json.loads(candidate)

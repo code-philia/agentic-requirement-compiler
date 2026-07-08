@@ -430,22 +430,24 @@ class WorkflowPhaseRunner:
             None,
             node_id,
         )
-        messages, tools = self.test_generator.build_initial_messages(
+        tests, test_messages, _test_output = await self.test_generator.generate_tests_with_retry(
             node_id=node_id,
             requirement_data=requirement_data,
             design_mode=design_mode,
+            validate=lambda artifacts: self._validate_generated_tests(
+                node_id=node_id,
+                tests=artifacts,
+                is_leaf=is_leaf,
+                allow_non_leaf_shell_tests=not is_leaf,
+            ),
         )
-        test_output, test_messages = await self.test_generator.run_from_messages(
-            messages=messages,
-            node_id=node_id,
-            max_steps=30,
-            tools=tools,
-        )
-        tests = extract_json_array_from_markdown(test_output)
         if not tests:
             await self.log_cb(
                 "TestGenerator",
-                "DESIGN phase test generation did not return a valid test JSON array.",
+                (
+                    "DESIGN phase test generation did not return a valid test JSON array "
+                    f"after {self._structured_output_attempts()} attempt(s)."
+                ),
                 "error",
                 node_id,
             )
@@ -615,6 +617,69 @@ class WorkflowPhaseRunner:
                 )
 
             self._register_interface_edges(node_id, interface_id, interface)
+
+    def _structured_output_attempts(self) -> int:
+        from structured_output import STRUCTURED_OUTPUT_RETRY_COUNT
+
+        return STRUCTURED_OUTPUT_RETRY_COUNT + 1
+
+    def _validate_generated_tests(
+        self,
+        node_id: str,
+        tests: list[dict[str, Any]],
+        is_leaf: bool,
+        allow_non_leaf_shell_tests: bool = False,
+    ) -> str | None:
+        generated_ids: set[str] = set()
+        sequence = 0
+
+        for test in tests:
+            if not isinstance(test, dict):
+                continue
+
+            raw_test_id = str(test.get("test_id", "")).strip()
+            if not raw_test_id:
+                continue
+
+            test_type = str(test.get("type", "")).strip()
+            file_path = str(test.get("file_path", "")).strip()
+            if not test_type:
+                return f"Generated test `{raw_test_id}` is missing `type`."
+            if not file_path:
+                return f"Generated test `{raw_test_id}` is missing `file_path`."
+
+            if not is_leaf and not allow_non_leaf_shell_tests:
+                return (
+                    f"Generated test `{raw_test_id}` is invalid for non-leaf node `{node_id}`. "
+                    "Non-leaf nodes should not register tests."
+                )
+            if not is_leaf and allow_non_leaf_shell_tests and test_type not in {"Integration", "E2E"}:
+                return (
+                    f"Generated non-leaf shell test `{raw_test_id}` has invalid type `{test_type}`. "
+                    "Non-leaf shell verification may only use Integration or E2E tests."
+                )
+
+            validation_error = self.app_handler.validate_test_path(test_type, file_path)
+            if validation_error:
+                return f"Generated test `{raw_test_id}` has an invalid path. {validation_error}"
+
+            sequence += 1
+            test_id = canonicalize_test_id(
+                node_id=node_id,
+                test_type=test_type,
+                raw_test_id=raw_test_id,
+                sequence=sequence,
+            )
+            if test_id in generated_ids:
+                return (
+                    f"Generated duplicate canonical test id `{test_id}` for node `{node_id}`. "
+                    "Each stored test must be globally unique."
+                )
+            generated_ids.add(test_id)
+
+        if sequence == 0:
+            return "Test JSON array did not contain any valid test entries with non-empty `test_id`."
+        return None
 
     def _store_tests(
         self,
