@@ -9,7 +9,6 @@
   <a href="#news">News</a> &middot;
   <a href="#what-arc-does">Pipeline</a> &middot;
   <a href="#getting-started">Getting Started</a> &middot;
-  <a href="#requirement-model">Requirement Model</a> &middot;
   <a href="#visualization">ARC-Bench</a>
 </p>
 
@@ -23,7 +22,7 @@
 ## News &#x2728;
 
 - <font color="#93b071"><strong>2026-06-25 &middot; Accepted</strong></font> The paper <em>Compiling Large Multi-Modal Requirement Documents into Runnable Software Systems: From an Agentic Test-Driven Perspective</em> was accepted to ISSTA 2026.
-- <font color="#93b071"><strong>2026-07-06 &middot; Released</strong></font> ARC CLI end-to-end v1, the first complete requirement-to-system compilation flow from the command line.
+- <font color="#93b071"><strong>2026-07-06 &middot; Released</strong></font> Open-sourced ARC CLI v1 and published the WeChat article: [Agentic Requirement Compilation: Turning Requirements into Source Code](https://mp.weixin.qq.com/s/AQSjEMdhEZZRetgQyVclGw)
 - <font color="#598f91"><strong>In progress</strong></font> Integrating ARC into the visual web experience for a more interactive development workflow.
 - <font color="#939ca3"><strong>Planned</strong></font> Extend ARC into a VS Code plugin so requirement compilation fits directly into day-to-day coding.
 
@@ -114,6 +113,23 @@ VISUAL_MODEL=your-visual-model
 ARC_DEBUG=1
 ```
 
+### Input: Requirement Model
+
+ARC consumes a hierarchical requirement tree with `FOLDER` and `ATOMIC` nodes, dependency links, and executable scenarios. See [example/](example/) for complete examples.
+
+At minimum, ARC expects:
+
+- `requirements.yaml`
+- optional assets such as `reference/...`
+
+Conceptually, ARC produces three layers of output:
+
+- **Runnable system**: the generated web or Android project
+- **Execution memory**: queue state, debug logs, and intermediate compiler artifacts
+- **Audit trail**: traceability records and git history that explain how requirements became code
+
+This is one of the main differences between ARC and prompt-only code generation: the result is not just an output directory, but a recoverable compilation process.
+
 ### CLI Usage
 
 ARC expects a requirement directory containing `requirements.yaml`.
@@ -155,53 +171,6 @@ arc-agent /path/to/my-requirement-dir --app-type web
 - ARC copies the requirement directory into `<output-dir>/requirements/`
 - Compilation executes inside `output-dir`
 - If `--clear-all` is not used and `.arc/processing_queue.json` already exists, ARC resumes from that workspace
-
-## Requirement Model
-
-ARC consumes a hierarchical requirement tree with `FOLDER` and `ATOMIC` nodes, dependency links, and executable scenarios.
-See [example/](example/) for complete examples.
-
-```yaml
-id: ROOT
-name: Small Train Ticket Booking System
-type: FOLDER
-description: A small web-based ticket booking system.
-dependencies: []
-children:
-  - id: REQ-1
-    name: Public Homepage and User Authentication
-    type: FOLDER
-    description: Shared public pages, authentication entry points, and session-related behavior.
-    dependencies: []
-    children:
-      - id: REQ-1.1
-        name: User Registration
-        type: ATOMIC
-        description: A visitor can register, and the system creates the account and session after valid submission.
-        dependencies: []
-        scenarios:
-          - name: Successfully register a new user
-            steps:
-              - keyword: GIVEN
-                content: The visitor is on a public page and is currently not logged in.
-              - keyword: WHEN
-                content: The user submits valid registration information.
-              - keyword: THEN
-                content: The system creates the new user and moves the UI into an authenticated state.
-```
-
-At minimum, ARC expects:
-
-- `requirements.yaml`
-- optional assets such as `reference/...`
-
-Conceptually, ARC produces three layers of output:
-
-- **Runnable system**: the generated web or Android project
-- **Execution memory**: queue state, debug logs, and intermediate compiler artifacts
-- **Audit trail**: traceability records and git history that explain how requirements became code
-
-This is one of the main differences between ARC and prompt-only code generation: the result is not just an output directory, but a recoverable compilation process.
 
 ## Visualization
 
@@ -265,6 +234,12 @@ ARC is currently best understood as a set of ideas and a framework for requireme
 You are welcome to build on top of it by integrating your own tools, skills, workflows, or even foundation agents.
 
 Contributions are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for how to open an issue or submit a pull request.
+
+<!-- If you want to join the community, you are also welcome to join the ARC WeChat group for updates, discussion, and collaboration.
+
+<p align="center">
+  <img src="docs/assets/wechat-group-qr.svg" alt="ARC WeChat Group QR Code" width="300" />
+</p> -->
 
 ## License
 
