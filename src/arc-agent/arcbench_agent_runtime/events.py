@@ -34,6 +34,9 @@ class EventClient:
     def mark_design_done(self, node_id: str, message: str | None = None) -> None:
         self._emit_requirement_state(node_id, "design", "completed", message)
 
+    def mark_design_failed(self, node_id: str, message: str | None = None) -> None:
+        self._emit_requirement_state(node_id, "design", "failed", message)
+
     def mark_implementation_done(self, node_id: str, message: str | None = None) -> None:
         self._emit_requirement_state(node_id, "implement", "completed", message)
 
