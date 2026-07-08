@@ -81,7 +81,7 @@ uv venv
 .venv\Scripts\Activate.ps1
 
 # Activate on Linux / macOS:
-# source .venv/bin/activate
+source .venv/bin/activate
 
 # Install dependencies:
 uv pip install -r requirements.txt
@@ -205,7 +205,7 @@ This is one of the main differences between ARC and prompt-only code generation:
 
 ## Visualization
 
-If you want a visual execution workflow, ARC can also be packaged and uploaded to **ARC-Bench**: [arc-bench.com](https://arc-bench.com). Follow the "Quick Start" instructions to upload a custom agent bundle.
+If you want a visual execution workflow, ARC can also be packaged and uploaded to **ARC-Bench**: [arc-bench.com](http://arc-bench.com). Follow the "Quick Start" instructions to upload a custom agent bundle.
 
 For the current repository layout, the simplest upload path is:
 
