@@ -837,11 +837,14 @@ This is the materialization step of `InterfaceDesigner` for a non-leaf UI-only p
         return enriched
 
     @staticmethod
-    def _build_design_repair_prompt() -> str:
-        return """
-Your previous reply did not return a valid design bundle JSON object.
-
-Do not read more files.
+    def _build_design_repair_prompt(last_error: str = "") -> str:
+        rejection = (
+            f"The previous reply was rejected: {last_error}\n\n"
+            if last_error
+            else "Your previous reply did not return a valid design bundle JSON object.\n\n"
+        )
+        return f"""
+{rejection}Do not read more files.
 Do not call any tools.
 Do not make more code changes.
 Based on the requirement, scenarios, and the evidence you already gathered, return the smallest valid design bundle now.
@@ -996,30 +999,39 @@ Rules for the returned JSON:
         implement_tools = [TOOL_REGISTRY[name]["schema"] for name in self._get_implement_tool_names() if name in TOOL_REGISTRY]
         previous_guard = self._existing_file_write_guard
         self._existing_file_write_guard = True
+
+        def _validate_design_bundle(parsed: dict[str, Any]) -> str | None:
+            interfaces = parsed.get("interfaces")
+            if not isinstance(interfaces, list):
+                return "Design bundle JSON object must include an `interfaces` array."
+            object_entries = [item for item in interfaces if isinstance(item, dict)]
+            if not object_entries:
+                return "Design bundle `interfaces` array did not contain any object entries."
+            return None
+
+        from structured_output import run_agent_for_json_object
+
         try:
-            raw_output, design_messages = await self.run_from_messages(
+            parsed_payload, design_messages, raw_output = await run_agent_for_json_object(
+                self,
                 design_messages,
                 node_id=node_id,
                 max_steps=50,
                 tools=implement_tools,
+                repair_prompt=self._build_design_repair_prompt,
+                log_cb=self.log_cb,
+                log_agent=self.agent_name,
+                validate=_validate_design_bundle,
             )
         finally:
             self._existing_file_write_guard = previous_guard
 
-        parsed_payload = self._parse_design_bundle_payload(raw_output)
-        interfaces = parsed_payload["interfaces"]
+        if not parsed_payload:
+            return {"interfaces": []}, design_messages
 
-        if not interfaces:
-            design_messages.append({"role": "user", "content": self._build_design_repair_prompt()})
-            repair_output, design_messages = await self.run_from_messages(
-                design_messages,
-                node_id=node_id,
-                max_steps=2,
-                tools=[],
-            )
-            parsed_payload = self._parse_design_bundle_payload(repair_output)
-            interfaces = parsed_payload["interfaces"]
-
+        interfaces = InterfaceDesigner._enrich_interfaces_with_contracts(
+            parsed_payload.get("interfaces") if isinstance(parsed_payload.get("interfaces"), list) else []
+        )
         return {
             "interfaces": interfaces,
         }, design_messages

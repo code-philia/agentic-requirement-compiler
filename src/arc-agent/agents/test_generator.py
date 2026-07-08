@@ -206,6 +206,66 @@ When finished, output one JSON array in a `json` markdown block:
         tools = [TOOL_REGISTRY[name]["schema"] for name in self.get_tool_names() if name in TOOL_REGISTRY]
         return messages, tools
 
+    @staticmethod
+    def _build_test_repair_prompt(node_id: str, last_error: str) -> str:
+        error_line = f"The previous reply was rejected: {last_error}\n\n" if last_error else ""
+        return f"""
+{error_line}Your previous reply did not return a valid generated-test JSON array.
+
+Do not read more files.
+Do not call any tools.
+Do not write or edit test files again in this repair turn.
+Based on the requirement, designed interfaces, and the evidence you already gathered, return the final test manifest now.
+
+Return exactly one JSON array in a ```json markdown block:
+[
+  {{
+    "test_id": "unique id",
+    "req_id": "{node_id}",
+    "interface_ids": ["covered interfaces"],
+    "type": "Unit|Integration|E2E",
+    "file_path": "relative path",
+    "first_line": "exact first line in the written test file"
+  }}
+]
+
+Rules:
+- Do not keep exploring.
+- Every entry must be a JSON object with non-empty `test_id`, `type`, and `file_path`.
+- Keep the file count low and aligned with the requirement scope for node `{node_id}`.
+"""
+
+    async def generate_tests_with_retry(
+        self,
+        node_id: str,
+        requirement_data: Dict[str, Any],
+        *,
+        design_mode: str = "leaf_full",
+        preloaded_source: str = None,
+        validate: Any = None,
+    ) -> tuple[list[dict[str, Any]] | None, list, str]:
+        from structured_output import run_agent_for_json_array
+
+        messages, tools = self.build_initial_messages(
+            node_id=node_id,
+            requirement_data=requirement_data,
+            preloaded_source=preloaded_source,
+            design_mode=design_mode,
+        )
+        self._soft_read_guard = {}
+        self._new_evidence_since_read = True
+        return await run_agent_for_json_array(
+            self,
+            messages,
+            node_id=node_id,
+            max_steps=30,
+            tools=tools,
+            repair_prompt=lambda last_error: self._build_test_repair_prompt(node_id, last_error),
+            log_cb=self.log_cb,
+            log_agent=self.agent_name,
+            validate=validate,
+        )
+
     async def generate_tests(
         self,
         node_id: str,
