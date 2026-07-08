@@ -30,6 +30,22 @@ def _resolve_traceability_snapshot_path(traceability_db_path: Path) -> Path:
     return Path(DEFAULT_TRACEABILITY_SNAPSHOT_PATH)
 
 
+def _resolve_runner_events_path(
+    *,
+    runner_events_path: str | os.PathLike[str] | None,
+    traceability_db_path: Path,
+) -> Path:
+    if runner_events_path:
+        return Path(runner_events_path)
+    for env_key in ("ARCBENCH_RUNNER_EVENTS_PATH", "ARCBENCH_TRACEABILITY_EVENTS_PATH"):
+        env_value = os.environ.get(env_key, "").strip()
+        if env_value:
+            return Path(env_value)
+    if traceability_db_path != Path(DEFAULT_TRACEABILITY_DB_PATH) and traceability_db_path.parent:
+        return traceability_db_path.parent / "runner-events.jsonl"
+    return Path(DEFAULT_RUNNER_EVENTS_PATH)
+
+
 @dataclass(frozen=True)
 class RuntimePaths:
     project_dir: Path
@@ -48,16 +64,14 @@ class RuntimePaths:
         traceability_snapshot_path: str | os.PathLike[str] | None = None,
         demo_test_status_path: str | os.PathLike[str] | None = None,
     ) -> "RuntimePaths":
-        resolved_runner_events = Path(
-            runner_events_path
-            or os.environ.get("ARCBENCH_RUNNER_EVENTS_PATH", "").strip()
-            or os.environ.get("ARCBENCH_TRACEABILITY_EVENTS_PATH", "").strip()
-            or DEFAULT_RUNNER_EVENTS_PATH
-        )
         resolved_traceability_db = Path(
             traceability_db_path
             or os.environ.get("ARCBENCH_TRACEABILITY_DB_PATH", "").strip()
             or DEFAULT_TRACEABILITY_DB_PATH
+        )
+        resolved_runner_events = _resolve_runner_events_path(
+            runner_events_path=runner_events_path,
+            traceability_db_path=resolved_traceability_db,
         )
         resolved_project_dir = Path(
             project_dir
