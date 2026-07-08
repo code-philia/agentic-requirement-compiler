@@ -235,11 +235,15 @@ You are welcome to build on top of it by integrating your own tools, skills, wor
 
 Contributions are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for how to open an issue or submit a pull request.
 
-<!-- If you want to join the community, you are also welcome to join the ARC WeChat group for updates, discussion, and collaboration.
+If you want to join the community, you are also welcome to join the ARC WeChat group for updates, discussion, and collaboration. 🎉
 
 <p align="center">
-  <img src="docs/assets/wechat-group-qr.svg" alt="ARC WeChat Group QR Code" width="300" />
-</p> -->
+  <img src="assets/qr.jpg" alt="ARC WeChat Group QR Code" width="300" />
+</p>
+
+<p align="center">
+  Welcome to contribute and build ARC together ✨🤝
+</p>
 
 ## License
 
