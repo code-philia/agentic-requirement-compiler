@@ -340,11 +340,21 @@ class TraceabilityStore:
             raise ValueError("req_id is required")
         normalized_scenarios = scenarios or []
         with self.connection() as connection:
+            # Use ON CONFLICT DO UPDATE instead of INSERT OR REPLACE. REPLACE deletes the
+            # existing row first, which cascades and removes registered tests for req_id.
             connection.execute(
                 """
-                INSERT OR REPLACE INTO requirements (
+                INSERT INTO requirements (
                     req_id, name, description, visual_reference, scenarios, parent_id, children_ids, dependencies
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(req_id) DO UPDATE SET
+                    name = excluded.name,
+                    description = excluded.description,
+                    visual_reference = excluded.visual_reference,
+                    scenarios = excluded.scenarios,
+                    parent_id = excluded.parent_id,
+                    children_ids = excluded.children_ids,
+                    dependencies = excluded.dependencies
                 """,
                 (
                     normalized_req_id,
@@ -355,8 +365,8 @@ class TraceabilityStore:
                     str(parent_id or "").strip() or None,
                     _json_list(children_ids or []),
                     _json_list(dependencies or []),
-                    ),
-                )
+                ),
+            )
             connection.execute("DELETE FROM scenarios WHERE req_id = ?", (normalized_req_id,))
             for scenario in normalized_scenarios:
                 scenario_id = str(scenario.get("id") or scenario.get("scenario_id") or "").strip()
