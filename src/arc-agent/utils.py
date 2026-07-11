@@ -73,6 +73,64 @@ def build_web_runtime_env(host: str = "127.0.0.1") -> dict[str, str]:
     }
 
 
+async def finalize_subprocess(
+    process: asyncio.subprocess.Process | None,
+    *,
+    force_kill: bool = False,
+    timeout: float = 5.0,
+) -> None:
+    """Terminate a subprocess and fully reap its asyncio transport.
+
+    This avoids leaving Proactor-based pipe transports unclosed on Windows
+    while still working on Linux/macOS.
+    """
+    if process is None:
+        return
+
+    has_pipes = any(
+        getattr(process, stream_name, None) is not None
+        for stream_name in ("stdin", "stdout", "stderr")
+    )
+
+    async def _drain() -> None:
+        if has_pipes:
+            await process.communicate()
+        else:
+            await process.wait()
+
+    if process.returncode is None:
+        try:
+            if force_kill:
+                process.kill()
+            else:
+                process.terminate()
+        except ProcessLookupError:
+            pass
+        except Exception:
+            pass
+
+    try:
+        await asyncio.wait_for(_drain(), timeout=timeout)
+        return
+    except asyncio.TimeoutError:
+        if not force_kill and process.returncode is None:
+            try:
+                process.kill()
+            except ProcessLookupError:
+                pass
+            except Exception:
+                pass
+            try:
+                await asyncio.wait_for(_drain(), timeout=timeout)
+            except Exception:
+                pass
+    except Exception:
+        try:
+            await asyncio.wait_for(process.wait(), timeout=timeout)
+        except Exception:
+            pass
+
+
 def set_android_package(package_name: str) -> None:
     global ANDROID_PACKAGE
     ANDROID_PACKAGE = package_name.strip()
@@ -216,6 +274,7 @@ async def check_prerequisites(
     log_cb: Callable[[str, str], Awaitable[None]],
 ) -> bool:
     if app_type == "android":
+        process = None
         try:
             process = await asyncio.create_subprocess_shell(
                 "java -version",
@@ -237,6 +296,7 @@ async def check_prerequisites(
                 "System",
                 f"Prerequisite check FAILED: Could not verify Java installation: {str(exc)}",
             )
+            await finalize_subprocess(process, force_kill=True)
             return False
 
         sdk_root = os.environ.get("ANDROID_SDK_ROOT") or os.environ.get("ANDROID_HOME")
@@ -273,6 +333,7 @@ async def check_prerequisites(
             sdkmanager_path += ".bat"
         if os.path.exists(sdkmanager_path):
             await log_cb("System", "Auto-accepting Android SDK licenses...")
+            accept_process = None
             try:
                 accept_process = await asyncio.create_subprocess_shell(
                     f'yes | "{sdkmanager_path}" --licenses',
@@ -282,12 +343,14 @@ async def check_prerequisites(
                 await asyncio.wait_for(accept_process.communicate(), timeout=30)
                 await log_cb("System", "Android SDK licenses accepted.")
             except Exception as exc:
+                await finalize_subprocess(accept_process, force_kill=True)
                 await log_cb("System", f"SDK license acceptance skipped (non-fatal): {str(exc)}")
         else:
             await log_cb("System", "sdkmanager not found at expected path; skipping license acceptance.")
         return True
 
     if app_type == "web":
+        process = None
         try:
             process = await asyncio.create_subprocess_shell(
                 "node --version",
@@ -309,6 +372,7 @@ async def check_prerequisites(
                 "System",
                 f"Prerequisite check FAILED: Could not verify Node.js installation: {str(exc)}",
             )
+            await finalize_subprocess(process, force_kill=True)
             return False
 
     return True

@@ -10,7 +10,7 @@ import hashlib
 from typing import Awaitable, Callable
 
 from .base import AppTypeHandler
-from utils import build_web_runtime_env, get_web_base_url, get_web_port
+from utils import build_web_runtime_env, finalize_subprocess, get_web_base_url, get_web_port
 
 async def run_npm_install(target_dir: str, log_cb: Callable[..., Awaitable[None]]):
     try:
@@ -64,7 +64,7 @@ async def _execute_web_test_command(
         return result
     except asyncio.TimeoutError:
         if process:
-            process.kill()
+            await finalize_subprocess(process, force_kill=True)
         return f"Command timed out after {timeout} seconds."
     except Exception as exc:
         return f"Execution failed: {str(exc)}"
@@ -540,16 +540,7 @@ async def _ensure_port_released(port: int, *, context: str, timeout: float = 5.0
 
 
 async def _terminate_process(process: asyncio.subprocess.Process | None, *, port: int | None = None) -> str:
-    if process is not None and process.returncode is None:
-        try:
-            process.terminate()
-            await asyncio.wait_for(process.wait(), timeout=5.0)
-        except Exception:
-            try:
-                process.kill()
-                await process.wait()
-            except Exception:
-                pass
+    await finalize_subprocess(process, force_kill=False)
 
     if port is None:
         return "No port cleanup required."

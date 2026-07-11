@@ -5,7 +5,7 @@ import re
 import shutil
 
 from runtime_sdk import get_runtime
-from utils import set_android_package
+from utils import finalize_subprocess, set_android_package
 
 from .base import AppTypeHandler
 
@@ -90,7 +90,7 @@ async def _run_android_gradle_test(workspace_path: str, file_path: str) -> str:
         return _filter_android_gradle_output(output, error, process.returncode)
     except asyncio.TimeoutError:
         if process:
-            process.kill()
+            await finalize_subprocess(process, force_kill=True)
         return "Command timed out after 180.0 seconds."
     except Exception as exc:
         return f"Execution failed: {str(exc)}"
@@ -433,6 +433,7 @@ If no app package can be identified, set package_name to "UNKNOWN"."""
                 return path
 
         try:
+            process = None
             process = await asyncio.create_subprocess_shell(
                 "java -XshowSettings:properties -version 2>&1 | grep 'java.home'",
                 stdout=asyncio.subprocess.PIPE,
@@ -447,6 +448,7 @@ If no app package can be identified, set package_name to "UNKNOWN"."""
                     if os.path.isdir(path):
                         return path
         except Exception:
+            await finalize_subprocess(process, force_kill=True)
             pass
 
         return ""

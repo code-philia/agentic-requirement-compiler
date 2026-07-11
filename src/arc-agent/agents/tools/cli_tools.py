@@ -2,7 +2,7 @@ import asyncio
 import os
 import re
 
-from utils import build_web_runtime_env, get_abs_path, get_app_type
+from utils import build_web_runtime_env, finalize_subprocess, get_abs_path, get_app_type
 
 DEFAULT_EXECUTE_COMMAND_TIMEOUT = 30.0
 MAX_EXECUTE_COMMAND_TIMEOUT = 45.0
@@ -57,7 +57,7 @@ async def execute_command_impl(command: str, cwd: str = ".", timeout: float = 30
         return result
     except asyncio.TimeoutError:
         if process:
-            process.kill()
+            await finalize_subprocess(process, force_kill=True)
         return (
             f"Command timed out after {timeout} seconds. "
             "If you started a server, make sure to run it in background or it will block the execution."
@@ -99,7 +99,7 @@ async def _run_build_android() -> str:
         exit_code = process.returncode
     except asyncio.TimeoutError:
         if process:
-            process.kill()
+            await finalize_subprocess(process, force_kill=True)
         return "=== Android Build Result ===\nCommand timed out after 180 seconds."
     except Exception as exc:
         return f"=== Android Build Result ===\nExecution failed: {str(exc)}"
