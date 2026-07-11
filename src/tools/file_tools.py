@@ -1,6 +1,6 @@
 import os
 import aiofiles
-from utils import get_abs_path
+from core.utils import get_abs_path
 from .search_tools import _SKIP_DIRS, _SKIP_FILES
 
 async def read_file_impl(path: str, offset: int = None, limit: int = None) -> str:

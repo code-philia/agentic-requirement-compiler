@@ -2,11 +2,9 @@ import asyncio
 import os
 import shutil
 from abc import ABC, abstractmethod
-from importlib import resources
 from typing import Awaitable, Callable
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-PACKAGE_TEMPLATES_PACKAGE = "templates"
 
 LogCallback = Callable[[str, str, str | None, str | None], Awaitable[None]]
 
@@ -14,8 +12,8 @@ LogCallback = Callable[[str, str, str | None, str | None], Awaitable[None]]
 def _resolve_templates_root() -> str:
     env_root = os.environ.get("ARC_AGENT_TEMPLATES_ROOT", "").strip()
     if env_root:
-        return env_root
-    return str(resources.files(PACKAGE_TEMPLATES_PACKAGE))
+        return os.path.abspath(env_root)
+    return os.path.abspath(os.path.join(BASE_DIR, "..", "templates"))
 
 
 class AppTypeHandler(ABC):
@@ -54,14 +52,14 @@ class AppTypeHandler(ABC):
         return True
 
     async def check_prerequisites(self) -> bool:
-        from utils import check_prerequisites
+        from core.utils import check_prerequisites
 
         return await check_prerequisites(self.name, self.log_cb)
 
     async def copy_template(self) -> bool:
         template_dir = self.template_dir()
         if not os.path.exists(template_dir):
-            await self.log_cb("System", f"Error: Template directory not found at {template_dir}")
+            await self.log_cb("System", f"Error: Template directory not found at {template_dir}", "error", None)
             return False
 
         await self.log_cb("System", f"Using app_type={self.name}, template={template_dir}")
@@ -76,7 +74,7 @@ class AppTypeHandler(ABC):
             await self.log_cb("System", "Template files copied successfully.")
             return True
         except Exception as exc:
-            await self.log_cb("System", f"Error copying template: {str(exc)}")
+            await self.log_cb("System", f"Error copying template: {str(exc)}", "error", None)
             return False
 
     async def post_template_setup(self) -> bool:
@@ -146,10 +144,6 @@ class AppTypeHandler(ABC):
     @abstractmethod
     def parse_stack_summary(cls, metadata_content: str) -> str:
         raise NotImplementedError
-
-    @classmethod
-    def upsert_metadata(cls, project_path: str) -> str:
-        return cls.build_stack_block()
 
     @classmethod
     def read_stack_summary(cls, project_path: str) -> str:

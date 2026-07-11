@@ -1,12 +1,10 @@
-import inspect
 import os
 import shutil
 from typing import Any, Awaitable, Callable
 
-from app_types import create_app_type_handler, normalize_app_type
-from runtime_sdk import configure_runtime
-from traceability import store_all_requirement
-from utils import (
+from app_type_handler import create_app_type_handler, normalize_app_type
+from core.service import configure_runtime
+from core.utils import (
     build_commit_message,
     load_requirements,
     read_json_file,
@@ -16,7 +14,7 @@ from utils import (
     write_json_file,
     load_project_env,
 )
-from workflow_phases import WorkflowPhaseRunner
+from core.phases import WorkflowPhaseRunner
 
 from agents.interface_designer import InterfaceDesigner
 from agents.test_driven_developer import TestDrivenDeveloper
@@ -224,7 +222,7 @@ class ARCWorkflowManager:
             return {"ok": False, "failed_nodes": []}
 
         await self.log_cb("Compiler", "Persisting requirement tree and preparing processing queue...")
-        store_all_requirement(requirement_tree)
+        self.runtime.traceability.store_requirement_tree(requirement_tree)
 
         queue_state = self._load_or_create_processing_queue(requirement_tree)
         self._recover_interrupted_queue(queue_state)

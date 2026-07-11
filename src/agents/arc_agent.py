@@ -6,8 +6,8 @@ import re
 from typing import Any, Awaitable, Callable, Dict, List
 from openai import AsyncOpenAI
 import tiktoken
-import utils
-from .tools import TOOL_REGISTRY
+import core.utils as utils
+from tools import TOOL_REGISTRY
 
 # Load environment variables only from ARC_ENV_FILE or the repository-root
 # `.env`. The existing process environment remains the primary source.

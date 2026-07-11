@@ -5,9 +5,9 @@ import shutil
 import time
 from dataclasses import dataclass
 
-from agent_workflow import ARCWorkflowManager
-from app_types import normalize_app_type
-from utils import cli_log, init_debug_logger, print_cli_banner, print_cli_startup, set_web_port, stop_cli_spinner
+from core.workflow import ARCWorkflowManager
+from app_type_handler import normalize_app_type
+from core.utils import cli_log, init_debug_logger, print_cli_banner, print_cli_startup, set_web_port, stop_cli_spinner
 
 
 @dataclass(slots=True)

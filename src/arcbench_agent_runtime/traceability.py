@@ -388,6 +388,36 @@ class TraceabilityStore:
             self._write_snapshot(connection)
         self.events.notify_traceability_changed("requirements_updated")
 
+    def store_requirement_tree(self, node: dict[str, Any], parent_id: str | None = None) -> None:
+        if not isinstance(node, dict):
+            return
+
+        req_id = str(node.get("id") or "").strip()
+        if not req_id:
+            return
+
+        children = node.get("children", []) or []
+        child_nodes = [child for child in children if isinstance(child, dict)]
+        child_ids = [
+            str(child.get("id") or "").strip()
+            for child in child_nodes
+            if str(child.get("id") or "").strip()
+        ]
+
+        self.upsert_requirement(
+            req_id=req_id,
+            name=str(node.get("name") or "").strip(),
+            description=str(node.get("description") or "").strip(),
+            visual_reference=node.get("visual_reference", []) or [],
+            scenarios=node.get("scenarios", []) or [],
+            parent_id=str(parent_id or "").strip() or None,
+            children_ids=child_ids,
+            dependencies=node.get("dependencies", []) or [],
+        )
+
+        for child in child_nodes:
+            self.store_requirement_tree(child, parent_id=req_id)
+
     def update_requirement_fields(self, req_id: str, **fields: Any) -> None:
         current = self.get_requirement(req_id)
         if current is None:

@@ -4,7 +4,7 @@ import os
 from typing import List, Dict, Any, Awaitable, Callable
 from .arc_agent import ARCAgent
 from .test_failure_verifier import TestFailureVerifier
-from .prompt_sections import (
+from prompts.prompt_sections import (
     get_common_session_guidance,
     get_compiler_role_guidance,
     get_tdd_guidance,
@@ -446,7 +446,7 @@ Rules:
 
     def _build_forced_edit_refresh(self, path: str) -> str:
         try:
-            from utils import get_abs_path
+            from core.utils import get_abs_path
             abs_path = get_abs_path(path)
             if not abs_path or not os.path.exists(abs_path):
                 return (
@@ -622,7 +622,7 @@ Rules:
         """Build the [system, user] messages and tools list without calling run().
         Returns (messages, tools) so the caller can use run_from_messages() or continue a session.
         """
-        from .context_pipeline import context_pipeline
+        from memory.context_pipeline import context_pipeline
         self._current_test_files = list(test_files)
         self._current_test_type = str(test_type or "").strip()
 
@@ -667,7 +667,7 @@ When all target tests pass, output "IMPLEMENTED". The system will handle the fin
             {"role": "system", "content": system_content},
             {"role": "user", "content": user_prompt}
         ]
-        from .tools import TOOL_REGISTRY
+        from tools import TOOL_REGISTRY
         tools = [TOOL_REGISTRY[n]["schema"] for n in self.get_tool_names() if n in TOOL_REGISTRY]
         return messages, tools
 

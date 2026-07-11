@@ -1,7 +1,7 @@
 from typing import Any, Dict, List
 
 from .arc_agent import ARCAgent
-from .prompt_sections import (
+from prompts.prompt_sections import (
     get_common_session_guidance,
     get_compiler_role_guidance,
     get_test_generator_guidance,
@@ -18,7 +18,7 @@ class TestGenerator(ARCAgent):
         self._new_evidence_since_read = True
 
     def get_system_prompt(self) -> str:
-        from utils import get_android_package, get_app_type, get_web_base_url, get_web_port
+        from core.utils import get_android_package, get_app_type, get_web_base_url, get_web_port
 
         app_type = get_app_type()
         if app_type == "android":
@@ -156,8 +156,8 @@ Generate Unit, Integration, and E2E coverage in one pass.
         preloaded_source: str = None,
         design_mode: str = "leaf_full",
     ) -> tuple:
-        from .context_pipeline import context_pipeline
-        from .tools import TOOL_REGISTRY
+        from memory.context_pipeline import context_pipeline
+        from tools import TOOL_REGISTRY
 
         static_ctx, dynamic_ctx = context_pipeline.build_agent_context_split(
             node_id=node_id,
@@ -247,7 +247,7 @@ Rules:
         preloaded_source: str = None,
         validate: Any = None,
     ) -> tuple[list[dict[str, Any]] | None, list, str]:
-        from structured_output import run_agent_for_json_array
+        from core.structured_output import run_agent_for_json_array
 
         messages, tools = self.build_initial_messages(
             node_id=node_id,

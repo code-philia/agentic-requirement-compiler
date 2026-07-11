@@ -2,7 +2,7 @@ import os
 import re
 import json
 from typing import Dict, Any, List
-from runtime_sdk import get_runtime
+from core.service import get_runtime
 
 
 def _store():
@@ -220,8 +220,8 @@ class ContextPipeline:
         Layer 1: Global Context (Tech stack and runtime rules).
         Build it directly from the active app type instead of reading metadata files.
         """
-        from app_types import get_app_type_handler_class
-        from utils import get_android_package, get_app_type
+        from app_type_handler import get_app_type_handler_class
+        from core.utils import get_android_package, get_app_type
 
         app_type = get_app_type()
         handler_class = get_app_type_handler_class(app_type)
@@ -243,7 +243,7 @@ class ContextPipeline:
 
     def _get_project_structure(self, agent_type: str = "") -> str:
         """Layer 1.5: Minimal runtime roots only. Do not inject full directory trees."""
-        from utils import get_app_type, get_web_port
+        from core.utils import get_app_type, get_web_port
         app_type = get_app_type()
         if app_type == "web":
             lines = [
@@ -334,7 +334,7 @@ class ContextPipeline:
         return "<source_file_cards>\n" + self._compact_json(cards) + "\n</source_file_cards>"
 
     def _get_node_session_layers(self, node_id: str) -> str:
-        from utils import load_node_session
+        from core.utils import load_node_session
 
         session = load_node_session(node_id)
         if not session:
@@ -352,7 +352,7 @@ class ContextPipeline:
         return "\n".join(sections)
 
     def _get_recent_failure_summary(self, node_id: str) -> str:
-        from utils import load_node_session
+        from core.utils import load_node_session
 
         session = load_node_session(node_id)
         if not session:
@@ -613,7 +613,7 @@ class ContextPipeline:
         """
         if not modified_files:
             return ""
-        from utils import get_abs_path
+        from core.utils import get_abs_path
         lines = []
         total = 0
         for fp in modified_files:

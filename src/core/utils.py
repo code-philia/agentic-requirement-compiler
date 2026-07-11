@@ -12,13 +12,16 @@ import copy
 from typing import Awaitable, Callable, Optional, Dict, List, Any
 from colorama import Fore, Style, init as colorama_init
 from dotenv import load_dotenv
-from runtime_sdk import get_runtime
+from core.service import get_runtime
 
 colorama_init()
 
 
 def _store():
     return get_runtime().traceability
+
+def normalize_path(path: str) -> str:
+    return str(path or "").strip().replace("\\", "/")
 
 # ======================================================================================
 #                                Runtime Context
@@ -31,7 +34,18 @@ WEB_PORT = 3301
 
 
 def get_repo_root() -> str:
-    return os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+    current = os.path.abspath(os.path.dirname(__file__))
+    markers = ("pyproject.toml", "MANIFEST.in", ".git", "README.md")
+
+    while True:
+        if any(os.path.exists(os.path.join(current, marker)) for marker in markers):
+            return current
+        parent = os.path.dirname(current)
+        if parent == current:
+            break
+        current = parent
+
+    return os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 
 
 def resolve_env_file() -> str | None:
@@ -51,7 +65,19 @@ def load_project_env() -> str | None:
     env_file = resolve_env_file()
     if env_file:
         load_dotenv(dotenv_path=env_file, override=False)
+    refresh_cached_env_flags()
     return env_file
+
+
+ARC_DEBUG_ENABLED = False
+
+
+def refresh_cached_env_flags() -> None:
+    global ARC_DEBUG_ENABLED
+    ARC_DEBUG_ENABLED = str(os.environ.get("ARC_DEBUG", "0")).strip().lower() not in {"0", "false", "no", "off", ""}
+
+
+load_project_env()
 
 
 def set_workspace_root(path: str) -> None:
@@ -639,7 +665,6 @@ class PromptDumpLogger:
 _spinner = Spinner()
 debug_logger: Optional[DebugLogger] = None
 prompt_dump_logger: Optional[PromptDumpLogger] = None
-ARC_DEBUG_ENABLED = str(os.environ.get("ARC_DEBUG", "0")).strip().lower() not in {"0", "false", "no", "off", ""}
 
 _AGENT_COLORS = {
     "System": Fore.WHITE,
@@ -1452,51 +1477,6 @@ def print_cli_banner():
     banner = "\n".join(
         [
             "",
-            f"{Fore.CYAN}+------------------------------------------------------------------+",
-            f"|{Style.BRIGHT} ARC Requirement Compiler                                         {Style.RESET_ALL}{Fore.CYAN}|",
-            f"|{Fore.WHITE} Compile requirement graphs into interfaces, tests, and code. {Fore.CYAN}|",
-            f"|{Fore.WHITE} Multi-agent orchestration · test-driven implementation         {Fore.CYAN}|",
-            f"+------------------------------------------------------------------+{Style.RESET_ALL}",
-        ]
-    )
-    print(banner)
-
-def print_cli_startup(
-    project_path: str,
-    requirement_path: str,
-    app_type: str,
-    clear_all: bool,
-    log_path: str,
-    web_port: int | None = None,
-    resume_from_queue: bool = False,
-):
-    from app_types import read_stack_summary
-
-    if log_path:
-        print(f"  {Fore.WHITE}Debug Log {Style.RESET_ALL}  {log_path}")
-    print(f"\n  {Fore.WHITE}Output    {Style.RESET_ALL}  {project_path}")
-    print(f"  {Fore.WHITE}Require   {Style.RESET_ALL}  {requirement_path}")
-    print(f"  {Fore.WHITE}App Type  {Style.RESET_ALL}  {Fore.CYAN}{app_type}{Style.RESET_ALL}")
-    if app_type == "web" and web_port is not None:
-        print(f"  {Fore.WHITE}Web Port  {Style.RESET_ALL}  {web_port}")
-    print(f"  {Fore.WHITE}Stack     {Style.RESET_ALL}  {read_stack_summary(project_path, app_type)}")
-    mode_label = "resume-compilation" if resume_from_queue else ("clear-and-recompile" if clear_all else "start-compilation")
-    print(
-        f"  {Fore.WHITE}Mode      {Style.RESET_ALL}  "
-        f"{Fore.YELLOW}{mode_label}{Style.RESET_ALL}"
-    )
-    print(
-        f"  {Fore.WHITE}View      {Style.RESET_ALL}  "
-        f"{Fore.GREEN if not ARC_DEBUG_ENABLED else Fore.MAGENTA}"
-        f"{'concise progress' if not ARC_DEBUG_ENABLED else 'debug'}{Style.RESET_ALL}"
-    )
-    print(f"  {Fore.WHITE}{'-' * 45}{Style.RESET_ALL}\n")
-
-
-def print_cli_banner():
-    banner = "\n".join(
-        [
-            "",
             f"{Fore.BLUE}{'=' * 78}{Style.RESET_ALL}",
             f"{Fore.CYAN}{Style.BRIGHT} ARC {Style.RESET_ALL}{Fore.WHITE}Requirement Compiler{Style.RESET_ALL}",
             f"{Fore.WHITE} Compile requirement graphs into interfaces, tests, and runnable code{Style.RESET_ALL}",
@@ -1515,7 +1495,7 @@ def print_cli_startup(
     web_port: int | None = None,
     resume_from_queue: bool = False,
 ):
-    from app_types import read_stack_summary
+    from app_type_handler import read_stack_summary
 
     mode_label = "resume-compilation" if resume_from_queue else ("clear-and-recompile" if clear_all else "start-compilation")
     stack_summary = read_stack_summary(project_path, app_type)
@@ -1635,83 +1615,4 @@ def load_requirements(file_path: str):
         return None
     with open(file_path, "r", encoding="utf-8") as file:
         return yaml.safe_load(file)
-
-
-def dfs_preorder(node: dict) -> List[str]:
-    result = []
-    node_id = node.get("id")
-    if node_id:
-        result.append(node_id)
-    for child in node.get("children", []):
-        result.extend(dfs_preorder(child))
-    return result
-
-
-def is_leaf_node(node: dict) -> bool:
-    return not node.get("children", [])
-
-
-def get_all_leaves(node: dict) -> Dict[str, dict]:
-    leaves: Dict[str, dict] = {}
-    children = node.get("children", [])
-    if not children:
-        if node.get("id") != "ROOT":
-            leaves[node.get("id")] = node
-        return leaves
-
-    for child in children:
-        leaves.update(get_all_leaves(child))
-    return leaves
-
-
-def build_dependency_graph(leaves: Dict[str, dict]):
-    adjacency = {node_id: [] for node_id in leaves}
-    in_degree = {node_id: 0 for node_id in leaves}
-
-    for node_id, node in leaves.items():
-        for dependency_id in node.get("dependencies", []):
-            if dependency_id in leaves:
-                adjacency[dependency_id].append(node_id)
-                in_degree[node_id] += 1
-            else:
-                print(f"Warning: Dependency {dependency_id} for {node_id} not found in leaves.")
-
-    return adjacency, in_degree
-
-
-def topological_sort(leaves: Dict[str, dict]) -> List[str]:
-    adjacency, in_degree = build_dependency_graph(leaves)
-    queue = [node_id for node_id in leaves if in_degree[node_id] == 0]
-    ordered = []
-
-    while queue:
-        current = queue.pop(0)
-        ordered.append(current)
-        for dependent in adjacency[current]:
-            in_degree[dependent] -= 1
-            if in_degree[dependent] == 0:
-                queue.append(dependent)
-
-    if len(ordered) != len(leaves):
-        print("Error: Cycle detected or disconnected graph issues.")
-        remaining = set(leaves.keys()) - set(ordered)
-        return ordered + list(remaining)
-    return ordered
-
-
-def detect_requirement_path(project_path: str, requirement_path: Optional[str]) -> str:
-    if requirement_path:
-        if os.path.isabs(requirement_path):
-            return requirement_path
-        return os.path.abspath(os.path.join(project_path, requirement_path))
-
-    candidates = [
-        os.path.join(project_path, "requirements", "requirements.yaml"),
-        os.path.join(project_path, "requirements", "requirents.yaml"),
-    ]
-    for path in candidates:
-        if os.path.exists(path):
-            return path
-    raise FileNotFoundError(
-        "Could not find requirements file. Tried: requirements/requirements.yaml, requirements/requirents.yaml"
-    )
+    

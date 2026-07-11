@@ -12,14 +12,15 @@ from urllib.parse import urlparse
 import requests
 import urllib3
 
-from runtime_sdk import get_runtime
+from core.service import get_runtime
+from core.utils import normalize_path
 from .arc_agent import ARCAgent
-from .prompt_sections import (
+from prompts.prompt_sections import (
     get_common_session_guidance,
     get_compiler_role_guidance,
     get_interface_designer_guidance,
 )
-from utils import read_json_file, write_json_file
+from core.utils import read_json_file, write_json_file
 
 warnings.filterwarnings("ignore", category=urllib3.exceptions.InsecureRequestWarning)
 
@@ -34,10 +35,6 @@ class InterfaceDesigner(ARCAgent):
         )
         self._existing_file_write_guard = False
         self._materialization_state_by_node: dict[str, dict[str, Any]] = {}
-
-    @staticmethod
-    def _normalize_path(path: str) -> str:
-        return str(path or "").strip().replace("\\", "/")
 
     @staticmethod
     def _append_unique_limited(items: list[str], value: str, limit: int = 12) -> None:
@@ -62,7 +59,7 @@ class InterfaceDesigner(ARCAgent):
             if not isinstance(interface, dict):
                 continue
             interface_id = str(interface.get("interface_id", "") or "").strip()
-            file_path = self._normalize_path(interface.get("file_path", ""))
+            file_path = normalize_path(interface.get("file_path", ""))
             if interface_id:
                 interface_statuses[interface_id] = "pending"
             if not file_path:
@@ -120,14 +117,14 @@ class InterfaceDesigner(ARCAgent):
         return all(int(read_counts.get(path, 0)) > 0 for path in owner_files)
 
     def _mark_interface_status_for_path(self, state: dict[str, Any], path: str, status: str) -> None:
-        normalized_path = self._normalize_path(path)
+        normalized_path = normalize_path(path)
         for interface_id in state.get("file_to_interfaces", {}).get(normalized_path, []):
             state["interface_statuses"][interface_id] = status
 
     def _mark_files(self, state: dict[str, Any], key: str, files: list[str]) -> None:
         bucket = state.setdefault(key, [])
         for path in files:
-            normalized_path = self._normalize_path(path)
+            normalized_path = normalize_path(path)
             if normalized_path and normalized_path not in bucket:
                 bucket.append(normalized_path)
 
@@ -202,7 +199,7 @@ class InterfaceDesigner(ARCAgent):
             if not reread_targets:
                 reread_targets = self._extract_path_tokens(reread_reason_block)
             for path in reread_targets:
-                state["allowed_reread_once"].add(self._normalize_path(path))
+                state["allowed_reread_once"].add(normalize_path(path))
 
     def _record_materialization_tool_result(
         self,
@@ -216,7 +213,7 @@ class InterfaceDesigner(ARCAgent):
             return
 
         if tool_name == "read_file":
-            path = self._normalize_path(tool_args.get("path", ""))
+            path = normalize_path(tool_args.get("path", ""))
             if not path:
                 return
             read_counts = state.setdefault("read_counts", {})
@@ -227,7 +224,7 @@ class InterfaceDesigner(ARCAgent):
             return
 
         if tool_name in {"edit_file", "write_file"}:
-            path = self._normalize_path(tool_args.get("path", ""))
+            path = normalize_path(tool_args.get("path", ""))
             if not path:
                 return
             state["has_materialized_change"] = True
@@ -317,7 +314,7 @@ class InterfaceDesigner(ARCAgent):
     ) -> tuple[bool, Any]:
         state = self._get_materialization_state(node_id)
         if state and tool_name == "read_file":
-            path = self._normalize_path(tool_args.get("path", ""))
+            path = normalize_path(tool_args.get("path", ""))
             allow_once = path in state.get("allowed_reread_once", set())
             if allow_once:
                 state["allowed_reread_once"].discard(path)
@@ -713,26 +710,6 @@ Rules:
             return None
 
     @staticmethod
-    def _extract_json_array_from_markdown(raw_output: str) -> list[dict[str, Any]] | None:
-        if not raw_output:
-            return None
-        fenced = re.search(r"```json\s*(.*?)\s*```", raw_output, re.DOTALL | re.IGNORECASE)
-        candidate = fenced.group(1) if fenced else raw_output
-        try:
-            data = json.loads(candidate)
-            return data if isinstance(data, list) else None
-        except Exception:
-            pass
-        span = re.search(r"(\[\s*{[\s\S]*}\s*\])", raw_output)
-        if not span:
-            return None
-        try:
-            data = json.loads(span.group(1))
-            return data if isinstance(data, list) else None
-        except Exception:
-            return None
-
-    @staticmethod
     def _build_design_stage_task(design_mode: str) -> str:
         if design_mode == "leaf_full":
             return """
@@ -976,8 +953,8 @@ Rules for the returned JSON:
         design_mode: str = "leaf_full",
         preloaded_source: str = None,
     ) -> tuple[dict[str, Any], list]:
-        from .context_pipeline import context_pipeline
-        from .tools import TOOL_REGISTRY
+        from memory.context_pipeline import context_pipeline
+        from tools import TOOL_REGISTRY
 
         static_ctx, dynamic_ctx = context_pipeline.build_agent_context_split(
             node_id=node_id,
@@ -1009,7 +986,7 @@ Rules for the returned JSON:
                 return "Design bundle `interfaces` array did not contain any object entries."
             return None
 
-        from structured_output import run_agent_for_json_object
+        from core.structured_output import run_agent_for_json_object
 
         try:
             parsed_payload, design_messages, raw_output = await run_agent_for_json_object(

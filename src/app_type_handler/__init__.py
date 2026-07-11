@@ -34,9 +34,5 @@ def create_app_type_handler(
     )
 
 
-def upsert_metadata(project_path: str, app_type: str) -> str:
-    return get_app_type_handler_class(app_type).upsert_metadata(project_path)
-
-
 def read_stack_summary(project_path: str, app_type: str) -> str:
     return get_app_type_handler_class(app_type).read_stack_summary(project_path)

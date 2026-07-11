@@ -3,7 +3,7 @@ import os
 from typing import Any, Dict, List
 
 from .arc_agent import ARCAgent
-from .prompt_sections import (
+from prompts.prompt_sections import (
     get_common_session_guidance,
     get_compiler_role_guidance,
     get_exploration_round_guidance,
@@ -68,7 +68,7 @@ Rules:
 
     @staticmethod
     def _read_target_test_code(test_files: list[str], max_chars_per_file: int = 4000, max_files: int = 3) -> str:
-        from utils import get_abs_path
+        from core.utils import get_abs_path
 
         blocks: list[str] = []
         for file_path in test_files[:max_files]:
@@ -160,8 +160,8 @@ Rules for the JSON:
         test_type: str,
         latest_test_output: str,
     ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-        from .context_pipeline import context_pipeline
-        from .tools import TOOL_REGISTRY
+        from memory.context_pipeline import context_pipeline
+        from tools import TOOL_REGISTRY
 
         static_ctx, dynamic_ctx = context_pipeline.build_agent_context_split(
             node_id=node_id,

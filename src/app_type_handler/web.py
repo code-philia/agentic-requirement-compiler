@@ -10,7 +10,7 @@ import hashlib
 from typing import Awaitable, Callable
 
 from .base import AppTypeHandler
-from utils import build_web_runtime_env, finalize_subprocess, get_web_base_url, get_web_port
+from core.utils import build_web_runtime_env, finalize_subprocess, get_web_base_url, get_web_port
 
 async def run_npm_install(target_dir: str, log_cb: Callable[..., Awaitable[None]]):
     try:

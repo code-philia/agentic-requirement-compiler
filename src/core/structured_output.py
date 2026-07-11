@@ -5,7 +5,7 @@ import os
 import re
 from typing import Any, Awaitable, Callable
 
-from utils import extract_json_array_from_markdown
+from core.utils import extract_json_array_from_markdown
 
 STRUCTURED_OUTPUT_RETRY_COUNT = int(os.environ.get("ARC_STRUCTURED_OUTPUT_RETRY_COUNT", "2"))
 

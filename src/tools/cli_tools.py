@@ -2,7 +2,7 @@ import asyncio
 import os
 import re
 
-from utils import build_web_runtime_env, finalize_subprocess, get_abs_path, get_app_type
+from core.utils import build_web_runtime_env, finalize_subprocess, get_abs_path, get_app_type
 
 DEFAULT_EXECUTE_COMMAND_TIMEOUT = 30.0
 MAX_EXECUTE_COMMAND_TIMEOUT = 45.0

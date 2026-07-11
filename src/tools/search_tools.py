@@ -4,8 +4,8 @@ import json
 import glob as glob_module
 import itertools
 import aiofiles
-from runtime_sdk import get_runtime
-from utils import get_abs_path
+from core.service import get_runtime
+from core.utils import get_abs_path
 
 
 def _store():
