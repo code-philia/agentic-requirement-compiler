@@ -5,15 +5,13 @@ import os
 import re
 from typing import Any, Awaitable, Callable, Dict, List
 from openai import AsyncOpenAI
-from dotenv import load_dotenv
 import tiktoken
 import utils
 from .tools import TOOL_REGISTRY
 
-# Load environment variables from src/arc-agent/.env if present.
-# Missing .env is allowed; the process environment remains the fallback source.
-_ENV_FILE = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".env"))
-load_dotenv(dotenv_path=_ENV_FILE, override=False)
+# Load environment variables only from ARC_ENV_FILE or the repository-root
+# `.env`. The existing process environment remains the primary source.
+utils.load_project_env()
 
 # Global Debug Flag
 DEBUG_MODE = int(os.environ.get("ARC_DEBUG", "0"))

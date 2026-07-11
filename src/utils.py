@@ -11,6 +11,7 @@ import copy
 
 from typing import Awaitable, Callable, Optional, Dict, List, Any
 from colorama import Fore, Style, init as colorama_init
+from dotenv import load_dotenv
 from runtime_sdk import get_runtime
 
 colorama_init()
@@ -27,6 +28,30 @@ WORKSPACE_ROOT = os.getcwd()
 APP_TYPE = "web"
 ANDROID_PACKAGE = "com.example.template"
 WEB_PORT = 3301
+
+
+def get_repo_root() -> str:
+    return os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+
+
+def resolve_env_file() -> str | None:
+    override = str(os.environ.get("ARC_ENV_FILE", "") or "").strip()
+    if override:
+        normalized = os.path.abspath(override)
+        if os.path.isfile(normalized):
+            return normalized
+
+    repo_env = os.path.join(get_repo_root(), ".env")
+    if os.path.isfile(repo_env):
+        return repo_env
+    return None
+
+
+def load_project_env() -> str | None:
+    env_file = resolve_env_file()
+    if env_file:
+        load_dotenv(dotenv_path=env_file, override=False)
+    return env_file
 
 
 def set_workspace_root(path: str) -> None:

@@ -14,6 +14,7 @@ from utils import (
     set_web_port,
     set_workspace_root,
     write_json_file,
+    load_project_env,
 )
 from workflow_phases import WorkflowPhaseRunner
 
@@ -21,9 +22,7 @@ from agents.interface_designer import InterfaceDesigner
 from agents.test_driven_developer import TestDrivenDeveloper
 from agents.test_generator import TestGenerator
 
-from dotenv import load_dotenv
-_ENV_FILE = os.path.abspath(os.path.join(os.path.dirname(__file__), ".env"))
-load_dotenv(dotenv_path=_ENV_FILE, override=False)
+load_project_env()
 
 # ======================================================================================
 #                              Workflow Queue Constants

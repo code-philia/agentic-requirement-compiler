@@ -72,7 +72,7 @@ The example below uses `uv`.
 
 ```bash
 git clone https://github.com/your-org/agentic-requirement-compiler.git
-cd agentic-requirement-compiler/src/arc-agent
+cd agentic-requirement-compiler
 
 uv venv
 
@@ -83,18 +83,19 @@ uv venv
 source .venv/bin/activate
 
 # Install dependencies:
-uv pip install -r requirements.txt
+uv pip install -r src/requirements.txt
 uv pip install -e .
 ```
 
-Installing with `-e .` exposes the `arc-agent` CLI entrypoint defined in `pyproject.toml`.
+Installing with `-e .` from the repository root exposes the `arc-agent` CLI entrypoint defined in the root `pyproject.toml`.
 
 ### Configuration
 
 ARC reads configuration in this order:
 
-1. `src/arc-agent/.env`
-2. Existing shell environment variables
+1. Existing shell environment variables from the current terminal session
+2. `ARC_ENV_FILE` if you explicitly point to an env file
+3. `<repo_root>/.env`
 
 Minimal `.env` example:
 
@@ -110,7 +111,6 @@ Optional visual-model and debug configuration:
 VISUAL_API_KEY=your-visual-api-key
 VISUAL_BASE_URL=https://api.openai.com/v1
 VISUAL_MODEL=your-visual-model
-ARC_DEBUG=1
 ```
 
 ### Input: Requirement Model
@@ -143,11 +143,10 @@ my-requirement-dir
     `-- homepage.png
 ```
 
-Run ARC from the source directory:
+Run ARC from the repository root with Python:
 
 ```bash
-cd src/arc-agent
-python main.py /path/to/my-requirement-dir --app-type web
+python src/main.py /path/to/my-requirement-dir --app-type web
 ```
 
 Or use the installed CLI:
@@ -178,8 +177,8 @@ If you want a visual execution workflow, ARC can also be packaged and uploaded t
 
 For the current repository layout, the simplest upload path is:
 
-1. Copy the contents of `src/arc-agent/` into your submission bundle root
-2. Keep `main.py`, `requirements.txt` directly under the bundle root
+1. Copy the contents of `src/` into your submission bundle root
+2. Keep `main.py` at the bundle root
 3. Zip the bundle
 4. Upload it to ARC-Bench as a custom agent
 
