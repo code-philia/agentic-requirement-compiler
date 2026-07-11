@@ -749,17 +749,17 @@ This is the design step of `InterfaceDesigner` for a leaf node.
 This is the design step of `InterfaceDesigner` for a non-leaf node with concrete scenarios.
 - Analyze the current requirement, scenarios, visual reference if present, and the most relevant existing code.
 - Produce a machine-verifiable parent contract through explicit parent-owned interfaces, not only prose guidance.
-- Only include parent-owned interfaces when the current non-leaf truly needs shell-level UI, routes, layouts, providers, guards, slots, props/context exposure, or mount points.
-- Make the parent contract explicit through shell-level interfaces that describe routes, layouts, providers, slots, navigation entry points, and data handoff points.
-- If the visual reference shows lists, tables, dashboards, schedules, or cards, express them as shell-level presentation structure only, not as copied record content.
+- Only include parent-owned interfaces when the current non-leaf truly needs route-level UI, layouts, providers, guards, slots, props/context exposure, mount points, or parent-owned interaction coordination.
+- Make the parent contract explicit through interfaces that describe routes, layouts, providers, slots, navigation entry points, data handoff points, and how descendant-owned features attach to the rendered surface.
+- If the visual reference shows lists, tables, dashboards, schedules, cards, or forms, preserve their structural placement and interaction affordances without turning descendant-owned behavior into fake disabled end-state content.
 - Do not write code in this stage.
 """
         return """
 This is the design step of `InterfaceDesigner` for a non-leaf UI-only parent node.
 - Analyze the current parent shell and the most relevant existing shared files.
 - Produce a machine-verifiable parent contract through explicit parent-owned interfaces, not only prose guidance.
-- If shell-level UI is required, design only parent UI shell interfaces: top-level routes, layouts, providers, guards, slots, mount points, and thin composition files.
-- Treat visual reference data regions as layout/style guidance only. Do not turn screenshot values into parent-owned mock content.
+- If route-level UI is required, design parent-owned interfaces around top-level routes, layouts, providers, guards, slots, mount points, and thin composition files that leave descendant-owned controls in place for later activation.
+- Treat visual reference data regions and form regions as layout/style guidance only. Do not turn screenshot values into parent-owned mock content, and do not redefine descendant-owned controls as a permanently disabled page contract.
 - Do not design API/FUNC/DB interfaces in this mode.
 - Do not write code in this stage.
 """
@@ -778,15 +778,15 @@ This is the materialization step of `InterfaceDesigner` for a leaf node.
             return """
 This is the materialization step of `InterfaceDesigner` for a non-leaf node with concrete scenarios.
 - Materialize the parent-owned contract and page shell into code now.
-- Land the parent shell interfaces for routes, layouts, providers, guards, slots, mount points, and shared composition files.
-- Do not implement child business logic here.
-- If the parent shell shows fetched or persisted data, wire the real parent-owned runtime path or explicit loading/empty/error states. Do not hardcode sample records to make the page look complete.
-- For non-UI shell interfaces, land the smallest compilable or runnable skeleton that matches the declared responsibility and test intent.
+- Land the parent-owned routes, layouts, providers, guards, slots, mount points, and shared composition files without collapsing descendant-owned features into placeholder-only or disabled-only end states.
+- Do not take over descendant business logic here, but keep descendant-owned interactive regions structurally ready for those later nodes to implement through the same route and component path.
+- If the parent layer shows fetched or persisted data, wire the real parent-owned runtime path or explicit loading/empty/error states. Do not hardcode sample records to make the page look complete.
+- For non-UI parent interfaces, land the smallest compilable or runnable skeleton that matches the declared responsibility and test intent.
 """
         return """
 This is the materialization step of `InterfaceDesigner` for a non-leaf UI-only parent node.
-- Materialize only the parent shell interfaces for routes, layouts, providers, guards, slots, mount points, and composition files.
-- Do not expand into API/FUNC/DB work in this mode.
+- Materialize the parent-owned routes, layouts, providers, guards, slots, mount points, and composition files while leaving descendant-owned controls and form surfaces structurally ready for later implementation.
+- Do not expand into descendant-owned API/FUNC/DB work in this mode, and do not convert descendant-owned interactions into explanatory disabled placeholders.
 """
 
     @staticmethod
@@ -947,7 +947,7 @@ When finished, return exactly one JSON object in a `json` markdown block with th
 Rules for the returned JSON:
 - Reuse existing interfaces whenever possible.
 - Keep the interface chain minimal and executable.
-- For non-leaf nodes, make the parent contract explicit through parent-owned shell interfaces whenever the parent owns routes, layouts, providers, guards, slots, mount points, or shared composition code.
+- For non-leaf nodes, make the parent contract explicit through parent-owned route, layout, provider, guard, slot, mount-point, or shared composition interfaces whenever the parent owns those seams, while preserving descendant-owned controls for later implementation instead of redefining them as a disabled end state.
 - Include brief contract fields directly on each interface object instead of returning a separate `interface_spec` array.
 - If `<visual_reference>` exists, use it to determine UI structure, major sections, stable chrome copy, data presentation style, and layout ownership for the UI interfaces.
 - Do not copy screenshot-specific row values, names, metrics, or business records into interface specs, seeded mock payloads, or fake default UI data.
