@@ -827,9 +827,9 @@ Do not make more code changes.
 Based on the requirement, scenarios, and the evidence you already gathered, return the smallest valid design bundle now.
 
 Return exactly one JSON object in a `json` markdown block with this schema:
-{
+{{
   "interfaces": [
-    {
+    {{
       "interface_id": "stable explicit id",
       "reuse": true,
       "type": "UI/API/FUNC/DB",
@@ -845,9 +845,9 @@ Return exactly one JSON object in a `json` markdown block with this schema:
       "reuse_notes": ["important reuse or extension constraints"],
       "file_path": "relative file path",
       "first_line": ""
-    }
+    }}
   ]
-}
+}}
 
 Rules:
 - Do not keep exploring.
