@@ -50,7 +50,7 @@ class TestGenerator(ARCAgent):
         "You should minimize file count and keep tests aligned with real ownership boundaries so the implementation stage receives a coherent batch, not scattered fragments.",
     ],
     outputs=[
-        "A compact coverage plan across the required unit, integration, and end-to-end layers, or parent-owned integration and end-to-end validation for non-leaf shell work.",
+        "A compact coverage plan across the required unit, integration, and end-to-end layers for nodes that own executable verification assets.",
         "Executable test files with stable assertions and correct placement.",
         "A JSON manifest of the generated test artifacts for the current node.",
     ],
@@ -122,24 +122,10 @@ Rules:
 
     @staticmethod
     def _build_scope_instruction(design_mode: str) -> str:
-        if design_mode == "non_leaf_ui_only":
+        if design_mode in {"non_leaf_ui_only", "non_leaf_full"}:
             return """
-This non-leaf node owns parent composition around descendant feature entrypoints.
-Generate parent-owned Integration and E2E validation only.
-- Integration covers parent routing, provider composition, descendant mounting, and parent-to-child collaboration boundaries.
-- E2E covers parent-visible user flows and browser validation across mounted descendant capabilities.
-- Do not generate Unit tests for descendant business logic from the parent node.
-- Do not lock descendant-owned controls into disabled-only or placeholder-only expectations unless the requirement explicitly requires that state.
-"""
-        if design_mode == "non_leaf_full":
-            return """
-This non-leaf node owns parent contract design plus parent integration validation.
-Generate parent-owned Integration and E2E coverage in one pass.
-- Integration covers parent routes, layouts, providers, mount points, guards, and parent-to-child collaboration.
-- E2E covers the parent-visible flows that are explicit in the requirement and scenarios.
-- Integration and E2E must exercise the real mounted chain instead of validating mocked success paths.
-- Do not generate Unit tests for descendant business logic from the parent node.
-- Do not freeze descendant-owned controls into disabled-only or placeholder-only expectations unless the requirement explicitly requires that state.
+This parent-owned node does not register node-local test artifacts in this stage.
+Return an empty JSON array and do not write test files.
 """
         return """
 Generate Unit, Integration, and E2E coverage in one pass.
@@ -178,7 +164,6 @@ Additional rules:
 - Use the provided requirement context plus `<interfaces>` blocks as the authoritative contract for ownership, visible literals, routes, messages, field labels, and test focus.
 - Prefer one main test file per enabled layer, or one file per coherent scenario group when that is cleaner.
 - Do not write tests that assert parent-owned behavior outside this node's scope.
-- For non-leaf nodes, validate parent-owned composition and handoff surfaces without treating a temporarily unimplemented descendant interaction as the final required state unless the requirement explicitly says so.
 - Keep the file count low and stable.
 - For persisted or fetched data flows, write at least one test that would fail if the implementation used hardcoded sample data, mock API payloads, or placeholder panels instead of the real runtime chain.
 - For owned web happy paths, prefer real API handlers and real DB-backed state in Integration/E2E tests; only mock systems outside this node's ownership boundary.
@@ -247,6 +232,9 @@ Rules:
         preloaded_source: str = None,
         validate: Any = None,
     ) -> tuple[list[dict[str, Any]] | None, list, str]:
+        if design_mode in {"non_leaf_ui_only", "non_leaf_full", "skip"}:
+            return [], [], "[]"
+
         from core.structured_output import run_agent_for_json_array
 
         messages, tools = self.build_initial_messages(
@@ -276,6 +264,9 @@ Rules:
         preloaded_source: str = None,
         design_mode: str = "leaf_full",
     ) -> str:
+        if design_mode in {"non_leaf_ui_only", "non_leaf_full", "skip"}:
+            return "[]"
+
         messages, tools = self.build_initial_messages(
             node_id=node_id,
             requirement_data=requirement_data,

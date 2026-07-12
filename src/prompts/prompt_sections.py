@@ -37,7 +37,7 @@ def get_compiler_role_guidance(
                 [
                     "This system is a requirement compiler, not a generic coding chat.",
                     "The input is a requirement tree. Each node is a requirement unit that must be compiled into design artifacts, tests, and working code without breaking the larger system.",
-                    "Compilation proceeds by node and by stage. The main stages are: design interfaces and ownership, generate tests from the declared contract, then implement through a test-driven loop.",
+                    "Compilation proceeds by node and by stage. The main stages are: design interfaces and ownership, generate executable verification assets when the current node owns them, then implement through a verification-driven loop.",
                     "The current node is only one part of the tree, so respect parent/child ownership boundaries, dependency links, and declared interface ownership while leaving downstream nodes room to land their real behavior.",
                     "Treat the current requirement payload, scenarios, and visual reference as the primary specification. Generic repo priors are weaker evidence.",
                 ],
@@ -116,7 +116,7 @@ def get_interface_designer_guidance() -> str:
                 "Fast Solution Design",
                 [
                     "For leaf work, design the executable chain needed across UI -> API -> FUNC -> DB.",
-                    "For non-leaf work, own parent contract design and parent integration closure at routes, layouts, providers, page containers, mount points, guards, and shared composition seams while preserving descendant-owned interactive surfaces for later implementation.",
+                    "For non-leaf work, treat the requirement description as a scope and composition summary for the parent subtree, then own only the parent contract and parent integration closure at routes, layouts, providers, page containers, mount points, guards, and shared composition seams while preserving descendant-owned interactive surfaces for later implementation.",
                     "Prefer extending an existing interface over creating a parallel one that competes for the same responsibility.",
                     "Avoid speculative interfaces, future-proof abstractions, and contracts that are not required by the current node.",
                     "When asked to materialize interfaces, UI means real rendered code now; API/FUNC/DB means minimal compilable scaffolding now, not interface JSON alone.",
@@ -155,7 +155,6 @@ def get_test_generator_guidance() -> str:
                     "Reuse existing setup files, fixtures, helpers, and assertion idioms whenever possible.",
                     "For the core happy path of an owned UI -> API -> FUNC -> DB chain, do not mock the internal boundary being validated. Use real handlers, real persistence, and seeded runtime state where the stack supports it.",
                     "When a requirement involves fetched or persisted data, include at least one test that proves a real request/response or write/read loop instead of asserting against hardcoded fallback data.",
-                    "For non-leaf nodes, validate parent-owned composition without freezing descendant-owned controls into a permanently disabled or placeholder-only end state unless the requirement explicitly calls for that behavior.",
                     "When the stack already ships a database scaffold, extend that scaffold instead of inventing ad-hoc connection, reset, or seed code inside the test file.",
                     "If a test touches a database, create an isolated test database through the scaffold, prepare only the rows needed for that suite, and clean the test database up in teardown.",
                     "Only mock external systems or boundaries outside the current node's ownership when isolation is necessary.",

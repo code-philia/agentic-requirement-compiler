@@ -629,7 +629,7 @@ For each data-bearing area (table/list/cards/calendar/chart/schedule):
     mission=[
         "Across this node's lifecycle, your job is to first understand the requirement, then explore the most relevant codebase evidence, then land the owned UI code or interface code, and finally summarize the result as strict structured interfaces when the task is a design-bundle call.",
         "For leaf nodes, that usually means a minimal executable chain across UI -> API -> FUNC -> DB.",
-        "For non-leaf nodes, that usually means only parent shell assembly such as routes, layouts, providers, containers, and mount points.",
+        "For non-leaf nodes, that usually means reading the requirement description as a subtree scope summary, then owning only parent-owned composition seams such as routes, layouts, providers, containers, guards, slots, and mount points while preserving descendant-owned interactive surfaces for later implementation.",
     ],
     outputs=[
         "A compact understanding of the current node grounded in the requirement and existing codebase.",
@@ -643,7 +643,7 @@ Rules:
 - Respect `<requirement_focus>`, `<scenarios>`, `<visual_reference>`, and the declared interface ownership.
 - If the requirement names exact UI ids or resource ids, keep them exact.
 - For leaf work, design the smallest complete chain needed across UI -> API -> FUNC -> DB.
-- For non-leaf work, stay at parent UI shell scope: routes, layouts, providers, page containers, mount points, and thin composition files.
+- For non-leaf work, treat the node description as a scope and composition summary for the subtree, then stay at parent-owned composition scope: routes, layouts, providers, page containers, guards, slots, mount points, and thin composition files that preserve descendant-owned interactive surfaces for later implementation.
 - When visual reference shows business records or data values, treat them as display examples only. Do not convert them into seeded implementation data, fallback arrays, or interface-level mock payloads.
 - In a design-bundle call, first understand and inspect, then write code, then return the final strict structured interface bundle.
 - In a design-only call, do not write code files.
@@ -725,6 +725,7 @@ This is the design step of `InterfaceDesigner` for a leaf node.
             return """
 This is the design step of `InterfaceDesigner` for a non-leaf node with concrete scenarios.
 - Analyze the current requirement, scenarios, visual reference if present, and the most relevant existing code.
+- Read the non-leaf description as a subtree scope summary. Preserve its feature language as parent contract context, not as an instruction to implement every mentioned behavior locally in this node.
 - Produce a machine-verifiable parent contract through explicit parent-owned interfaces, not only prose guidance.
 - Only include parent-owned interfaces when the current non-leaf truly needs route-level UI, layouts, providers, guards, slots, props/context exposure, mount points, or parent-owned interaction coordination.
 - Make the parent contract explicit through interfaces that describe routes, layouts, providers, slots, navigation entry points, data handoff points, and how descendant-owned features attach to the rendered surface.
@@ -733,7 +734,8 @@ This is the design step of `InterfaceDesigner` for a non-leaf node with concrete
 """
         return """
 This is the design step of `InterfaceDesigner` for a non-leaf UI-only parent node.
-- Analyze the current parent shell and the most relevant existing shared files.
+- Analyze the current parent-owned route, layout, and composition surfaces plus the most relevant existing shared files.
+- Read the non-leaf description as a subtree scope summary. Keep its named capabilities as composition context only, and allocate concrete feature behavior to descendant-owned surfaces unless the parent clearly owns the seam.
 - Produce a machine-verifiable parent contract through explicit parent-owned interfaces, not only prose guidance.
 - If route-level UI is required, design parent-owned interfaces around top-level routes, layouts, providers, guards, slots, mount points, and thin composition files that leave descendant-owned controls in place for later activation.
 - Treat visual reference data regions and form regions as layout/style guidance only. Do not turn screenshot values into parent-owned mock content, and do not redefine descendant-owned controls as a permanently disabled page contract.
@@ -756,13 +758,14 @@ This is the materialization step of `InterfaceDesigner` for a leaf node.
 This is the materialization step of `InterfaceDesigner` for a non-leaf node with concrete scenarios.
 - Materialize the parent-owned contract and page shell into code now.
 - Land the parent-owned routes, layouts, providers, guards, slots, mount points, and shared composition files without collapsing descendant-owned features into placeholder-only or disabled-only end states.
-- Do not take over descendant business logic here, but keep descendant-owned interactive regions structurally ready for those later nodes to implement through the same route and component path.
+- Do not take over descendant business logic here. The non-leaf description names subtree scope, while concrete descendant behavior is still child-owned. Keep descendant-owned interactive regions structurally ready for those later nodes to implement through the same route and component path.
 - If the parent layer shows fetched or persisted data, wire the real parent-owned runtime path or explicit loading/empty/error states. Do not hardcode sample records to make the page look complete.
 - For non-UI parent interfaces, land the smallest compilable or runnable skeleton that matches the declared responsibility and test intent.
 """
         return """
 This is the materialization step of `InterfaceDesigner` for a non-leaf UI-only parent node.
 - Materialize the parent-owned routes, layouts, providers, guards, slots, mount points, and composition files while leaving descendant-owned controls and form surfaces structurally ready for later implementation.
+- Treat the description as subtree scope context, not as a request to close every named feature inside this parent node.
 - Do not expand into descendant-owned API/FUNC/DB work in this mode, and do not convert descendant-owned interactions into explanatory disabled placeholders.
 """
 
@@ -897,6 +900,7 @@ Execution rules:
 - Do not use `write_file` on an existing file in this step.
 - Call `run_build` once after landing code when you made code changes.
 - If you already know enough to name the smallest target edit file, stop reading and edit it.
+- For non-leaf nodes, keep the original description visible in your reasoning, but interpret it as subtree scope and composition intent. Do not try to satisfy every named feature locally in the parent layer when child nodes own those features.
 
 When finished, return exactly one JSON object in a `json` markdown block with this schema:
 {{
@@ -924,7 +928,7 @@ When finished, return exactly one JSON object in a `json` markdown block with th
 Rules for the returned JSON:
 - Reuse existing interfaces whenever possible.
 - Keep the interface chain minimal and executable.
-- For non-leaf nodes, make the parent contract explicit through parent-owned route, layout, provider, guard, slot, mount-point, or shared composition interfaces whenever the parent owns those seams, while preserving descendant-owned controls for later implementation instead of redefining them as a disabled end state.
+- For non-leaf nodes, treat the requirement description as subtree scope and composition intent, then make the parent contract explicit through parent-owned route, layout, provider, guard, slot, mount-point, or shared composition interfaces whenever the parent owns those seams, while preserving descendant-owned controls for later implementation instead of redefining them as a disabled end state.
 - Include brief contract fields directly on each interface object instead of returning a separate `interface_spec` array.
 - If `<visual_reference>` exists, use it to determine UI structure, major sections, stable chrome copy, data presentation style, and layout ownership for the UI interfaces.
 - Do not copy screenshot-specific row values, names, metrics, or business records into interface specs, seeded mock payloads, or fake default UI data.

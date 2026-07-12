@@ -3,7 +3,7 @@ import re
 import json
 
 from typing import Any, Awaitable, Callable
-from tools.cli_tools import parse_test_results
+from tools.cli_tools import parse_test_results, run_build_impl
 
 import core.utils as utils
 from memory.context_pipeline import context_pipeline
@@ -411,14 +411,29 @@ class WorkflowPhaseRunner:
             node_id,
         )
 
+        if not is_leaf:
+            self._update_node_session(
+                node_id,
+                {
+                    "execution_mode": "non_leaf_system_path",
+                    "test_plan": build_test_plan([]),
+                    "test_artifacts": [],
+                    "phase_status": {"test": "skipped"},
+                },
+            )
+            context_pipeline.cache.invalidate_db_layers(node_id)
+            await self.log_cb(
+                "TestGenerator",
+                "This parent-owned node keeps interface and composition artifacts only. Node-local test assets are not generated in this stage.",
+                None,
+                node_id,
+            )
+            return True
+
         # ---------------- Test generation ----------------
         await self.log_cb(
             "TestGenerator",
-            (
-                "Generating unit, integration, and end-to-end tests from the designed interfaces..."
-                if is_leaf else
-                "Generating parent integration and end-to-end validation tests from the parent contract and shell interfaces..."
-            ),
+            "Generating unit, integration, and end-to-end tests from the designed interfaces...",
             None,
             node_id,
         )
@@ -430,7 +445,6 @@ class WorkflowPhaseRunner:
                 node_id=node_id,
                 tests=artifacts,
                 is_leaf=is_leaf,
-                allow_non_leaf_shell_tests=not is_leaf,
             ),
         )
         if not tests:
@@ -450,7 +464,6 @@ class WorkflowPhaseRunner:
                 node_id,
                 tests,
                 is_leaf=is_leaf,
-                allow_non_leaf_shell_tests=not is_leaf,
             )
         except ValueError as exc:
             await self.log_cb(
@@ -465,7 +478,7 @@ class WorkflowPhaseRunner:
         self._update_node_session(
             node_id,
             {
-                "execution_mode": "leaf_full" if is_leaf else "non_leaf_parent_shell",
+                "execution_mode": "leaf_full",
                 "test_plan": build_test_plan(tests),
                 "test_artifacts": tests,
                 "phase_status": {"test": "completed"},
@@ -515,6 +528,25 @@ class WorkflowPhaseRunner:
         )
 
         interfaces = self.traceability.list_interfaces(req_id=node_id)
+        if session.get("execution_mode") == "non_leaf_system_path":
+            final_ok = await self._run_non_leaf_system_path_check(
+                node_id=node_id,
+                interfaces=interfaces,
+            )
+
+            for interface in interfaces:
+                interface_id = str(interface.get("interface_id") or "").strip()
+                if interface_id:
+                    self.traceability.set_interface_implemented(interface_id, True)
+
+            self._update_node_session(
+                node_id,
+                {
+                    "phase_status": {"implement": "completed" if final_ok else "failed"},
+                },
+            )
+            return final_ok
+
         tests = self.traceability.list_tests(req_id=node_id)
         if not interfaces:
             await self.log_cb(
@@ -558,6 +590,44 @@ class WorkflowPhaseRunner:
             )
         
         return final_ok
+
+    async def _run_non_leaf_system_path_check(
+        self,
+        node_id: str,
+        interfaces: list[dict[str, Any]],
+    ) -> bool:
+        await self.log_cb(
+            "TestDrivenDeveloper",
+            "Verifying the parent-owned system path by checking that the current composition remains buildable.",
+            None,
+            node_id,
+        )
+        build_output = await run_build_impl()
+        passed = self._build_verification_passed(build_output)
+        failure_summary = "" if passed else summarize_batch_output(build_output)
+        self._update_node_session(
+            node_id,
+            {
+                "tdd_handoff": {
+                    "last_test_type": "SystemPath",
+                    "last_failed_output_summary": failure_summary,
+                    "modified_files": [],
+                    "root_cause_notes": (
+                        ["System path check passed."]
+                        if passed else
+                        ["System path check failed and requires interface or composition repair."]
+                    ),
+                },
+                "recent_failure_summary": failure_summary,
+            },
+        )
+        await self.log_cb(
+            "Compiler",
+            "System path check passed." if passed else "System path check failed.",
+            None if passed else "error",
+            node_id,
+        )
+        return passed
 
     # ----- Persistence and execution helpers -----
     @staticmethod
@@ -620,7 +690,6 @@ class WorkflowPhaseRunner:
         node_id: str,
         tests: list[dict[str, Any]],
         is_leaf: bool,
-        allow_non_leaf_shell_tests: bool = False,
     ) -> str | None:
         generated_ids: set[str] = set()
         sequence = 0
@@ -640,15 +709,10 @@ class WorkflowPhaseRunner:
             if not file_path:
                 return f"Generated test `{raw_test_id}` is missing `file_path`."
 
-            if not is_leaf and not allow_non_leaf_shell_tests:
+            if not is_leaf:
                 return (
                     f"Generated test `{raw_test_id}` is invalid for non-leaf node `{node_id}`. "
                     "Non-leaf nodes should not register tests."
-                )
-            if not is_leaf and allow_non_leaf_shell_tests and test_type not in {"Integration", "E2E"}:
-                return (
-                    f"Generated non-leaf shell test `{raw_test_id}` has invalid type `{test_type}`. "
-                    "Non-leaf shell verification may only use Integration or E2E tests."
                 )
 
             validation_error = self.app_handler.validate_test_path(test_type, file_path)
@@ -678,7 +742,6 @@ class WorkflowPhaseRunner:
         node_id: str,
         tests: list[dict[str, Any]],
         is_leaf: bool,
-        allow_non_leaf_shell_tests: bool = False,
     ) -> None:
         generated_ids: set[str] = set()
         sequence = 0
@@ -693,15 +756,10 @@ class WorkflowPhaseRunner:
 
             test_type = str(test.get("type", "")).strip()
             file_path = str(test.get("file_path", "")).strip()
-            if not is_leaf and not allow_non_leaf_shell_tests:
+            if not is_leaf:
                 raise ValueError(
                     f"Generated test `{raw_test_id}` is invalid for non-leaf node `{node_id}`. "
                     "Non-leaf nodes should not register tests; they only keep shared interface and aggregation artifacts."
-                )
-            if not is_leaf and allow_non_leaf_shell_tests and test_type not in {"Integration", "E2E"}:
-                raise ValueError(
-                    f"Generated non-leaf shell test `{raw_test_id}` has invalid type `{test_type}`. "
-                    "Non-leaf shell verification may only use Integration or E2E tests."
                 )
             validation_error = self.app_handler.validate_test_path(test_type, file_path)
             if validation_error:
