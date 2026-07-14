@@ -58,6 +58,7 @@ class TestGenerator(ARCAgent):
 
 Rules:
 - Tests must cover `<interfaces>` and `<requirement_focus>`.
+- Every stored test artifact must declare exactly one execution layer: `Unit`, `Integration`, or `E2E`.
 - Keep granularity coarse: prefer one primary file per layer, or one file per coherent scenario group.
 - Prefer stable contract assertions over incidental DOM structure or implementation details.
 - Treat the provided `<interfaces>` block as the source of truth for responsibility, specification, and test focus.
@@ -121,17 +122,33 @@ Rules:
         return False, None
 
     @staticmethod
-    def _build_scope_instruction(design_mode: str) -> str:
+    def _build_scope_instruction(design_mode: str, enabled_test_types: list[str] | None = None) -> str:
         if design_mode in {"non_leaf_ui_only", "non_leaf_full"}:
             return """
 This parent-owned node does not register node-local test artifacts in this stage.
 Return an empty JSON array and do not write test files.
 """
+        enabled_test_types = enabled_test_types or ["Integration"]
+        enabled_layers = ", ".join(enabled_test_types)
+        unit_note = (
+            "- Unit covers DB/FUNC contracts owned by the current node.\n"
+            if "Unit" in enabled_test_types else
+            ""
+        )
+        integration_note = (
+            "- Integration covers API and boundary collaboration owned by the current node.\n"
+            if "Integration" in enabled_test_types else
+            ""
+        )
+        e2e_note = (
+            "- E2E covers the UI flows that are explicit in the requirement and scenarios.\n"
+            if "E2E" in enabled_test_types else
+            ""
+        )
         return """
-Generate Unit, Integration, and E2E coverage in one pass.
-- Unit covers DB/FUNC contracts.
-- Integration covers API and boundary collaboration.
-- E2E covers the UI flows that are explicit in the requirement and scenarios.
+Generate the allowed coverage layers in one pass.
+- Allowed layers for this node: """ + enabled_layers + """.
+""" + unit_note + integration_note + e2e_note + """- Every generated file must map to exactly one execution layer.
 - Integration and E2E must exercise the real owned chain instead of validating mocked success paths.
 """
 
@@ -141,6 +158,7 @@ Generate Unit, Integration, and E2E coverage in one pass.
         requirement_data: Dict[str, Any],
         preloaded_source: str = None,
         design_mode: str = "leaf_full",
+        enabled_test_types: list[str] | None = None,
     ) -> tuple:
         from memory.context_pipeline import context_pipeline
         from tools import TOOL_REGISTRY
@@ -157,7 +175,7 @@ Read this first. The current requirement payload below is the authoritative task
 {dynamic_ctx}
 
 ### Task
-{self._build_scope_instruction(design_mode)}
+{self._build_scope_instruction(design_mode, enabled_test_types)}
 
 Additional rules:
 - Cover the spec, not speculation.
@@ -178,7 +196,7 @@ When finished, output one JSON array in a `json` markdown block:
     "test_id": "unique id",
     "req_id": "{node_id}",
     "interface_ids": ["covered interfaces"],
-    "type": "Unit|Integration|E2E",
+    "type": "Unit or Integration or E2E",
     "file_path": "relative path",
     "first_line": "exact first line in the written test file"
   }}
@@ -211,7 +229,7 @@ Return exactly one JSON array in a ```json markdown block:
     "test_id": "unique id",
     "req_id": "{node_id}",
     "interface_ids": ["covered interfaces"],
-    "type": "Unit|Integration|E2E",
+    "type": "Unit or Integration or E2E",
     "file_path": "relative path",
     "first_line": "exact first line in the written test file"
   }}
@@ -230,6 +248,7 @@ Rules:
         *,
         design_mode: str = "leaf_full",
         preloaded_source: str = None,
+        enabled_test_types: list[str] | None = None,
         validate: Any = None,
     ) -> tuple[list[dict[str, Any]] | None, list, str]:
         if design_mode in {"non_leaf_ui_only", "non_leaf_full", "skip"}:
@@ -242,6 +261,7 @@ Rules:
             requirement_data=requirement_data,
             preloaded_source=preloaded_source,
             design_mode=design_mode,
+            enabled_test_types=enabled_test_types,
         )
         self._soft_read_guard = {}
         self._new_evidence_since_read = True
@@ -263,6 +283,7 @@ Rules:
         requirement_data: Dict[str, Any],
         preloaded_source: str = None,
         design_mode: str = "leaf_full",
+        enabled_test_types: list[str] | None = None,
     ) -> str:
         if design_mode in {"non_leaf_ui_only", "non_leaf_full", "skip"}:
             return "[]"
@@ -272,6 +293,7 @@ Rules:
             requirement_data=requirement_data,
             preloaded_source=preloaded_source,
             design_mode=design_mode,
+            enabled_test_types=enabled_test_types,
         )
         self._soft_read_guard = {}
         self._new_evidence_since_read = True

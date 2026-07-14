@@ -132,11 +132,20 @@ class WorkflowPhaseRunner:
         scope_note: str = "",
         initial_failure_summary: str = "",
     ) -> bool:
+        tests = self._normalize_registered_tests_for_execution(node_id, tests)
         previous_group_handoff_summary = initial_failure_summary.strip()
         previous_group_modified_files: list[str] = []
 
         for test_type in get_selected_test_types():
-            typed_tests = [test for test in tests if str(test.get("type", "")).strip() == test_type]
+            typed_tests = [
+                test
+                for test in tests
+                if normalize_test_type_name(
+                    test.get("type", ""),
+                    str(test.get("file_path", "")).strip(),
+                    test.get("interface_ids"),
+                ) == test_type
+            ]
             if not typed_tests:
                 continue
 
@@ -403,6 +412,7 @@ class WorkflowPhaseRunner:
                 "materialized_files": materialized_files,
             },
         )
+        owned_interface_types = sorted(derive_owned_interface_types(node_id, interfaces))
         
         await self.log_cb(
             "InterfaceDesigner",
@@ -418,6 +428,10 @@ class WorkflowPhaseRunner:
                     "execution_mode": "non_leaf_system_path",
                     "test_plan": build_test_plan([]),
                     "test_artifacts": [],
+                    "test_policy": {
+                        "enabled_layers": [],
+                        "owned_interface_types": owned_interface_types,
+                    },
                     "phase_status": {"test": "skipped"},
                 },
             )
@@ -431,6 +445,7 @@ class WorkflowPhaseRunner:
             return True
 
         # ---------------- Test generation ----------------
+        enabled_test_types = select_leaf_test_types(node_id, interfaces)
         await self.log_cb(
             "TestGenerator",
             "Generating unit, integration, and end-to-end tests from the designed interfaces...",
@@ -441,10 +456,12 @@ class WorkflowPhaseRunner:
             node_id=node_id,
             requirement_data=requirement_data,
             design_mode=design_mode,
+            enabled_test_types=enabled_test_types,
             validate=lambda artifacts: self._validate_generated_tests(
                 node_id=node_id,
                 tests=artifacts,
                 is_leaf=is_leaf,
+                allowed_test_types=enabled_test_types,
             ),
         )
         if not tests:
@@ -464,6 +481,7 @@ class WorkflowPhaseRunner:
                 node_id,
                 tests,
                 is_leaf=is_leaf,
+                allowed_test_types=enabled_test_types,
             )
         except ValueError as exc:
             await self.log_cb(
@@ -481,6 +499,10 @@ class WorkflowPhaseRunner:
                 "execution_mode": "leaf_full",
                 "test_plan": build_test_plan(tests),
                 "test_artifacts": tests,
+                "test_policy": {
+                    "enabled_layers": enabled_test_types,
+                    "owned_interface_types": owned_interface_types,
+                },
                 "phase_status": {"test": "completed"},
             },
         )
@@ -564,9 +586,11 @@ class WorkflowPhaseRunner:
                 node_id,
             )
 
+        current_node_interfaces = session.get("interfaces") or interfaces
         final_ok = await self._run_tdd_batches_for_node(
             node_id=node_id,
             tests=tests,
+            scope_note=build_leaf_scope_note(node_id, current_node_interfaces),
         )
         
         for interface in interfaces:
@@ -590,6 +614,34 @@ class WorkflowPhaseRunner:
             )
         
         return final_ok
+
+    def _normalize_registered_tests_for_execution(
+        self,
+        node_id: str,
+        tests: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        normalized_tests: list[dict[str, Any]] = []
+        for test in tests:
+            if not isinstance(test, dict):
+                continue
+            normalized_type = normalize_test_type_name(
+                test.get("type", ""),
+                str(test.get("file_path", "")).strip(),
+                test.get("interface_ids"),
+            )
+            if not normalized_type:
+                normalized_tests.append(test)
+                continue
+            if normalized_type != str(test.get("type", "")).strip():
+                test_id = str(test.get("test_id", "")).strip()
+                if test_id:
+                    self.traceability.update_test_fields(test_id, type=normalized_type)
+                test = {
+                    **test,
+                    "type": normalized_type,
+                }
+            normalized_tests.append(test)
+        return normalized_tests
 
     async def _run_non_leaf_system_path_check(
         self,
@@ -690,6 +742,7 @@ class WorkflowPhaseRunner:
         node_id: str,
         tests: list[dict[str, Any]],
         is_leaf: bool,
+        allowed_test_types: list[str],
     ) -> str | None:
         generated_ids: set[str] = set()
         sequence = 0
@@ -702,8 +755,12 @@ class WorkflowPhaseRunner:
             if not raw_test_id:
                 continue
 
-            test_type = str(test.get("type", "")).strip()
             file_path = str(test.get("file_path", "")).strip()
+            test_type = normalize_test_type_name(
+                test.get("type", ""),
+                file_path,
+                test.get("interface_ids"),
+            )
             if not test_type:
                 return f"Generated test `{raw_test_id}` is missing `type`."
             if not file_path:
@@ -713,6 +770,12 @@ class WorkflowPhaseRunner:
                 return (
                     f"Generated test `{raw_test_id}` is invalid for non-leaf node `{node_id}`. "
                     "Non-leaf nodes should not register tests."
+                )
+
+            if test_type not in allowed_test_types:
+                return (
+                    f"Generated test `{raw_test_id}` resolved to unsupported layer `{test_type}` for node `{node_id}`. "
+                    f"Allowed layers: {', '.join(allowed_test_types) if allowed_test_types else 'none'}."
                 )
 
             validation_error = self.app_handler.validate_test_path(test_type, file_path)
@@ -742,6 +805,7 @@ class WorkflowPhaseRunner:
         node_id: str,
         tests: list[dict[str, Any]],
         is_leaf: bool,
+        allowed_test_types: list[str],
     ) -> None:
         generated_ids: set[str] = set()
         sequence = 0
@@ -754,12 +818,21 @@ class WorkflowPhaseRunner:
             if not raw_test_id:
                 continue
 
-            test_type = str(test.get("type", "")).strip()
             file_path = str(test.get("file_path", "")).strip()
+            test_type = normalize_test_type_name(
+                test.get("type", ""),
+                file_path,
+                test.get("interface_ids"),
+            )
             if not is_leaf:
                 raise ValueError(
                     f"Generated test `{raw_test_id}` is invalid for non-leaf node `{node_id}`. "
                     "Non-leaf nodes should not register tests; they only keep shared interface and aggregation artifacts."
+                )
+            if test_type not in allowed_test_types:
+                raise ValueError(
+                    f"Generated test `{raw_test_id}` resolved to unsupported layer `{test_type}` for node `{node_id}`. "
+                    f"Allowed layers: {', '.join(allowed_test_types) if allowed_test_types else 'none'}."
                 )
             validation_error = self.app_handler.validate_test_path(test_type, file_path)
             if validation_error:
@@ -863,6 +936,127 @@ def build_base_node_session(
     }
 
 
+def derive_owned_interface_types(
+    node_id: str,
+    interfaces: list[dict[str, Any]],
+) -> set[str]:
+    owned_types: set[str] = set()
+    prefix = f"{str(node_id or '').strip()}-"
+    for interface in interfaces or []:
+        if not isinstance(interface, dict):
+            continue
+        interface_id = str(interface.get("interface_id", "")).strip()
+        if not interface_id.startswith(prefix):
+            continue
+        interface_type = str(interface.get("type", "")).strip().upper()
+        if interface_type:
+            owned_types.add(interface_type)
+    return owned_types
+
+
+def select_leaf_test_types(
+    node_id: str,
+    interfaces: list[dict[str, Any]],
+) -> list[str]:
+    owned_types = derive_owned_interface_types(node_id, interfaces)
+    enabled_layers: list[str] = []
+    if any(interface_type in {"FUNC", "DB"} for interface_type in owned_types):
+        enabled_layers.append("Unit")
+    if owned_types:
+        enabled_layers.append("Integration")
+    if "UI" in owned_types:
+        enabled_layers.append("E2E")
+    if not enabled_layers:
+        enabled_layers.append("Integration")
+    return enabled_layers
+
+
+def build_leaf_scope_note(
+    node_id: str,
+    interfaces: list[dict[str, Any]],
+) -> str:
+    owned_types = sorted(derive_owned_interface_types(node_id, interfaces))
+    if not owned_types:
+        return (
+            "Treat this node as a thin boundary closure. Keep repairs on the smallest reused owner file that the "
+            "current failing batch proves necessary."
+        )
+    if set(owned_types).issubset({"UI"}):
+        return (
+            "Current node ownership is UI-only. Keep tests and repairs in the rendered form and the immediate frontend "
+            "request boundary. Reused backend or DB collaborators are fallback dependencies and should change only when "
+            "the current failing batch proves a reused route or persistence mismatch."
+        )
+    if set(owned_types).issubset({"UI", "API"}):
+        return (
+            "Current node ownership is limited to frontend UI and request wiring. Prefer fixes in the page, route "
+            "container, or frontend API helper before changing reused backend services."
+        )
+    if "UI" not in owned_types:
+        return (
+            "Current node does not own a browser surface. Keep repairs in backend or service boundaries and avoid "
+            "inventing page-level behavior."
+        )
+    return (
+        "Current node owns an executable feature chain. Start at the smallest failing owner layer and expand outward "
+        "only when direct evidence shows the boundary is reused and broken upstream."
+    )
+
+
+def normalize_test_type_name(
+    test_type: Any,
+    file_path: str,
+    interface_ids: Any = None,
+) -> str:
+    raw_type = str(test_type or "").strip()
+    normalized_raw = raw_type.lower()
+    direct_map = {
+        "unit": "Unit",
+        "integration": "Integration",
+        "e2e": "E2E",
+    }
+    if normalized_raw in direct_map:
+        return direct_map[normalized_raw]
+
+    normalized_path = str(file_path or "").strip().replace("\\", "/").lower()
+    interface_type_hints: set[str] = set()
+    for interface_id in normalize_string_list(interface_ids):
+        match = re.search(r"-(UI|API|FUNC|DB)-", str(interface_id).strip(), re.IGNORECASE)
+        if match:
+            interface_type_hints.add(match.group(1).upper())
+
+    candidate_types: list[str] = []
+    for separator in ("|", "/", ","):
+        if separator in raw_type:
+            candidate_types = [
+                direct_map.get(part.strip().lower(), "")
+                for part in raw_type.split(separator)
+                if part.strip()
+            ]
+            break
+    candidate_types = [candidate for candidate in candidate_types if candidate]
+    if not candidate_types:
+        if "/test-e2e/" in normalized_path:
+            return "E2E"
+        if normalized_path.startswith("frontend/tests/") or normalized_path.startswith("backend/tests/"):
+            return "Integration"
+        return ""
+
+    if len(candidate_types) == 1:
+        return candidate_types[0]
+    if "/test-e2e/" in normalized_path:
+        return "E2E"
+    if interface_type_hints & {"UI", "API"}:
+        return "Integration"
+    if interface_type_hints and interface_type_hints <= {"FUNC", "DB"}:
+        return "Unit"
+    if normalized_path.startswith("frontend/tests/"):
+        return "Integration"
+    if "Integration" in candidate_types:
+        return "Integration"
+    return candidate_types[0]
+
+
 def build_test_plan(tests: list[dict[str, Any]]) -> dict[str, Any]:
     grouped = {
         "unit_files": [],
@@ -873,8 +1067,12 @@ def build_test_plan(tests: list[dict[str, Any]]) -> dict[str, Any]:
     for test in tests:
         if not isinstance(test, dict):
             continue
-        test_type = str(test.get("type", "")).strip()
         file_path = str(test.get("file_path", "")).strip()
+        test_type = normalize_test_type_name(
+            test.get("type", ""),
+            file_path,
+            test.get("interface_ids"),
+        )
         test_id = str(test.get("test_id", "")).strip()
         if test_id:
             grouped["test_ids"].append(test_id)
