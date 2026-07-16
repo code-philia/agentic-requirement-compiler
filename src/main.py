@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import argparse
 import asyncio
 import os
@@ -5,9 +7,9 @@ import shutil
 import time
 from dataclasses import dataclass
 
-from core.workflow import ARCWorkflowManager
 from app_type_handler import normalize_app_type
 from core.utils import cli_log, init_debug_logger, print_cli_banner, print_cli_startup, set_web_port, stop_cli_spinner
+from core.workflow import ARCWorkflowManager
 
 
 @dataclass(slots=True)
@@ -36,9 +38,7 @@ def _resolve_requirement_dir(path: str) -> str:
         raise FileNotFoundError(f"Requirement directory does not exist: {normalized}")
     requirement_file = os.path.join(normalized, "requirements.yaml")
     if not os.path.isfile(requirement_file):
-        raise FileNotFoundError(
-            f"Requirement directory must contain requirements.yaml: {normalized}"
-        )
+        raise FileNotFoundError(f"Requirement directory must contain requirements.yaml: {normalized}")
     return normalized
 
 
@@ -127,7 +127,6 @@ def prepare_config(args: argparse.Namespace) -> CompilationConfig:
 
 async def run() -> None:
     config = prepare_config(parse_args())
-
     print_cli_banner()
     log_path = init_debug_logger(config.output_dir, reset_existing=not config.resume_from_queue)
     print_cli_startup(
@@ -139,7 +138,6 @@ async def run() -> None:
         web_port=config.web_port,
         resume_from_queue=config.resume_from_queue,
     )
-
     try:
         workflow_manager = ARCWorkflowManager(
             workspace_path=config.output_dir,

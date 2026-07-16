@@ -39,6 +39,26 @@ def _parse_bool(value: Any) -> bool | None:
     return None
 
 
+def _normalize_scenarios(req_id: str, scenarios: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
+    normalized: list[dict[str, Any]] = []
+    for index, scenario in enumerate(scenarios or [], start=1):
+        if not isinstance(scenario, dict):
+            continue
+        scenario_id = str(scenario.get("id") or scenario.get("scenario_id") or "").strip()
+        if not scenario_id:
+            scenario_id = f"{req_id}-SCENARIO-{index}"
+        normalized.append(
+            {
+                **scenario,
+                "id": scenario_id,
+                "scenario_id": scenario_id,
+                "name": str(scenario.get("name") or "").strip() or scenario_id,
+                "steps": scenario.get("steps") or [],
+            }
+        )
+    return normalized
+
+
 @dataclass(frozen=True)
 class RequirementRecord:
     req_id: str
@@ -338,7 +358,7 @@ class TraceabilityStore:
         normalized_req_id = str(req_id or "").strip()
         if not normalized_req_id:
             raise ValueError("req_id is required")
-        normalized_scenarios = scenarios or []
+        normalized_scenarios = _normalize_scenarios(normalized_req_id, scenarios)
         with self.connection() as connection:
             # Use ON CONFLICT DO UPDATE instead of INSERT OR REPLACE. REPLACE deletes the
             # existing row first, which cascades and removes registered tests for req_id.
@@ -370,8 +390,6 @@ class TraceabilityStore:
             connection.execute("DELETE FROM scenarios WHERE req_id = ?", (normalized_req_id,))
             for scenario in normalized_scenarios:
                 scenario_id = str(scenario.get("id") or scenario.get("scenario_id") or "").strip()
-                if not scenario_id:
-                    continue
                 connection.execute(
                     """
                     INSERT OR REPLACE INTO scenarios (scenario_id, name, req_id, steps)

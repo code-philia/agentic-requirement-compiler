@@ -1,4 +1,5 @@
 import asyncio
+import inspect
 import os
 import shutil
 from abc import ABC, abstractmethod
@@ -6,7 +7,7 @@ from typing import Awaitable, Callable
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
-LogCallback = Callable[[str, str, str | None, str | None], Awaitable[None]]
+LogCallback = Callable[[str, str, str | None, str | None], Awaitable[None] | None]
 
 
 def _resolve_templates_root() -> str:
@@ -59,11 +60,11 @@ class AppTypeHandler(ABC):
     async def copy_template(self) -> bool:
         template_dir = self.template_dir()
         if not os.path.exists(template_dir):
-            await self.log_cb("System", f"Error: Template directory not found at {template_dir}", "error", None)
+            await self._log("System", f"Error: Template directory not found at {template_dir}", "error", None)
             return False
 
-        await self.log_cb("System", f"Using app_type={self.name}, template={template_dir}")
-        await self.log_cb("System", f"Copying template from {template_dir} to {self.workspace_path}...")
+        await self._log("System", f"Using app_type={self.name}, template={template_dir}")
+        await self._log("System", f"Copying template from {template_dir} to {self.workspace_path}...")
         try:
             await asyncio.to_thread(
                 shutil.copytree,
@@ -71,11 +72,22 @@ class AppTypeHandler(ABC):
                 self.workspace_path,
                 dirs_exist_ok=True,
             )
-            await self.log_cb("System", "Template files copied successfully.")
+            await self._log("System", "Template files copied successfully.")
             return True
         except Exception as exc:
-            await self.log_cb("System", f"Error copying template: {str(exc)}", "error", None)
+            await self._log("System", f"Error copying template: {str(exc)}", "error", None)
             return False
+
+    async def _log(
+        self,
+        agent_name: str,
+        message: str,
+        status: str | None = None,
+        node_id: str | None = None,
+    ) -> None:
+        result = self.log_cb(agent_name, message, status, node_id)
+        if inspect.isawaitable(result):
+            await result
 
     async def post_template_setup(self) -> bool:
         return True

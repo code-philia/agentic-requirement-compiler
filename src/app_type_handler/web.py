@@ -6,13 +6,20 @@ import asyncio
 import subprocess
 import signal
 import hashlib
+import inspect
 
 from typing import Awaitable, Callable
 
 from .base import AppTypeHandler
 from core.utils import build_web_runtime_env, finalize_subprocess, get_web_base_url, get_web_port
 
-async def run_npm_install(target_dir: str, log_cb: Callable[..., Awaitable[None]]):
+async def _emit_log(log_cb: Callable[..., Awaitable[None] | None], *args) -> None:
+    result = log_cb(*args)
+    if inspect.isawaitable(result):
+        await result
+
+
+async def run_npm_install(target_dir: str, log_cb: Callable[..., Awaitable[None] | None]):
     try:
         process = await asyncio.create_subprocess_shell(
             "npm install",
@@ -22,11 +29,11 @@ async def run_npm_install(target_dir: str, log_cb: Callable[..., Awaitable[None]
         )
         _, stderr = await process.communicate()
         if process.returncode == 0:
-            await log_cb("System", f"NPM install success in {target_dir}")
+            await _emit_log(log_cb, "System", f"NPM install success in {target_dir}")
         else:
-            await log_cb("System", f"NPM install failed in {target_dir}: dependency installation returned a non-zero exit code.")
+            await _emit_log(log_cb, "System", f"NPM install failed in {target_dir}: dependency installation returned a non-zero exit code.")
     except Exception as exc:
-        await log_cb("System", f"NPM install error: {str(exc)}")
+        await _emit_log(log_cb, "System", f"NPM install error: {str(exc)}")
 
 
 async def _execute_web_test_command(
@@ -567,8 +574,6 @@ def _resolve_backend_start_command(backend_path: str) -> str | None:
     scripts = _read_package_scripts(backend_path)
     if "start" in scripts:
         return "npm run start"
-    if "dev" in scripts:
-        return "npm run dev"
     return None
 
 
@@ -633,8 +638,7 @@ async def _start_backend_runtime(
     start_command = _resolve_backend_start_command(backend_path)
     if not start_command:
         return None, "", (
-            "Backend package.json must define `start` or `dev` so the backend can host "
-            "the built frontend on the single web port."
+            "Backend package.json must define `start` so the backend can host the built frontend on the single web port."
         ), ""
 
     try:
@@ -686,6 +690,8 @@ class WebAppType(AppTypeHandler):
 
     def validate_test_path(self, test_type: str, file_path: str) -> str | None:
         normalized_type = (test_type or "").strip().lower()
+        if normalized_type not in {"unit", "integration", "e2e"}:
+            return "Web test `type` must be one of `Unit`, `Integration`, or `E2E`."
         if normalized_type in {"unit", "integration"} and not _is_valid_web_vitest_test_path(file_path):
             return (
                 "Web Unit and Integration tests must live under `frontend/tests/...` or `backend/tests/...` "
@@ -719,28 +725,28 @@ class WebAppType(AppTypeHandler):
                     content = content.replace(old_value, new_value)
                 with open(file_path, "w", encoding="utf-8") as file:
                     file.write(content)
-            await self.log_cb(
+            await self._log(
                 "System",
                 f"Configured web template for single-port backend hosting on port {get_web_port()}.",
             )
             return True
         except Exception as exc:
-            await self.log_cb("System", f"Failed to configure web template: {str(exc)}")
+            await self._log("System", f"Failed to configure web template: {str(exc)}")
             return False
 
     async def install_dependencies(self) -> None:
         backend_path = os.path.join(self.workspace_path, "backend")
         if os.path.exists(backend_path):
-            await self.log_cb("System", "Installing backend dependencies. This might take a moment...")
+            await self._log("System", "Installing backend dependencies. This might take a moment...")
             await run_npm_install(backend_path, self.log_cb)
 
         frontend_path = os.path.join(self.workspace_path, "frontend")
         if os.path.exists(frontend_path):
-            await self.log_cb("System", "Installing frontend dependencies. This might take a moment...")
+            await self._log("System", "Installing frontend dependencies. This might take a moment...")
             await run_npm_install(frontend_path, self.log_cb)
 
     async def run_test_file(self, test_type: str, file_path: str) -> str:
-        await self.log_cb("System", f"System test execution ({test_type}): {file_path}")
+        await self._log("System", f"System test execution ({test_type}): {file_path}")
         normalized_type = test_type.lower()
         validation_error = self.validate_test_path(test_type, file_path)
         if validation_error:
@@ -847,7 +853,7 @@ class WebAppType(AppTypeHandler):
             )
 
         for file_path in file_paths:
-            await self.log_cb("System", f"System test execution ({test_type}): {file_path}")
+            await self._log("System", f"System test execution ({test_type}): {file_path}")
 
         invalid_paths = [file_path for file_path in file_paths if self.validate_test_path(test_type, file_path)]
         if invalid_paths:
@@ -1002,7 +1008,7 @@ class WebAppType(AppTypeHandler):
             "### Runtime And Hosting\n"
             f"* **Single Web Port**: {web_port}\n"
             f"* **Base URL Under Test**: {base_url}\n"
-            "* **Hosting Model**: Build the Vite frontend and let the Express backend serve `frontend/dist` on the same origin.\n"
+            "* **Hosting Model**: Enter `frontend` and run `npm run build`, then enter `backend` and run `npm run start` so the Express backend serves `frontend/dist` on the same origin.\n"
             "* **Deployment Rule**: Do not rely on a separate frontend dev server for deployment or E2E.\n"
             "\n"
             "### Frontend\n"
@@ -1011,7 +1017,7 @@ class WebAppType(AppTypeHandler):
             "* **Styling**: Tailwind CSS v4 via utility classes in component markup, not only bare CSS imports\n"
             "* **HTTP**: Axios (Must use Interceptors for global error handling)\n"
             "* **Testing**: Vitest for frontend unit/integration tests in `frontend/tests/...`.\n"
-            "* **Frontend Test Infrastructure**: `vitest` + `jsdom` + `@testing-library/react` + `@testing-library/jest-dom` + `@testing-library/user-event` are preinstalled and configured through `frontend/vite.config.js` and `frontend/src/test/setup.ts`.\n"
+            "* **Frontend Test Infrastructure**: `vitest` + `jsdom` + `@testing-library/react` + `@testing-library/jest-dom` + `@testing-library/user-event` are preinstalled and configured through `frontend/vite.config.js` and `frontend/test/setup.ts`.\n"
             "\n"
             "### Backend\n"
             "* **Runtime**: Node.js (LTS)\n"
