@@ -19,6 +19,8 @@ dependencies = [
   "jsonschema",
   "tiktoken",
   "httpx[socks]",
+  "deepagents",
+  "langchain-openai",
 ]
 
 [project.scripts]
@@ -43,14 +45,22 @@ where = ["src"]
 include = [
   "agents",
   "agents.*",
-  "app_types",
-  "app_types.*",
+  "app_type_handler",
+  "app_type_handler.*",
   "arcbench_agent_runtime",
   "arcbench_agent_runtime.*",
-  "traceability",
-  "traceability.*",
+  "context",
+  "context.*",
+  "core",
+  "core.*",
+  "memory",
+  "memory.*",
+  "prompts",
+  "prompts.*",
   "templates",
   "templates.*",
+  "tools",
+  "tools.*",
 ]
 namespaces = true
 

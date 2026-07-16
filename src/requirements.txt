@@ -9,3 +9,5 @@ click
 jsonschema
 tiktoken
 httpx[socks]
+deepagents
+langchain-openai
