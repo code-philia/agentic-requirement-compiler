@@ -7,7 +7,7 @@ from deepagents import FilesystemPermission, HarnessProfile, create_deep_agent, 
 from deepagents.backends import CompositeBackend, FilesystemBackend, LocalShellBackend, StateBackend
 from deepagents._models import get_model_provider
 from langchain.agents.middleware.types import AgentMiddleware
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, create_model
 
 from agents.context import AgentRuntimeContext
 from agents.model_factory import create_arc_chat_model
@@ -302,13 +302,123 @@ def _tool_name(tool: "BaseTool | dict[str, Any] | Any") -> str | None:
 
 def _normalize_tool_schema(tool: "BaseTool | dict[str, Any] | Any") -> "BaseTool | dict[str, Any] | Any":
     name = _tool_name(tool)
-    if name not in {"glob", "grep"}:
-        return tool
-    schema = OpenAIGlobSchema if name == "glob" else OpenAIGrepSchema
-    if hasattr(tool, "model_copy"):
-        return tool.model_copy(update={"args_schema": schema})
     if isinstance(tool, dict):
         copied = dict(tool)
-        copied["parameters"] = schema.model_json_schema()
+        parameters = copied.get("parameters")
+        if isinstance(parameters, dict):
+            copied["parameters"] = _sanitize_json_schema(parameters)
+        function = copied.get("function")
+        if isinstance(function, dict) and isinstance(function.get("parameters"), dict):
+            copied["function"] = {
+                **function,
+                "parameters": _sanitize_json_schema(function["parameters"]),
+            }
         return copied
+
+    schema = _openai_compatible_args_schema(tool, name)
+    if schema is None:
+        return tool
+    if hasattr(tool, "model_copy"):
+        return tool.model_copy(update={"args_schema": schema})
     return tool
+
+
+def _openai_compatible_args_schema(tool: "BaseTool | Any", name: str | None) -> type[BaseModel] | None:
+    if name == "glob":
+        return OpenAIGlobSchema
+    if name == "grep":
+        return OpenAIGrepSchema
+
+    args_schema = getattr(tool, "args_schema", None)
+    if not isinstance(args_schema, type) or not issubclass(args_schema, BaseModel):
+        return None
+    raw_schema = args_schema.model_json_schema()
+    if not _schema_needs_openai_normalization(raw_schema):
+        return None
+    return _build_openai_schema_model(name or "Tool", raw_schema)
+
+
+def _schema_needs_openai_normalization(schema: dict[str, Any]) -> bool:
+    properties = schema.get("properties")
+    if not isinstance(properties, dict):
+        return False
+    return any(isinstance(prop, dict) and "type" not in prop for prop in properties.values())
+
+
+def _build_openai_schema_model(tool_name: str, schema: dict[str, Any]) -> type[BaseModel]:
+    properties = schema.get("properties") if isinstance(schema.get("properties"), dict) else {}
+    required = set(schema.get("required") or [])
+    fields: dict[str, tuple[Any, Any]] = {}
+    for field_name, property_schema in properties.items():
+        if not isinstance(field_name, str) or not isinstance(property_schema, dict):
+            continue
+        annotation = _annotation_from_json_schema(property_schema)
+        default = ... if field_name in required else property_schema.get("default", None)
+        description = property_schema.get("description")
+        title = property_schema.get("title")
+        fields[field_name] = (
+            annotation,
+            Field(default=default, description=description, title=title),
+        )
+
+    model_name = "".join(part for part in f"OpenAI{tool_name.title()}Schema" if part.isalnum())
+    return create_model(model_name or "OpenAIToolSchema", __base__=BaseModel, **fields)
+
+
+def _annotation_from_json_schema(schema: dict[str, Any]) -> Any:
+    concrete = _first_non_null_schema(schema)
+    schema_type = concrete.get("type")
+    if schema_type == "string":
+        return str
+    if schema_type == "integer":
+        return int
+    if schema_type == "number":
+        return float
+    if schema_type == "boolean":
+        return bool
+    if schema_type == "array":
+        item_annotation = _annotation_from_json_schema(concrete.get("items") or {})
+        return list[item_annotation]
+    if schema_type == "object":
+        return dict[str, Any]
+    return Any
+
+
+def _first_non_null_schema(schema: dict[str, Any]) -> dict[str, Any]:
+    any_of = schema.get("anyOf")
+    if isinstance(any_of, list):
+        for candidate in any_of:
+            if isinstance(candidate, dict) and candidate.get("type") != "null":
+                return candidate
+    one_of = schema.get("oneOf")
+    if isinstance(one_of, list):
+        for candidate in one_of:
+            if isinstance(candidate, dict) and candidate.get("type") != "null":
+                return candidate
+    return schema
+
+
+def _sanitize_json_schema(schema: dict[str, Any]) -> dict[str, Any]:
+    copied = dict(schema)
+    copied.setdefault("type", "object")
+    properties = copied.get("properties")
+    if isinstance(properties, dict):
+        copied["properties"] = {
+            key: _sanitize_property_schema(value) if isinstance(value, dict) else value
+            for key, value in properties.items()
+        }
+    return copied
+
+
+def _sanitize_property_schema(schema: dict[str, Any]) -> dict[str, Any]:
+    concrete = dict(_first_non_null_schema(schema))
+    for key in ("default", "description", "title"):
+        if key in schema and key not in concrete:
+            concrete[key] = schema[key]
+    if "type" not in concrete:
+        concrete["type"] = "string"
+    if concrete.get("type") == "object":
+        return _sanitize_json_schema(concrete)
+    if concrete.get("type") == "array" and isinstance(concrete.get("items"), dict):
+        concrete["items"] = _sanitize_property_schema(concrete["items"])
+    return concrete
