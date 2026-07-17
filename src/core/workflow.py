@@ -39,7 +39,9 @@ TASK_COMPLETED = "COMPLETED"
 TASK_FAILED = "FAILED"
 
 NODE_UNSEEN = "UNSEEN"
+NODE_DESIGNING = "DESIGNING"
 NODE_DESIGNED = "DESIGNED"
+NODE_IMPLEMENTING = "IMPLEMENTING"
 NODE_PASSED = "PASSED"
 NODE_CONVERGED = "CONVERGED"
 NODE_CONVERGED_WITH_FAILED_CHILDREN = "CONVERGED_WITH_FAILED_CHILDREN"
@@ -221,6 +223,7 @@ class ARCWorkflowManager:
 
         self.runtime.traceability.store_requirement_tree(requirement_tree)
         queue_state = self._load_or_create_processing_queue(requirement_tree)
+        self._sync_queue_node_states(queue_state)
         self._recover_interrupted_queue(queue_state)
         self._save_processing_queue(queue_state)
         await self._log(
@@ -238,6 +241,7 @@ class ARCWorkflowManager:
             requirement_data = self.runtime.traceability.get_requirement(node_id) or {}
 
             task["status"] = TASK_RUNNING
+            self._mark_task_running(queue_state["node_states"], node_id, phase)
             queue_state["last_task_id"] = task["task_id"]
             self._save_processing_queue(queue_state)
 
@@ -265,6 +269,7 @@ class ARCWorkflowManager:
             if phase == PHASE_DESIGN:
                 self.runtime.events.mark_design_failed(node_id)
             else:
+                self.runtime.events.mark_implementation_failed(node_id)
                 self.runtime.events.mark_test_failed(node_id)
             await self._commit_phase_checkpoint(node_id, f"{phase}-FAILED", requirement_data)
             await self._log("Compiler", f"{phase} failed for node {node_id}.", "error", node_id)
@@ -395,6 +400,19 @@ class ARCWorkflowManager:
     def _set_node_state(self, node_states: dict[str, str], node_id: str, state: str) -> None:
         node_states[node_id] = state
         self.runtime.traceability.upsert_node_state(node_id, state)
+
+    def _sync_queue_node_states(self, queue_state: dict[str, Any]) -> None:
+        for node_id, state in queue_state.get("node_states", {}).items():
+            normalized_state = str(state or NODE_UNSEEN).strip().upper() or NODE_UNSEEN
+            self.runtime.traceability.upsert_node_state(node_id, normalized_state)
+
+    def _mark_task_running(self, node_states: dict[str, str], node_id: str, phase: str) -> None:
+        if phase == PHASE_DESIGN:
+            self._set_node_state(node_states, node_id, NODE_DESIGNING)
+            self.runtime.events.mark_design_started(node_id)
+            return
+        self._set_node_state(node_states, node_id, NODE_IMPLEMENTING)
+        self.runtime.events.mark_implementation_started(node_id)
 
     @staticmethod
     def _build_compile_result(queue_state: dict[str, Any]) -> dict[str, Any]:
