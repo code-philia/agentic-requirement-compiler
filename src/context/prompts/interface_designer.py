@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from context.prompts.common import compiler_background, code_task_exploration_policy, reasoning_reflection_policy, response_contract, section, task_context_block, web_runtime_contract, whole_app_policy, workspace_tool_policy
+from context.prompts.common import app_runtime_contract, compiler_background, code_task_exploration_policy, reasoning_reflection_policy, response_contract, section, task_context_block, whole_app_policy, workspace_tool_policy
 
 
 def get_system_prompt() -> str:
@@ -40,7 +40,7 @@ def get_system_prompt() -> str:
                     "Return interface schemas with stable ids and enough specification for tests to target them.",
                 ],
             ),
-            web_runtime_contract(),
+            app_runtime_contract(),
             code_task_exploration_policy(),
             workspace_tool_policy(),
             response_contract(),

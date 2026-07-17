@@ -169,7 +169,9 @@ async def finalize_subprocess(process: Any, *, force_kill: bool = False) -> None
 
 async def check_prerequisites(app_type: str, log_cb: LogCallback | None = None) -> bool:
     normalized = (app_type or "web").strip().lower()
-    required = ["node", "npm"] if normalized == "web" else ["java"]
+    from app_type_handler import get_app_type_handler_class
+
+    required = get_app_type_handler_class(normalized).prerequisite_commands()
     missing = [command for command in required if shutil.which(command) is None]
     if missing:
         await _emit_log(

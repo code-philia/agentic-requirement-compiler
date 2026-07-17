@@ -91,6 +91,12 @@ class ContextPipeline:
         return getattr(self.runtime, "traceability", None)
 
     @staticmethod
+    def _get_app_type_handler_class(app_type: str):
+        from app_type_handler import get_app_type_handler_class
+
+        return get_app_type_handler_class(app_type)
+
+    @staticmethod
     def _compact_json(value: Any) -> str:
         return json.dumps(value, ensure_ascii=False, separators=(",", ":"), default=str)
 
@@ -225,109 +231,29 @@ class ContextPipeline:
 
     def _get_tech_stack_context(self) -> str:
         app_type = (self.config.app_type or "web").strip().lower()
-        if app_type == "android":
-            content = "\n".join(
-                [
-                    "* **Platform** : Android Native App (Single-module `app` template)",
-                    "* **Build System** : Gradle Wrapper + Android Gradle Plugin `8.1.4`",
-                    "* **Language** : Java 8",
-                    "* **UI Stack** : XML Layout + AndroidX AppCompat + Material Components + ConstraintLayout",
-                    "* **SDK Target** : `compileSdk 34` / `minSdk 31` / `targetSdk 34`",
-                    "* **Runtime Entry** : `MainActivity` + `AndroidManifest.xml`",
-                    "* **Database** : Room 2.6.1",
-                    "* **Testing** : JUnit5 + Robolectric under `app/src/test/`",
-                ]
-            )
-            package_name = self.config.android_package
-            package_dir = package_name.replace(".", "/")
-            content += (
-                "\n\n## Android Package Configuration\n"
-                f"- Package: `{package_name}`\n"
-                f"- Package directory: `{package_dir}`\n"
-                f"- Main source: `app/src/main/java/{package_dir}/`\n"
-                f"- Unit tests: `app/src/test/java/{package_dir}/unit/`\n"
-                f"- Integration tests: `app/src/test/java/{package_dir}/integration/`\n"
-                f"- E2E tests: `app/src/test/java/{package_dir}/e2e/`\n"
-            )
-        else:
-            base_url = f"http://localhost:{self.config.web_port}"
-            content = (
-                "### Main Stack\n"
-                "- backend: nodejs\n"
-                "- frontend: react\n"
-                "- database: sqlite\n"
-                f"- web_port: {self.config.web_port}\n"
-                "\n"
-                "### Runtime And Hosting\n"
-                f"* **Single Web Port**: {self.config.web_port}\n"
-                f"* **Base URL Under Test**: {base_url}\n"
-                "* **Hosting Model**: Enter `frontend` and run `npm run build`, then enter `backend` and run `npm run start` so the Express backend serves `frontend/dist` on the same origin.\n"
-                "* **Deployment Rule**: Do not rely on a separate frontend dev server for deployment or E2E.\n"
-                "\n"
-                "### Frontend\n"
-                "* **Framework**: React 18+ with Vite\n"
-                "* **Language**: TypeScript + TSX for frontend source files\n"
-                "* **HTTP**: Axios with shared client/error handling where applicable\n"
-                "* **Testing**: Vitest for frontend unit/integration tests in `frontend/tests/...`\n"
-                "* **Frontend Test Setup**: shared Vitest setup lives at `frontend/test/setup.ts` and is configured by `frontend/vite.config.js`.\n"
-                "\n"
-                "### Backend\n"
-                "* **Runtime**: Node.js LTS\n"
-                "* **Framework**: Express.js\n"
-                "* **Database**: SQLite3 file-based runtime\n"
-                "* **Database Scaffold**: extend `backend/src/database/` instead of creating one-off DB lifecycle helpers.\n"
-                "* **Testing**: Vitest/Supertest for backend tests and Playwright under `backend/test-e2e/...` for E2E.\n"
-            )
+        handler_class = self._get_app_type_handler_class(app_type)
+        content = handler_class.build_stack_block(
+            web_port=self.config.web_port,
+            android_package=self.config.android_package,
+        )
         return f"<tech_stack_context>\n{content}\n</tech_stack_context>"
 
     def _get_project_structure(self, agent_type: str = "") -> str:
         app_type = (self.config.app_type or "web").strip().lower()
-        if app_type == "web":
-            lines = [
-                "- Web structure rules:",
-                f"  - Single runtime port: backend serves frontend dist on port {self.config.web_port}",
-                "  - Web runtime sequence: frontend/npm run build -> backend/npm run start",
-                "  - Backend runtime root: backend/",
-                "  - Frontend source root: frontend/src/",
-                "  - Frontend shared test setup: frontend/test/setup.ts",
-                "  - Backend source root: backend/src/",
-                "  - Shared database scaffold: backend/src/database/",
-                "  - Backend Vitest tests: backend/tests/...",
-                "  - Frontend Vitest tests: frontend/tests/...",
-                "  - Playwright E2E tests: backend/test-e2e/...",
-                "  - Database-using tests must allocate an isolated test DB through the scaffold.",
-                "  - Prefer entrypoints, route files, and owner files before broader search.",
-            ]
-        else:
-            lines = [
-                "- Android structure rules:",
-                "- Main source root: app/src/main/java/...",
-                "- Unit tests: app/src/test/java/.../unit/",
-                "- Integration tests: app/src/test/java/.../integration/",
-                "- E2E tests: app/src/test/java/.../e2e/",
-                "- Prefer app entrypoints, activities, fragments, and owner classes before broader search.",
-            ]
+        handler_class = self._get_app_type_handler_class(app_type)
+        lines = handler_class.project_structure_lines(
+            web_port=self.config.web_port,
+            android_package=self.config.android_package,
+        )
         return "<project_structure>\n" + "\n".join(lines) + "\n</project_structure>"
 
     def _get_test_harness_context(self) -> str:
         app_type = (self.config.app_type or "web").strip().lower()
-        if app_type == "android":
-            package_dir = self.config.android_package.replace(".", "/")
-            lines = [
-                "Test manifest `type` must be one of `Unit`, `Integration`, or `E2E`.",
-                f"Unit tests: place under `app/src/test/java/{package_dir}/unit/`.",
-                f"Integration tests: place under `app/src/test/java/{package_dir}/integration/`.",
-                f"E2E tests: place under `app/src/test/java/{package_dir}/e2e/`.",
-                "Use Java/Kotlin test filenames supported by the Android app handler.",
-            ]
-        else:
-            lines = [
-                "Test manifest `type` must be one of `Unit`, `Integration`, or `E2E`.",
-                "Unit tests: place under `frontend/tests/...` for UI/unit code or `backend/tests/...` for backend/service code.",
-                "Integration tests: place under `frontend/tests/...` for frontend integration or `backend/tests/...` for API/service/database integration.",
-                "E2E tests: place under `backend/test-e2e/...` and use a JavaScript or TypeScript test filename.",
-                "Database-using tests must use the app-type-provided isolated test harness/scaffold.",
-            ]
+        handler_class = self._get_app_type_handler_class(app_type)
+        lines = handler_class.test_harness_lines(
+            web_port=self.config.web_port,
+            android_package=self.config.android_package,
+        )
         return "<test_harness>\n" + "\n".join(f"- {line}" for line in lines) + "\n</test_harness>"
 
     @staticmethod

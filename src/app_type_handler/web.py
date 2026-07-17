@@ -688,6 +688,66 @@ async def _start_backend_runtime(
 class WebAppType(AppTypeHandler):
     name = "web"
 
+    @classmethod
+    def prerequisite_commands(cls) -> list[str]:
+        return ["node", "npm"]
+
+    @classmethod
+    def runtime_contract_lines(
+        cls,
+        *,
+        web_port: int | None = None,
+        android_package: str | None = None,
+    ) -> list[str]:
+        del android_package
+        resolved_port = int(web_port or get_web_port())
+        return [
+            "For web apps, the hosted runtime is backend-led: enter `frontend` and run `npm run build`, then enter `backend` and run `npm run start` to serve the built frontend dist.",
+            f"The backend process is responsible for hosting `frontend/dist` on the single web port `{resolved_port}`; do not assume a separate frontend dev server is part of the runtime.",
+            "E2E and runtime verification should target the backend-hosted origin after the frontend build completes.",
+        ]
+
+    @classmethod
+    def project_structure_lines(
+        cls,
+        *,
+        web_port: int | None = None,
+        android_package: str | None = None,
+    ) -> list[str]:
+        del android_package
+        resolved_port = int(web_port or get_web_port())
+        return [
+            "- Web structure rules:",
+            f"  - Single runtime port: backend serves frontend dist on port {resolved_port}",
+            "  - Web runtime sequence: frontend/npm run build -> backend/npm run start",
+            "  - Backend runtime root: backend/",
+            "  - Frontend source root: frontend/src/",
+            "  - Frontend shared test setup: frontend/test/setup.ts",
+            "  - Backend source root: backend/src/",
+            "  - Shared database scaffold: backend/src/database/",
+            "  - Backend Vitest tests: backend/tests/...",
+            "  - Frontend Vitest tests: frontend/tests/...",
+            "  - Playwright E2E tests: backend/test-e2e/...",
+            "  - Database-using tests must allocate an isolated test DB through the scaffold.",
+            "  - Prefer entrypoints, route files, and owner files before broader search.",
+        ]
+
+    @classmethod
+    def test_harness_lines(
+        cls,
+        *,
+        web_port: int | None = None,
+        android_package: str | None = None,
+    ) -> list[str]:
+        del web_port, android_package
+        return [
+            "Test manifest `type` must be one of `Unit`, `Integration`, or `E2E`.",
+            "Unit tests: place under `frontend/tests/...` for UI/unit code or `backend/tests/...` for backend/service code.",
+            "Integration tests: place under `frontend/tests/...` for frontend integration or `backend/tests/...` for API/service/database integration.",
+            "E2E tests: place under `backend/test-e2e/...` and use a JavaScript or TypeScript test filename.",
+            "Database-using tests must use the app-type-provided isolated test harness/scaffold.",
+        ]
+
     def validate_test_path(self, test_type: str, file_path: str) -> str | None:
         normalized_type = (test_type or "").strip().lower()
         if normalized_type not in {"unit", "integration", "e2e"}:
@@ -744,6 +804,19 @@ class WebAppType(AppTypeHandler):
         if os.path.exists(frontend_path):
             await self._log("System", "Installing frontend dependencies. This might take a moment...")
             await run_npm_install(frontend_path, self.log_cb)
+
+    async def run_build(self) -> str:
+        frontend_result = await _execute_web_test_command(
+            "npm run build",
+            cwd=os.path.join(self.workspace_path, "frontend"),
+            timeout=120.0,
+        )
+        backend_result = await _execute_web_test_command(
+            "npm run build --if-present",
+            cwd=os.path.join(self.workspace_path, "backend"),
+            timeout=120.0,
+        )
+        return f"=== Frontend Build Result ===\n{frontend_result}\n\n=== Backend Build Result ===\n{backend_result}"
 
     async def run_test_file(self, test_type: str, file_path: str) -> str:
         await self._log("System", f"System test execution ({test_type}): {file_path}")
@@ -995,18 +1068,24 @@ class WebAppType(AppTypeHandler):
         return _prepend_group_execution_header(execution, body)
 
     @classmethod
-    def build_stack_block(cls) -> str:
-        web_port = get_web_port()
-        base_url = get_web_base_url()
+    def build_stack_block(
+        cls,
+        *,
+        web_port: int | None = None,
+        android_package: str | None = None,
+    ) -> str:
+        del android_package
+        resolved_port = int(web_port or get_web_port())
+        base_url = f"http://localhost:{resolved_port}"
         return (
             "### Main Stack\n"
             "- backend: nodejs\n"
             "- frontend: react\n"
             "- database: sqlite\n"
-            f"- web_port: {web_port}\n"
+            f"- web_port: {resolved_port}\n"
             "\n"
             "### Runtime And Hosting\n"
-            f"* **Single Web Port**: {web_port}\n"
+            f"* **Single Web Port**: {resolved_port}\n"
             f"* **Base URL Under Test**: {base_url}\n"
             "* **Hosting Model**: Enter `frontend` and run `npm run build`, then enter `backend` and run `npm run start` so the Express backend serves `frontend/dist` on the same origin.\n"
             "* **Deployment Rule**: Do not rely on a separate frontend dev server for deployment or E2E.\n"

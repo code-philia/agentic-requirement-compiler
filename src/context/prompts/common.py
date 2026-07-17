@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from typing import Any
 
 
@@ -44,9 +45,9 @@ def whole_app_policy() -> str:
     return section(
         "Whole-App Coherence",
         [
-            "Treat UI, client API calls, backend routes, service logic, persistence, tests, and runtime startup as one application path.",
-            "A local feature is not complete if it only changes the visible page while leaving API, state, persistence, routing, or shared shell behavior disconnected.",
-            "Prefer integrating with existing app structure over creating parallel files, duplicate state containers, duplicate route trees, or isolated helper modules.",
+            "Treat user-facing surfaces, client or command entrypoints, backend routes, service logic, persistence, tests, and runtime startup as one application path.",
+            "A local feature is not complete if it only changes the visible surface while leaving API, command flow, state, persistence, routing, or shared runtime behavior disconnected.",
+            "Prefer integrating with existing app structure over creating parallel files, duplicate state containers, duplicate route trees, duplicate command registries, or isolated helper modules.",
             "When touching cross-cutting concerns such as auth/session, search state, selected booking context, or current user state, keep the shared source of truth explicit and consumed by all affected surfaces.",
             "Do not make tests pass by weakening the application path: avoid hardcoded runtime data, local-only fake state, fallback arrays, or test-only behavior unless the requirement explicitly asks for a mock boundary.",
             "For web apps, remember that the user will experience the backend-hosted built frontend; implementation choices must work through that hosted runtime.",
@@ -54,15 +55,20 @@ def whole_app_policy() -> str:
     )
 
 
-def web_runtime_contract() -> str:
-    return section(
-        "Web Runtime Contract",
-        [
-            "For web apps, the hosted runtime is backend-led: enter `frontend` and run `npm run build`, then enter `backend` and run `npm run start` to serve the built frontend dist.",
-            "The backend process is responsible for hosting `frontend/dist` on the single web port; do not assume a separate frontend dev server is part of the runtime.",
-            "E2E and runtime verification should target the backend-hosted origin after the frontend build completes.",
-        ],
+def app_runtime_contract() -> str:
+    from app_type_handler import get_app_type_handler_class
+
+    app_type = os.environ.get("ARC_APP_TYPE", "web").strip().lower() or "web"
+    web_port = int(os.environ.get("ARC_WEB_PORT", "3301") or 3301)
+    android_package = os.environ.get("ARC_ANDROID_PACKAGE", "com.example.template").strip() or "com.example.template"
+    handler_class = get_app_type_handler_class(app_type)
+    lines = handler_class.runtime_contract_lines(
+        web_port=web_port,
+        android_package=android_package,
     )
+    if not lines:
+        return ""
+    return section("Runtime Contract", lines)
 
 
 def workspace_tool_policy() -> str:

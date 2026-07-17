@@ -95,6 +95,13 @@ class AppTypeHandler(ABC):
     async def install_dependencies(self) -> None:
         return None
 
+    async def run_build(self) -> str:
+        return (
+            "Exit Code: 1\n"
+            "STDERR:\n"
+            f"System build runner is not configured for app_type={self.name}.\n"
+        )
+
     @abstractmethod
     async def run_test_file(self, test_type: str, file_path: str) -> str:
         """Run one concrete test file through the system-side test executor."""
@@ -143,8 +150,47 @@ class AppTypeHandler(ABC):
         return None
 
     @classmethod
+    def prerequisite_commands(cls) -> list[str]:
+        return []
+
+    @classmethod
+    def runtime_contract_lines(
+        cls,
+        *,
+        web_port: int | None = None,
+        android_package: str | None = None,
+    ) -> list[str]:
+        del web_port, android_package
+        return []
+
+    @classmethod
+    def project_structure_lines(
+        cls,
+        *,
+        web_port: int | None = None,
+        android_package: str | None = None,
+    ) -> list[str]:
+        del web_port, android_package
+        return []
+
+    @classmethod
+    def test_harness_lines(
+        cls,
+        *,
+        web_port: int | None = None,
+        android_package: str | None = None,
+    ) -> list[str]:
+        del web_port, android_package
+        return []
+
+    @classmethod
     @abstractmethod
-    def build_stack_block(cls) -> str:
+    def build_stack_block(
+        cls,
+        *,
+        web_port: int | None = None,
+        android_package: str | None = None,
+    ) -> str:
         raise NotImplementedError
 
     @classmethod
@@ -159,4 +205,5 @@ class AppTypeHandler(ABC):
 
     @classmethod
     def read_stack_summary(cls, project_path: str) -> str:
+        del project_path
         return cls.parse_stack_summary(cls.build_stack_block())

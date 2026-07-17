@@ -5,7 +5,7 @@ import re
 import shutil
 
 from core.service import get_runtime
-from core.utils import finalize_subprocess, set_android_package
+from core.utils import finalize_subprocess, get_android_package, set_android_package
 
 from .base import AppTypeHandler
 
@@ -96,8 +96,86 @@ async def _run_android_gradle_test(workspace_path: str, file_path: str) -> str:
         return f"Execution failed: {str(exc)}"
 
 
+async def _run_android_gradle_build(workspace_path: str) -> str:
+    command = f"{_gradlew_cmd()} assembleDebug compileDebugUnitTestJavaWithJavac --info"
+    process = None
+    try:
+        process = await asyncio.create_subprocess_shell(
+            command,
+            cwd=workspace_path,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            env={**os.environ, "PYTHONIOENCODING": "utf-8", "JAVA_TOOL_OPTIONS": "-Dfile.encoding=UTF-8"},
+        )
+        stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=180.0)
+        output = stdout.decode("utf-8", errors="replace")
+        error = stderr.decode("utf-8", errors="replace")
+        return _filter_android_gradle_output(output, error, process.returncode)
+    except asyncio.TimeoutError:
+        if process:
+            await finalize_subprocess(process, force_kill=True)
+        return "Exit Code: 124\nSTDERR:\nCommand timed out after 180.0 seconds.\n"
+    except Exception as exc:
+        return f"Exit Code: 1\nSTDERR:\nExecution failed: {str(exc)}\n"
+
+
 class AndroidAppType(AppTypeHandler):
     name = "android"
+
+    @classmethod
+    def prerequisite_commands(cls) -> list[str]:
+        return ["java"]
+
+    @classmethod
+    def runtime_contract_lines(
+        cls,
+        *,
+        web_port: int | None = None,
+        android_package: str | None = None,
+    ) -> list[str]:
+        del web_port, android_package
+        return [
+            "For Android apps, the runtime is the packaged app module built by the Gradle wrapper, not a hosted web server.",
+            "The user-visible flow runs through Android components such as `MainActivity`, layouts, ViewModels, repositories, and owned persistence/services.",
+            "Unit, integration, and end-to-end verification should align with the app-module test sources under `app/src/test/...`.",
+        ]
+
+    @classmethod
+    def project_structure_lines(
+        cls,
+        *,
+        web_port: int | None = None,
+        android_package: str | None = None,
+    ) -> list[str]:
+        del web_port
+        package_name = android_package or get_android_package()
+        package_dir = package_name.replace(".", "/")
+        return [
+            "- Android structure rules:",
+            f"- Main source root: app/src/main/java/{package_dir}/",
+            f"- Unit tests: app/src/test/java/{package_dir}/unit/",
+            f"- Integration tests: app/src/test/java/{package_dir}/integration/",
+            f"- E2E tests: app/src/test/java/{package_dir}/e2e/",
+            "- Prefer app entrypoints, activities, fragments, and owner classes before broader search.",
+        ]
+
+    @classmethod
+    def test_harness_lines(
+        cls,
+        *,
+        web_port: int | None = None,
+        android_package: str | None = None,
+    ) -> list[str]:
+        del web_port
+        package_name = android_package or get_android_package()
+        package_dir = package_name.replace(".", "/")
+        return [
+            "Test manifest `type` must be one of `Unit`, `Integration`, or `E2E`.",
+            f"Unit tests: place under `app/src/test/java/{package_dir}/unit/`.",
+            f"Integration tests: place under `app/src/test/java/{package_dir}/integration/`.",
+            f"E2E tests: place under `app/src/test/java/{package_dir}/e2e/`.",
+            "Use Java/Kotlin test filenames supported by the Android app handler.",
+        ]
 
     async def run_test_file(self, test_type: str, file_path: str) -> str:
         await self._log("System", f"System test execution ({test_type}): {file_path}")
@@ -111,6 +189,9 @@ class AndroidAppType(AppTypeHandler):
                 f"No test files were configured for the current {test_type} batch.\n"
             )
         return await super().run_test_group(test_type, file_paths)
+
+    async def run_build(self) -> str:
+        return await _run_android_gradle_build(self.workspace_path)
 
     async def post_template_setup(self) -> bool:
         target_package = await self._extract_android_package_name_via_llm()
@@ -155,7 +236,13 @@ class AndroidAppType(AppTypeHandler):
         return True
 
     @classmethod
-    def build_stack_block(cls) -> str:
+    def build_stack_block(
+        cls,
+        *,
+        web_port: int | None = None,
+        android_package: str | None = None,
+    ) -> str:
+        del web_port, android_package
         return "\n".join(
             [
                 "* **Platform** : Android Native App (Single-module `app` template)",

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 
-from context.prompts.common import compiler_background, code_task_exploration_policy, reasoning_reflection_policy, section, web_runtime_contract, whole_app_policy, workspace_tool_policy
+from context.prompts.common import app_runtime_contract, compiler_background, code_task_exploration_policy, reasoning_reflection_policy, section, whole_app_policy, workspace_tool_policy
 
 
 def get_system_prompt() -> str:
@@ -22,7 +22,7 @@ def get_system_prompt() -> str:
                     "Only leaf nodes reach this stage; non-leaf nodes are design-only and never enter TDD.",
                     "When multiple test categories exist, the system activates them in Unit -> Integration -> E2E order with an independent run_tests budget for each layer.",
                     "Do not treat generated-test defects, build configuration defects, or test harness mismatches as blockers; repair them in-place when they are inside `/workspace` and current-node scoped.",
-                    "When the requirement or tests involve login, registration, logout, session, authenticated state, current user, account state, or auth-sensitive navigation, use the auth-session-consistency skill and implement the global auth/session path rather than a page-local state patch.",
+                    "When the requirement or tests involve login, registration, logout, session, authenticated state, current user, account state, or auth-sensitive navigation, use the auth-session-consistency skill and implement the global auth/session path rather than a local-only state patch.",
                 ],
             ),
             section(
@@ -30,8 +30,8 @@ def get_system_prompt() -> str:
                 [
                     "Read the current test manifest, current interface contract, generated tests, nearest implementation files, and relevant build/test configuration before editing.",
                     "Before the first `run_tests` call, perform an initial full-chain implementation pass based on the requirement, UI/API/FUNC/DB interface contract, and generated test code.",
-                    "The initial implementation pass should connect all required owned layers in one cohesive scoped edit set: UI event/state, API route/client, service/function logic, database schema/runtime, and tests/config when applicable.",
-                    "For auth/session requirements, the initial pass should connect durable session creation/loading, a current-session API or equivalent boundary, frontend global auth/session state, shared shell/header consumption, and post-action state updates when these are part of the interface contract or scenario.",
+                    "The initial implementation pass should connect all required owned layers in one cohesive scoped edit set: user-facing entrypoints, API or command boundaries, service/function logic, database/runtime state, and tests/config when applicable.",
+                    "For auth/session requirements, the initial pass should connect durable session creation/loading, a current-session API or equivalent boundary, shared auth/session state, shared consumers, and post-action state updates when these are part of the interface contract or scenario.",
                     "Do not limit the initial pass to the first obvious failing file when the interface contract shows a multi-layer chain.",
                     "Do not start by calling `run_tests` unless a previous failure handoff is already present and no implementation files need an initial pass.",
                     "After the initial implementation pass, work on the currently active test layer selected by the system.",
@@ -42,14 +42,14 @@ def get_system_prompt() -> str:
                     "Call `run_tests` after a concrete implementation change.",
                     "Use `run_build` only when exposed and when build feedback is needed.",
                     "After failures, classify the cause, inspect directly relevant files, and change hypothesis before retrying.",
-                    "If an auth/session test fails, repair the shared session path first: token/cookie/session record, current-user API, client session loader, global provider/state, shell/header consumers, and route behavior. Do not fake authenticated state with only local page state.",
+                    "If an auth/session test fails, repair the shared session path first: token/cookie/session record, current-user API, session loader, shared provider/state, shared consumers, and route or command behavior. Do not fake authenticated state with only local state.",
                     "After each repair, reflect on whether the change restores the whole app path or merely silences the current assertion. Prefer repairing the broken path.",
                     "Do not stop after a failing test result while the active layer's `run_tests` budget remains; keep repairing and rerunning.",
                     "Do not return blocked, failed, impossible, or out-of-scope as a final answer for a failing batch; choose the next editable surface and continue.",
                     "Return exactly `IMPLEMENTED` only after the latest `run_tests` result passes with Exit Code: 0.",
                 ],
             ),
-            web_runtime_contract(),
+            app_runtime_contract(),
             code_task_exploration_policy(),
             workspace_tool_policy(),
             section(
@@ -103,8 +103,8 @@ def get_user_prompt(
             "Task",
             [
                 "First perform an initial full-chain implementation pass: read the requirement context, current interface contract, all generated test files in the manifest, nearest product files, and relevant config; then implement the required behavior and interface wiring before the first test run.",
-                "The initial pass should satisfy the requirement and generated tests as far as can be inferred statically; it should include multiple cohesive edits when a UI/API/FUNC/DB chain needs to be connected.",
-                "If the requirement or interface contract mentions auth/session/authenticated state/current user/account state, implement the global session path in the first pass: durable session creation, session loading/current-user API, client-side shared auth/session state, shell/header consumption, and post-action state transition. Do not satisfy this with only a local success message.",
+                "The initial pass should satisfy the requirement and generated tests as far as can be inferred statically; it should include multiple cohesive edits when a UI/API/FUNC/DB or command/runtime chain needs to be connected.",
+                "If the requirement or interface contract mentions auth/session/authenticated state/current user/account state, implement the global session path in the first pass: durable session creation, session loading/current-user API, shared auth/session state, shared consumers, and post-action state transition. Do not satisfy this with only a local success message.",
                 "After the initial pass, work on the active test layer selected by the system. The system will move to later layers even if an earlier layer fails or exhausts its budget.",
                 "`run_tests()` with no arguments runs the active current-node test layer.",
                 "You may call `run_tests(test_type='Unit'|'Integration'|'E2E')` only for the active layer; the tool will reject attempts to run a non-active layer.",
@@ -118,7 +118,7 @@ def get_user_prompt(
                 "For E2E selector failures, preserve selectors that come from explicit requirement wording. If the requirement did not specify an exact selector and the generated E2E defines a stable accessible selector, align the implementation to that selector instead of repeatedly rewriting the test.",
                 "If build/test configuration prevents valid tests from running, edit the relevant config or package scripts inside `/workspace`.",
                 "If product behavior is wrong, edit product code. If the test is wrong, edit the test. If the runner setup is wrong, edit build/config. Then rerun tests.",
-                "When tests pass for the active layer, briefly re-check whether implementation choices remain compatible with later layers and the backend-hosted app runtime before returning to the system.",
+                "When tests pass for the active layer, briefly re-check whether implementation choices remain compatible with later layers and the real app runtime before returning to the system.",
                 "If the latest result is still failing and budget remains, keep repairing and rerunning instead of finalizing.",
                 "Do not return blocked, failed, impossible, or out-of-scope. The only successful final answer is `IMPLEMENTED` after a passing latest `run_tests`.",
                 "Do not say `IMPLEMENTED` unless the latest `run_tests` output passed with Exit Code: 0.",
