@@ -1,0 +1,1 @@
+"""ARC CLI template package."""

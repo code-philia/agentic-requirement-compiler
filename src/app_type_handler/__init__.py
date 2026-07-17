@@ -1,11 +1,13 @@
 from .android import AndroidAppType
 from .base import AppTypeHandler
+from .cli import CliAppType
 from .web import WebAppType
 
 
 APP_TYPE_HANDLERS = {
-    "android": AndroidAppType,
     "web": WebAppType,
+    "android": AndroidAppType,
+    "cli": CliAppType,
 }
 
 
@@ -16,6 +18,10 @@ def normalize_app_type(app_type: str) -> str:
 
 def get_app_type_handler_class(app_type: str) -> type[AppTypeHandler]:
     return APP_TYPE_HANDLERS[normalize_app_type(app_type)]
+
+
+def list_app_types() -> list[str]:
+    return list(APP_TYPE_HANDLERS.keys())
 
 
 def create_app_type_handler(
