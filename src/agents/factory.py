@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 from deepagents import FilesystemPermission, HarnessProfile, create_deep_agent, register_harness_profile
 from deepagents.backends import CompositeBackend, FilesystemBackend, LocalShellBackend, StateBackend
 from deepagents._models import get_model_provider
 from langchain.agents.middleware.types import AgentMiddleware
+from pydantic import BaseModel, Field
 
 from agents.context import AgentRuntimeContext
 from agents.model_factory import create_arc_chat_model
@@ -21,6 +22,25 @@ if TYPE_CHECKING:
 WORKSPACE_PREFIX = "/workspace"
 SKILLS_PREFIX = "/skills"
 DISABLED_BUILTIN_TOOLS = frozenset({"write_todos"})
+
+
+class OpenAIGlobSchema(BaseModel):
+    """OpenAI-compatible schema for the deep-agents glob tool."""
+
+    pattern: str = Field(description="Glob pattern to match files (e.g., '**/*.py', '*.txt', '/subdir/**/*.md').")
+    path: str = Field(default=None, description="Base directory to search from. Defaults to the backend's default root.")
+
+
+class OpenAIGrepSchema(BaseModel):
+    """OpenAI-compatible schema for the deep-agents grep tool."""
+
+    pattern: str = Field(description="Text pattern to search for (literal string, not regex).")
+    path: str = Field(default=None, description="Directory to search in. Defaults to current working directory.")
+    glob: str = Field(default=None, description="Glob pattern to filter which files to search (e.g., '*.py').")
+    output_mode: Literal["files_with_matches", "content", "count"] = Field(
+        default="files_with_matches",
+        description="Output format: 'files_with_matches' (file paths only, default), 'content' (matching lines with context), 'count' (match counts per file).",
+    )
 
 
 class DisableToolsMiddleware(AgentMiddleware[Any, Any, Any]):
@@ -44,7 +64,11 @@ class DisableToolsMiddleware(AgentMiddleware[Any, Any, Any]):
         return await handler(request.override(tools=self._filter_tools(request.tools)))
 
     def _filter_tools(self, tools: list[Any]) -> list[Any]:
-        return [tool for tool in tools if _tool_name(tool) not in self._disabled]
+        return [
+            _normalize_tool_schema(tool)
+            for tool in tools
+            if _tool_name(tool) not in self._disabled
+        ]
 
 
 def build_stage_agent(
@@ -274,3 +298,17 @@ def _tool_name(tool: "BaseTool | dict[str, Any] | Any") -> str | None:
         return name if isinstance(name, str) else None
     name = getattr(tool, "name", None)
     return name if isinstance(name, str) else None
+
+
+def _normalize_tool_schema(tool: "BaseTool | dict[str, Any] | Any") -> "BaseTool | dict[str, Any] | Any":
+    name = _tool_name(tool)
+    if name not in {"glob", "grep"}:
+        return tool
+    schema = OpenAIGlobSchema if name == "glob" else OpenAIGrepSchema
+    if hasattr(tool, "model_copy"):
+        return tool.model_copy(update={"args_schema": schema})
+    if isinstance(tool, dict):
+        copied = dict(tool)
+        copied["parameters"] = schema.model_json_schema()
+        return copied
+    return tool
