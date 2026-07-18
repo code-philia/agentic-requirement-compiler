@@ -129,9 +129,8 @@ class WorkflowPhaseRunner:
                 node_id=node_id,
             )
 
-        self.traceability.clear_node_design_artifacts(node_id)
         try:
-            self._store_interfaces(node_id, interfaces)
+            prepared_interfaces = self._prepare_interfaces(node_id, interfaces)
         except ValueError as exc:
             await self._log("InterfaceDesigner", str(exc), status="error", node_id=node_id)
             return False
@@ -140,29 +139,36 @@ class WorkflowPhaseRunner:
         self._update_node_session(
             node_id,
             {
-                "interfaces": interfaces,
+                "interfaces": prepared_interfaces,
                 "materialized_files": files_written,
-                "phase_status": {"design": "completed"},
+                "phase_status": {"design": "prepared"},
             },
         )
-        await self._log(
-            "InterfaceDesigner",
-            f"Stored {len(interfaces)} interface definition(s) into traceability DB.",
-            node_id=node_id,
-        )
-        await self._log(
-            "InterfaceDesigner",
-            f"Interface artifact summary: {json.dumps(summarize_interface_artifacts(interfaces), ensure_ascii=False)}",
-            node_id=node_id,
-        )
+        context_pipeline.cache.invalidate_db_layers(node_id)
 
+        stored_tests: list[dict[str, Any]] = []
         if is_non_leaf:
+            self.traceability.clear_node_design_artifacts(node_id)
+            self._store_prepared_interfaces(node_id, prepared_interfaces)
+            context_pipeline.cache.invalidate_file_layers(node_id)
+            context_pipeline.cache.invalidate_db_layers(node_id)
             self._update_node_session(
                 node_id,
                 {
+                    "interfaces": prepared_interfaces,
                     "test_artifacts": [],
-                    "phase_status": {"test": "skipped"},
+                    "phase_status": {"design": "completed", "test": "skipped"},
                 },
+            )
+            await self._log(
+                "InterfaceDesigner",
+                f"Stored {len(prepared_interfaces)} interface definition(s) into traceability DB.",
+                node_id=node_id,
+            )
+            await self._log(
+                "InterfaceDesigner",
+                f"Interface artifact summary: {json.dumps(summarize_interface_artifacts(prepared_interfaces), ensure_ascii=False)}",
+                node_id=node_id,
             )
             await self._log(
                 "TestGenerator",
@@ -170,46 +176,67 @@ class WorkflowPhaseRunner:
                 status="info",
                 node_id=node_id,
             )
-        else:
-            await self._log("TestGenerator", "Generating tests from agent-selected coverage strategy.", node_id=node_id)
-            tests, _ = await self.test_generator.run(
-                node_id=node_id,
-                requirement_data=requirement_data,
-            )
-            if tests is None:
-                await self._log(
-                    "TestGenerator",
-                    "DESIGN test generation did not return a valid test manifest.",
-                    status="error",
-                    node_id=node_id,
-                )
-                return False
+            return True
 
-            try:
-                stored_tests = self._store_tests(node_id=node_id, tests=tests)
-            except ValueError as exc:
-                await self._log("TestGenerator", str(exc), status="error", node_id=node_id)
-                return False
+        await self._log(
+            "InterfaceDesigner",
+            f"Prepared {len(prepared_interfaces)} interface definition(s) for traceability storage.",
+            node_id=node_id,
+        )
+        await self._log(
+            "InterfaceDesigner",
+            f"Interface artifact summary: {json.dumps(summarize_interface_artifacts(prepared_interfaces), ensure_ascii=False)}",
+            node_id=node_id,
+        )
 
-            context_pipeline.cache.invalidate_file_layers(node_id)
-            context_pipeline.cache.invalidate_db_layers(node_id)
-            self._update_node_session(
-                node_id,
-                {
-                    "test_artifacts": stored_tests,
-                    "phase_status": {"test": "completed"},
-                },
-            )
+        await self._log("TestGenerator", "Generating tests from agent-selected coverage strategy.", node_id=node_id)
+        tests, _ = await self.test_generator.run(
+            node_id=node_id,
+            requirement_data=requirement_data,
+        )
+        if tests is None:
             await self._log(
                 "TestGenerator",
-                f"Stored {len(stored_tests)} test mapping item(s) into traceability DB.",
+                "DESIGN test generation did not return a valid test manifest.",
+                status="error",
                 node_id=node_id,
             )
-            await self._log(
-                "TestGenerator",
-                f"Test artifact summary: {json.dumps(summarize_test_artifacts(stored_tests), ensure_ascii=False)}",
-                node_id=node_id,
-            )
+            return False
+
+        try:
+            stored_tests = self._prepare_tests(node_id=node_id, tests=tests)
+        except ValueError as exc:
+            await self._log("TestGenerator", str(exc), status="error", node_id=node_id)
+            return False
+
+        self.traceability.clear_node_design_artifacts(node_id)
+        self._store_prepared_interfaces(node_id, prepared_interfaces)
+        self._store_prepared_tests(stored_tests)
+        context_pipeline.cache.invalidate_file_layers(node_id)
+        context_pipeline.cache.invalidate_db_layers(node_id)
+        self._update_node_session(
+            node_id,
+            {
+                "interfaces": prepared_interfaces,
+                "test_artifacts": stored_tests,
+                "phase_status": {"design": "completed", "test": "completed"},
+            },
+        )
+        await self._log(
+            "InterfaceDesigner",
+            f"Stored {len(prepared_interfaces)} interface definition(s) into traceability DB.",
+            node_id=node_id,
+        )
+        await self._log(
+            "TestGenerator",
+            f"Stored {len(stored_tests)} test mapping item(s) into traceability DB.",
+            node_id=node_id,
+        )
+        await self._log(
+            "TestGenerator",
+            f"Test artifact summary: {json.dumps(summarize_test_artifacts(stored_tests), ensure_ascii=False)}",
+            node_id=node_id,
+        )
         return True
 
     async def run_implement_phase(self, node_id: str, requirement_data: dict[str, Any]) -> bool:
@@ -531,7 +558,8 @@ class WorkflowPhaseRunner:
 
         return True
 
-    def _store_interfaces(self, node_id: str, interfaces: list[dict[str, Any]]) -> None:
+    def _prepare_interfaces(self, node_id: str, interfaces: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        prepared: list[dict[str, Any]] = []
         for interface in interfaces:
             interface_id = str(interface.get("interface_id", "")).strip()
             if not interface_id:
@@ -550,27 +578,46 @@ class WorkflowPhaseRunner:
                     f"Generated interface `{interface_id}` has invalid `type` {interface.get('type')!r}. "
                     "Interface type must be one of UI, API, FUNC, or DB."
                 )
-            interface["type"] = interface_type
-            req_ids = list(existing.get("req_ids", [])) if existing else []
+            normalized = {
+                **interface,
+                "interface_id": interface_id,
+                "req_id": node_id,
+                "type": interface_type,
+                "file_path": (
+                    normalize_workspace_relative_path(interface.get("file_path"), self.workspace_path)
+                    or ((existing or {}).get("file_path") if existing else "")
+                ),
+                "first_line": str(interface.get("first_line") or (existing or {}).get("first_line") or "").strip(),
+                "callers": normalize_string_list(interface.get("callers")) or normalize_string_list((existing or {}).get("callers")),
+                "callees": normalize_string_list(interface.get("callees")) or normalize_string_list((existing or {}).get("callees")),
+                "_existing_req_ids": list(existing.get("req_ids", [])) if existing else [],
+                "_existing_implemented": bool(existing.get("implemented")) if existing else False,
+            }
+            prepared.append(normalized)
+        return prepared
+
+    def _store_prepared_interfaces(self, node_id: str, interfaces: list[dict[str, Any]]) -> None:
+        for interface in interfaces:
+            interface_id = str(interface.get("interface_id", "")).strip()
+            if not interface_id:
+                continue
+            req_ids = normalize_string_list(interface.get("_existing_req_ids"))
             if node_id not in req_ids:
                 req_ids.append(node_id)
             self.traceability.upsert_interface(
                 interface_id=interface_id,
                 req_ids=req_ids,
-                type=interface_type,
-                content=json.dumps(interface, ensure_ascii=False),
-                file_path=(
-                    normalize_workspace_relative_path(interface.get("file_path"), self.workspace_path)
-                    or ((existing or {}).get("file_path") if existing else None)
-                ),
-                first_line=str(interface.get("first_line") or (existing or {}).get("first_line") or "").strip() or None,
-                implemented=bool(existing.get("implemented")) if existing else False,
-                callers=normalize_string_list(interface.get("callers")) or normalize_string_list((existing or {}).get("callers")),
-                callees=normalize_string_list(interface.get("callees")) or normalize_string_list((existing or {}).get("callees")),
+                type=str(interface.get("type", "") or "").strip().upper(),
+                content=json.dumps(_strip_internal_fields(interface), ensure_ascii=False),
+                file_path=str(interface.get("file_path", "") or "").strip() or None,
+                first_line=str(interface.get("first_line", "") or "").strip() or None,
+                implemented=bool(interface.get("_existing_implemented")),
+                callers=normalize_string_list(interface.get("callers")),
+                callees=normalize_string_list(interface.get("callees")),
             )
             self._register_interface_edges(node_id, interface_id, interface)
 
-    def _store_tests(
+    def _prepare_tests(
         self,
         *,
         node_id: str,
@@ -605,17 +652,20 @@ class WorkflowPhaseRunner:
                 "interface_ids": normalize_string_list(test.get("interface_ids")),
                 "first_line": str(test.get("first_line", "")).strip(),
             }
-            self.traceability.upsert_test(
-                test_id=raw_test_id,
-                req_id=node_id,
-                interface_ids=stored_item["interface_ids"],
-                type=test_type,
-                file_path=file_path or None,
-                first_line=stored_item["first_line"] or None,
-                passed=None,
-            )
             stored.append(stored_item)
         return stored
+
+    def _store_prepared_tests(self, tests: list[dict[str, Any]]) -> None:
+        for test in tests:
+            self.traceability.upsert_test(
+                test_id=str(test.get("test_id", "") or "").strip(),
+                req_id=str(test.get("req_id", "") or "").strip(),
+                interface_ids=normalize_string_list(test.get("interface_ids")),
+                type=str(test.get("type", "") or "").strip(),
+                file_path=str(test.get("file_path", "") or "").strip() or None,
+                first_line=str(test.get("first_line", "") or "").strip() or None,
+                passed=None,
+            )
 
     def _register_interface_edges(self, node_id: str, interface_id: str, interface: dict[str, Any]) -> None:
         for caller_id in normalize_string_list(interface.get("callers")):
@@ -753,3 +803,7 @@ def normalize_string_list(value: Any) -> list[str]:
         if text and text not in result:
             result.append(text)
     return result
+
+
+def _strip_internal_fields(value: dict[str, Any]) -> dict[str, Any]:
+    return {key: item for key, item in value.items() if not str(key).startswith("_")}

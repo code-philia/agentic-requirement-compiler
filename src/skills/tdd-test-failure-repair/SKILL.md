@@ -23,3 +23,6 @@ Use this skill after `run_tests` reports a failing current batch.
 12. If Playwright reports an unknown fixture parameter, inspect the `test.extend` block and make the fixture name and `use(...)` value match before rerunning.
 13. If Playwright or Testing Library reports multiple matches for a label, do not retry with a broader selector. Use an exact accessible role, a stable id, or a scoped locator that identifies one element.
 14. If the same backend database singleton error repeats, inspect the database runtime helper and initialization lifecycle before changing unrelated tests or UI files.
+15. When repairing a contradictory generated test, re-check the requirement scenario: GIVEN remains setup, WHEN remains action, THEN remains assertion. Preserve the scenario intent instead of weakening it to match current implementation.
+16. For cart, checkout, account, product, order, catalog, inventory, or persisted user-owned data failures, repair the connected domain path first: data source, API route/client, service logic, persistence/runtime state, shared consumer, and visible UI.
+17. If the nearest owner file is roughly over 500 lines, avoid adding another feature-sized block. Extract a cohesive component, hook, API client, service, repository, or route module, then connect it with a small edit.

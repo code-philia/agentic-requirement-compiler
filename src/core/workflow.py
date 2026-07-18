@@ -9,6 +9,7 @@ from agents.interface_designer import InterfaceDesigner
 from agents.test_driven_developer import TestDrivenDeveloper
 from agents.test_generator import TestGenerator
 from app_type_handler import create_app_type_handler, normalize_app_type
+from core import utils
 from core.phases import WorkflowPhaseRunner
 from core.service import configure_runtime
 from core.utils import (
@@ -224,8 +225,18 @@ class ARCWorkflowManager:
         self.runtime.traceability.store_requirement_tree(requirement_tree)
         queue_state = self._load_or_create_processing_queue(requirement_tree)
         self._sync_queue_node_states(queue_state)
-        self._recover_interrupted_queue(queue_state)
+        recovered_tasks = self._recover_interrupted_queue(queue_state)
         self._save_processing_queue(queue_state)
+        for recovered in recovered_tasks:
+            await self._log(
+                "Compiler",
+                (
+                    f"Recovered interrupted {recovered['phase']} task for node {recovered['node_id']}; "
+                    "preserving existing workspace and traceability artifacts for the resumed agent."
+                ),
+                status="warning",
+                node_id=recovered["node_id"],
+            )
         await self._log(
             "Compiler",
             f"Loaded processing queue with {len(queue_state['tasks'])} task(s) for root node {root_id}.",
@@ -250,6 +261,7 @@ class ARCWorkflowManager:
 
             if task_ok:
                 task["status"] = TASK_COMPLETED
+                utils.merge_node_session(node_id, {"resume_context": {}})
                 new_state = self._resolve_completed_node_state(node_id, phase)
                 self._set_node_state(queue_state["node_states"], node_id, new_state)
                 self._save_processing_queue(queue_state)
@@ -350,11 +362,47 @@ class ARCWorkflowManager:
             elif node_state == NODE_FAILED:
                 task["status"] = TASK_FAILED
 
-    @staticmethod
-    def _recover_interrupted_queue(queue_state: dict[str, Any]) -> None:
+    def _recover_interrupted_queue(self, queue_state: dict[str, Any]) -> list[dict[str, str]]:
+        recovered: list[dict[str, str]] = []
+        git_status = ""
+        if self.runtime is not None:
+            try:
+                git_status = self.runtime.git.status_porcelain().strip()
+            except Exception:
+                git_status = ""
         for task in queue_state["tasks"]:
             if task["status"] == TASK_RUNNING:
+                node_id = str(task.get("node_id", "") or "").strip()
+                phase = str(task.get("phase", "") or "").strip()
+                previous_state = str(queue_state.get("node_states", {}).get(node_id, NODE_UNSEEN) or NODE_UNSEEN)
                 task["status"] = TASK_PENDING
+                fallback_state = NODE_DESIGNED if phase == PHASE_IMPLEMENT else NODE_UNSEEN
+                if node_id:
+                    queue_state["node_states"][node_id] = fallback_state
+                    if self.runtime is not None:
+                        self.runtime.traceability.upsert_node_state(node_id, fallback_state)
+                    utils.merge_node_session(
+                        node_id,
+                        {
+                            "resume_context": {
+                                "interrupted": True,
+                                "task_id": str(task.get("task_id", "") or "").strip(),
+                                "phase": phase,
+                                "previous_node_state": previous_state,
+                                "recovered_node_state": fallback_state,
+                                "git_status": git_status.splitlines()[:80],
+                                "instruction": (
+                                    "This node is resuming after an interrupted agent stage. "
+                                    "Preserve useful existing source, test, and traceability artifacts; inspect the listed dirty files "
+                                    "and current-node records before regenerating or overwriting work."
+                                ),
+                            },
+                            "phase_status": {phase.lower(): "interrupted"} if phase else {},
+                        },
+                    )
+                recovered.append({"node_id": node_id, "phase": phase, "task_id": str(task.get("task_id", ""))})
+        queue_state["recovered_interrupted_tasks"] = recovered
+        return recovered
 
     @staticmethod
     def _next_runnable_task(queue_state: dict[str, Any]) -> dict[str, Any] | None:

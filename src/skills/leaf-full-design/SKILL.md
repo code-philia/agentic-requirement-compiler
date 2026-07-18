@@ -22,3 +22,5 @@ Use this skill when you determine the current node owns the smallest executable 
 11. The interface `type` must be one of `UI`, `API`, `FUNC`, or `DB`.
 12. Keep the chain connected to existing routes, handlers, tests, and persistence so the leaf compiles into the current system rather than a detached fragment.
 13. If the feature affects auth/session/authenticated state/current user/account state, use the auth-session-consistency skill and include global session state, session API, service, and persistence interfaces as needed.
+14. If the feature affects cart, checkout, account, products, orders, catalog, inventory, or persisted user-owned data, prefer a connected UI -> API -> FUNC -> DB interface chain over frontend-local state. Omit a layer only when it is clearly not needed by the requirement or existing app architecture.
+15. If the natural owner file is roughly over 500 lines, design an extracted component, hook, API client, service, repository, or route module and connect it from the large file with a narrow wiring interface.

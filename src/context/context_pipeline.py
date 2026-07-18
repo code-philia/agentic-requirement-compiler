@@ -49,6 +49,7 @@ class NodeContextCache:
 
     def invalidate_db_layers(self, node_id: str) -> None:
         self.invalidate(node_id, "node_session")
+        self.invalidate(node_id, "resume_context")
         self.invalidate(node_id, "existing_interfaces")
         self.invalidate(node_id, "recent_failure_summary")
 
@@ -375,6 +376,13 @@ class ContextPipeline:
             return ""
         return "<interfaces>\n" + self._compact_json(interfaces) + "\n</interfaces>"
 
+    def _get_resume_context(self, node_id: str) -> str:
+        session = self._load_node_session(node_id)
+        resume_context = session.get("resume_context")
+        if not isinstance(resume_context, dict) or not resume_context.get("interrupted"):
+            return ""
+        return "<resume_context>\n" + self._compact_json(resume_context) + "\n</resume_context>"
+
     def _get_existing_interface_cards(self, node_id: str) -> str:
         store = self._store()
         if store is None:
@@ -485,6 +493,14 @@ class ContextPipeline:
         )
         if node_session_layers:
             context_parts.append(node_session_layers)
+
+        resume_context = self.cache.get_or_compute(
+            node_id,
+            "resume_context",
+            lambda: self._get_resume_context(node_id),
+        )
+        if resume_context:
+            context_parts.append(resume_context)
 
         existing_interfaces = self.cache.get_or_compute(
             node_id,
