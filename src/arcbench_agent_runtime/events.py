@@ -1,14 +1,14 @@
 from __future__ import annotations
 
-import time
 from typing import Any
 
 from .context import RuntimePaths
 from .jsonio import append_jsonl, read_json, write_json_atomic
+from tools.logging import local_timestamp
 
 
-def utc_timestamp() -> str:
-    return time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime())
+def event_timestamp() -> str:
+    return local_timestamp()
 
 
 class EventClient:
@@ -26,7 +26,7 @@ class EventClient:
                 "node_id": normalized_node_id,
                 "phase": str(phase or "").strip(),
                 "status": str(status or "").strip(),
-                "timestamp": utc_timestamp(),
+                "timestamp": event_timestamp(),
                 "message": message,
             },
         )
@@ -34,11 +34,20 @@ class EventClient:
     def mark_design_done(self, node_id: str, message: str | None = None) -> None:
         self._emit_requirement_state(node_id, "design", "completed", message)
 
+    def mark_design_started(self, node_id: str, message: str | None = None) -> None:
+        self._emit_requirement_state(node_id, "design", "running", message)
+
     def mark_design_failed(self, node_id: str, message: str | None = None) -> None:
         self._emit_requirement_state(node_id, "design", "failed", message)
 
+    def mark_implementation_started(self, node_id: str, message: str | None = None) -> None:
+        self._emit_requirement_state(node_id, "implement", "running", message)
+
     def mark_implementation_done(self, node_id: str, message: str | None = None) -> None:
         self._emit_requirement_state(node_id, "implement", "completed", message)
+
+    def mark_implementation_failed(self, node_id: str, message: str | None = None) -> None:
+        self._emit_requirement_state(node_id, "implement", "failed", message)
 
     def mark_test_passed(self, node_id: str, message: str | None = None) -> None:
         self._emit_requirement_state(node_id, "test", "passed", message)
@@ -52,7 +61,7 @@ class EventClient:
             {
                 "type": "runner_state",
                 "state": str(state or "").strip(),
-                "timestamp": utc_timestamp(),
+                "timestamp": event_timestamp(),
                 "message": message,
             },
         )
@@ -74,7 +83,7 @@ class EventClient:
 
     def _emit_traceability_event(self, payload: dict[str, Any]) -> None:
         normalized = dict(payload)
-        normalized.setdefault("timestamp", utc_timestamp())
+        normalized.setdefault("timestamp", event_timestamp())
         append_jsonl(self.paths.runner_events_path, normalized)
 
     def _emit_refresh_signal(
@@ -93,7 +102,7 @@ class EventClient:
             {
                 "type": "signal",
                 "reason": str(reason or "").strip() or "arcbench_agent_runtime",
-                "timestamp": utc_timestamp(),
+                "timestamp": event_timestamp(),
                 "refresh": {
                     "submission": bool(submission),
                     "logs": bool(logs),

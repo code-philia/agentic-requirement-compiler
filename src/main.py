@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import argparse
 import asyncio
 import os
@@ -5,9 +7,9 @@ import shutil
 import time
 from dataclasses import dataclass
 
-from core.workflow import ARCWorkflowManager
-from app_type_handler import normalize_app_type
+from app_type_handler import list_app_types, normalize_app_type
 from core.utils import cli_log, init_debug_logger, print_cli_banner, print_cli_startup, set_web_port, stop_cli_spinner
+from core.workflow import ARCWorkflowManager
 
 
 @dataclass(slots=True)
@@ -36,9 +38,7 @@ def _resolve_requirement_dir(path: str) -> str:
         raise FileNotFoundError(f"Requirement directory does not exist: {normalized}")
     requirement_file = os.path.join(normalized, "requirements.yaml")
     if not os.path.isfile(requirement_file):
-        raise FileNotFoundError(
-            f"Requirement directory must contain requirements.yaml: {normalized}"
-        )
+        raise FileNotFoundError(f"Requirement directory must contain requirements.yaml: {normalized}")
     return normalized
 
 
@@ -78,7 +78,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--app-type",
-        choices=["web", "android"],
+        choices=list_app_types(),
         default="web",
         help="Application type for runtime stack context.",
     )
@@ -86,7 +86,7 @@ def parse_args() -> argparse.Namespace:
         "--web-port",
         type=int,
         default=3000,
-        help="Single backend port for web apps. The backend serves the built frontend on this port.",
+        help="Single backend port for web apps. Ignored by non-web app types.",
     )
     return parser.parse_args()
 
@@ -97,10 +97,11 @@ def prepare_config(args: argparse.Namespace) -> CompilationConfig:
     normalized_app_type = normalize_app_type(args.app_type)
 
     web_port = int(args.web_port)
-    if web_port < 1 or web_port > 65535:
+    if normalized_app_type == "web" and (web_port < 1 or web_port > 65535):
         raise ValueError(f"Web port must be between 1 and 65535, got: {web_port}")
 
-    set_web_port(web_port)
+    if normalized_app_type == "web":
+        set_web_port(web_port)
     queue_path = os.path.join(normalized_output_dir, ".arc", "processing_queue.json")
     resume_from_queue = (not args.clear_all) and os.path.exists(queue_path)
 
@@ -127,7 +128,6 @@ def prepare_config(args: argparse.Namespace) -> CompilationConfig:
 
 async def run() -> None:
     config = prepare_config(parse_args())
-
     print_cli_banner()
     log_path = init_debug_logger(config.output_dir, reset_existing=not config.resume_from_queue)
     print_cli_startup(
@@ -139,7 +139,6 @@ async def run() -> None:
         web_port=config.web_port,
         resume_from_queue=config.resume_from_queue,
     )
-
     try:
         workflow_manager = ARCWorkflowManager(
             workspace_path=config.output_dir,

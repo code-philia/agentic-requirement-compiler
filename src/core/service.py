@@ -1,39 +1,58 @@
 from __future__ import annotations
 
-from arcbench_agent_runtime import AgentRuntime
+from pathlib import Path
+from typing import Any
+
+from arcbench_agent_runtime.runtime import AgentRuntime
+from context.context_pipeline import set_context_config, set_context_runtime
 
 
-_RUNTIME: AgentRuntime | None = None
-_RUNTIME_KWARGS: dict[str, str] = {}
+_runtime: AgentRuntime | None = None
 
 
 def configure_runtime(
     *,
-    project_dir: str | None = None,
-    runner_events_path: str | None = None,
+    project_dir: str,
     traceability_db_path: str | None = None,
+    runner_events_path: str | None = None,
+    traceability_snapshot_path: str | None = None,
     demo_test_status_path: str | None = None,
+    app_type: str | None = None,
+    web_port: int | None = None,
+    android_package: str | None = None,
 ) -> AgentRuntime:
-    global _RUNTIME
+    """Create and publish the process-wide ARC runtime."""
 
-    current = dict(_RUNTIME_KWARGS)
-    if project_dir is not None:
-        current["project_dir"] = str(project_dir)
-    if runner_events_path is not None:
-        current["runner_events_path"] = str(runner_events_path)
-    if traceability_db_path is not None:
-        current["traceability_db_path"] = str(traceability_db_path)
-    if demo_test_status_path is not None:
-        current["demo_test_status_path"] = str(demo_test_status_path)
-
-    _RUNTIME_KWARGS.clear()
-    _RUNTIME_KWARGS.update(current)
-    _RUNTIME = AgentRuntime.from_env(**_RUNTIME_KWARGS)
-    return _RUNTIME
+    global _runtime
+    resolved_project_dir = str(Path(project_dir).expanduser().resolve())
+    _runtime = AgentRuntime.from_env(
+        project_dir=resolved_project_dir,
+        runner_events_path=runner_events_path,
+        traceability_db_path=traceability_db_path,
+        traceability_snapshot_path=traceability_snapshot_path,
+        demo_test_status_path=demo_test_status_path,
+    )
+    set_context_runtime(_runtime)
+    set_context_config(
+        workspace_dir=resolved_project_dir,
+        app_type=app_type,
+        web_port=web_port,
+        android_package=android_package,
+    )
+    return _runtime
 
 
 def get_runtime() -> AgentRuntime:
-    global _RUNTIME
-    if _RUNTIME is None:
-        _RUNTIME = AgentRuntime.from_env(**_RUNTIME_KWARGS)
-    return _RUNTIME
+    if _runtime is None:
+        raise RuntimeError("ARC runtime has not been configured.")
+    return _runtime
+
+
+def has_runtime() -> bool:
+    return _runtime is not None
+
+
+def reset_runtime_for_tests() -> None:
+    global _runtime
+    _runtime = None
+    set_context_runtime(None)

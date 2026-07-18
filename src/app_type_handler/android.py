@@ -5,7 +5,7 @@ import re
 import shutil
 
 from core.service import get_runtime
-from core.utils import finalize_subprocess, set_android_package
+from core.utils import finalize_subprocess, get_android_package, set_android_package
 
 from .base import AppTypeHandler
 
@@ -96,11 +96,89 @@ async def _run_android_gradle_test(workspace_path: str, file_path: str) -> str:
         return f"Execution failed: {str(exc)}"
 
 
+async def _run_android_gradle_build(workspace_path: str) -> str:
+    command = f"{_gradlew_cmd()} assembleDebug compileDebugUnitTestJavaWithJavac --info"
+    process = None
+    try:
+        process = await asyncio.create_subprocess_shell(
+            command,
+            cwd=workspace_path,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            env={**os.environ, "PYTHONIOENCODING": "utf-8", "JAVA_TOOL_OPTIONS": "-Dfile.encoding=UTF-8"},
+        )
+        stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=180.0)
+        output = stdout.decode("utf-8", errors="replace")
+        error = stderr.decode("utf-8", errors="replace")
+        return _filter_android_gradle_output(output, error, process.returncode)
+    except asyncio.TimeoutError:
+        if process:
+            await finalize_subprocess(process, force_kill=True)
+        return "Exit Code: 124\nSTDERR:\nCommand timed out after 180.0 seconds.\n"
+    except Exception as exc:
+        return f"Exit Code: 1\nSTDERR:\nExecution failed: {str(exc)}\n"
+
+
 class AndroidAppType(AppTypeHandler):
     name = "android"
 
+    @classmethod
+    def prerequisite_commands(cls) -> list[str]:
+        return ["java"]
+
+    @classmethod
+    def runtime_contract_lines(
+        cls,
+        *,
+        web_port: int | None = None,
+        android_package: str | None = None,
+    ) -> list[str]:
+        del web_port, android_package
+        return [
+            "For Android apps, the runtime is the packaged app module built by the Gradle wrapper, not a hosted web server.",
+            "The user-visible flow runs through Android components such as `MainActivity`, layouts, ViewModels, repositories, and owned persistence/services.",
+            "Unit, integration, and end-to-end verification should align with the app-module test sources under `app/src/test/...`.",
+        ]
+
+    @classmethod
+    def project_structure_lines(
+        cls,
+        *,
+        web_port: int | None = None,
+        android_package: str | None = None,
+    ) -> list[str]:
+        del web_port
+        package_name = android_package or get_android_package()
+        package_dir = package_name.replace(".", "/")
+        return [
+            "- Android structure rules:",
+            f"- Main source root: app/src/main/java/{package_dir}/",
+            f"- Unit tests: app/src/test/java/{package_dir}/unit/",
+            f"- Integration tests: app/src/test/java/{package_dir}/integration/",
+            f"- E2E tests: app/src/test/java/{package_dir}/e2e/",
+            "- Prefer app entrypoints, activities, fragments, and owner classes before broader search.",
+        ]
+
+    @classmethod
+    def test_harness_lines(
+        cls,
+        *,
+        web_port: int | None = None,
+        android_package: str | None = None,
+    ) -> list[str]:
+        del web_port
+        package_name = android_package or get_android_package()
+        package_dir = package_name.replace(".", "/")
+        return [
+            "Test manifest `type` must be one of `Unit`, `Integration`, or `E2E`.",
+            f"Unit tests: place under `app/src/test/java/{package_dir}/unit/`.",
+            f"Integration tests: place under `app/src/test/java/{package_dir}/integration/`.",
+            f"E2E tests: place under `app/src/test/java/{package_dir}/e2e/`.",
+            "Use Java/Kotlin test filenames supported by the Android app handler.",
+        ]
+
     async def run_test_file(self, test_type: str, file_path: str) -> str:
-        await self.log_cb("System", f"System test execution ({test_type}): {file_path}")
+        await self._log("System", f"System test execution ({test_type}): {file_path}")
         return await _run_android_gradle_test(self.workspace_path, file_path)
 
     async def run_test_group(self, test_type: str, file_paths: list[str]) -> str:
@@ -112,13 +190,16 @@ class AndroidAppType(AppTypeHandler):
             )
         return await super().run_test_group(test_type, file_paths)
 
+    async def run_build(self) -> str:
+        return await _run_android_gradle_build(self.workspace_path)
+
     async def post_template_setup(self) -> bool:
         target_package = await self._extract_android_package_name_via_llm()
         if target_package:
-            await self.log_cb("System", f"Extracted package name: {target_package}")
+            await self._log("System", f"Extracted package name: {target_package}")
             self._setup_android_package(target_package)
         else:
-            await self.log_cb("System", "Package extraction failed. Using fallback: com.example.app")
+            await self._log("System", "Package extraction failed. Using fallback: com.example.app")
             self._setup_android_package("com.example.app")
 
         sdk_root = os.environ.get("ANDROID_SDK_ROOT") or os.environ.get("ANDROID_HOME")
@@ -127,7 +208,7 @@ class AndroidAppType(AppTypeHandler):
             sdk_dir_gradle = sdk_root.replace("\\", "/")
             with open(local_props_path, "w", encoding="utf-8") as file:
                 file.write(f"sdk.dir={sdk_dir_gradle}\n")
-            await self.log_cb("System", f"Wrote local.properties with sdk.dir={sdk_dir_gradle}")
+            await self._log("System", f"Wrote local.properties with sdk.dir={sdk_dir_gradle}")
 
         gradle_props_path = os.path.join(self.workspace_path, "gradle.properties")
         if os.path.exists(gradle_props_path):
@@ -146,16 +227,22 @@ class AndroidAppType(AppTypeHandler):
                     props += f"\norg.gradle.java.home={jdk_gradle}\n"
                 with open(gradle_props_path, "w", encoding="utf-8") as file:
                     file.write(props)
-                await self.log_cb("System", f"Set org.gradle.java.home={jdk_gradle} in gradle.properties")
+                await self._log("System", f"Set org.gradle.java.home={jdk_gradle} in gradle.properties")
             else:
-                await self.log_cb(
+                await self._log(
                     "System",
                     "Could not auto-detect JDK path. Please set org.gradle.java.home in gradle.properties manually.",
                 )
         return True
 
     @classmethod
-    def build_stack_block(cls) -> str:
+    def build_stack_block(
+        cls,
+        *,
+        web_port: int | None = None,
+        android_package: str | None = None,
+    ) -> str:
+        del web_port, android_package
         return "\n".join(
             [
                 "* **Platform** : Android Native App (Single-module `app` template)",
@@ -203,7 +290,7 @@ class AndroidAppType(AppTypeHandler):
 
                 all_reqs = flatten(data)
             except Exception as exc:
-                await self.log_cb("System", f"Failed to read requirements from YAML: {str(exc)}. Trying DB fallback.")
+                await self._log("System", f"Failed to read requirements from YAML: {str(exc)}. Trying DB fallback.")
                 all_reqs = get_runtime().traceability.list_requirements()
         else:
             all_reqs = get_runtime().traceability.list_requirements()
@@ -270,7 +357,7 @@ If no app package can be identified, set package_name to "UNKNOWN"."""
             result_text = response.choices[0].message.content.strip()
             json_match = re.search(r"\{[\s\S]*\}", result_text)
             if not json_match:
-                await self.log_cb("System", "Package extraction: no JSON found in LLM response, using fallback")
+                await self._log("System", "Package extraction: no JSON found in LLM response, using fallback")
                 return self._fallback_package_name_extraction(all_reqs)
 
             parsed = json.loads(json_match.group())
@@ -283,12 +370,12 @@ If no app package can be identified, set package_name to "UNKNOWN"."""
                 if not segment or not (segment[0].isalpha() or segment[0] == "_"):
                     return self._fallback_package_name_extraction(all_reqs)
 
-            await self.log_cb("System", f"LLM extracted package name: {package_name}")
+            await self._log("System", f"LLM extracted package name: {package_name}")
             if resource_ids:
-                await self.log_cb("System", f"LLM extracted {len(resource_ids)} resource-id mappings")
+                await self._log("System", f"LLM extracted {len(resource_ids)} resource-id mappings")
             return package_name
         except Exception as exc:
-            await self.log_cb("System", f"Package extraction via LLM failed: {str(exc)}")
+            await self._log("System", f"Package extraction via LLM failed: {str(exc)}")
             return self._fallback_package_name_extraction(all_reqs)
 
     def _write_android_package_metadata(self, package_name: str, resource_ids: dict):

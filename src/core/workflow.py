@@ -1,30 +1,33 @@
+from __future__ import annotations
+
 import os
 import shutil
+from pathlib import Path
 from typing import Any, Awaitable, Callable
 
+from agents.interface_designer import InterfaceDesigner
+from agents.test_driven_developer import TestDrivenDeveloper
+from agents.test_generator import TestGenerator
 from app_type_handler import create_app_type_handler, normalize_app_type
+from core import utils
+from core.phases import WorkflowPhaseRunner
 from core.service import configure_runtime
 from core.utils import (
     build_commit_message,
+    load_project_env,
     load_requirements,
     read_json_file,
     set_app_type,
     set_web_port,
     set_workspace_root,
     write_json_file,
-    load_project_env,
 )
-from core.phases import WorkflowPhaseRunner
+from tools.logging import append_debug_log, write_terminal_log
 
-from agents.interface_designer import InterfaceDesigner
-from agents.test_driven_developer import TestDrivenDeveloper
-from agents.test_generator import TestGenerator
 
 load_project_env()
 
-# ======================================================================================
-#                              Workflow Queue Constants
-# ======================================================================================
+LogCallback = Callable[[str, str, str | None, str | None], Awaitable[None] | None]
 
 QUEUE_FILENAME = "processing_queue.json"
 
@@ -37,19 +40,17 @@ TASK_COMPLETED = "COMPLETED"
 TASK_FAILED = "FAILED"
 
 NODE_UNSEEN = "UNSEEN"
+NODE_DESIGNING = "DESIGNING"
 NODE_DESIGNED = "DESIGNED"
+NODE_IMPLEMENTING = "IMPLEMENTING"
 NODE_PASSED = "PASSED"
 NODE_CONVERGED = "CONVERGED"
 NODE_CONVERGED_WITH_FAILED_CHILDREN = "CONVERGED_WITH_FAILED_CHILDREN"
 NODE_FAILED = "FAILED"
 
 
-# ======================================================================================
-#                              Workflow Manager
-# ======================================================================================
-
 class ARCWorkflowManager:
-    """Manage the end-to-end compilation queue for the ARC compiler."""
+    """Manage the ARC requirement-tree compilation queue."""
 
     def __init__(
         self,
@@ -57,24 +58,38 @@ class ARCWorkflowManager:
         requirement_path: str = "",
         app_type: str = "web",
         web_port: int = 3301,
-        log_cb: Callable[[str, str, str | None, str | None], Awaitable[None] | None] | None = None,
-    ):
-        self.workspace_path = workspace_path
-        self.requirement_path = requirement_path
+        log_cb: LogCallback | None = None,
+    ) -> None:
+        self.workspace_path = str(Path(workspace_path).expanduser().resolve())
+        self.requirement_path = str(Path(requirement_path).expanduser().resolve()) if requirement_path else ""
         self.app_type = normalize_app_type(app_type)
         self.web_port = int(web_port)
-        self.log_cb = log_cb
+        set_workspace_root(self.workspace_path)
+        self.log_cb = log_cb or _default_log_cb
 
         self.arc_dir = os.path.join(self.workspace_path, ".arc")
         self.queue_path = os.path.join(self.arc_dir, QUEUE_FILENAME)
         self.runtime = None
 
         set_web_port(self.web_port)
-
-        # Keep agent instances here so compile steps can directly orchestrate them later.
-        self.interface_designer = InterfaceDesigner(log_cb)
-        self.test_generator = TestGenerator(log_cb)
-        self.test_driven_developer = TestDrivenDeveloper(log_cb)
+        self.interface_designer = InterfaceDesigner(
+            self.log_cb,
+            workspace_root=self.workspace_path,
+            requirement_path=self.requirement_path,
+            app_type=self.app_type,
+        )
+        self.test_generator = TestGenerator(
+            self.log_cb,
+            workspace_root=self.workspace_path,
+            requirement_path=self.requirement_path,
+            app_type=self.app_type,
+        )
+        self.test_driven_developer = TestDrivenDeveloper(
+            self.log_cb,
+            workspace_root=self.workspace_path,
+            requirement_path=self.requirement_path,
+            app_type=self.app_type,
+        )
         self.phase_runner = WorkflowPhaseRunner(
             workspace_path=self.workspace_path,
             requirement_path=self.requirement_path,
@@ -85,13 +100,10 @@ class ARCWorkflowManager:
             log_cb=self.log_cb,
         )
 
-    # ==================================================================================
-    #                              Setup And Input Loading
-    # ==================================================================================
-
     async def cleanup_workspace(self) -> bool:
-        await self.log_cb("Compiler", "Clear-and-recompile requested. Cleaning workspace...")
+        await self._log("Compiler", "Clear-and-recompile requested. Cleaning workspace...")
         try:
+            Path(self.workspace_path).mkdir(parents=True, exist_ok=True)
             for item in os.listdir(self.workspace_path):
                 if item == "requirements":
                     continue
@@ -100,28 +112,22 @@ class ARCWorkflowManager:
                     shutil.rmtree(item_path, ignore_errors=True)
                 else:
                     os.remove(item_path)
-
-            await self.log_cb("Compiler", "Workspace cleaned successfully.")
             return True
         except Exception as exc:
-            await self.log_cb("Compiler", f"Failed to clean workspace: {str(exc)}", "error")
+            await self._log("Compiler", f"Failed to clean workspace: {exc}", "error")
             return False
 
     async def load_requirement_tree(self) -> dict[str, Any] | None:
-        await self.log_cb("RequirementLoader", f"Reading requirements file: {self.requirement_path}")
+        await self._log("RequirementLoader", f"Reading requirements file: {self.requirement_path}")
         try:
-            requirement_tree = load_requirements(self.requirement_path)
-            if not requirement_tree:
-                await self.log_cb("RequirementLoader", "Failed to read requirements file or file is empty.", "error")
-                return None
-            return requirement_tree
+            return load_requirements(self.requirement_path)
         except Exception as exc:
-            await self.log_cb("RequirementLoader", f"Error while reading requirements file: {str(exc)}", "error")
+            await self._log("RequirementLoader", f"Error while reading requirements file: {exc}", "error")
             return None
 
-    async def initialize_project(self):
-        await self.log_cb("System", f"Initializing project environment in {self.workspace_path}...")
-
+    async def initialize_project(self) -> bool:
+        await self._log("System", f"Initializing project environment in {self.workspace_path}...")
+        Path(self.arc_dir).mkdir(parents=True, exist_ok=True)
         set_workspace_root(self.workspace_path)
         set_app_type(self.app_type)
         set_web_port(self.web_port)
@@ -130,12 +136,13 @@ class ARCWorkflowManager:
             self.arc_dir,
             "traceability.db",
         )
-        await self.log_cb("System", f"Initializing traceability database at {db_path}...")
         self.runtime = configure_runtime(
             project_dir=self.workspace_path,
             traceability_db_path=db_path,
+            app_type=self.app_type,
+            web_port=self.web_port,
         )
-        self.runtime.traceability.init_db()
+        self.runtime.traceability.init_db(reset=False)
 
         app_handler = create_app_type_handler(
             workspace_path=self.workspace_path,
@@ -148,8 +155,7 @@ class ARCWorkflowManager:
         if not init_ok:
             return False
 
-        await self.log_cb("System", "Full-stack workspace initialized completely.")
-        await self.log_cb("System", "Initializing Git repository...")
+        await self._log("System", "Initializing Git repository...")
         self.runtime.git.ensure_repo(create_initial_commit=True)
         return True
 
@@ -157,25 +163,26 @@ class ARCWorkflowManager:
         set_workspace_root(self.workspace_path)
         set_app_type(self.app_type)
         set_web_port(self.web_port)
-
         db_path = os.environ.get("ARCBENCH_TRACEABILITY_DB_PATH", "").strip() or os.path.join(
             self.arc_dir,
             "traceability.db",
         )
-        await self.log_cb("System", f"Reusing existing traceability database at {db_path}...")
         self.runtime = configure_runtime(
             project_dir=self.workspace_path,
             traceability_db_path=db_path,
+            app_type=self.app_type,
+            web_port=self.web_port,
         )
-        self.runtime.traceability.init_db()
+        self.runtime.traceability.init_db(reset=False)
+        self.runtime.events.mark_run_resumed("ARC compilation resumed from processing queue.")
 
     async def start_compilation(
         self,
+        *,
         clear_all: bool = False,
         resume_from_queue: bool = False,
     ) -> dict[str, Any]:
-        await self.log_cb("Compiler", "ARC compilation started.")
-
+        await self._log("Compiler", "ARC compilation started.")
         if clear_all:
             cleaned = await self.cleanup_workspace()
             if not cleaned:
@@ -186,49 +193,51 @@ class ARCWorkflowManager:
             return {"ok": False, "failed_nodes": []}
 
         if resume_from_queue:
-            await self.log_cb(
-                "Compiler",
-                f"Existing processing queue detected at {self.queue_path}. Resuming without project initialization.",
-            )
+            await self._log("Compiler", f"Resuming from existing queue: {self.queue_path}")
             await self.prepare_resume_context()
         else:
             init_ok = await self.initialize_project()
-            if init_ok is False:
-                await self.log_cb("Compiler", "Project initialization failed.", "error")
+            if not init_ok:
+                await self._log("Compiler", "Project initialization failed.", "error")
                 return {"ok": False, "failed_nodes": []}
+            self.runtime.events.mark_run_started("ARC compilation run started.")
 
-        compile_result = await self.compile_requirement_tree(requirement_tree)
-
-        failed_nodes = compile_result.get("failed_nodes", [])
-        if failed_nodes:
-            await self.log_cb(
+        result = await self.compile_requirement_tree(requirement_tree)
+        if result.get("ok"):
+            self.runtime.events.mark_run_completed("ARC compilation completed.")
+            await self._log("Compiler", "Compilation finished successfully.")
+        else:
+            self.runtime.events.mark_run_failed("ARC compilation finished with failures.")
+            failed_nodes = result.get("failed_nodes", [])
+            await self._log(
                 "Compiler",
                 f"Compilation finished with {len(failed_nodes)} failed node(s): {', '.join(failed_nodes)}",
                 "error",
             )
-        else:
-            await self.log_cb("Compiler", "Compilation finished successfully.")
-
-        return compile_result
-
-    # ==================================================================================
-    #                              Compilation Entry
-    # ==================================================================================
+        return result
 
     async def compile_requirement_tree(self, requirement_tree: dict[str, Any]) -> dict[str, Any]:
-        root_id = requirement_tree.get("id") if isinstance(requirement_tree, dict) else None
+        root_id = str(requirement_tree.get("id") or "").strip()
         if not root_id:
-            await self.log_cb("Compiler", "Requirement root node id is missing.", "error")
+            await self._log("Compiler", "Requirement root node id is missing.", "error")
             return {"ok": False, "failed_nodes": []}
 
-        await self.log_cb("Compiler", "Persisting requirement tree and preparing processing queue...")
         self.runtime.traceability.store_requirement_tree(requirement_tree)
-
         queue_state = self._load_or_create_processing_queue(requirement_tree)
-        self._recover_interrupted_queue(queue_state)
+        self._sync_queue_node_states(queue_state)
+        recovered_tasks = self._recover_interrupted_queue(queue_state)
         self._save_processing_queue(queue_state)
-
-        await self.log_cb(
+        for recovered in recovered_tasks:
+            await self._log(
+                "Compiler",
+                (
+                    f"Recovered interrupted {recovered['phase']} task for node {recovered['node_id']}; "
+                    "preserving existing workspace and traceability artifacts for the resumed agent."
+                ),
+                status="warning",
+                node_id=recovered["node_id"],
+            )
+        await self._log(
             "Compiler",
             f"Loaded processing queue with {len(queue_state['tasks'])} task(s) for root node {root_id}.",
         )
@@ -243,14 +252,16 @@ class ARCWorkflowManager:
             requirement_data = self.runtime.traceability.get_requirement(node_id) or {}
 
             task["status"] = TASK_RUNNING
+            self._mark_task_running(queue_state["node_states"], node_id, phase)
             queue_state["last_task_id"] = task["task_id"]
             self._save_processing_queue(queue_state)
 
-            await self.log_cb("Compiler", f"Running {phase} for node {node_id}...", None, node_id)
+            await self._log("Compiler", f"Running {phase} for node {node_id}...", node_id=node_id)
             task_ok = await self._run_task(task)
 
             if task_ok:
                 task["status"] = TASK_COMPLETED
+                utils.merge_node_session(node_id, {"resume_context": {}})
                 new_state = self._resolve_completed_node_state(node_id, phase)
                 self._set_node_state(queue_state["node_states"], node_id, new_state)
                 self._save_processing_queue(queue_state)
@@ -260,39 +271,29 @@ class ARCWorkflowManager:
                     self.runtime.events.mark_implementation_done(node_id)
                     self.runtime.events.mark_test_passed(node_id)
                 await self._commit_phase_checkpoint(node_id, phase, requirement_data)
-                await self.log_cb("Compiler", f"{phase} completed for node {node_id}.", None, node_id)
+                await self._log("Compiler", f"{phase} completed for node {node_id}.", node_id=node_id)
+                continue
+
+            task["status"] = TASK_FAILED
+            self._set_node_state(queue_state["node_states"], node_id, NODE_FAILED)
+            self._mark_remaining_node_tasks_failed(queue_state, node_id)
+            self._save_processing_queue(queue_state)
+            if phase == PHASE_DESIGN:
+                self.runtime.events.mark_design_failed(node_id)
             else:
-                task["status"] = TASK_FAILED
-                self._set_node_state(queue_state["node_states"], node_id, NODE_FAILED)
-                self._mark_remaining_node_tasks_failed(queue_state, node_id)
-                self._save_processing_queue(queue_state)
-                if phase == PHASE_DESIGN:
-                    self.runtime.events.mark_design_failed(node_id)
-                if phase == PHASE_IMPLEMENT:
-                    self.runtime.events.mark_test_failed(node_id)
-                await self._commit_phase_checkpoint(node_id, f"{phase}-FAILED", requirement_data)
-                await self.log_cb("Compiler", f"{phase} failed for node {node_id}.", "error", node_id)
-                await self.log_cb(
-                    "Compiler",
-                    f"Node {node_id} marked as failed. Continuing with remaining tasks.",
-                    "error",
-                    node_id,
-                )
+                self.runtime.events.mark_implementation_failed(node_id)
+                self.runtime.events.mark_test_failed(node_id)
+            await self._commit_phase_checkpoint(node_id, f"{phase}-FAILED", requirement_data)
+            await self._log("Compiler", f"{phase} failed for node {node_id}.", "error", node_id)
 
         return self._build_compile_result(queue_state)
 
-    # ==================================================================================
-    #                              Queue Construction And Recovery
-    # ==================================================================================
-
     def _load_or_create_processing_queue(self, requirement_tree: dict[str, Any]) -> dict[str, Any]:
         os.makedirs(self.arc_dir, exist_ok=True)
-
         root_id = str(requirement_tree.get("id", ""))
         expected_tasks = self._build_processing_tasks(requirement_tree)
         expected_task_ids = [task["task_id"] for task in expected_tasks]
         node_ids = self._collect_node_ids(expected_tasks)
-
         existing_queue = read_json_file(self.queue_path)
         if self._is_compatible_queue(existing_queue, root_id, expected_task_ids):
             queue_state = existing_queue
@@ -301,7 +302,6 @@ class ARCWorkflowManager:
                 queue_state["node_states"].setdefault(node_id, NODE_UNSEEN)
             self._apply_saved_states_to_tasks(queue_state)
             return queue_state
-
         queue_state = {
             "root_id": root_id,
             "tasks": expected_tasks,
@@ -318,10 +318,10 @@ class ARCWorkflowManager:
             node_id = str(node.get("id", "")).strip()
             if not node_id:
                 return
-
             tasks.append(self._make_task(node_id, PHASE_DESIGN, len(tasks)))
             for child in node.get("children", []) or []:
-                walk(child)
+                if isinstance(child, dict):
+                    walk(child)
             tasks.append(self._make_task(node_id, PHASE_IMPLEMENT, len(tasks)))
 
         walk(root_node)
@@ -336,7 +336,8 @@ class ARCWorkflowManager:
             "status": TASK_PENDING,
         }
 
-    def _collect_node_ids(self, tasks: list[dict[str, Any]]) -> list[str]:
+    @staticmethod
+    def _collect_node_ids(tasks: list[dict[str, Any]]) -> list[str]:
         seen: list[str] = []
         for task in tasks:
             node_id = task["node_id"]
@@ -344,15 +345,14 @@ class ARCWorkflowManager:
                 seen.append(node_id)
         return seen
 
-    def _is_compatible_queue(self, queue_state: dict[str, Any] | None, root_id: str, expected_task_ids: list[str]) -> bool:
-        if not queue_state:
+    @staticmethod
+    def _is_compatible_queue(queue_state: dict[str, Any] | None, root_id: str, expected_task_ids: list[str]) -> bool:
+        if not queue_state or queue_state.get("root_id") != root_id:
             return False
-        if queue_state.get("root_id") != root_id:
-            return False
-        existing_task_ids = [task.get("task_id") for task in queue_state.get("tasks", [])]
-        return existing_task_ids == expected_task_ids
+        return [task.get("task_id") for task in queue_state.get("tasks", [])] == expected_task_ids
 
-    def _apply_saved_states_to_tasks(self, queue_state: dict[str, Any]) -> None:
+    @staticmethod
+    def _apply_saved_states_to_tasks(queue_state: dict[str, Any]) -> None:
         for task in queue_state["tasks"]:
             node_state = queue_state["node_states"].get(task["node_id"], NODE_UNSEEN)
             if node_state in {NODE_PASSED, NODE_CONVERGED, NODE_CONVERGED_WITH_FAILED_CHILDREN}:
@@ -362,60 +362,77 @@ class ARCWorkflowManager:
             elif node_state == NODE_FAILED:
                 task["status"] = TASK_FAILED
 
-    def _recover_interrupted_queue(self, queue_state: dict[str, Any]) -> None:
+    def _recover_interrupted_queue(self, queue_state: dict[str, Any]) -> list[dict[str, str]]:
+        recovered: list[dict[str, str]] = []
+        git_status = ""
+        if self.runtime is not None:
+            try:
+                git_status = self.runtime.git.status_porcelain().strip()
+            except Exception:
+                git_status = ""
         for task in queue_state["tasks"]:
             if task["status"] == TASK_RUNNING:
+                node_id = str(task.get("node_id", "") or "").strip()
+                phase = str(task.get("phase", "") or "").strip()
+                previous_state = str(queue_state.get("node_states", {}).get(node_id, NODE_UNSEEN) or NODE_UNSEEN)
                 task["status"] = TASK_PENDING
+                fallback_state = NODE_DESIGNED if phase == PHASE_IMPLEMENT else NODE_UNSEEN
+                if node_id:
+                    queue_state["node_states"][node_id] = fallback_state
+                    if self.runtime is not None:
+                        self.runtime.traceability.upsert_node_state(node_id, fallback_state)
+                    utils.merge_node_session(
+                        node_id,
+                        {
+                            "resume_context": {
+                                "interrupted": True,
+                                "task_id": str(task.get("task_id", "") or "").strip(),
+                                "phase": phase,
+                                "previous_node_state": previous_state,
+                                "recovered_node_state": fallback_state,
+                                "git_status": git_status.splitlines()[:80],
+                                "instruction": (
+                                    "This node is resuming after an interrupted agent stage. "
+                                    "Preserve useful existing source, test, and traceability artifacts; inspect the listed dirty files "
+                                    "and current-node records before regenerating or overwriting work."
+                                ),
+                            },
+                            "phase_status": {phase.lower(): "interrupted"} if phase else {},
+                        },
+                    )
+                recovered.append({"node_id": node_id, "phase": phase, "task_id": str(task.get("task_id", ""))})
+        queue_state["recovered_interrupted_tasks"] = recovered
+        return recovered
 
-    # ==================================================================================
-    #                              Task Scheduling And Execution
-    # ==================================================================================
-
-    def _next_runnable_task(self, queue_state: dict[str, Any]) -> dict[str, Any] | None:
+    @staticmethod
+    def _next_runnable_task(queue_state: dict[str, Any]) -> dict[str, Any] | None:
         for task in queue_state["tasks"]:
             if task["status"] == TASK_PENDING:
                 return task
         return None
 
-    def _mark_remaining_node_tasks_failed(self, queue_state: dict[str, Any], node_id: str) -> None:
+    @staticmethod
+    def _mark_remaining_node_tasks_failed(queue_state: dict[str, Any], node_id: str) -> None:
         for task in queue_state["tasks"]:
-            if task["node_id"] != node_id:
-                continue
-            if task["status"] in {TASK_PENDING, TASK_RUNNING}:
+            if task["node_id"] == node_id and task["status"] in {TASK_PENDING, TASK_RUNNING}:
                 task["status"] = TASK_FAILED
 
     async def _run_task(self, task: dict[str, Any]) -> bool:
         node_id = task["node_id"]
+        requirement_data = self.runtime.traceability.get_requirement(node_id)
+        if not requirement_data:
+            await self._log("System", f"Requirement node {node_id} not found in database.", "error", node_id)
+            return False
         if task["phase"] == PHASE_DESIGN:
-            return await self._run_design_phase(node_id)
-        return await self._run_implement_phase(node_id)
-
-    async def _run_design_phase(self, node_id: str) -> bool:
-        requirement_data = self.runtime.traceability.get_requirement(node_id)
-        if not requirement_data:
-            await self.log_cb("System", f"Requirement node {node_id} not found in database.", "error", node_id)
-            return False
-
-        return await self.phase_runner.run_design_phase(node_id, requirement_data)
-
-    async def _run_implement_phase(self, node_id: str) -> bool:
-        requirement_data = self.runtime.traceability.get_requirement(node_id)
-        if not requirement_data:
-            await self.log_cb("System", f"Requirement node {node_id} not found in database.", "error", node_id)
-            return False
-
+            return await self.phase_runner.run_design_phase(node_id, requirement_data)
         return await self.phase_runner.run_implement_phase(node_id, requirement_data)
-
-    # ==================================================================================
-    #                              Result And State Persistence
-    # ==================================================================================
 
     async def _commit_phase_checkpoint(self, node_id: str, phase: str, requirement_data: dict[str, Any]) -> None:
         commit_message = build_commit_message(node_id, phase, requirement_data)
-        await self.log_cb("Compiler", f"Running git checkpoint for {phase} on node {node_id}...", None, node_id)
+        await self._log("Compiler", f"Running git checkpoint for {phase} on node {node_id}...", node_id=node_id)
         committed = self.runtime.git.commit(commit_message)
         if not committed:
-            await self.log_cb("Compiler", "No file changes detected for this checkpoint.", None, node_id)
+            await self._log("Compiler", "No file changes detected for this checkpoint.", node_id=node_id)
 
     def _resolve_completed_node_state(self, node_id: str, phase: str) -> str:
         if phase == PHASE_DESIGN:
@@ -432,13 +449,25 @@ class ARCWorkflowManager:
         node_states[node_id] = state
         self.runtime.traceability.upsert_node_state(node_id, state)
 
-    def _build_compile_result(self, queue_state: dict[str, Any]) -> dict[str, Any]:
+    def _sync_queue_node_states(self, queue_state: dict[str, Any]) -> None:
+        for node_id, state in queue_state.get("node_states", {}).items():
+            normalized_state = str(state or NODE_UNSEEN).strip().upper() or NODE_UNSEEN
+            self.runtime.traceability.upsert_node_state(node_id, normalized_state)
+
+    def _mark_task_running(self, node_states: dict[str, str], node_id: str, phase: str) -> None:
+        if phase == PHASE_DESIGN:
+            self._set_node_state(node_states, node_id, NODE_DESIGNING)
+            self.runtime.events.mark_design_started(node_id)
+            return
+        self._set_node_state(node_states, node_id, NODE_IMPLEMENTING)
+        self.runtime.events.mark_implementation_started(node_id)
+
+    @staticmethod
+    def _build_compile_result(queue_state: dict[str, Any]) -> dict[str, Any]:
         failed_nodes = sorted(
             node_id for node_id, state in queue_state["node_states"].items() if state == NODE_FAILED
         )
-        completed_tasks = [
-            task["task_id"] for task in queue_state["tasks"] if task["status"] == TASK_COMPLETED
-        ]
+        completed_tasks = [task["task_id"] for task in queue_state["tasks"] if task["status"] == TASK_COMPLETED]
         all_completed = all(task["status"] == TASK_COMPLETED for task in queue_state["tasks"])
         return {
             "ok": all_completed and not failed_nodes,
@@ -449,3 +478,32 @@ class ARCWorkflowManager:
 
     def _save_processing_queue(self, queue_state: dict[str, Any]) -> None:
         write_json_file(self.queue_path, queue_state)
+
+    async def _log(
+        self,
+        agent_name: str,
+        message: str,
+        status: str | None = None,
+        node_id: str | None = None,
+    ) -> None:
+        result = self.log_cb(agent_name, message, status, node_id)
+        if hasattr(result, "__await__"):
+            await result
+
+
+class _CompletedLogAwaitable:
+    def __await__(self):
+        if False:
+            yield None
+        return None
+
+
+def _default_log_cb(
+    agent_name: str,
+    message: str,
+    status: str | None = None,
+    node_id: str | None = None,
+) -> _CompletedLogAwaitable:
+    append_debug_log(agent_name, message, status=status, node_id=node_id)
+    write_terminal_log(agent_name, message, status=status, node_id=node_id)
+    return _CompletedLogAwaitable()
