@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
+from urllib.parse import urlparse
 
 from deepagents import FilesystemPermission, HarnessProfile, create_deep_agent, register_harness_profile
 from deepagents.backends import CompositeBackend, FilesystemBackend, LocalShellBackend, StateBackend
@@ -115,7 +117,7 @@ def build_stage_agent(
         memory=_resolve_source_paths(memory, root, skills_root, default=[]),
         permissions=_build_filesystem_permissions(root, writable_roots),
         context_schema=AgentRuntimeContext,
-        response_format=response_format,
+        response_format=_resolve_response_format(response_format),
     )
 
 
@@ -208,6 +210,18 @@ def _register_arc_tool_exclusions(*, model: Any, resolved_model: Any) -> None:
     provider = get_model_provider(resolved_model)
     if provider and provider not in registered:
         register_harness_profile(provider, profile)
+
+
+def _resolve_response_format(response_format: object | None) -> object | None:
+    base_url = os.getenv("OPENAI_API_BASE", "").strip() or os.getenv("OPENAI_BASE_URL", "").strip()
+    if base_url and not _is_openai_base_url(base_url):
+        return None
+    return response_format
+
+
+def _is_openai_base_url(base_url: str) -> bool:
+    host = urlparse(base_url).hostname or ""
+    return host == "api.openai.com" or host.endswith(".openai.com")
 
 
 def _resolve_source_paths(paths: list[str] | None, root: Path, skills_root: Path, *, default: list[str]) -> list[str]:

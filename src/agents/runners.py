@@ -5,6 +5,7 @@ import json
 import os
 import re
 import time
+from urllib.parse import urlparse
 from typing import Any, Awaitable, Callable
 
 from pydantic import BaseModel
@@ -671,7 +672,27 @@ def _should_stream(stream: bool | None) -> bool:
     if stream is not None:
         return stream
     value = os.environ.get("ARC_AGENT_STREAM", "").strip().lower()
+    if _should_disable_streaming_for_responses_api():
+        return False
+    if value in {"1", "true", "yes", "on"}:
+        return True
     if value in {"0", "false", "no", "off"}:
+        return False
+    return True
+
+
+def _should_disable_streaming_for_responses_api() -> bool:
+    force = os.environ.get("ARC_AGENT_FORCE_RESPONSES_STREAM", "").strip().lower()
+    if force in {"1", "true", "yes", "on"}:
+        return False
+    override = os.environ.get("ARC_USE_RESPONSES_API", "").strip().lower()
+    if override in {"0", "false", "no", "off"}:
+        return False
+    base_url = os.environ.get("OPENAI_API_BASE", "").strip() or os.environ.get("OPENAI_BASE_URL", "").strip()
+    if not base_url:
+        return False
+    host = urlparse(base_url).hostname or ""
+    if host == "api.openai.com" or host.endswith(".openai.com"):
         return False
     return True
 
