@@ -90,9 +90,9 @@ class GitClient:
                 "frontend/dist-ssr/",
                 "*.db",
                 ".env",
-                "!.arc/",
-                "!.arc/**",
-                ".arc/debug.log",
+                ".arc/*",
+                "!.arc/traceability/",
+                "!.arc/traceability/**",
                 ARC_GITIGNORE_END,
             ]
         )

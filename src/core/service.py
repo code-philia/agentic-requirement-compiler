@@ -13,10 +13,8 @@ _runtime: AgentRuntime | None = None
 def configure_runtime(
     *,
     project_dir: str,
-    traceability_db_path: str | None = None,
+    traceability_dir: str | None = None,
     runner_events_path: str | None = None,
-    traceability_snapshot_path: str | None = None,
-    demo_test_status_path: str | None = None,
     app_type: str | None = None,
     web_port: int | None = None,
     android_package: str | None = None,
@@ -28,9 +26,7 @@ def configure_runtime(
     _runtime = AgentRuntime.from_env(
         project_dir=resolved_project_dir,
         runner_events_path=runner_events_path,
-        traceability_db_path=traceability_db_path,
-        traceability_snapshot_path=traceability_snapshot_path,
-        demo_test_status_path=demo_test_status_path,
+        traceability_dir=traceability_dir,
     )
     set_context_runtime(_runtime)
     set_context_config(

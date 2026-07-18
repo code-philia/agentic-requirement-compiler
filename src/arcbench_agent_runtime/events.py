@@ -1,19 +1,23 @@
 from __future__ import annotations
 
+import time
 from typing import Any
 
 from .context import RuntimePaths
-from .jsonio import append_jsonl, read_json, write_json_atomic
-from tools.logging import local_timestamp
+from .jsonio import append_jsonl
 
 
-def event_timestamp() -> str:
-    return local_timestamp()
+def utc_timestamp() -> str:
+    return time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime())
 
 
 class EventClient:
     def __init__(self, paths: RuntimePaths) -> None:
         self.paths = paths
+        self._requirement_state_writer = None
+
+    def set_requirement_state_writer(self, writer) -> None:
+        self._requirement_state_writer = writer
 
     def _emit_requirement_state(self, node_id: str, phase: str, status: str, message: str | None = None) -> None:
         normalized_node_id = str(node_id or "").strip()
@@ -26,16 +30,29 @@ class EventClient:
                 "node_id": normalized_node_id,
                 "phase": str(phase or "").strip(),
                 "status": str(status or "").strip(),
-                "timestamp": event_timestamp(),
+                "timestamp": utc_timestamp(),
                 "message": message,
             },
         )
-
-    def mark_design_done(self, node_id: str, message: str | None = None) -> None:
-        self._emit_requirement_state(node_id, "design", "completed", message)
+        if self._requirement_state_writer is not None:
+            state = {
+                ("design", "running"): "DESIGNING",
+                ("design", "completed"): "DESIGNED",
+                ("design", "failed"): "FAILED",
+                ("implement", "running"): "IMPLEMENTING",
+                ("implement", "completed"): "IMPLEMENTED",
+                ("implement", "failed"): "FAILED",
+                ("test", "passed"): "PASSED",
+                ("test", "failed"): "FAILED",
+            }.get((str(phase or "").strip(), str(status or "").strip()))
+            if state:
+                self._requirement_state_writer(normalized_node_id, state, str(phase or "").strip())
 
     def mark_design_started(self, node_id: str, message: str | None = None) -> None:
         self._emit_requirement_state(node_id, "design", "running", message)
+
+    def mark_design_done(self, node_id: str, message: str | None = None) -> None:
+        self._emit_requirement_state(node_id, "design", "completed", message)
 
     def mark_design_failed(self, node_id: str, message: str | None = None) -> None:
         self._emit_requirement_state(node_id, "design", "failed", message)
@@ -61,7 +78,7 @@ class EventClient:
             {
                 "type": "runner_state",
                 "state": str(state or "").strip(),
-                "timestamp": event_timestamp(),
+                "timestamp": utc_timestamp(),
                 "message": message,
             },
         )
@@ -83,7 +100,7 @@ class EventClient:
 
     def _emit_traceability_event(self, payload: dict[str, Any]) -> None:
         normalized = dict(payload)
-        normalized.setdefault("timestamp", event_timestamp())
+        normalized.setdefault("timestamp", utc_timestamp())
         append_jsonl(self.paths.runner_events_path, normalized)
 
     def _emit_refresh_signal(
@@ -102,7 +119,7 @@ class EventClient:
             {
                 "type": "signal",
                 "reason": str(reason or "").strip() or "arcbench_agent_runtime",
-                "timestamp": event_timestamp(),
+                "timestamp": utc_timestamp(),
                 "refresh": {
                     "submission": bool(submission),
                     "logs": bool(logs),
@@ -130,70 +147,29 @@ class EventClient:
         )
 
     def read_demo_test_status_payload(self) -> dict[str, Any]:
-        payload = read_json(self.paths.demo_test_status_path, {"tests": {}, "requirements": {}})
-        tests = payload.get("tests")
-        requirements = payload.get("requirements")
-        return {
-            "tests": tests if isinstance(tests, dict) else {},
-            "requirements": requirements if isinstance(requirements, dict) else {},
-        }
+        return {"tests": {}, "requirements": {}}
 
     def write_demo_test_status_payload(self, payload: dict[str, Any]) -> None:
-        normalized_payload = {
-            "tests": payload.get("tests") if isinstance(payload.get("tests"), dict) else {},
-            "requirements": payload.get("requirements") if isinstance(payload.get("requirements"), dict) else {},
-        }
-        write_json_atomic(self.paths.demo_test_status_path, normalized_payload)
+        return None
 
     def set_demo_test_status(self, test_id: str, status: str | None) -> None:
         normalized_test_id = str(test_id or "").strip()
         if not normalized_test_id:
             return
-        payload = self.read_demo_test_status_payload()
-        normalized_status = str(status or "").strip().lower()
-        if normalized_status in {"passed", "failed"}:
-            payload["tests"][normalized_test_id] = normalized_status
-        else:
-            payload["tests"].pop(normalized_test_id, None)
-        self.write_demo_test_status_payload(payload)
         self.notify_traceability_changed("demo_test_status_updated")
 
     def set_demo_test_statuses(self, status_by_test_id: dict[str, str | None]) -> None:
         if not status_by_test_id:
             return
-        payload = self.read_demo_test_status_payload()
-        for test_id, status in status_by_test_id.items():
-            normalized_test_id = str(test_id or "").strip()
-            if not normalized_test_id:
-                continue
-            normalized_status = str(status or "").strip().lower()
-            if normalized_status in {"passed", "failed"}:
-                payload["tests"][normalized_test_id] = normalized_status
-            else:
-                payload["tests"].pop(normalized_test_id, None)
-        self.write_demo_test_status_payload(payload)
         self.notify_traceability_changed("demo_test_statuses_updated")
 
     def clear_demo_test_statuses(self, test_ids: list[str]) -> None:
         if not test_ids:
             return
-        payload = self.read_demo_test_status_payload()
-        for test_id in test_ids:
-            normalized_test_id = str(test_id or "").strip()
-            if normalized_test_id:
-                payload["tests"].pop(normalized_test_id, None)
-        self.write_demo_test_status_payload(payload)
         self.notify_traceability_changed("demo_test_statuses_cleared")
 
     def set_demo_requirement_status(self, req_id: str, status: str | None) -> None:
         normalized_req_id = str(req_id or "").strip()
         if not normalized_req_id:
             return
-        payload = self.read_demo_test_status_payload()
-        normalized_status = str(status or "").strip().lower()
-        if normalized_status in {"passed", "failed"}:
-            payload["requirements"][normalized_req_id] = normalized_status
-        else:
-            payload["requirements"].pop(normalized_req_id, None)
-        self.write_demo_test_status_payload(payload)
         self.notify_traceability_changed("demo_requirement_status_updated")

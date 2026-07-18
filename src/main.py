@@ -5,6 +5,7 @@ import asyncio
 import os
 import shutil
 import time
+import tempfile
 from dataclasses import dataclass
 
 from app_type_handler import list_app_types, normalize_app_type
@@ -61,6 +62,14 @@ def _copy_requirement_dir_contents(requirement_dir: str, output_dir: str) -> Non
             shutil.copy2(src, dst)
 
 
+def _is_relative_to(path: str, parent: str) -> bool:
+    try:
+        os.path.commonpath([os.path.abspath(path), os.path.abspath(parent)]) == os.path.abspath(parent)
+    except ValueError:
+        return False
+    return os.path.commonpath([os.path.abspath(path), os.path.abspath(parent)]) == os.path.abspath(parent)
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run ARC agent workflow from the command line.")
     parser.add_argument(
@@ -106,8 +115,13 @@ def prepare_config(args: argparse.Namespace) -> CompilationConfig:
     resume_from_queue = (not args.clear_all) and os.path.exists(queue_path)
 
     if not resume_from_queue:
-        _reset_directory(normalized_output_dir)
-        _copy_requirement_dir_contents(normalized_requirement_dir, normalized_output_dir)
+        staged_requirement_dir = normalized_requirement_dir
+        with tempfile.TemporaryDirectory(prefix="arc-agent-requirements-") as temp_dir:
+            if _is_relative_to(normalized_requirement_dir, normalized_output_dir):
+                staged_requirement_dir = os.path.join(temp_dir, "requirements")
+                shutil.copytree(normalized_requirement_dir, staged_requirement_dir, dirs_exist_ok=True)
+            _reset_directory(normalized_output_dir)
+            _copy_requirement_dir_contents(staged_requirement_dir, normalized_output_dir)
 
     normalized_requirement_path = os.path.join(normalized_output_dir, "requirements", "requirements.yaml")
     if not os.path.isfile(normalized_requirement_path):

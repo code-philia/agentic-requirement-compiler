@@ -132,17 +132,17 @@ class ARCWorkflowManager:
         set_app_type(self.app_type)
         set_web_port(self.web_port)
 
-        db_path = os.environ.get("ARCBENCH_TRACEABILITY_DB_PATH", "").strip() or os.path.join(
+        traceability_dir = os.environ.get("ARCBENCH_TRACEABILITY_DIR", "").strip() or os.path.join(
             self.arc_dir,
-            "traceability.db",
+            "traceability",
         )
         self.runtime = configure_runtime(
             project_dir=self.workspace_path,
-            traceability_db_path=db_path,
+            traceability_dir=traceability_dir,
             app_type=self.app_type,
             web_port=self.web_port,
         )
-        self.runtime.traceability.init_db(reset=False)
+        self.runtime.traceability.init_store(reset=False)
 
         app_handler = create_app_type_handler(
             workspace_path=self.workspace_path,
@@ -163,17 +163,17 @@ class ARCWorkflowManager:
         set_workspace_root(self.workspace_path)
         set_app_type(self.app_type)
         set_web_port(self.web_port)
-        db_path = os.environ.get("ARCBENCH_TRACEABILITY_DB_PATH", "").strip() or os.path.join(
+        traceability_dir = os.environ.get("ARCBENCH_TRACEABILITY_DIR", "").strip() or os.path.join(
             self.arc_dir,
-            "traceability.db",
+            "traceability",
         )
         self.runtime = configure_runtime(
             project_dir=self.workspace_path,
-            traceability_db_path=db_path,
+            traceability_dir=traceability_dir,
             app_type=self.app_type,
             web_port=self.web_port,
         )
-        self.runtime.traceability.init_db(reset=False)
+        self.runtime.traceability.init_store(reset=False)
         self.runtime.events.mark_run_resumed("ARC compilation resumed from processing queue.")
 
     async def start_compilation(
