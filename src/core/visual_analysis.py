@@ -216,7 +216,7 @@ async def _request_visual_analysis(full_path: Path) -> str:
     client = OpenAI(api_key=visual_api_key, base_url=visual_base_url)
     response = await asyncio.to_thread(
         client.chat.completions.create,
-        model=_normalize_openai_model_name(os.environ.get("VISUAL_MODEL", os.environ.get("MODEL", ""))),
+        model=_normalize_openai_model_name(os.environ.get("VISUAL_MODEL") or os.environ.get("MODEL", "")),
         messages=[
             {
                 "role": "system",
