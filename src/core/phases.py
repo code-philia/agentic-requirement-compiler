@@ -8,6 +8,7 @@ from app_type_handler import create_app_type_handler
 from context.context_pipeline import context_pipeline
 from core import utils
 from core.service import get_runtime
+from core.path_compat import normalize_windows_extended_prefix_text
 from core.visual_analysis import analyze_and_attach_visual_references
 from tools.result_parsers import parse_test_results
 
@@ -769,9 +770,10 @@ def summarize_test_artifacts(tests: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 def normalize_workspace_relative_path(value: Any, workspace_path: str) -> str:
-    path = str(value or "").strip().replace("\\", "/")
+    path = normalize_windows_extended_prefix_text(value)
     if not path:
         return ""
+    path = path.replace("\\", "/")
     while path.startswith("./"):
         path = path[2:]
     if path == "/workspace":
@@ -779,7 +781,7 @@ def normalize_workspace_relative_path(value: Any, workspace_path: str) -> str:
     if path.startswith("/workspace/"):
         return path[len("/workspace/") :].lstrip("/")
 
-    workspace = str(Path(workspace_path).expanduser().resolve()).replace("\\", "/").rstrip("/")
+    workspace = normalize_windows_extended_prefix_text(Path(workspace_path).expanduser().resolve()).rstrip("/")
     if path == workspace:
         return ""
     if path.startswith(workspace + "/"):

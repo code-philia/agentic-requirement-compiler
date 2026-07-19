@@ -5,12 +5,12 @@ import json
 import os
 import re
 import time
-from urllib.parse import urlparse
 from typing import Any, Awaitable, Callable
 
 from pydantic import BaseModel
 
 from agents.context import AgentRuntimeContext
+from agents.openai_api_adapter import should_disable_streaming_for_openai_mode
 from tools.logging import format_json_for_log, log_to_logger
 
 
@@ -682,19 +682,7 @@ def _should_stream(stream: bool | None) -> bool:
 
 
 def _should_disable_streaming_for_responses_api() -> bool:
-    force = os.environ.get("ARC_AGENT_FORCE_RESPONSES_STREAM", "").strip().lower()
-    if force in {"1", "true", "yes", "on"}:
-        return False
-    override = os.environ.get("ARC_USE_RESPONSES_API", "").strip().lower()
-    if override in {"0", "false", "no", "off"}:
-        return False
-    base_url = os.environ.get("OPENAI_API_BASE", "").strip() or os.environ.get("OPENAI_BASE_URL", "").strip()
-    if not base_url:
-        return False
-    host = urlparse(base_url).hostname or ""
-    if host == "api.openai.com" or host.endswith(".openai.com"):
-        return False
-    return True
+    return should_disable_streaming_for_openai_mode()
 
 
 def _should_use_sync_stream_v3() -> bool:

@@ -8,11 +8,13 @@ from urllib.parse import urlparse
 from deepagents import FilesystemPermission, HarnessProfile, create_deep_agent, register_harness_profile
 from deepagents.backends import CompositeBackend, FilesystemBackend, LocalShellBackend, StateBackend
 from deepagents._models import get_model_provider
+from deepagents.backends.filesystem import _raise_if_symlink_loop
 from langchain.agents.middleware.types import AgentMiddleware
 from pydantic import BaseModel, Field, create_model
 
 from agents.context import AgentRuntimeContext
 from agents.model_factory import create_arc_chat_model
+from core.path_compat import normalize_windows_extended_prefix_path, normalize_windows_extended_prefix_text
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -24,6 +26,7 @@ if TYPE_CHECKING:
 WORKSPACE_PREFIX = "/workspace"
 SKILLS_PREFIX = "/skills"
 DISABLED_BUILTIN_TOOLS = frozenset({"write_todos"})
+_WINDOWS_PATH_COMPAT_APPLIED = False
 
 
 class OpenAIGlobSchema(BaseModel):
@@ -87,6 +90,7 @@ def build_stage_agent(
 ):
     """Create a deep-agent instance with ARC's first-batch filesystem policy."""
 
+    _apply_windows_filesystem_path_compat()
     root = Path(workspace_root).expanduser().resolve()
     routes = {
         f"{WORKSPACE_PREFIX}/": LocalShellBackend(
@@ -217,6 +221,50 @@ def _resolve_response_format(response_format: object | None) -> object | None:
     if base_url and not _is_openai_base_url(base_url):
         return None
     return response_format
+
+
+def _apply_windows_filesystem_path_compat() -> None:
+    """Normalize Windows extended-length paths before deepagents containment checks."""
+
+    global _WINDOWS_PATH_COMPAT_APPLIED
+    if _WINDOWS_PATH_COMPAT_APPLIED or os.name != "nt":
+        return
+
+    original_resolve_path = FilesystemBackend._resolve_path
+    original_to_virtual_path = FilesystemBackend._to_virtual_path
+
+    def _resolve_path_with_windows_compat(self: FilesystemBackend, key: str) -> Path:
+        if not getattr(self, "virtual_mode", False):
+            return original_resolve_path(self, key)
+
+        raw_key = normalize_windows_extended_prefix_text(key)
+        vpath = raw_key if raw_key.startswith("/") else "/" + raw_key
+        if ".." in vpath or vpath.startswith("~"):
+            raise ValueError("Path traversal not allowed")
+
+        full = normalize_windows_extended_prefix_path((self.cwd / vpath.lstrip("/")).resolve())
+        cwd = normalize_windows_extended_prefix_path(self.cwd)
+        try:
+            full.relative_to(cwd)
+        except ValueError:
+            msg = f"Path:{full} outside root directory: {cwd}"
+            raise ValueError(msg) from None
+        _raise_if_symlink_loop(full)
+        return full
+
+    def _to_virtual_path_with_windows_compat(self: FilesystemBackend, path: Path) -> str:
+        if not getattr(self, "virtual_mode", False):
+            return original_to_virtual_path(self, path)
+
+        full = normalize_windows_extended_prefix_path(path.resolve())
+        cwd = normalize_windows_extended_prefix_path(self.cwd)
+        return "/" + full.relative_to(cwd).as_posix()
+
+    FilesystemBackend._resolve_path = _resolve_path_with_windows_compat  # type: ignore[method-assign]
+    FilesystemBackend._to_virtual_path = _to_virtual_path_with_windows_compat  # type: ignore[method-assign]
+    LocalShellBackend._resolve_path = _resolve_path_with_windows_compat  # type: ignore[method-assign]
+    LocalShellBackend._to_virtual_path = _to_virtual_path_with_windows_compat  # type: ignore[method-assign]
+    _WINDOWS_PATH_COMPAT_APPLIED = True
 
 
 def _is_openai_base_url(base_url: str) -> bool:
