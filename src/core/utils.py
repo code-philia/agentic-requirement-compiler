@@ -775,10 +775,22 @@ def print_cli_startup(
     log_path: str | None,
     web_port: int | None = None,
     resume_from_queue: bool = False,
+    retry_failed: bool = False,
+    retry_node_ids: list[str] | None = None,
+    model_api_mode: str | None = None,
 ) -> None:
     from app_type_handler import read_stack_summary
 
-    mode_label = "resume-compilation" if resume_from_queue else ("clear-and-recompile" if clear_all else "start-compilation")
+    if retry_failed:
+        mode_label = "retry-failed"
+    elif retry_node_ids:
+        mode_label = "retry-selected"
+    elif resume_from_queue:
+        mode_label = "resume-compilation"
+    elif clear_all:
+        mode_label = "clear-and-recompile"
+    else:
+        mode_label = "start-compilation"
     requirement_name = Path(requirement_path).parent.name or "requirements"
     view_label = "debug" if ARC_DEBUG_ENABLED else "progress"
     print("")
@@ -787,8 +799,14 @@ def print_cli_startup(
     print(f"   {Fore.CYAN}input     {Style.RESET_ALL}{requirement_name}")
     print(f"   {Fore.CYAN}output    {Style.RESET_ALL}{project_path}")
     print(f"   {Fore.CYAN}target    {Style.RESET_ALL}{app_type}")
+    if retry_failed:
+        print(f"   {Fore.CYAN}retry     {Style.RESET_ALL}all failed nodes")
+    elif retry_node_ids:
+        print(f"   {Fore.CYAN}retry     {Style.RESET_ALL}{', '.join(retry_node_ids)}")
     if app_type == "web" and web_port is not None:
         print(f"   {Fore.CYAN}port      {Style.RESET_ALL}{web_port}")
+    if model_api_mode:
+        print(f"   {Fore.CYAN}model api {Style.RESET_ALL}{model_api_mode}")
     print(f"   {Fore.CYAN}stack     {Style.RESET_ALL}{read_stack_summary(project_path, app_type)}")
     print(f"   {Fore.CYAN}view      {Style.RESET_ALL}{view_label}")
     if log_path:

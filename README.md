@@ -103,6 +103,7 @@ Minimal `.env` example:
 OPENAI_API_KEY=your-api-key
 OPENAI_BASE_URL=https://api.openai.com/v1
 MODEL=your-model
+ARC_OPENAI_API_MODE=responses
 ```
 
 Optional visual-model and debug configuration:
@@ -162,14 +163,46 @@ arc-agent /path/to/my-requirement-dir --app-type web
 | `requirement_path` | Requirement directory containing `requirements.yaml` |
 | `--output-dir` | Output workspace directory. Defaults to `<repo_root>/workspace/run-<timestamp>` |
 | `--clear-all` | Clears the output workspace and recopies the requirement input before recompiling |
-| `--app-type` | `web` or `android` |
+| `--retry-failed` | Retry all failed nodes in the existing queue without clearing the workspace |
+| `--retry-node` | Retry only the specified node IDs in the existing queue |
+| `--app-type` | `web`, `android`, or `cli` |
 | `--web-port` | Backend port for generated web applications |
+| `--model-api-mode` | OpenAI-compatible API mode: `responses` or `chat_completions` |
 
 #### Runtime behavior
 
 - ARC copies the requirement directory into `<output-dir>/requirements/`
 - Compilation executes inside `output-dir`
 - If `--clear-all` is not used and `.arc/processing_queue.json` already exists, ARC resumes from that workspace
+
+#### Partial failure recovery
+
+ARC now supports retrying failed nodes in an existing workspace without wiping generated code.
+
+- `--retry-failed` retries every node whose queue state is `FAILED`
+- `--retry-node REQ-1 REQ-2` retries only the named nodes, including nodes that already passed
+- `--clear-all` cannot be combined with retry flags
+
+Retry semantics are phase-aware:
+
+- If a node's `DESIGN` task failed, ARC treats it as a design failure, resets both queue tasks for that node to `PENDING`, clears that node's design/test traceability artifacts, and restarts the node from `UNSEEN`
+- If a node's `IMPLEMENT` task failed while `DESIGN` completed, ARC treats it as an implement-only failure, keeps the design artifacts, resets only `IMPLEMENT` to `PENDING`, and restarts the node from `DESIGNED`
+- If a selected node is already completed, ARC restarts that node from `DESIGN` but preserves existing interfaces, tests, node-session artifacts, and implementation files so the agents can revise incrementally in the same workspace
+
+This distinction comes from the queue itself, not from a separate manual flag. The workflow checks the task statuses for the node and chooses the narrowest safe reset for that node.
+
+#### Model API mode
+
+ARC uses a model adapter for OpenAI-compatible providers. Select the request API explicitly when needed:
+
+```bash
+python src/main.py /path/to/my-requirement-dir --model-api-mode chat_completions
+```
+
+- `responses` uses the Responses API and is the default.
+- `chat_completions` uses Chat Completions for providers that do not support Responses.
+- `ARC_OPENAI_API_MODE` provides the same control from `.env`.
+- The legacy `ARC_USE_RESPONSES_API=false` flag is still accepted and maps to `chat_completions`.
 
 ## Visualization
 

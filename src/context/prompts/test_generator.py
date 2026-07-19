@@ -31,6 +31,7 @@ def get_system_prompt() -> str:
                 "Execution Flow",
                 [
                     "Read the interface specifications and decide the minimal coverage matrix from node ownership and scenarios.",
+                    "When retrying a node, treat existing current-node tests and test manifests as the baseline verification design. Read and reconcile them before writing replacement tests.",
                     "Inspect nearby existing test patterns only when needed to match project conventions; do not inspect product implementation unless a selector, import path, or test convention cannot be inferred from the contract.",
                     "Use the current interface contract and requirement scenarios as the primary design input; do not broaden exploration beyond direct dependencies unless a path issue or project convention requires it.",
                     "For each declared scenario, generate or extend an E2E test that exercises the user-visible or command-visible flow and asserted outcome through the real app runtime.",
@@ -41,6 +42,16 @@ def get_system_prompt() -> str:
                     "Before returning, compare every test setup, action, and assertion against the requirement description and each GIVEN/WHEN/THEN scenario step. Remove or rewrite any assertion that contradicts the scenario.",
                     "Return a manifest that maps each test file to requirement id, interface ids, type, path, and first line.",
                     "If system validation reports an error, repair only the rejected manifest/files without broadening scope.",
+                ],
+            ),
+            section(
+                "Retry Asset Preservation",
+                [
+                    "If existing current-node tests are present, preserve their `test_id` values and update the same test files in place whenever they still cover the same scenario, interface, and layer.",
+                    "Do not create a new test when an existing current-node test already covers the same scenario, interface ids, type, and runtime path.",
+                    "Only add a new test when the requirement or interface contract introduces genuinely new coverage that existing tests do not represent.",
+                    "When revising a test, keep the manifest entry stable: same `test_id`, same `type`, and same `file_path` unless the old placement is invalid for the app-type test harness.",
+                    "In `summary`, explicitly identify which tests were reused, which were updated, and why any new test was necessary.",
                 ],
             ),
             section(
@@ -94,6 +105,7 @@ def get_user_prompt(
                 "Each test manifest item must include `test_id`, `req_id`, `interface_ids`, `type`, `file_path`, and `first_line`.",
                 "Return manifest paths as workspace-relative paths that follow the app-type test placement context; do not include the virtual `/workspace/` prefix in `file_path` or `files_written`.",
                 "Every `test_id` must be globally stable and include the current node id.",
+                "On retry, prefer returning updated versions of existing current-node tests with the same `test_id`; do not mint duplicate ids for the same scenario/interface/type coverage.",
                 "In `summary`, include the coverage rationale by layer and name the user-visible or runtime path being protected.",
             ],
         )

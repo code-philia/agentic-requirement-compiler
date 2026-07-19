@@ -30,6 +30,7 @@ def get_system_prompt() -> str:
                 [
                     "Understand the node, dependencies, parent/child boundary, and prior artifacts.",
                     "Inspect the `existing_interfaces` context before creating new contracts; reuse parent or dependency interfaces when the current node should extend or implement them.",
+                    "When retrying a node, treat existing current-node interfaces and source skeletons as the baseline design. Read and reconcile them before proposing changes.",
                     "Inspect only directly relevant workspace files. Do not inventory the project.",
                     "Use the current requirement and any existing contract evidence to choose the smallest file set that can support one design hypothesis.",
                     "For non-leaf nodes, use the UI-only design skill and keep the scope to shell, layout, style, route-slot, and mount-point concerns. Do not read backend, database, test, or package files for UI-only design.",
@@ -41,6 +42,16 @@ def get_system_prompt() -> str:
                     "If an owned file is already roughly over 500 lines, do not place a new feature-sized skeleton inside it unless it is only a connector. Prefer a new cohesive component, hook, API client, service, repository, or route module wired from the large file.",
                     "Before returning, reflect on the interface graph: every new interface should have a clear caller/callee relation, owning file, downstream test target, and role in the eventual working app.",
                     "Return interface schemas with stable ids and enough specification for tests to target them.",
+                ],
+            ),
+            section(
+                "Retry Asset Preservation",
+                [
+                    "If existing current-node interfaces are present, preserve their `interface_id` values and update their responsibilities/specifications in place instead of creating replacement interfaces.",
+                    "Do not create a new interface when an existing current-node, parent, or dependency interface already covers the same file path, type, and responsibility.",
+                    "Only add a new interface when the requirement needs a genuinely new owned boundary that is not represented by existing contracts.",
+                    "When modifying an existing skeleton file, edit it incrementally and keep it aligned with the preserved interface id.",
+                    "In `summary`, explicitly identify which interfaces were reused, which were updated, and why any new interface was necessary.",
                 ],
             ),
             app_runtime_contract(),
@@ -78,6 +89,7 @@ def get_user_prompt(
                     "The `type` field must be exactly one of `UI`, `API`, `FUNC`, or `DB`.",
                     "Return schema paths as workspace-relative paths based on the project structure context; do not include the virtual `/workspace/` prefix in `file_path` or `files_written`.",
                     "New `interface_id` values must be globally stable and include the current node id. Reused interfaces should keep their existing `interface_id` so the system can attach the current node to the same traceability record.",
+                    "On retry, prefer returning updated versions of existing current-node interfaces with the same `interface_id`; do not mint duplicate ids for the same contract.",
                     "In `summary`, include a concise design rationale: owned boundary, reused interfaces, and how the chain remains connected to the app.",
                     "Do not return an empty interface list unless the node truly has no current-node owned contract to record; explain that case in `summary`.",
                 ],

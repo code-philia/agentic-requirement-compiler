@@ -9,6 +9,7 @@ from agents.interface_designer import InterfaceDesigner
 from agents.test_driven_developer import TestDrivenDeveloper
 from agents.test_generator import TestGenerator
 from app_type_handler import create_app_type_handler, normalize_app_type
+from context.context_pipeline import context_pipeline
 from core import utils
 from core.phases import WorkflowPhaseRunner
 from core.service import configure_runtime
@@ -181,6 +182,8 @@ class ARCWorkflowManager:
         *,
         clear_all: bool = False,
         resume_from_queue: bool = False,
+        retry_failed: bool = False,
+        retry_node_ids: list[str] | None = None,
     ) -> dict[str, Any]:
         await self._log("Compiler", "ARC compilation started.")
         if clear_all:
@@ -202,7 +205,11 @@ class ARCWorkflowManager:
                 return {"ok": False, "failed_nodes": []}
             self.runtime.events.mark_run_started("ARC compilation run started.")
 
-        result = await self.compile_requirement_tree(requirement_tree)
+        result = await self.compile_requirement_tree(
+            requirement_tree,
+            retry_failed=retry_failed,
+            retry_node_ids=retry_node_ids,
+        )
         if result.get("ok"):
             self.runtime.events.mark_run_completed("ARC compilation completed.")
             await self._log("Compiler", "Compilation finished successfully.")
@@ -216,16 +223,31 @@ class ARCWorkflowManager:
             )
         return result
 
-    async def compile_requirement_tree(self, requirement_tree: dict[str, Any]) -> dict[str, Any]:
+    async def compile_requirement_tree(
+        self,
+        requirement_tree: dict[str, Any],
+        *,
+        retry_failed: bool = False,
+        retry_node_ids: list[str] | None = None,
+    ) -> dict[str, Any]:
         root_id = str(requirement_tree.get("id") or "").strip()
         if not root_id:
             await self._log("Compiler", "Requirement root node id is missing.", "error")
             return {"ok": False, "failed_nodes": []}
 
         self.runtime.traceability.store_requirement_tree(requirement_tree)
-        queue_state = self._load_or_create_processing_queue(requirement_tree)
+        retry_requested = retry_failed or bool(retry_node_ids)
+        queue_state = self._load_or_create_processing_queue(
+            requirement_tree,
+            require_compatible_existing_queue=retry_requested,
+        )
         self._sync_queue_node_states(queue_state)
         recovered_tasks = self._recover_interrupted_queue(queue_state)
+        retry_plan = self._apply_retry_plan(
+            queue_state,
+            retry_failed=retry_failed,
+            retry_node_ids=retry_node_ids,
+        )
         self._save_processing_queue(queue_state)
         for recovered in recovered_tasks:
             await self._log(
@@ -236,6 +258,13 @@ class ARCWorkflowManager:
                 ),
                 status="warning",
                 node_id=recovered["node_id"],
+            )
+        for node_id in retry_plan:
+            await self._log(
+                "Compiler",
+                f"Queued node {node_id} for retry using the existing workspace and traceability artifacts.",
+                status="warning",
+                node_id=node_id,
             )
         await self._log(
             "Compiler",
@@ -288,7 +317,12 @@ class ARCWorkflowManager:
 
         return self._build_compile_result(queue_state)
 
-    def _load_or_create_processing_queue(self, requirement_tree: dict[str, Any]) -> dict[str, Any]:
+    def _load_or_create_processing_queue(
+        self,
+        requirement_tree: dict[str, Any],
+        *,
+        require_compatible_existing_queue: bool = False,
+    ) -> dict[str, Any]:
         os.makedirs(self.arc_dir, exist_ok=True)
         root_id = str(requirement_tree.get("id", ""))
         expected_tasks = self._build_processing_tasks(requirement_tree)
@@ -302,6 +336,10 @@ class ARCWorkflowManager:
                 queue_state["node_states"].setdefault(node_id, NODE_UNSEEN)
             self._apply_saved_states_to_tasks(queue_state)
             return queue_state
+        if require_compatible_existing_queue:
+            raise ValueError(
+                "Retry requested, but the existing processing queue is missing or incompatible with the current requirement tree."
+            )
         queue_state = {
             "root_id": root_id,
             "tasks": expected_tasks,
@@ -416,6 +454,137 @@ class ARCWorkflowManager:
         for task in queue_state["tasks"]:
             if task["node_id"] == node_id and task["status"] in {TASK_PENDING, TASK_RUNNING}:
                 task["status"] = TASK_FAILED
+
+    def _apply_retry_plan(
+        self,
+        queue_state: dict[str, Any],
+        *,
+        retry_failed: bool = False,
+        retry_node_ids: list[str] | None = None,
+    ) -> list[str]:
+        requested_ids: list[str] = []
+        if retry_failed:
+            requested_ids = [
+                node_id
+                for node_id, state in queue_state.get("node_states", {}).items()
+                if str(state or "").strip().upper() == NODE_FAILED
+            ]
+        elif retry_node_ids:
+            requested_ids = [str(node_id).strip() for node_id in retry_node_ids if str(node_id).strip()]
+
+        requested_ids = list(dict.fromkeys(requested_ids))
+        if not requested_ids:
+            return []
+
+        known_ids = set(queue_state.get("node_states", {}).keys())
+        unknown_ids = [node_id for node_id in requested_ids if node_id not in known_ids]
+        if unknown_ids:
+            raise ValueError(f"Retry requested for unknown node id(s): {', '.join(unknown_ids)}")
+
+        for node_id in requested_ids:
+            self._reset_node_for_retry(queue_state, node_id)
+
+        queue_state["last_task_id"] = None
+        queue_state["retry_plan"] = {"requested_node_ids": requested_ids, "retry_failed": bool(retry_failed)}
+        return requested_ids
+
+    def _reset_node_for_retry(self, queue_state: dict[str, Any], node_id: str) -> str:
+        design_task = None
+        implement_task = None
+        for task in queue_state["tasks"]:
+            if task["node_id"] != node_id:
+                continue
+            if task["phase"] == PHASE_DESIGN:
+                design_task = task
+            elif task["phase"] == PHASE_IMPLEMENT:
+                implement_task = task
+        if design_task is None or implement_task is None:
+            raise ValueError(f"Retry requested for node {node_id}, but its queue tasks are incomplete.")
+
+        design_status = str(design_task.get("status") or "").strip().upper()
+        implement_status = str(implement_task.get("status") or "").strip().upper()
+        design_failed = design_status == TASK_FAILED
+        implement_failed = implement_status == TASK_FAILED
+
+        if design_failed or design_status != TASK_COMPLETED:
+            self._reset_node_from_design_retry(queue_state, node_id, design_task, implement_task)
+            return "design"
+
+        if implement_failed:
+            self._reset_node_from_implement_retry(queue_state, node_id, design_task, implement_task)
+            return "implement"
+
+        self._reset_node_for_full_retry(queue_state, node_id, design_task, implement_task)
+        return "design"
+
+    def _reset_node_from_design_retry(
+        self,
+        queue_state: dict[str, Any],
+        node_id: str,
+        design_task: dict[str, Any],
+        implement_task: dict[str, Any],
+    ) -> None:
+        design_task["status"] = TASK_PENDING
+        implement_task["status"] = TASK_PENDING
+        self.runtime.traceability.clear_node_design_artifacts(node_id)
+        self.runtime.traceability.reset_test_pass_statuses_for_requirement(node_id)
+        self._set_node_state(queue_state["node_states"], node_id, NODE_UNSEEN)
+        utils.merge_node_session(
+            node_id,
+            {
+                "interfaces": [],
+                "materialized_files": [],
+                "test_artifacts": [],
+                "recent_failure_summary": "",
+                "phase_status": {"design": "pending", "test": "pending", "implement": "pending"},
+                "resume_context": {},
+                "result_state": "",
+            },
+        )
+        context_pipeline.cache.invalidate_file_layers(node_id)
+        context_pipeline.cache.invalidate_db_layers(node_id)
+
+    def _reset_node_from_implement_retry(
+        self,
+        queue_state: dict[str, Any],
+        node_id: str,
+        design_task: dict[str, Any],
+        implement_task: dict[str, Any],
+    ) -> None:
+        design_task["status"] = TASK_COMPLETED
+        implement_task["status"] = TASK_PENDING
+        self.runtime.traceability.reset_test_pass_statuses_for_requirement(node_id)
+        self._set_node_state(queue_state["node_states"], node_id, NODE_DESIGNED)
+        utils.merge_node_session(
+            node_id,
+            {
+                "phase_status": {"implement": "pending"},
+                "resume_context": {},
+                "result_state": "",
+            },
+        )
+        context_pipeline.cache.invalidate_db_layers(node_id)
+
+    def _reset_node_for_full_retry(
+        self,
+        queue_state: dict[str, Any],
+        node_id: str,
+        design_task: dict[str, Any],
+        implement_task: dict[str, Any],
+    ) -> None:
+        design_task["status"] = TASK_PENDING
+        implement_task["status"] = TASK_PENDING
+        self._set_node_state(queue_state["node_states"], node_id, NODE_UNSEEN)
+        utils.merge_node_session(
+            node_id,
+            {
+                "phase_status": {"design": "pending", "test": "pending", "implement": "pending"},
+                "resume_context": {},
+                "result_state": "",
+                "recent_failure_summary": "",
+            },
+        )
+        context_pipeline.cache.invalidate_db_layers(node_id)
 
     async def _run_task(self, task: dict[str, Any]) -> bool:
         node_id = task["node_id"]
