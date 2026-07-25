@@ -7,6 +7,6 @@ AGENTS.md
 __pycache__
 *.db
 .env
+arc_compiler.egg-info
 
-arc_agent.egg-info
 build

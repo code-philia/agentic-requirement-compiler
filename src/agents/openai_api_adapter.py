@@ -148,19 +148,14 @@ def resolve_openai_adapter_config(
 def resolve_openai_api_mode(api_mode: str | None = None) -> OpenAIAPIMode:
     requested = str(api_mode or os.getenv("ARC_OPENAI_API_MODE", "")).strip().lower()
     if not requested:
-        legacy = os.getenv("ARC_USE_RESPONSES_API", "").strip().lower()
-        if legacy in _TRUTHY:
-            return "responses"
-        if legacy in _FALSY:
-            return "chat_completions"
+        return "chat_completions"
+    if requested in _TRUTHY or requested in {"responses"}:
         return "responses"
-    if requested in _TRUTHY:
-        return "responses"
-    if requested in _FALSY:
+    if requested in _FALSY or requested in {"chat_completions", "chat"}:
         return "chat_completions"
     raise ValueError(
         "Invalid OpenAI API mode. Use `responses` or `chat_completions` "
-        "(aliases: `chat`, `chat/completions`)."
+        "(aliases: true/false for responses, chat for chat_completions)."
     )
 
 

@@ -3,9 +3,9 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "arc-agent"
-version = "0.1.0"
-description = "Agentic Requirement Compiler CLI agent"
+name = "arc-compiler"
+version = "1.1.0"
+description = "Agentic Requirement Compiler"
 requires-python = ">=3.11"
 dependencies = [
   "aiofiles",
@@ -15,7 +15,6 @@ dependencies = [
   "pyyaml",
   "pydantic",
   "colorama",
-  "click",
   "jsonschema",
   "tiktoken",
   "httpx[socks]",
@@ -24,20 +23,10 @@ dependencies = [
 ]
 
 [project.scripts]
-arc-agent = "arc_agent_cli:main"
+arc = "main:main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}
-py-modules = [
-  "agent_workflow",
-  "arc_agent_cli",
-  "main",
-  "runtime_sdk",
-  "structured_output",
-  "utils",
-  "workflow_phase_utils",
-  "workflow_phases",
-]
 include-package-data = true
 
 [tool.setuptools.packages.find]
@@ -53,16 +42,9 @@ include = [
   "context.*",
   "core",
   "core.*",
-  "memory",
-  "memory.*",
-  "prompts",
-  "prompts.*",
-  "templates",
-  "templates.*",
   "tools",
   "tools.*",
 ]
-namespaces = true
 
 [tool.setuptools.package-data]
 templates = ["**/*", "**/.*"]
