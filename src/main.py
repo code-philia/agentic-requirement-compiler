@@ -4,12 +4,21 @@ import argparse
 import asyncio
 import os
 import shutil
+import sys
 import time
-import tempfile
 from dataclasses import dataclass
+from pathlib import Path
 
 from app_type_handler import list_app_types, normalize_app_type
-from core.utils import cli_log, init_debug_logger, print_cli_banner, print_cli_startup, set_web_port, stop_cli_spinner
+from core.utils import (
+    cli_log,
+    init_debug_logger,
+    print_cli_banner,
+    print_cli_startup,
+    print_compilation_summary,
+    set_web_port,
+    stop_cli_spinner,
+)
 from core.workflow import ARCWorkflowManager
 
 
@@ -31,152 +40,150 @@ def _get_repo_root() -> str:
     return os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 
 
-def _build_default_output_dir() -> str:
-    timestamp = time.strftime("%Y%m%d-%H%M%S")
-    return os.path.join(_get_repo_root(), "workspace", f"run-{timestamp}")
+def _ensure_dotenv_loaded() -> None:
+    """Load .env file if present, respecting ARC_ENV_FILE override."""
+    from dotenv import load_dotenv
+
+    custom_env = os.environ.get("ARC_ENV_FILE", "").strip()
+    if custom_env and os.path.isfile(custom_env):
+        load_dotenv(custom_env, override=False)
+        return
+
+    repo_root = _get_repo_root()
+    default_env = os.path.join(repo_root, ".env")
+    if os.path.isfile(default_env):
+        load_dotenv(default_env, override=False)
 
 
-def _resolve_requirement_dir(path: str) -> str:
-    normalized = os.path.abspath(path)
-    if not os.path.isdir(normalized):
-        raise FileNotFoundError(f"Requirement directory does not exist: {normalized}")
-    requirement_file = os.path.join(normalized, "requirements.yaml")
-    if not os.path.isfile(requirement_file):
-        raise FileNotFoundError(f"Requirement directory must contain requirements.yaml: {normalized}")
-    return normalized
+def _locate_requirement_file(input_path: str) -> tuple[str, str, str]:
+    """
+    Locate requirements.yaml given an input path.
+    Returns: (requirement_dir, requirement_path, requirement_name)
+    """
+    abs_input = os.path.abspath(input_path)
+
+    if os.path.isfile(abs_input):
+        if not abs_input.endswith((".yaml", ".yml")):
+            raise ValueError(f"Input file must be .yaml or .yml: {abs_input}")
+        requirement_dir = os.path.dirname(abs_input)
+        requirement_path = abs_input
+        requirement_name = os.path.basename(abs_input)
+        return requirement_dir, requirement_path, requirement_name
+
+    if os.path.isdir(abs_input):
+        # Input directory should directly contain requirements.yaml
+        candidates = ["requirements.yaml", "requirements.yml"]
+        for candidate in candidates:
+            candidate_path = os.path.join(abs_input, candidate)
+            if os.path.isfile(candidate_path):
+                return abs_input, candidate_path, candidate
+        raise FileNotFoundError(f"No requirements.yaml found in {abs_input}")
+
+    raise FileNotFoundError(f"Input path not found: {abs_input}")
 
 
-def _reset_directory(path: str) -> None:
-    if os.path.isdir(path):
-        shutil.rmtree(path, ignore_errors=True)
-    os.makedirs(path, exist_ok=True)
-
-
-def _copy_requirement_dir_contents(requirement_dir: str, output_dir: str) -> None:
-    target_requirements_dir = os.path.join(output_dir, "requirements")
-    os.makedirs(target_requirements_dir, exist_ok=True)
-    for entry in os.listdir(requirement_dir):
-        src = os.path.join(requirement_dir, entry)
-        dst = os.path.join(target_requirements_dir, entry)
-        if os.path.isdir(src):
-            shutil.copytree(src, dst, dirs_exist_ok=True)
-        else:
-            os.makedirs(os.path.dirname(dst), exist_ok=True)
-            shutil.copy2(src, dst)
-
-
-def _is_relative_to(path: str, parent: str) -> bool:
-    try:
-        os.path.commonpath([os.path.abspath(path), os.path.abspath(parent)]) == os.path.abspath(parent)
-    except ValueError:
-        return False
-    return os.path.commonpath([os.path.abspath(path), os.path.abspath(parent)]) == os.path.abspath(parent)
-
-
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Run ARC agent workflow from the command line.")
+# ============================================================
+# Subcommand: compile
+# ============================================================
+def build_compile_parser(subparsers) -> None:
+    parser = subparsers.add_parser(
+        "compile",
+        help="Compile requirements into a working application",
+        description="Run ARC compilation from requirement tree to interfaces, tests, and implementation.",
+    )
     parser.add_argument(
         "requirement_path",
-        help="Requirement directory containing requirements.yaml and optional reference/ assets. Its contents will be copied into output-dir/requirements/ before compilation.",
+        help="Path to requirements directory or .yaml file",
     )
     parser.add_argument(
+        "-o",
         "--output-dir",
-        help="Output workspace directory. Defaults to <repo_root>/workspace/run-<timestamp>.",
+        required=True,
+        help="Output workspace directory",
     )
     parser.add_argument(
-        "--clear-all",
-        action="store_true",
-        help="Reset the output directory before copying the requirement directory and recompiling.",
+        "-t",
+        "--type",
+        dest="app_type",
+        default="web",
+        help=f"Application type (choices: {', '.join(list_app_types())})",
     )
-    retry_group = parser.add_mutually_exclusive_group()
-    retry_group.add_argument(
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=3301,
+        help="Web server port (only for app-type=web, default: 3301)",
+    )
+    parser.add_argument(
+        "--clean",
+        action="store_true",
+        help="Remove existing output directory before compilation",
+    )
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        help="Resume from saved compilation queue",
+    )
+    parser.add_argument(
         "--retry-failed",
         action="store_true",
-        help="Retry all failed nodes in the existing queue without clearing the workspace.",
+        help="Retry all failed nodes from previous run (requires --resume)",
     )
-    retry_group.add_argument(
-        "--retry-node",
+    parser.add_argument(
+        "--retry",
         nargs="+",
         metavar="NODE_ID",
-        help="Retry only the specified node ids in the existing queue.",
+        help="Retry specific node IDs (requires --resume)",
     )
-    parser.add_argument(
-        "--app-type",
-        choices=list_app_types(),
-        default="web",
-        help="Application type for runtime stack context.",
-    )
-    parser.add_argument(
-        "--web-port",
-        type=int,
-        default=3000,
-        help="Single backend port for web apps. Ignored by non-web app types.",
-    )
-    parser.add_argument(
-        "--model-api-mode",
-        choices=["responses", "chat_completions"],
-        help="OpenAI-compatible model API mode. Defaults to ARC_OPENAI_API_MODE or responses.",
-    )
-    return parser.parse_args()
+    parser.set_defaults(func=cmd_compile)
 
 
-def prepare_config(args: argparse.Namespace) -> CompilationConfig:
-    normalized_output_dir = os.path.abspath(args.output_dir) if args.output_dir else _build_default_output_dir()
-    normalized_requirement_dir = _resolve_requirement_dir(args.requirement_path)
+async def cmd_compile(args: argparse.Namespace) -> int:
+    """Execute compile subcommand."""
+    _ensure_dotenv_loaded()
+    
+    # Validate mutual exclusivity
+    if args.clean and args.resume:
+        print("Error: --clean and --resume are mutually exclusive")
+        return 2
+    if (args.retry_failed or args.retry) and not args.resume:
+        print("Error: --retry-failed and --retry require --resume")
+        return 2
+    if args.retry_failed and args.retry:
+        print("Error: --retry-failed and --retry are mutually exclusive")
+        return 2
+    
+    # Normalize paths
+    requirement_dir, requirement_path, _ = _locate_requirement_file(args.requirement_path)
+    output_dir = os.path.abspath(args.output_dir)
+    
+    # Handle --clean
+    if args.clean and os.path.exists(output_dir):
+        shutil.rmtree(output_dir)
+    
+    # Normalize app type
     normalized_app_type = normalize_app_type(args.app_type)
-    retry_node_ids = [str(node_id).strip() for node_id in (args.retry_node or []) if str(node_id).strip()]
-
-    if args.clear_all and (args.retry_failed or retry_node_ids):
-        raise ValueError("--clear-all cannot be combined with retry options.")
-
-    web_port = int(args.web_port)
-    if normalized_app_type == "web" and (web_port < 1 or web_port > 65535):
-        raise ValueError(f"Web port must be between 1 and 65535, got: {web_port}")
-
-    if normalized_app_type == "web":
-        set_web_port(web_port)
-    model_api_mode = str(args.model_api_mode or "").strip() or None
-    if model_api_mode:
-        os.environ["ARC_OPENAI_API_MODE"] = model_api_mode
-    queue_path = os.path.join(normalized_output_dir, ".arc", "processing_queue.json")
-    resume_from_queue = (not args.clear_all) and os.path.exists(queue_path)
-    retry_requested = bool(args.retry_failed or retry_node_ids)
-    if retry_requested and not resume_from_queue:
-        raise FileNotFoundError(
-            f"Retry requires an existing queue in the output workspace: {queue_path}"
-        )
-
-    if not resume_from_queue:
-        staged_requirement_dir = normalized_requirement_dir
-        with tempfile.TemporaryDirectory(prefix="arc-agent-requirements-") as temp_dir:
-            if _is_relative_to(normalized_requirement_dir, normalized_output_dir):
-                staged_requirement_dir = os.path.join(temp_dir, "requirements")
-                shutil.copytree(normalized_requirement_dir, staged_requirement_dir, dirs_exist_ok=True)
-            _reset_directory(normalized_output_dir)
-            _copy_requirement_dir_contents(staged_requirement_dir, normalized_output_dir)
-
-    normalized_requirement_path = os.path.join(normalized_output_dir, "requirements", "requirements.yaml")
-    if not os.path.isfile(normalized_requirement_path):
-        raise FileNotFoundError(
-            f"Copied requirement workspace is missing requirements.yaml: {normalized_requirement_path}"
-        )
-
-    return CompilationConfig(
-        output_dir=normalized_output_dir,
-        requirement_dir=normalized_requirement_dir,
-        requirement_path=normalized_requirement_path,
-        user_requested_clear_all=args.clear_all,
+    
+    # Set web port
+    set_web_port(args.port)
+    
+    # Model API mode
+    model_api_mode = os.environ.get("ARC_OPENAI_API_MODE", "").strip() or None
+    
+    config = CompilationConfig(
+        output_dir=output_dir,
+        requirement_dir=requirement_dir,
+        requirement_path=requirement_path,
+        user_requested_clear_all=args.clean,
         app_type=normalized_app_type,
-        web_port=web_port,
-        resume_from_queue=resume_from_queue,
-        retry_failed=bool(args.retry_failed),
-        retry_node_ids=retry_node_ids or None,
+        web_port=args.port,
+        resume_from_queue=args.resume,
+        retry_failed=args.retry_failed,
+        retry_node_ids=args.retry or None,
         model_api_mode=model_api_mode,
     )
-
-
-async def run() -> None:
-    config = prepare_config(parse_args())
+    
+    # Print banner and startup info
     print_cli_banner()
     log_path = init_debug_logger(config.output_dir, reset_existing=not config.resume_from_queue)
     print_cli_startup(
@@ -191,6 +198,9 @@ async def run() -> None:
         retry_node_ids=config.retry_node_ids,
         model_api_mode=config.model_api_mode,
     )
+    
+    # Run compilation
+    start_time = time.time()
     try:
         workflow_manager = ARCWorkflowManager(
             workspace_path=config.output_dir,
@@ -199,7 +209,7 @@ async def run() -> None:
             web_port=config.web_port,
             log_cb=cli_log,
         )
-        await workflow_manager.start_compilation(
+        result = await workflow_manager.start_compilation(
             clear_all=False,
             resume_from_queue=config.resume_from_queue,
             retry_failed=config.retry_failed,
@@ -207,10 +217,92 @@ async def run() -> None:
         )
     finally:
         stop_cli_spinner()
+    
+    elapsed = time.time() - start_time
+    print_compilation_summary(result, config.output_dir, elapsed)
+    
+    return 0 if result.get("ok") else 1
+
+
+# ============================================================
+# Subcommand: doctor
+# ============================================================
+def build_doctor_parser(subparsers) -> None:
+    build_config_parser(subparsers)
+    parser = subparsers.add_parser(
+        "doctor",
+        help="Check ARC configuration and environment",
+        description="Validate configuration, check dependencies, and diagnose common issues.",
+    )
+    parser.set_defaults(func=cmd_doctor)
+
+
+def cmd_doctor(args: argparse.Namespace) -> int:
+    """Execute doctor subcommand."""
+    _ensure_dotenv_loaded()
+    from config_validator import print_health_check
+    return print_health_check()
+
+
+# ============================================================
+# Subcommand: init
+# ============================================================
+
+# ============================================================
+# Subcommand: config
+# ============================================================
+def build_config_parser(subparsers) -> None:
+    parser = subparsers.add_parser(
+        "config",
+        help="Configure ARC interactively",
+        description="Create or update .env file with core configuration.",
+    )
+    parser.set_defaults(func=cmd_config)
+
+
+def cmd_config(args: argparse.Namespace) -> int:
+    """Execute config subcommand."""
+    from config_validator import interactive_config_setup
+    return interactive_config_setup()
+
+
+# ============================================================
+# Main CLI entry
+# ============================================================
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="arc",
+        description="ARC: Agentic Requirement Compiler",
+    )
+    parser.add_argument(
+        "--version",
+        action="version",
+        version="ARC 1.1.0",
+    )
+    
+    subparsers = parser.add_subparsers(
+        dest="command",
+        required=True,
+        help="Available commands",
+    )
+    
+    build_compile_parser(subparsers)
+    build_doctor_parser(subparsers)
+    
+    return parser
 
 
 def main() -> None:
-    asyncio.run(run())
+    parser = build_parser()
+    args = parser.parse_args()
+    
+    # Call subcommand handler
+    if asyncio.iscoroutinefunction(args.func):
+        exit_code = asyncio.run(args.func(args))
+    else:
+        exit_code = args.func(args)
+    
+    sys.exit(exit_code)
 
 
 if __name__ == "__main__":

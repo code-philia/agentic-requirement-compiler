@@ -68,50 +68,67 @@ Additional requirements for Android generation:
 
 ### Installation
 
-The example below uses `uv`.
-
 ```bash
+# Clone the repository
 git clone https://github.com/your-org/agentic-requirement-compiler.git
 cd agentic-requirement-compiler
 
+# Create and activate virtual environment
 uv venv
+source .venv/bin/activate  # On Linux/macOS
+# .venv\Scripts\Activate.ps1  # On Windows PowerShell
 
-# Activate on Windows PowerShell:
-.venv\Scripts\Activate.ps1
-
-# Activate on Linux / macOS:
-source .venv/bin/activate
-
-# Install dependencies:
-uv pip install -r src/requirements.txt
+# Install ARC
 uv pip install -e .
 ```
 
-Installing with `-e .` from the repository root exposes the `arc-agent` CLI entrypoint defined in the root `pyproject.toml`.
+After installation, the `arc` command will be available in your virtual environment.
+
+**Verify installation:**
+```bash
+arc --version
+arc --help
+```
 
 ### Configuration
 
-ARC reads configuration in this order:
+**Quick setup (recommended):**
 
-1. Existing shell environment variables from the current terminal session
-2. `ARC_ENV_FILE` if you explicitly point to an env file
-3. `<repo_root>/.env`
-
-Minimal `.env` example:
-
-```dotenv
-OPENAI_API_KEY=your-api-key
-OPENAI_BASE_URL=https://api.openai.com/v1
-MODEL=your-model
-ARC_OPENAI_API_MODE=responses
+```bash
+arc config
 ```
 
-Optional visual-model and debug configuration:
+This will interactively prompt you for required configuration values and create/update `.env`.
 
-```dotenv
-VISUAL_API_KEY=your-visual-api-key
-VISUAL_BASE_URL=https://api.openai.com/v1
-VISUAL_MODEL=your-visual-model
+**Manual setup:**
+
+Copy `.env_example` to `.env` and fill in your API credentials:
+
+```bash
+cp .env_example .env
+```
+
+Edit `.env` with your configuration:
+
+```bash
+# Required
+OPENAI_API_KEY=sk-your-api-key-here
+OPENAI_BASE_URL=https://api.openai.com/v1
+MODEL=gpt-5.6
+ARC_OPENAI_API_MODE=responses
+
+# Optional: Visual analysis
+VISUAL_API_KEY=
+VISUAL_BASE_URL=
+VISUAL_MODEL=
+
+# Optional: Debug mode
+ARC_DEBUG=0
+```
+
+**Validate configuration:**
+```bash
+arc doctor
 ```
 
 ### Input: Requirement Model
@@ -144,34 +161,45 @@ my-requirement-dir
     `-- homepage.png
 ```
 
-Run ARC from the repository root with Python:
+**Basic usage:**
 
 ```bash
-python src/main.py /path/to/my-requirement-dir --app-type web
+arc compile /path/to/my-requirement-dir -o workspace/output
 ```
 
-Or use the installed CLI:
+**With options:**
 
 ```bash
-arc-agent /path/to/my-requirement-dir --app-type web
+arc compile example/ticketbooking-demo -o workspace/demo \
+  --type web \
+  --port 3301 \
+  --clean
 ```
 
-#### CLI arguments
+#### Available Commands
+
+- **`arc compile`** - Compile requirements into a working application
+- **`arc config`** - Configure ARC interactively (create/update .env)
+- **`arc doctor`** - Check configuration and environment health
+
+Run `arc --help` or `arc compile --help` for detailed usage.
+
+#### Main Arguments
 
 | Argument | Description |
 | --- | --- |
 | `requirement_path` | Requirement directory containing `requirements.yaml` |
-| `--output-dir` | Output workspace directory. Defaults to `<repo_root>/workspace/run-<timestamp>` |
-| `--clear-all` | Clears the output workspace and recopies the requirement input before recompiling |
-| `--retry-failed` | Retry all failed nodes in the existing queue without clearing the workspace |
-| `--retry-node` | Retry only the specified node IDs in the existing queue |
-| `--app-type` | `web`, `android`, or `cli` |
-| `--web-port` | Backend port for generated web applications |
-| `--model-api-mode` | OpenAI-compatible API mode: `responses` or `chat_completions` |
+| `-o, --output-dir` | Output workspace directory (required) |
+| `-t, --type` | Application type: `web`, `android`, or `cli` (default: `web`) |
+| `--port` | Backend port for web applications (default: 3301) |
+| `--clean` | Remove existing output directory before compilation |
+| `--resume` | Resume from saved compilation queue |
+| `--retry-failed` | Retry all failed nodes (requires `--resume`) |
+| `--retry NODE_ID...` | Retry specific node IDs (requires `--resume`) |
 
 #### Runtime behavior
 
-- ARC copies the requirement directory into `<output-dir>/requirements/`
+- ARC copies the requirement directory into `<output-dir>/requirements/` (you must specify `-o` explicitly)
 - Compilation executes inside `output-dir`
 - If `--clear-all` is not used and `.arc/processing_queue.json` already exists, ARC resumes from that workspace
 
@@ -180,7 +208,7 @@ arc-agent /path/to/my-requirement-dir --app-type web
 ARC now supports retrying failed nodes in an existing workspace without wiping generated code.
 
 - `--retry-failed` retries every node whose queue state is `FAILED`
-- `--retry-node REQ-1 REQ-2` retries only the named nodes, including nodes that already passed
+- `--retry REQ-1 REQ-2` retries only the named nodes, including nodes that already passed
 - `--clear-all` cannot be combined with retry flags
 
 Retry semantics are phase-aware:
@@ -193,34 +221,41 @@ This distinction comes from the queue itself, not from a separate manual flag. T
 
 #### Model API mode
 
-ARC uses a model adapter for OpenAI-compatible providers. Select the request API explicitly when needed:
+ARC supports two OpenAI-compatible API modes, configured via `ARC_OPENAI_API_MODE` in `.env`:
 
-```bash
-python src/main.py /path/to/my-requirement-dir --model-api-mode chat_completions
-```
+- `chat_completions` (default) - Uses `/v1/chat/completions` endpoint, most compatible
+- `responses` - Uses `/v1/responses` endpoint for models that support it
 
-- `responses` uses the Responses API and is the default.
-- `chat_completions` uses Chat Completions for providers that do not support Responses.
-- `ARC_OPENAI_API_MODE` provides the same control from `.env`.
-- The legacy `ARC_USE_RESPONSES_API=false` flag is still accepted and maps to `chat_completions`.
+Set this in your `.env` file (see Configuration section above).
+
 
 ## Visualization
 
-If you want a visual execution workflow, ARC can also be packaged and uploaded to **ARC-Bench**: [arc-bench.com](http://arc-bench.com). Follow the "Quick Start" instructions to upload a custom agent bundle.
+If you want a visual execution workflow with progress tracking and result visualization, use **ARC-Bench**: [arc-bench.com](http://arc-bench.com).
 
-For the current repository layout, the simplest upload path is:
+### Use Built-in ARC Agent (Recommended)
+
+When submitting a task on ARC-Bench, select **"ARC"** from the built-in agents dropdown. This uses the official ARC implementation maintained by the ARC-Bench team.
+
+
+### Custom ARC Bundle (For Modified Versions)
+
+If you've modified ARC, package and upload your custom version:
 
 1. Copy the contents of `src/` into your submission bundle root
 2. Keep `main.py` at the bundle root
 3. Zip the bundle
-4. Upload it to ARC-Bench as a custom agent
+4. Upload to ARC-Bench as a custom agent
 
-A minimal bundle layout looks like this:
+A minimal bundle layout:
 
 ```text
-submission
+submission/
 |-- main.py
 |-- requirements.txt
+|-- agents/
+|-- context/
+|-- core/
 `-- ...
 ```
 
