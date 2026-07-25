@@ -145,7 +145,7 @@ def _agent_color(agent_name: str, message: str, status: str | None) -> str:
         return ANSI_GREEN + ANSI_BOLD
     if "model>" in normalized or "model-final>" in normalized:
         return ANSI_MAGENTA + ANSI_BOLD
-    if "deep-agent" in normalized or "agent trace" in normalized:
+    if "agent" in normalized or "agent trace" in normalized:
         return ANSI_BLUE + ANSI_BOLD
     if agent_name in {"System", "Compiler", "RequirementLoader"}:
         return ANSI_GRAY + ANSI_BOLD

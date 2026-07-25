@@ -328,6 +328,8 @@ class _CliProgressView:
         self.current_phase: str | None = None
         self._last_line: str | None = None
         self._transient_line_count = 0
+        self._tool_batch_lines: list[str] = []
+        self._tool_batch_open = False
 
     @staticmethod
     def _plain_node(node_id: str | None) -> str:
@@ -399,7 +401,9 @@ class _CliProgressView:
         tool_name = match.group(1).strip() or "unknown"
         detail = self._summarize_tool_args(match.group(2))
         _spinner.start(f"{self._plain_node(active_node)} | {self._pretty_agent(agent)} | {tool_name}")
-        return self._emit_once(stage_line("Tool Call", f"{tool_name} {detail}".strip(), "info"))
+        tool_line = stage_line("Tool Call", f"{tool_name} {detail}".strip(), "info")
+        self._emit_transient_tool(tool_line)
+        return None
 
     def _render_tool_result_event(self, message: str, stage_line: Callable[[str, str, str], str]) -> str | None:
         match = re.match(r"tool-result>\s*([^\s]+)\s+result=(.*)", message, flags=re.DOTALL)
@@ -407,7 +411,9 @@ class _CliProgressView:
             return None
         tool_name = match.group(1).strip() or "unknown"
         result = self._clip(match.group(2), 140)
-        return self._emit_once(stage_line("Tool Result", f"{tool_name} -> {result}", "ok"))
+        result_line = stage_line("Tool Result", f"{tool_name} -> {result}", "ok")
+        self._emit_transient_tool(result_line)
+        return None
 
     def _render_stream_messages(self, message: str, stage_line: Callable[[str, str, str], str]) -> str | None:
         body = message.split("stream messages:", 1)[1] if "stream messages:" in message else message
@@ -427,10 +433,12 @@ class _CliProgressView:
                 name_part = f"{current_tool} " if current_tool else ""
                 id_part = current_id[-8:] if current_id else ""
                 label = f"{name_part}{id_part}".strip() or "tool"
-                lines.append(stage_line("Tool Result", f"{label} -> {content}", "ok"))
+                result_line = stage_line("Tool Result", f"{label} -> {content}", "ok")
+                self._emit_transient_tool(result_line)
             elif current_tool:
                 detail = self._summarize_tool_args(current_args)
-                lines.append(stage_line("Tool Call", f"{current_tool} {detail}".strip(), "info"))
+                tool_line = stage_line("Tool Call", f"{current_tool} {detail}".strip(), "info")
+                self._emit_transient_tool(tool_line)
             elif current_role == "AI" and current_content:
                 content = self._clip(" ".join(current_content), 160)
                 if content and not content.startswith("{\"type\": \"tool_call\""):
@@ -480,6 +488,7 @@ class _CliProgressView:
             if reading_content and stripped:
                 current_content.append(stripped)
         flush()
+        self._close_tool_batch()
         if not lines:
             return None
         return self._emit_once("\n".join(lines))
@@ -568,6 +577,54 @@ class _CliProgressView:
             return clear or None
         return f"{clear}{rendered}" if clear else rendered
 
+
+
+    def _emit_transient_tool(self, line: str) -> None:
+        """Emit a tool call/result line in transient mode (will be cleared on next batch)."""
+        if not self._tool_batch_open:
+            self._tool_batch_open = True
+            self._tool_batch_lines = []
+        
+        self._tool_batch_lines.append(line)
+        
+        # Clear previous tool batch
+        if self._transient_line_count > 0:
+            clear = "".join("\033[F\033[2K" for _ in range(self._transient_line_count))
+            sys.stdout.write(clear)
+            sys.stdout.flush()
+        
+        # Print entire batch
+        for batch_line in self._tool_batch_lines:
+            print(batch_line, flush=True)
+        self._transient_line_count = len(self._tool_batch_lines)
+
+    def _close_tool_batch(self) -> None:
+        """Finalize tool batch, making it persistent."""
+        self._tool_batch_open = False
+        self._tool_batch_lines = []
+        self._transient_line_count = 0
+
+    def _start_phase_timer(self, node_id: str, phase: str):
+        """Start timing a node phase."""
+        key = f"{node_id}:{phase}"
+        import time
+        self._node_start_times[key] = time.time()
+
+    def _stop_phase_timer(self, node_id: str, phase: str) -> str:
+        """Stop timing and return elapsed time string."""
+        key = f"{node_id}:{phase}"
+        if key not in self._node_start_times:
+            return ""
+        import time
+        elapsed = time.time() - self._node_start_times[key]
+        del self._node_start_times[key]
+        self._node_phase_times[key] = elapsed
+        if elapsed < 60:
+            return f" {Fore.WHITE}({elapsed:.1f}s){Style.RESET_ALL}"
+        mins = int(elapsed / 60)
+        secs = int(elapsed % 60)
+        return f" {Fore.WHITE}({mins}m{secs:02d}s){Style.RESET_ALL}"
+
     def render(self, agent: str, message: str, status: str | None = None, node_id: str | None = None) -> str | None:
         active_node = node_id or self.current_node_id
 
@@ -653,9 +710,9 @@ class _CliProgressView:
             if test_match:
                 return self._emit_once(stage_line("Verify", f"{test_match.group(1)} :: {self._compact_path(test_match.group(2))}"))
 
-        if agent == "InterfaceDesigner" and message.startswith("Running deep-agent interface design"):
+        if agent == "InterfaceDesigner" and message.startswith("Running interface design"):
             return self._emit_once(stage_line("Design", "InterfaceDesigner is shaping interfaces", "agent"))
-        if agent == "InterfaceDesigner" and message.startswith("Invoking deep-agent"):
+        if agent == "InterfaceDesigner" and message.startswith("Invoking agent"):
             _spinner.start(f"{self._plain_node(active_node)} | Design | InterfaceDesigner")
             return None
         if agent == "InterfaceDesigner" and message.startswith("Stored ") and "interface definition" in message:
@@ -672,7 +729,7 @@ class _CliProgressView:
 
         if agent == "TestGenerator" and message.startswith("Generating tests"):
             return self._emit_once(stage_line("Tests", "TestGenerator is generating verification assets", "test"))
-        if agent == "TestGenerator" and message.startswith("Invoking deep-agent"):
+        if agent == "TestGenerator" and message.startswith("Invoking agent"):
             _spinner.start(f"{self._plain_node(active_node)} | Tests | TestGenerator")
             return None
         if agent == "TestGenerator" and message.startswith("Stored ") and "test mapping item" in message:
@@ -689,7 +746,7 @@ class _CliProgressView:
 
         if agent == "TestDrivenDeveloper" and message.startswith("Running TDD batch"):
             return self._emit_once(stage_line("Implement", message, "agent"))
-        if agent == "TestDrivenDeveloper" and message.startswith("Invoking deep-agent"):
+        if agent == "TestDrivenDeveloper" and message.startswith("Invoking agent"):
             _spinner.start(f"{self._plain_node(active_node)} | Implement | TestDrivenDeveloper")
             return None
         if agent == "TestDrivenDeveloper" and message.startswith("`run_tests`") and (" usage " in message or " budget exhausted " in message):
@@ -703,7 +760,8 @@ class _CliProgressView:
         if agent == "TestDrivenDeveloper" and message.startswith("TDD batch") and "did not pass" in message:
             return self._emit_once(stage_line("Verify", message, "fail"))
 
-        if "deep-agent stream start" in message:
+        if "agent stream start" in message:
+            self._close_tool_batch()
             _spinner.start(f"{self._plain_node(active_node)} | {self._pretty_agent(agent)}")
             return None
         if message.startswith("tool-call>"):
@@ -716,7 +774,8 @@ class _CliProgressView:
             return self._persistent(self._render_stream_messages(message, stage_line))
         if message.startswith("agent trace:"):
             return None
-        if "deep-agent call end" in message:
+        if "agent call end" in message:
+            self._close_tool_batch()
             return self._persistent(None)
 
         if status == "error":
@@ -825,7 +884,74 @@ def cli_log(
         _progress_view.clear_transient_block()
         write_terminal_log(agent_name, message, status=status, node_id=node_id)
         return
+    
+    # Check if this is a transient tool message (handled separately)
+    is_tool_event = message.startswith("tool-call>") or message.startswith("tool-result>")
+    
     rendered = _progress_view.render(agent_name, message, status=status, node_id=node_id)
     if rendered:
-        _spinner.stop()
+        if not is_tool_event:
+            _spinner.stop()
         print(rendered, flush=True)
+
+
+def print_compilation_summary(
+    result: dict,
+    output_dir: str,
+    elapsed_seconds: float,
+) -> None:
+    """Print enhanced compilation summary with statistics."""
+    print(f"\n{Fore.BLUE}{'━' * 78}{Style.RESET_ALL}")
+    print(f"{Fore.CYAN}Compilation Summary{Style.RESET_ALL}")
+    print(f"{Fore.BLUE}{'━' * 78}{Style.RESET_ALL}\n")
+    
+    # Time
+    if elapsed_seconds < 60:
+        time_str = f"{elapsed_seconds:.1f}s"
+    else:
+        mins = int(elapsed_seconds / 60)
+        secs = int(elapsed_seconds % 60)
+        time_str = f"{mins}m {secs:02d}s"
+    
+    print(f"{Fore.WHITE}Duration:{Style.RESET_ALL} {time_str}")
+    
+    # Nodes
+    states = result.get("states", {})
+    passed = [nid for nid, st in states.items() if st == "PASSED"]
+    failed = [nid for nid, st in states.items() if st == "FAILED"]
+    skipped = [nid for nid, st in states.items() if st not in {"PASSED", "FAILED"}]
+    
+    if passed:
+        print(f"{Fore.GREEN}✓ Passed:{Style.RESET_ALL}  {', '.join(passed)}")
+    if failed:
+        print(f"{Fore.RED}✗ Failed:{Style.RESET_ALL}  {', '.join(failed)}")
+    if skipped:
+        print(f"{Fore.YELLOW}⊙ Skipped:{Style.RESET_ALL} {', '.join(skipped)}")
+    
+    # Stats from progress view
+    if hasattr(_progress_view, '_phase_stats'):
+        stats = _progress_view._phase_stats
+        if stats.get("interfaces") or stats.get("tests"):
+            print()
+            if stats.get("interfaces"):
+                print(f"{Fore.CYAN}Interfaces:{Style.RESET_ALL} {stats['interfaces']} designed")
+            if stats.get("tests"):
+                print(f"{Fore.CYAN}Tests:{Style.RESET_ALL}      {stats['tests']} generated")
+    
+    # Output
+    print(f"\n{Fore.WHITE}Output:{Style.RESET_ALL}    {output_dir}")
+    
+    debug_log = os.path.join(output_dir, ".arc", "debug.log")
+    if os.path.exists(debug_log):
+        print(f"{Fore.WHITE}Debug log:{Style.RESET_ALL} {debug_log}")
+    
+    # Next steps
+    if failed:
+        print(f"\n{Fore.YELLOW}Next steps:{Style.RESET_ALL}")
+        print(f"  • Review failure details in debug log")
+        print(f"  • Fix requirement issues and retry: arc compile <input> -o {output_dir} --resume --retry-failed")
+    elif result.get("ok"):
+        print(f"\n{Fore.GREEN}✓ Compilation successful{Style.RESET_ALL}")
+        # TODO: Add app-specific run instructions
+    
+    print(f"{Fore.BLUE}{'━' * 78}{Style.RESET_ALL}\n")

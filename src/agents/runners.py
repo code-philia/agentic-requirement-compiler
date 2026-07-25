@@ -35,7 +35,7 @@ async def ainvoke_stage_agent(
     await _emit_log(
         log_cb,
         run_label,
-        f"deep-agent call start: thread_id={thread_id}",
+        f"agent call start: thread_id={thread_id}",
         node_id=context.node_id,
     )
 
@@ -61,7 +61,7 @@ async def ainvoke_stage_agent(
             await _emit_log(
                 log_cb,
                 run_label,
-                f"deep-agent call end: duration_ms={duration_ms:.1f}, payload={format_json_for_log(stream_payload)}",
+                f"agent call end: duration_ms={duration_ms:.1f}, payload={format_json_for_log(stream_payload)}",
                 node_id=context.node_id,
             )
             return stream_payload
@@ -84,7 +84,7 @@ async def ainvoke_stage_agent(
     await _emit_log(
         log_cb,
         run_label,
-        f"deep-agent call end: duration_ms={duration_ms:.1f}, payload={format_json_for_log(payload)}",
+        f"agent call end: duration_ms={duration_ms:.1f}, payload={format_json_for_log(payload)}",
         node_id=context.node_id,
     )
     return payload
@@ -205,10 +205,10 @@ async def _try_astream_stage_agent(
             return sync_payload
 
     if not hasattr(agent, "astream_events"):
-        await _emit_log(log_cb, run_label, "deep-agent streaming is unavailable; falling back to ainvoke.", node_id=context.node_id)
+        await _emit_log(log_cb, run_label, "agent streaming is unavailable; falling back to ainvoke.", node_id=context.node_id)
         return None
 
-    await _emit_log(log_cb, run_label, "deep-agent stream start.", node_id=context.node_id)
+    await _emit_log(log_cb, run_label, "agent stream start.", node_id=context.node_id)
     final_state: dict[str, Any] | None = None
     try:
         event_stream = agent.astream_events(
@@ -232,7 +232,7 @@ async def _try_astream_stage_agent(
         await _emit_log(
             log_cb,
             run_label,
-            f"deep-agent stream failed; falling back to ainvoke. error={exc}",
+            f"agent stream failed; falling back to ainvoke. error={exc}",
             status="warning",
             node_id=context.node_id,
         )
@@ -243,7 +243,7 @@ async def _try_astream_stage_agent(
         await _emit_log(
             log_cb,
             run_label,
-            "deep-agent stream ended without final state; falling back to ainvoke.",
+            "agent stream ended without final state; falling back to ainvoke.",
             status="warning",
             node_id=context.node_id,
         )
@@ -277,7 +277,7 @@ def _try_stream_stage_agent_sync(
         if not stream_names or not hasattr(stream, "interleave"):
             return None
 
-        _emit_log_sync(log_cb, run_label, "deep-agent stream start.", node_id=context.node_id)
+        _emit_log_sync(log_cb, run_label, "agent stream start.", node_id=context.node_id)
         final_state: dict[str, Any] | None = None
         seen_message_count = 0
         for stream_name, item in stream.interleave(*stream_names):
@@ -319,7 +319,7 @@ def _try_stream_stage_agent_sync(
             _emit_log_sync(
                 log_cb,
                 run_label,
-                "deep-agent stream ended without final state; falling back to ainvoke.",
+                "agent stream ended without final state; falling back to ainvoke.",
                 status="warning",
                 node_id=context.node_id,
             )
@@ -330,7 +330,7 @@ def _try_stream_stage_agent_sync(
         _emit_log_sync(
             log_cb,
             run_label,
-            f"deep-agent stream failed; falling back to ainvoke. error={exc}",
+            f"agent stream failed; falling back to ainvoke. error={exc}",
             status="warning",
             node_id=context.node_id,
         )
