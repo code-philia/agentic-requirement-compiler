@@ -19,7 +19,7 @@ ALLOWED_INTERFACE_TYPES = {"UI", "API", "FUNC", "DB"}
 TDD_BATCH_ORDER = ("Unit", "Integration", "E2E")
 
 class WorkflowPhaseRunner:
-    """Run ARC DESIGN and IMPLEMENT phases using the new deep-agent adapters."""
+    """Run ARC DESIGN and IMPLEMENT phases using the agent adapters."""
 
     def __init__(
         self,
@@ -105,7 +105,7 @@ class WorkflowPhaseRunner:
             )
             return True
 
-        await self._log("InterfaceDesigner", "Running deep-agent interface design.", node_id=node_id)
+        await self._log("InterfaceDesigner", "Running interface design.", node_id=node_id)
         interface_result = await self.interface_designer.run(
             node_id=node_id,
             requirement_data=requirement_data,

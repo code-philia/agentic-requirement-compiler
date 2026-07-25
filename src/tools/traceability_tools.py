@@ -15,7 +15,7 @@ def build_traceability_tools(
     node_id: str,
     log_cb: LogCallback | None = None,
 ) -> list[object]:
-    """Build read-only traceability DB tools for deep-agents."""
+    """Build read-only traceability DB tools for agents."""
 
     async def get_interfaces_for_requirement(req_id: str) -> str:
         """Return raw interface records associated with a requirement id."""

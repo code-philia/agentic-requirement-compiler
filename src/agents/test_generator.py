@@ -100,7 +100,7 @@ class TestGenerator:
             dynamic_context=context_text,
             interface_contract=interface_contract,
         )
-        await self._log("Invoking deep-agent test generation.", node_id=node_id)
+        await self._log("Invoking test generation.", node_id=node_id)
         raw_payload = await ainvoke_stage_agent(
             agent,
             message=message,

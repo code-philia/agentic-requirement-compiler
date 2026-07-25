@@ -87,7 +87,7 @@ class InterfaceDesigner:
             requirement_data=requirement_data,
             dynamic_context=context_text,
         )
-        await self._log("Invoking deep-agent interface design.", node_id=node_id)
+        await self._log("Invoking interface design.", node_id=node_id)
         payload = await ainvoke_stage_agent(
             agent,
             message=message,

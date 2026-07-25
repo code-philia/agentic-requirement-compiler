@@ -1,2 +1,2 @@
-"""Prompt sections used by ARC deep-agents stage agents."""
+"""Prompt sections used by ARC stage agents."""
 

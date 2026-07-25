@@ -30,14 +30,14 @@ _WINDOWS_PATH_COMPAT_APPLIED = False
 
 
 class OpenAIGlobSchema(BaseModel):
-    """OpenAI-compatible schema for the deep-agents glob tool."""
+    """OpenAI-compatible schema for the glob tool."""
 
     pattern: str = Field(description="Glob pattern to match files (e.g., '**/*.py', '*.txt', '/subdir/**/*.md').")
     path: str = Field(default=None, description="Base directory to search from. Defaults to the backend's default root.")
 
 
 class OpenAIGrepSchema(BaseModel):
-    """OpenAI-compatible schema for the deep-agents grep tool."""
+    """OpenAI-compatible schema for the grep tool."""
 
     pattern: str = Field(description="Text pattern to search for (literal string, not regex).")
     path: str = Field(default=None, description="Directory to search in. Defaults to current working directory.")
@@ -88,7 +88,7 @@ def build_stage_agent(
     memory: list[str] | None = None,
     tools: list[object] | None = None,
 ):
-    """Create a deep-agent instance with ARC's first-batch filesystem policy."""
+    """Create an agent instance with ARC's first-batch filesystem policy."""
 
     _apply_windows_filesystem_path_compat()
     root = Path(workspace_root).expanduser().resolve()
@@ -201,7 +201,7 @@ def _expand_write_permission_paths(path: str, root: Path) -> list[str]:
 
 
 def _register_arc_tool_exclusions(*, model: Any, resolved_model: Any) -> None:
-    """Remove built-in deep-agents tools that ARC does not want agents to use."""
+    """Remove built-in agent tools that ARC does not want to expose."""
 
     profile = HarnessProfile(excluded_tools=DISABLED_BUILTIN_TOOLS)
     registered: set[str] = set()
@@ -224,7 +224,7 @@ def _resolve_response_format(response_format: object | None) -> object | None:
 
 
 def _apply_windows_filesystem_path_compat() -> None:
-    """Normalize Windows extended-length paths before deepagents containment checks."""
+    """Normalize Windows extended-length paths before agent containment checks."""
 
     global _WINDOWS_PATH_COMPAT_APPLIED
     if _WINDOWS_PATH_COMPAT_APPLIED or os.name != "nt":
