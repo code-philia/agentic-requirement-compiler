@@ -84,7 +84,7 @@ def workspace_tool_policy() -> str:
             "Start exploration with exact paths from the requirement, interface contract, test manifest, traceability records, or failure output.",
             "Avoid broad `grep`, broad `glob`, and directory inventory from `/workspace`; use at most one narrow discovery step before switching to exact path reads.",
             "The `glob` tool uses simple glob patterns; do not rely on brace expansion such as `**/*.{ts,tsx}`.",
-            "Read before editing. Prefer `edit_file` for existing files and `write_file` only for genuinely new files.",
+            "Read before editing. `read_file` returns raw source without line-number prefixes; copy its indentation exactly. Prefer a unique 1-3 line `old_string` from the immediately preceding read, then use `edit_file` for existing files and `write_file` only for genuinely new files.",
             "Shell execution is available through the built-in `execute` tool. Run commands only from `/workspace` or a subdirectory, and never target host paths outside `/workspace`.",
             "Prefer stage-specific system tools such as `run_tests` or `run_build` for build/test feedback when they are explicitly available; use shell commands only for scoped inspection, diagnostics, or skill-required scripts.",
             "Read-only traceability tools are available: `get_interfaces_for_requirement(req_id)`, `get_interface(interface_id)`, and `search_interfaces(keyword, req_id?, interface_type?, limit?)`.",

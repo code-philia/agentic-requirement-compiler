@@ -27,6 +27,7 @@ WORKSPACE_PREFIX = "/workspace"
 SKILLS_PREFIX = "/skills"
 DISABLED_BUILTIN_TOOLS = frozenset({"write_todos"})
 _WINDOWS_PATH_COMPAT_APPLIED = False
+_READ_FILE_FORMAT_PATCHED = False
 
 
 class OpenAIGlobSchema(BaseModel):
@@ -91,6 +92,7 @@ def build_stage_agent(
     """Create an agent instance with ARC's first-batch filesystem policy."""
 
     _apply_windows_filesystem_path_compat()
+    _apply_unambiguous_read_file_format()
     root = Path(workspace_root).expanduser().resolve()
     routes = {
         f"{WORKSPACE_PREFIX}/": LocalShellBackend(
@@ -123,6 +125,32 @@ def build_stage_agent(
         context_schema=AgentRuntimeContext,
         response_format=_resolve_response_format(response_format),
     )
+
+
+def _apply_unambiguous_read_file_format() -> None:
+    """Remove line-number padding from read_file output before agents copy it.
+
+    The upstream filesystem middleware renders each line as a six-character
+    line number plus a tab. Models can mistake that separator for indentation
+    and then submit an `edit_file` anchor that cannot match the source.
+    """
+    global _READ_FILE_FORMAT_PATCHED
+    if _READ_FILE_FORMAT_PATCHED:
+        return
+
+    import deepagents.middleware.filesystem as filesystem_middleware
+
+    def format_without_line_numbers(content: str | list[str], start_line: int = 1) -> str:
+        del start_line
+        if isinstance(content, str):
+            lines = content.split("\n")
+            if lines and lines[-1] == "":
+                lines = lines[:-1]
+            return "\n".join(lines)
+        return "\n".join(content)
+
+    filesystem_middleware.format_content_with_line_numbers = format_without_line_numbers
+    _READ_FILE_FORMAT_PATCHED = True
 
 
 def _build_filesystem_permissions(root: Path, writable_roots: list[str]) -> list[Any]:
@@ -317,16 +345,16 @@ def _to_virtual_workspace_path(path: str, root: Path) -> str:
     raw = str(path or "").strip().replace("\\", "/")
     if not raw:
         return WORKSPACE_PREFIX
-    if raw == WORKSPACE_PREFIX or raw.startswith(f"{WORKSPACE_PREFIX}/"):
-        return _normalize_virtual_path(raw)
 
     candidate = Path(raw).expanduser()
-    if not candidate.is_absolute():
-        candidate = root / candidate
     try:
-        relative = candidate.resolve().relative_to(root)
+        relative = candidate.resolve().relative_to(root.resolve())
     except ValueError as exc:
-        raise ValueError(f"Path `{path}` is outside workspace root `{root}`.") from exc
+        if raw == WORKSPACE_PREFIX or raw.startswith(f"{WORKSPACE_PREFIX}/"):
+            return _normalize_virtual_path(raw)
+        if candidate.is_absolute():
+            raise ValueError(f"Path `{path}` is outside workspace root `{root}`.") from exc
+        relative = (root / candidate).resolve().relative_to(root.resolve())
 
     relative_text = relative.as_posix()
     if not relative_text or relative_text == ".":
