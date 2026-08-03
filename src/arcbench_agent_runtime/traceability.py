@@ -99,6 +99,7 @@ class RequirementRecord:
     roles: list[dict[str, Any]] | None = None
     permissions: str | list[str] | None = None
     images: list[dict[str, Any]] | None = None
+    references: list[dict[str, Any]] | None = None
     state_flow: list[str] | None = None
 
 
@@ -281,6 +282,7 @@ class TraceabilityStore:
                 "roles": _as_mapping_list(node.get("roles")),
                 "permissions": _as_permissions(node.get("permissions")),
                 "images": _as_mapping_list(node.get("images")),
+                "references": _as_mapping_list(node.get("references")),
                 "state_flow": _as_str_list(node.get("state_flow")),
                 "visual_reference": _as_visual_reference_list(node.get("visual_reference")),
                 "scenarios": node_scenarios,
@@ -331,6 +333,7 @@ class TraceabilityStore:
         roles: list[dict[str, Any]] | None = None,
         permissions: str | list[str] | None = None,
         images: list[dict[str, Any]] | None = None,
+        references: list[dict[str, Any]] | None = None,
         state_flow: list[str] | None = None,
         visual_reference: list[Any] | None = None,
         scenarios: list[dict[str, Any]] | None = None,
@@ -360,6 +363,7 @@ class TraceabilityStore:
                 "roles": _as_mapping_list(roles),
                 "permissions": _as_permissions(permissions),
                 "images": _as_mapping_list(images),
+                "references": _as_mapping_list(references),
                 "state_flow": _as_str_list(state_flow),
                 "visual_reference": _as_visual_reference_list(visual_reference),
                 "scenarios": normalized_scenarios,
@@ -384,6 +388,7 @@ class TraceabilityStore:
             roles=_as_mapping_list(merged.get("roles")),
             permissions=_as_permissions(merged.get("permissions")),
             images=_as_mapping_list(merged.get("images")),
+            references=_as_mapping_list(merged.get("references")),
             state_flow=_as_str_list(merged.get("state_flow")),
             visual_reference=_as_visual_reference_list(merged.get("visual_reference")),
             scenarios=_as_list(merged.get("scenarios")),

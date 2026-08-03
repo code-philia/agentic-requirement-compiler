@@ -5,6 +5,9 @@ description: Minimal schema-extension fixture.
 images:
   - label: System overview
     path: ./reference/workflow.svg
+references:
+  - label: Global review standard
+    path: ./reference_docs/global-standard.md
 roles:
   - id: USER
     name: User
@@ -30,6 +33,8 @@ children:
         images:
           - label: Approval workspace
             path: ./reference/workflow.svg
+        references:
+          - path: ./reference_docs/approval-policy.txt
         state_flow:
           - DRAFT
           - SUBMITTED

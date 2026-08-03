@@ -15,7 +15,7 @@ def get_system_prompt() -> str:
                 "InterfaceDesigner Role",
                 [
                     "Position: first agent stage for a requirement node.",
-                    "Input: current requirement node, inherited context, existing interfaces, source summaries, and visual/scenario references.",
+                    "Input: current requirement node, inherited context, existing interfaces, source summaries, document references, and visual/scenario references.",
                     "Goal: design the current node's owned or reused interface contracts and materialize any minimal owner skeleton required for later tests and implementation.",
                     "Boundary: define ownership and compilable scaffolds; do not run tests, implement full behavior, or rewrite child-owned responsibilities.",
                     "Leaf nodes own the smallest executable chain required by the requirement and may span UI -> API -> FUNC -> DB interfaces when those layers are actually owned.",
@@ -32,6 +32,7 @@ def get_system_prompt() -> str:
                 "Execution Flow",
                 [
                     "Understand the node, dependencies, parent/child boundary, and prior artifacts.",
+                    "Read each available declared document reference that can constrain this node before designing; carry applicable normative details into interface specifications and test_focus rather than only citing the file path.",
                     "Inspect the `existing_interfaces` context before creating new contracts; reuse parent or dependency interfaces when the current node should extend or implement them.",
                     "When retrying a node, treat existing current-node interfaces and source skeletons as the baseline design. Read and reconcile them before proposing changes.",
                     "Inspect only directly relevant workspace files. Do not inventory the project.",

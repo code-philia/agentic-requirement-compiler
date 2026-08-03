@@ -6,10 +6,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
+from core.reference_documents import build_reference_catalog
+
 
 @dataclass
 class ContextConfig:
     workspace_dir: str = "."
+    requirements_dir: str = ""
     app_type: str = "web"
     web_port: int = 3301
     android_package: str = "com.example.template"
@@ -70,12 +73,15 @@ class ContextPipeline:
         self,
         *,
         workspace_dir: str | None = None,
+        requirements_dir: str | None = None,
         app_type: str | None = None,
         web_port: int | None = None,
         android_package: str | None = None,
     ) -> None:
         if workspace_dir is not None:
             self.config.workspace_dir = workspace_dir
+        if requirements_dir is not None:
+            self.config.requirements_dir = requirements_dir
         if app_type is not None:
             self.config.app_type = app_type
         if web_port is not None:
@@ -217,10 +223,16 @@ class ContextPipeline:
             ),
         }
 
-    def _build_acceptance_gate(self, node_id: str, req_data: dict[str, Any]) -> str:
+    def _build_acceptance_gate(
+        self,
+        node_id: str,
+        req_data: dict[str, Any],
+        reference_catalog: list[dict[str, Any]] | None = None,
+    ) -> str:
         scenarios = req_data.get("scenarios") or []
         visual_reference = req_data.get("visual_reference") or []
         images = req_data.get("images") or []
+        references = reference_catalog or []
         role_catalog = self._resolve_role_catalog(node_id, req_data)
         permission_contract = self._build_permission_contract(req_data, role_catalog)
         primary_outcomes = [
@@ -241,6 +253,11 @@ class ContextPipeline:
         if req_data.get("state_flow"):
             primary_outcomes.append(
                 "Use state_flow as the required state vocabulary and implement only transitions supported by the description or scenarios."
+            )
+        if references:
+            primary_outcomes.append(
+                "Read the available declared reference documents that affect this node before finalizing artifacts; "
+                "do not invent content for unavailable references."
             )
         gate = {
             "req_id": req_data.get("req_id", node_id),
@@ -266,11 +283,22 @@ class ContextPipeline:
             gate["permission_contract"] = permission_contract
         if req_data.get("state_flow"):
             gate["state_vocabulary"] = req_data.get("state_flow")
+        if references:
+            gate["reference_rule"] = (
+                "Reference declaration order and ancestry provide provenance, not implicit priority. "
+                "Follow precedence stated by the requirements or source documents; otherwise record the chosen interpretation."
+            )
         return "<acceptance_gate>\n" + self._compact_json(gate) + "\n</acceptance_gate>"
 
-    def _build_requirement_focus(self, node_id: str, req_data: dict[str, Any]) -> str:
+    def _build_requirement_focus(
+        self,
+        node_id: str,
+        req_data: dict[str, Any],
+        reference_catalog: list[dict[str, Any]] | None = None,
+    ) -> str:
         scenarios = req_data.get("scenarios") or []
         visual_reference = req_data.get("visual_reference") or []
+        references = reference_catalog or []
         role_catalog = self._resolve_role_catalog(node_id, req_data)
         permission_contract = self._build_permission_contract(req_data, role_catalog)
         focus = {
@@ -283,9 +311,13 @@ class ContextPipeline:
             "permissions": req_data.get("permissions"),
             "state_flow": req_data.get("state_flow", []),
             "images": req_data.get("images", []),
+            "references": req_data.get("references", []),
             "scenario_count": len(scenarios),
             "image_count": len(req_data.get("images") or []),
             "visual_reference_count": len(visual_reference),
+            "reference_count": len(req_data.get("references") or []),
+            "available_reference_count": sum(1 for item in references if item.get("available")),
+            "inherited_reference_count": sum(1 for item in references if item.get("relation") == "ancestor"),
         }
         if role_catalog:
             focus["role_catalog"] = role_catalog
@@ -310,6 +342,22 @@ class ContextPipeline:
             )
         parts.append("</requirement_focus>")
         return "\n".join(parts)
+
+    def get_reference_catalog(
+        self,
+        node_id: str,
+        req_data: dict[str, Any] | None = None,
+    ) -> list[dict[str, Any]]:
+        store = self._store()
+        requirement = req_data or (store.get_requirement(node_id) if store is not None else None)
+        if not isinstance(requirement, dict):
+            return []
+        return build_reference_catalog(
+            node_id=node_id,
+            requirement_data=requirement,
+            store=store,
+            requirements_dir=self.config.requirements_dir,
+        )
 
     def _with_scenarios_from_store(self, node_id: str, req_data: dict[str, Any]) -> dict[str, Any]:
         scenarios = [item for item in req_data.get("scenarios") or [] if isinstance(item, dict)]
@@ -568,12 +616,20 @@ class ContextPipeline:
         if not req_data:
             return f"<error>Requirement node {node_id} not found in database.</error>"
         req_data = self._with_scenarios_from_store(node_id, req_data)
+        reference_catalog = self.get_reference_catalog(node_id, req_data)
 
         context_parts = [
-            self._build_requirement_focus(node_id, req_data),
-            self._build_acceptance_gate(node_id, req_data),
+            self._build_requirement_focus(node_id, req_data, reference_catalog),
+            self._build_acceptance_gate(node_id, req_data, reference_catalog),
             self.cache.get_or_compute(node_id, "tech_stack_context", self._get_tech_stack_context),
         ]
+        if reference_catalog:
+            context_parts.insert(
+                1,
+                "<reference_catalog>\n"
+                + self._compact_json(reference_catalog)
+                + "\n</reference_catalog>",
+            )
         project_structure = self.cache.get_or_compute(
             node_id,
             f"project_structure::{agent_type}",
@@ -730,12 +786,14 @@ def set_context_runtime(runtime: Any | None) -> None:
 def set_context_config(
     *,
     workspace_dir: str | None = None,
+    requirements_dir: str | None = None,
     app_type: str | None = None,
     web_port: int | None = None,
     android_package: str | None = None,
 ) -> None:
     context_pipeline.configure(
         workspace_dir=workspace_dir,
+        requirements_dir=requirements_dir,
         app_type=app_type,
         web_port=web_port,
         android_package=android_package,

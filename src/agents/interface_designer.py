@@ -12,6 +12,7 @@ from agents.factory import build_stage_agent
 from agents.runners import ainvoke_stage_agent
 from context.context_pipeline import context_pipeline
 from context.prompts.interface_designer import get_system_prompt, get_user_prompt
+from core.reference_documents import available_reference_paths
 from tools.traceability_tools import build_traceability_tools
 
 
@@ -58,13 +59,20 @@ class InterfaceDesigner:
         ).expanduser().resolve())
         app_type = (self.app_type or context_pipeline.config.app_type or os.environ.get("ARC_APP_TYPE") or "web").strip().lower()
         skill_root = Path(__file__).resolve().parents[1] / "skills"
+        requirements_dir = (
+            str(Path(self.requirement_path).expanduser().resolve().parent)
+            if self.requirement_path
+            else context_pipeline.config.requirements_dir
+        )
         is_non_leaf = bool(requirement_data.get("children_ids"))
         skill_names = ["non-leaf-ui-only-design"] if is_non_leaf else ["leaf-full-design"]
         skill_names.append("auth-session-consistency")
         context_pipeline.configure(
             workspace_dir=workspace_root,
+            requirements_dir=requirements_dir,
             app_type=app_type,
         )
+        reference_catalog = context_pipeline.get_reference_catalog(node_id, requirement_data)
         static_context, dynamic_context = context_pipeline.build_agent_context_split(
             node_id=node_id,
             agent_type=self.agent_name,
@@ -78,6 +86,8 @@ class InterfaceDesigner:
             response_format=InterfaceDesignResponse,
             workspace_root=workspace_root,
             writable_roots=[workspace_root],
+            reference_root=requirements_dir,
+            readable_reference_paths=available_reference_paths(reference_catalog),
             skills=[f"/skills/{name}/" for name in skill_names if (skill_root / name / "SKILL.md").exists()],
             memory=[],
             tools=build_traceability_tools(node_id=node_id, log_cb=self.log_cb),

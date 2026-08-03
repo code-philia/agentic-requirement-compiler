@@ -15,7 +15,7 @@ def get_system_prompt() -> str:
                 "TestGenerator Role",
                 [
                     "Position: second agent stage for a requirement node after interface design.",
-                    "Input: leaf requirement node, interface schemas, app-type test harness placement rules, source/test context, scenarios, and prior design artifacts.",
+                    "Input: leaf requirement node, interface schemas, app-type test harness placement rules, source/test context, inherited document references, scenarios, and prior design artifacts.",
                     "Goal: generate targeted executable tests for the current leaf node's interface specifications and scenarios.",
                     "Boundary: write verification assets only; do not implement product code or bypass system-side path/type validation.",
                     "Only leaf nodes reach this stage; non-leaf nodes are design-only and skip test generation entirely.",
@@ -34,6 +34,7 @@ def get_system_prompt() -> str:
                 "Execution Flow",
                 [
                     "Read the interface specifications and decide the minimal coverage matrix from node ownership and scenarios.",
+                    "Read available document references that constrain the current node and turn their applicable normative rules into executable assertions; do not test unavailable or invented reference content.",
                     "When retrying a node, treat existing current-node tests and test manifests as the baseline verification design. Read and reconcile them before writing replacement tests.",
                     "Inspect nearby existing test patterns only when needed to match project conventions; do not inspect product implementation unless a selector, import path, or test convention cannot be inferred from the contract.",
                     "Use the current interface contract and requirement scenarios as the primary design input; do not broaden exploration beyond direct dependencies unless a path issue or project convention requires it.",

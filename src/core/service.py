@@ -15,6 +15,7 @@ def configure_runtime(
     project_dir: str,
     traceability_dir: str | None = None,
     runner_events_path: str | None = None,
+    requirements_dir: str | None = None,
     app_type: str | None = None,
     web_port: int | None = None,
     android_package: str | None = None,
@@ -31,6 +32,7 @@ def configure_runtime(
     set_context_runtime(_runtime)
     set_context_config(
         workspace_dir=resolved_project_dir,
+        requirements_dir=requirements_dir,
         app_type=app_type,
         web_port=web_port,
         android_package=android_package,

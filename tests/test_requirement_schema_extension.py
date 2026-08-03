@@ -36,7 +36,11 @@ OLD_DEMO_PATH = REPO_ROOT / "example" / "ticketbooking-demo" / "requirements.yam
 class RequirementSchemaExtensionTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temp_dir = tempfile.TemporaryDirectory()
-        self.runtime = configure_runtime(project_dir=self.temp_dir.name, app_type="cli")
+        self.runtime = configure_runtime(
+            project_dir=self.temp_dir.name,
+            requirements_dir=str(FIXTURE_DIR),
+            app_type="cli",
+        )
         self.runtime.traceability.init_store(reset=True)
         self.requirement_tree = load_requirements(FIXTURE_PATH)
         self.runtime.traceability.store_requirement_tree(self.requirement_tree)
@@ -61,11 +65,16 @@ class RequirementSchemaExtensionTests(unittest.TestCase):
             ],
         )
         self.assertEqual(root["images"], [{"label": "System overview", "path": "./reference/workflow.svg"}])
+        self.assertEqual(
+            root["references"],
+            [{"label": "Global review standard", "path": "./reference_docs/global-standard.md"}],
+        )
         self.assertEqual(module["permissions"], "ALL")
         self.assertEqual(workflow["type"], "WORKFLOW")
         self.assertEqual(workflow["permissions"], ["REVIEWER", "ADMIN"])
         self.assertEqual(workflow["state_flow"], ["DRAFT", "SUBMITTED", "APPROVED"])
         self.assertEqual(workflow["images"][0]["label"], "Approval workspace")
+        self.assertEqual(workflow["references"], [{"path": "./reference_docs/approval-policy.txt"}])
 
         implicit_id = "FLOW-APPROVAL:SCENARIO:002"
         embedded = {item["scenario_id"]: item for item in workflow["scenarios"]}
@@ -80,7 +89,7 @@ class RequirementSchemaExtensionTests(unittest.TestCase):
 
         original_metadata = {
             key: copy.deepcopy(workflow[key])
-            for key in ("type", "permissions", "images", "state_flow")
+            for key in ("type", "permissions", "images", "references", "state_flow")
         }
         self.runtime.traceability.update_requirement_fields("FLOW-APPROVAL", description="Updated description")
         self.runtime.traceability.update_requirement_fields(
@@ -175,8 +184,11 @@ class RequirementSchemaExtensionTests(unittest.TestCase):
             '"path":"./reference/workflow.svg"',
             '"actor":"ADMIN"',
             '"actor":"USER"',
+            '"virtual_path":"/references/reference_docs/global-standard.md"',
+            '"virtual_path":"/references/reference_docs/approval-policy.txt"',
         ):
             self.assertIn(expected, context)
+        self.assertNotIn("Every approval decision must retain", context)
 
         tdd_prompt = get_tdd_user_prompt(
             node_id="FLOW-APPROVAL",
@@ -290,6 +302,7 @@ class RequirementSchemaExtensionTests(unittest.TestCase):
         self.assertEqual(stored["permissions"], ["REVIEWER", "ADMIN"])
         self.assertEqual(stored["state_flow"], ["DRAFT", "SUBMITTED", "APPROVED"])
         self.assertEqual(stored["images"][0]["label"], "Approval workspace")
+        self.assertEqual(stored["references"], [{"path": "./reference_docs/approval-policy.txt"}])
 
         self.runtime.traceability.update_requirement_fields(
             "FLOW-APPROVAL",
@@ -397,6 +410,12 @@ class RequirementSchemaExtensionTests(unittest.TestCase):
         self.assertIn("before returning protected data or committing state", tdd_prompt)
         self.assertIn("data scopes", tdd_prompt)
         self.assertIn("state transitions", tdd_prompt)
+        for prompt in (interface_prompt, test_prompt, tdd_prompt):
+            self.assertIn("/references", prompt)
+            self.assertIn("Reference ancestry and declaration order do not imply priority", prompt)
+        self.assertIn("Read each available declared document reference", interface_prompt)
+        self.assertIn("Read available document references", test_prompt)
+        self.assertIn("Read available document references", tdd_prompt)
 
 
 if __name__ == "__main__":

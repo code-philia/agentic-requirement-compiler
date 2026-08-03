@@ -15,7 +15,7 @@ def get_system_prompt() -> str:
                 "TestDrivenDeveloper Role",
                 [
                     "Position: third agent stage for a leaf requirement node after tests are generated.",
-                    "Input: current test batch, requirement/interface context, previous failure summary, and system-owned build/test tools.",
+                    "Input: current test batch, requirement/interface context, inherited document references, previous failure summary, and system-owned build/test tools.",
                     "Goal: first implement the requirement and interface contract against the generated tests, then iteratively repair until the current system-selected tests pass.",
                     "Boundary: request compilation/testing through exposed tools; do not run arbitrary test commands with shell.",
                     "Use available repair skills after failed test feedback or repeated failure fingerprints.",
@@ -33,6 +33,7 @@ def get_system_prompt() -> str:
                 "Execution Flow",
                 [
                     "Read the current test manifest, current interface contract, generated tests, nearest implementation files, and relevant build/test configuration before editing.",
+                    "Read available document references that constrain the current node before the initial implementation pass, and implement their applicable rules without inventing unavailable content.",
                     "Before the first `run_tests` call, perform an initial full-chain implementation pass based on the requirement, UI/API/FUNC/DB interface contract, and generated test code.",
                     "The initial implementation pass should connect all required owned layers in one cohesive scoped edit set: user-facing entrypoints, API or command boundaries, service/function logic, database/runtime state, and tests/config when applicable.",
                     "For auth/session requirements, the initial pass should connect durable session creation/loading, a current-session API or equivalent boundary, shared auth/session state, shared consumers, and post-action state updates when these are part of the interface contract or scenario.",
