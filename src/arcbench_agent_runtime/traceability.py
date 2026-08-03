@@ -33,6 +33,29 @@ def _as_str_list(value: Any) -> list[str]:
     return [str(item).strip() for item in _as_list(value) if str(item).strip()]
 
 
+def _as_mapping_list(value: Any) -> list[dict[str, Any]]:
+    return [dict(item) for item in _as_list(value) if isinstance(item, dict)]
+
+
+def _as_visual_reference_list(value: Any) -> list[Any]:
+    normalized: list[Any] = []
+    for item in _as_list(value):
+        if isinstance(item, dict):
+            normalized.append(dict(item))
+            continue
+        text = str(item or "").strip()
+        if text:
+            normalized.append(text)
+    return normalized
+
+
+def _as_permissions(value: Any) -> str | list[str] | None:
+    if isinstance(value, list):
+        return _as_str_list(value)
+    normalized = str(value or "").strip()
+    return normalized or None
+
+
 def _as_optional_str(value: Any) -> str | None:
     normalized = str(value or "").strip()
     return normalized or None
@@ -67,11 +90,16 @@ class RequirementRecord:
     req_id: str
     name: str = ""
     description: str = ""
-    visual_reference: list[str] | None = None
+    visual_reference: list[Any] | None = None
     scenarios: list[dict[str, Any]] | None = None
     parent_id: str | None = None
     children_ids: list[str] | None = None
     dependencies: list[str] | None = None
+    type: str = ""
+    roles: list[dict[str, Any]] | None = None
+    permissions: str | list[str] | None = None
+    images: list[dict[str, Any]] | None = None
+    state_flow: list[str] | None = None
 
 
 @dataclass(frozen=True)
@@ -79,7 +107,8 @@ class ScenarioRecord:
     scenario_id: str
     req_id: str
     name: str
-    steps: list[dict[str, str]]
+    steps: list[dict[str, Any]]
+    actor: str | None = None
 
 
 @dataclass(frozen=True)
@@ -156,6 +185,69 @@ class TraceabilityStore:
             "node_contracts": self.list_node_contracts(),
         }
 
+    @staticmethod
+    def _normalize_scenarios(req_id: str, value: Any) -> list[dict[str, Any]]:
+        normalized: list[dict[str, Any]] = []
+        seen_ids: set[str] = set()
+        for index, item in enumerate(_as_list(value), start=1):
+            if not isinstance(item, dict):
+                continue
+            explicit_id = str(item.get("id") or "").strip()
+            explicit_scenario_id = str(item.get("scenario_id") or "").strip()
+            if explicit_id and explicit_scenario_id and explicit_id != explicit_scenario_id:
+                raise ValueError(
+                    f"Scenario in requirement `{req_id}` has conflicting id values: "
+                    f"id=`{explicit_id}`, scenario_id=`{explicit_scenario_id}`."
+                )
+            scenario_id = explicit_id or explicit_scenario_id or f"{req_id}:SCENARIO:{index:03d}"
+            if scenario_id in seen_ids:
+                raise ValueError(f"Duplicate scenario id `{scenario_id}` in requirement `{req_id}`.")
+            seen_ids.add(scenario_id)
+            scenario = {
+                **dict(item),
+                "scenario_id": scenario_id,
+                "id": scenario_id,
+                "name": str(item.get("name") or "").strip() or scenario_id,
+                "steps": _as_mapping_list(item.get("steps")),
+            }
+            actor = _as_optional_str(item.get("actor"))
+            if actor is not None:
+                scenario["actor"] = actor
+            else:
+                scenario.pop("actor", None)
+            normalized.append(scenario)
+        return normalized
+
+    @staticmethod
+    def _scenario_row(req_id: str, scenario: dict[str, Any]) -> dict[str, Any]:
+        scenario_id = str(scenario.get("scenario_id") or scenario.get("id") or "").strip()
+        row = {
+            **dict(scenario),
+            "scenario_id": scenario_id,
+            "id": scenario_id,
+            "req_id": req_id,
+            "name": str(scenario.get("name") or "").strip() or scenario_id,
+            "steps": _as_mapping_list(scenario.get("steps")),
+        }
+        actor = _as_optional_str(scenario.get("actor"))
+        if actor is not None:
+            row["actor"] = actor
+        else:
+            row.pop("actor", None)
+        return row
+
+    @staticmethod
+    def _add_scenario_row(rows: dict[str, Any], req_id: str, scenario: dict[str, Any]) -> None:
+        scenario_id = str(scenario.get("scenario_id") or scenario.get("id") or "").strip()
+        existing = rows.get(scenario_id)
+        if isinstance(existing, dict):
+            existing_req_id = str(existing.get("req_id") or "").strip()
+            raise ValueError(
+                f"Duplicate scenario id `{scenario_id}` across requirements "
+                f"`{existing_req_id}` and `{req_id}`."
+            )
+        rows[scenario_id] = TraceabilityStore._scenario_row(req_id, scenario)
+
     def store_requirement_tree(self, requirement_tree: dict[str, Any]) -> None:
         """Persist a nested ARC requirements tree into current-state tables.
 
@@ -179,29 +271,25 @@ class TraceabilityStore:
                 for child in children
                 if str(child.get("id") or child.get("req_id") or "").strip()
             ]
-            node_scenarios = [dict(item) for item in _as_list(node.get("scenarios")) if isinstance(item, dict)]
+            node_scenarios = self._normalize_scenarios(req_id, node.get("scenarios"))
             requirements[req_id] = {
                 "req_id": req_id,
                 "id": req_id,
                 "name": str(node.get("name") or "").strip(),
                 "description": str(node.get("description") or "").strip(),
-                "visual_reference": _as_str_list(node.get("visual_reference")),
+                "type": str(node.get("type") or "").strip(),
+                "roles": _as_mapping_list(node.get("roles")),
+                "permissions": _as_permissions(node.get("permissions")),
+                "images": _as_mapping_list(node.get("images")),
+                "state_flow": _as_str_list(node.get("state_flow")),
+                "visual_reference": _as_visual_reference_list(node.get("visual_reference")),
                 "scenarios": node_scenarios,
                 "parent_id": _as_optional_str(parent_id),
                 "children_ids": children_ids,
                 "dependencies": _as_str_list(node.get("dependencies")),
             }
             for scenario in node_scenarios:
-                scenario_id = str(scenario.get("id") or scenario.get("scenario_id") or "").strip()
-                if not scenario_id:
-                    continue
-                scenarios[scenario_id] = {
-                    "scenario_id": scenario_id,
-                    "id": scenario_id,
-                    "name": str(scenario.get("name") or "").strip() or scenario_id,
-                    "req_id": req_id,
-                    "steps": _as_list(scenario.get("steps")),
-                }
+                self._add_scenario_row(scenarios, req_id, scenario)
             for child in children:
                 walk(child, req_id)
 
@@ -239,7 +327,12 @@ class TraceabilityStore:
         req_id: str,
         name: str = "",
         description: str = "",
-        visual_reference: list[str] | None = None,
+        type: str = "",
+        roles: list[dict[str, Any]] | None = None,
+        permissions: str | list[str] | None = None,
+        images: list[dict[str, Any]] | None = None,
+        state_flow: list[str] | None = None,
+        visual_reference: list[Any] | None = None,
         scenarios: list[dict[str, Any]] | None = None,
         parent_id: str | None = None,
         children_ids: list[str] | None = None,
@@ -248,35 +341,33 @@ class TraceabilityStore:
         normalized_req_id = str(req_id or "").strip()
         if not normalized_req_id:
             raise ValueError("req_id is required")
-        normalized_scenarios = [dict(item) for item in _as_list(scenarios) if isinstance(item, dict)]
+        normalized_scenarios = self._normalize_scenarios(normalized_req_id, scenarios)
+        scenarios_table = self._read_table("scenarios")
+        for scenario_id, scenario in list(scenarios_table.items()):
+            if isinstance(scenario, dict) and scenario.get("req_id") == normalized_req_id:
+                scenarios_table.pop(scenario_id, None)
+        for scenario in normalized_scenarios:
+            self._add_scenario_row(scenarios_table, normalized_req_id, scenario)
         self._upsert_row(
             "requirements",
             normalized_req_id,
             {
                 "req_id": normalized_req_id,
+                "id": normalized_req_id,
                 "name": str(name or "").strip(),
                 "description": str(description or "").strip(),
-                "visual_reference": _as_str_list(visual_reference),
+                "type": str(type or "").strip(),
+                "roles": _as_mapping_list(roles),
+                "permissions": _as_permissions(permissions),
+                "images": _as_mapping_list(images),
+                "state_flow": _as_str_list(state_flow),
+                "visual_reference": _as_visual_reference_list(visual_reference),
                 "scenarios": normalized_scenarios,
                 "parent_id": _as_optional_str(parent_id),
                 "children_ids": _as_str_list(children_ids),
                 "dependencies": _as_str_list(dependencies),
             },
         )
-        scenarios_table = self._read_table("scenarios")
-        for scenario_id, scenario in list(scenarios_table.items()):
-            if isinstance(scenario, dict) and scenario.get("req_id") == normalized_req_id:
-                scenarios_table.pop(scenario_id, None)
-        for scenario in normalized_scenarios:
-            scenario_id = str(scenario.get("id") or scenario.get("scenario_id") or "").strip()
-            if not scenario_id:
-                continue
-            scenarios_table[scenario_id] = {
-                "scenario_id": scenario_id,
-                "name": str(scenario.get("name") or "").strip() or scenario_id,
-                "req_id": normalized_req_id,
-                "steps": _as_list(scenario.get("steps")),
-            }
         self._write_table("scenarios", scenarios_table)
         self.events.notify_traceability_changed("requirements_updated")
 
@@ -289,7 +380,12 @@ class TraceabilityStore:
             req_id=req_id,
             name=str(merged.get("name") or "").strip(),
             description=str(merged.get("description") or "").strip(),
-            visual_reference=_as_str_list(merged.get("visual_reference")),
+            type=str(merged.get("type") or "").strip(),
+            roles=_as_mapping_list(merged.get("roles")),
+            permissions=_as_permissions(merged.get("permissions")),
+            images=_as_mapping_list(merged.get("images")),
+            state_flow=_as_str_list(merged.get("state_flow")),
+            visual_reference=_as_visual_reference_list(merged.get("visual_reference")),
             scenarios=_as_list(merged.get("scenarios")),
             parent_id=merged.get("parent_id"),
             children_ids=_as_str_list(merged.get("children_ids")),
@@ -322,30 +418,64 @@ class TraceabilityStore:
             rows = [row for row in rows if isinstance(row, dict) and row.get("req_id") == req_id]
         return [dict(row) for row in rows if isinstance(row, dict)]
 
-    def upsert_scenario(self, *, scenario_id: str, req_id: str, name: str, steps: list[dict[str, str]]) -> None:
+    def upsert_scenario(
+        self,
+        *,
+        scenario_id: str,
+        req_id: str,
+        name: str,
+        steps: list[dict[str, Any]],
+        actor: str | None = None,
+    ) -> None:
         normalized_scenario_id = str(scenario_id or "").strip()
         normalized_req_id = str(req_id or "").strip()
         if not normalized_scenario_id or not normalized_req_id:
             raise ValueError("scenario_id and req_id are required")
-        self._upsert_row(
-            "scenarios",
-            normalized_scenario_id,
-            {
-                "scenario_id": normalized_scenario_id,
-                "name": str(name or "").strip(),
-                "req_id": normalized_req_id,
-                "steps": _as_list(steps),
-            },
-        )
+        existing = self.get_scenario(normalized_scenario_id)
+        if existing and str(existing.get("req_id") or "").strip() != normalized_req_id:
+            raise ValueError(
+                f"Duplicate scenario id `{normalized_scenario_id}` across requirements "
+                f"`{existing.get('req_id')}` and `{normalized_req_id}`."
+            )
         requirement = self.get_requirement(normalized_req_id)
+        existing_actor = _as_optional_str((existing or {}).get("actor"))
+        normalized_actor = _as_optional_str(actor) if actor is not None else existing_actor
+        scenario_payload: dict[str, Any] = {
+            **(existing or {}),
+            "scenario_id": normalized_scenario_id,
+            "id": normalized_scenario_id,
+            "name": str(name or "").strip() or normalized_scenario_id,
+            "steps": _as_mapping_list(steps),
+        }
+        scenario_payload.pop("req_id", None)
+        if normalized_actor is not None:
+            scenario_payload["actor"] = normalized_actor
+        else:
+            scenario_payload.pop("actor", None)
         if requirement:
-            scenarios = [
-                item
-                for item in _as_list(requirement.get("scenarios"))
-                if str(item.get("id") or item.get("scenario_id") or "").strip() != normalized_scenario_id
-            ]
-            scenarios.append({"id": normalized_scenario_id, "name": str(name or "").strip(), "steps": _as_list(steps)})
+            scenarios: list[dict[str, Any]] = []
+            replaced = False
+            for item in _as_list(requirement.get("scenarios")):
+                if not isinstance(item, dict):
+                    continue
+                item_id = str(item.get("id") or item.get("scenario_id") or "").strip()
+                if item_id == normalized_scenario_id:
+                    embedded = {**dict(item), **scenario_payload}
+                    if actor is None and _as_optional_str(item.get("actor")) is not None:
+                        embedded["actor"] = _as_optional_str(item.get("actor"))
+                    scenarios.append(embedded)
+                    replaced = True
+                else:
+                    scenarios.append(dict(item))
+            if not replaced:
+                scenarios.append(scenario_payload)
             self.update_requirement_fields(normalized_req_id, scenarios=scenarios)
+        else:
+            self._upsert_row(
+                "scenarios",
+                normalized_scenario_id,
+                self._scenario_row(normalized_req_id, scenario_payload),
+            )
         self.events.notify_traceability_changed("scenarios_updated")
 
     def delete_scenario(self, scenario_id: str) -> None:

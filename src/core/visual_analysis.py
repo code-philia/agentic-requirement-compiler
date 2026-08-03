@@ -17,7 +17,7 @@ from core.service import get_runtime
 
 LogCallback = Callable[[str, str, str | None, str | None], Awaitable[None] | None]
 
-VISUAL_ANALYSIS_PROMPT_VERSION = "frontend-style-requirements"
+VISUAL_ANALYSIS_PROMPT_VERSION = "frontend-style-requirements-v2-label-aware"
 
 
 def build_visual_analysis_prompt() -> str:
@@ -93,52 +93,78 @@ async def analyze_and_attach_visual_references(
 
     candidates = _collect_visual_candidates(requirement_data)
     if not candidates:
-        await _log(log_cb, "System", "No image found in the description or visual_reference.", "info", req_id)
+        await _log(log_cb, "System", "No image found in images, description, or visual_reference.", "info", req_id)
         return requirement_data
 
     cache = _load_visual_cache(workspace_path)
     cache_updated = False
     visual_references: list[dict[str, Any]] = []
+    has_analysis = False
 
     for item in candidates:
         image_path = str(item.get("image_path") or "").strip()
         if not image_path:
             continue
+        label = str(item.get("label") or "").strip()
         existing_analysis = str(item.get("analysis") or "").strip()
         if existing_analysis:
-            visual_references.append(_reference_payload(image_path, existing_analysis, item.get("resolved_image_path")))
+            visual_references.append(
+                _reference_payload(
+                    image_path,
+                    existing_analysis,
+                    item.get("resolved_image_path"),
+                    label=label,
+                )
+            )
+            has_analysis = True
             continue
 
         full_path = _resolve_image_path(image_path, workspace_path, requirements_dir)
         if not full_path.exists():
             await _log(log_cb, "System", f"Image not found: {full_path}", "warning", req_id)
+            visual_references.append(
+                _reference_payload(image_path, "", item.get("resolved_image_path"), label=label)
+            )
             continue
 
         try:
-            cache_key = _build_visual_cache_key(full_path)
+            cache_key = _build_visual_cache_key(full_path, label=label)
             cached_entry = cache.get(cache_key)
             if isinstance(cached_entry, dict) and cached_entry.get("analysis"):
-                visual_references.append(_reference_payload(image_path, str(cached_entry["analysis"]), str(full_path)))
+                visual_references.append(
+                    _reference_payload(
+                        image_path,
+                        str(cached_entry["analysis"]),
+                        str(full_path),
+                        label=label,
+                    )
+                )
+                has_analysis = True
                 await _log(log_cb, "System", f"Reusing cached visual analysis: {image_path}", None, req_id)
                 continue
 
             await _log(log_cb, "System", f"Analyzing visual element: {image_path}", None, req_id)
-            analysis = await _request_visual_analysis(full_path)
+            analysis = await _request_visual_analysis(full_path, label=label)
             cache[cache_key] = {
                 "image_path": image_path,
+                "label": label,
                 "full_path": str(full_path),
                 "prompt_version": VISUAL_ANALYSIS_PROMPT_VERSION,
                 "analysis": analysis,
             }
             cache_updated = True
-            visual_references.append(_reference_payload(image_path, analysis, str(full_path)))
+            visual_references.append(_reference_payload(image_path, analysis, str(full_path), label=label))
+            has_analysis = True
         except Exception as exc:
             await _log(log_cb, "System", f"Failed to analyze image {image_path}: {exc}", "error", req_id)
+            visual_references.append(
+                _reference_payload(image_path, "", item.get("resolved_image_path"), label=label)
+            )
 
     if cache_updated:
         _save_visual_cache(workspace_path, cache)
 
-    if visual_references:
+    if visual_references and has_analysis:
         get_runtime().traceability.update_requirement_fields(req_id, visual_reference=visual_references)
         requirement_data["visual_reference"] = visual_references
         await _log(log_cb, "System", f"Stored {len(visual_references)} visual references for {req_id}", None, req_id)
@@ -147,25 +173,62 @@ async def analyze_and_attach_visual_references(
 
 
 def _collect_visual_candidates(requirement_data: dict[str, Any]) -> list[dict[str, Any]]:
-    seen: set[str] = set()
     candidates: list[dict[str, Any]] = []
+    candidate_indexes: dict[str, int] = {}
+
+    def add_candidate(
+        image_path: Any,
+        metadata: dict[str, Any] | None = None,
+        *,
+        prefer_label: bool = False,
+    ) -> None:
+        path = str(image_path or "").strip()
+        if not path:
+            return
+        candidate = {"image_path": path, **(metadata or {})}
+        candidate["image_path"] = path
+        key = _normalize_candidate_path(path)
+        if key in candidate_indexes:
+            existing = candidates[candidate_indexes[key]]
+            existing_label = str(existing.get("label") or "").strip()
+            candidate_label = str(candidate.get("label") or "").strip()
+            if prefer_label and candidate_label:
+                if existing_label and existing_label != candidate_label:
+                    existing.pop("analysis", None)
+                existing["label"] = candidate["label"]
+            for field in ("label", "analysis", "resolved_image_path"):
+                if not str(existing.get(field) or "").strip() and str(candidate.get(field) or "").strip():
+                    existing[field] = candidate[field]
+            return
+        candidate_indexes[key] = len(candidates)
+        candidates.append(candidate)
+
     visual_reference = requirement_data.get("visual_reference") or []
     if isinstance(visual_reference, list):
         for item in visual_reference:
-            if not isinstance(item, dict):
-                continue
-            image_path = str(item.get("image_path") or "").strip()
-            if image_path and image_path not in seen:
-                seen.add(image_path)
-                candidates.append(dict(item))
+            if isinstance(item, dict):
+                image_path = item.get("image_path") or item.get("path")
+                add_candidate(image_path, dict(item))
+            else:
+                add_candidate(item)
+
+    images = requirement_data.get("images") or []
+    if isinstance(images, list):
+        for item in images:
+            if isinstance(item, dict):
+                image_path = item.get("path") or item.get("image_path")
+                add_candidate(image_path, {"label": item.get("label", "")}, prefer_label=True)
+            else:
+                add_candidate(item)
 
     description = str(requirement_data.get("description") or "")
-    for image_path in re.findall(r"!\[[^\]]*\]\(([^)]+)\)", description):
-        normalized = image_path.strip()
-        if normalized and normalized not in seen:
-            seen.add(normalized)
-            candidates.append({"image_path": normalized})
+    for label, image_path in re.findall(r"!\[([^\]]*)\]\(([^)]+)\)", description):
+        add_candidate(image_path, {"label": label.strip()})
     return candidates
+
+
+def _normalize_candidate_path(image_path: str) -> str:
+    return os.path.normpath(str(image_path or "").strip().replace("\\", "/")).replace("\\", "/")
 
 
 def _resolve_image_path(image_path: str, workspace_path: str, requirements_dir: str) -> Path:
@@ -175,8 +238,18 @@ def _resolve_image_path(image_path: str, workspace_path: str, requirements_dir: 
     return (base_dir / normalized).resolve()
 
 
-def _reference_payload(image_path: str, analysis: str, resolved_image_path: Any = None) -> dict[str, Any]:
-    payload = {"image_path": image_path, "analysis": analysis}
+def _reference_payload(
+    image_path: str,
+    analysis: str,
+    resolved_image_path: Any = None,
+    *,
+    label: str = "",
+) -> dict[str, Any]:
+    payload = {"image_path": image_path}
+    if label:
+        payload["label"] = label
+    if analysis:
+        payload["analysis"] = analysis
     if resolved_image_path:
         payload["resolved_image_path"] = str(resolved_image_path)
     return payload
@@ -194,13 +267,16 @@ def _save_visual_cache(workspace_path: str, cache: dict[str, Any]) -> None:
     utils.write_json_file(_visual_cache_path(workspace_path), cache)
 
 
-def _build_visual_cache_key(full_path: Path) -> str:
+def _build_visual_cache_key(full_path: Path, *, label: str = "") -> str:
     stat = full_path.stat()
-    raw_key = f"{full_path}::{int(stat.st_mtime_ns)}::{stat.st_size}::{VISUAL_ANALYSIS_PROMPT_VERSION}"
+    raw_key = (
+        f"{full_path}::{int(stat.st_mtime_ns)}::{stat.st_size}::"
+        f"{VISUAL_ANALYSIS_PROMPT_VERSION}::{str(label or '').strip()}"
+    )
     return hashlib.sha256(raw_key.encode("utf-8")).hexdigest()
 
 
-async def _request_visual_analysis(full_path: Path) -> str:
+async def _request_visual_analysis(full_path: Path, *, label: str = "") -> str:
     visual_base_url = _resolve_visual_base_url()
     visual_api_key = _resolve_visual_api_key()
     if not visual_base_url:
@@ -225,13 +301,20 @@ async def _request_visual_analysis(full_path: Path) -> str:
             {
                 "role": "user",
                 "content": [
-                    {"type": "text", "text": "Analyze this UI image."},
+                    {"type": "text", "text": _build_visual_user_message(label)},
                     {"type": "image_url", "image_url": {"url": data_url}},
                 ],
             },
         ],
     )
     return _extract_visual_chat_completion_text(response)
+
+
+def _build_visual_user_message(label: str) -> str:
+    normalized_label = str(label or "").strip()
+    if normalized_label:
+        return f"Reference label: {normalized_label}\nAnalyze this UI image."
+    return "Analyze this UI image."
 
 
 def _resolve_visual_api_key() -> str:
