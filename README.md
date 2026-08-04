@@ -70,7 +70,7 @@ Additional requirements for Android generation:
 
 ```bash
 # Clone the repository
-git clone https://github.com/your-org/agentic-requirement-compiler.git
+git clone https://github.com/code-philia/agentic-requirement-compiler.git
 cd agentic-requirement-compiler
 
 # Create and activate virtual environment
