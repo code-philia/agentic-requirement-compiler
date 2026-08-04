@@ -139,6 +139,21 @@ At minimum, ARC expects:
 
 - `requirements.yaml`
 - optional assets such as `reference/...`
+- optional UTF-8 document references such as `docs/...`
+
+Requirement nodes may declare external text documents with `references`:
+
+```yaml
+references:
+  - label: National formatting standard
+    path: ./docs/formatting-standard.md
+```
+
+Reference paths are local paths relative to `requirements.yaml`. A node receives its own references and all references declared by its ancestors. ARC exposes only the declared, valid files to stage agents under exact read-only paths such as `/references/docs/formatting-standard.md`; document contents are read on demand and are not copied or inlined into every prompt.
+
+Supported reference formats are UTF-8 Markdown, TXT, RST, AsciiDoc, JSON/JSONL, YAML, TOML, INI/CFG, CSV/TSV, XML, and HTML. URLs, absolute paths, files outside the requirement directory, PDF/DOCX, media, and other binary files are unavailable. ARC logs a warning and continues compilation when a reference is malformed, missing, unreadable, or unsupported; agents are instructed not to invent unavailable content.
+
+Reference ancestry and declaration order describe provenance only. ARC applies precedence explicitly stated in the requirements or referenced documents and does not infer an additional priority rule.
 
 Conceptually, ARC produces three layers of output:
 
@@ -157,6 +172,8 @@ Minimal input layout:
 ```text
 my-requirement-dir
 |-- requirements.yaml
+|-- docs/
+|   `-- formatting-standard.md
 `-- reference/
     `-- homepage.png
 ```
@@ -199,7 +216,7 @@ Run `arc --help` or `arc compile --help` for detailed usage.
 
 #### Runtime behavior
 
-- ARC copies the requirement directory into `<output-dir>/requirements/` (you must specify `-o` explicitly)
+- ARC reads declared images and document references from the input requirement directory without copying them into the generated project
 - Compilation executes inside `output-dir`
 - If `--clear-all` is not used and `.arc/processing_queue.json` already exists, ARC resumes from that workspace
 

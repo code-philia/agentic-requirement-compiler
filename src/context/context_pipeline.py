@@ -6,10 +6,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
+from core.reference_documents import build_reference_catalog
+
 
 @dataclass
 class ContextConfig:
     workspace_dir: str = "."
+    requirements_dir: str = ""
     app_type: str = "web"
     web_port: int = 3301
     android_package: str = "com.example.template"
@@ -70,12 +73,15 @@ class ContextPipeline:
         self,
         *,
         workspace_dir: str | None = None,
+        requirements_dir: str | None = None,
         app_type: str | None = None,
         web_port: int | None = None,
         android_package: str | None = None,
     ) -> None:
         if workspace_dir is not None:
             self.config.workspace_dir = workspace_dir
+        if requirements_dir is not None:
+            self.config.requirements_dir = requirements_dir
         if app_type is not None:
             self.config.app_type = app_type
         if web_port is not None:
@@ -125,43 +131,137 @@ class ContextPipeline:
         return str(step.get("keyword") or step.get("type") or "").strip().upper()
 
     def _build_scenario_digest(self, scenario: dict[str, Any]) -> dict[str, Any]:
-        flow: list[str] = []
+        flow: list[dict[str, str]] = []
         for step in scenario.get("steps") or []:
             if not isinstance(step, dict):
                 continue
             keyword = self._normalize_step_keyword(step)
             content = str(step.get("content", "") or "").strip()
-            if keyword and content:
-                flow.append(f"{keyword}: {content}")
-            elif content:
-                flow.append(content)
+            actor = str(step.get("actor") or "").strip()
+            if content:
+                flow.append({"keyword": keyword, "actor": actor, "content": content})
         return {
             "scenario_id": scenario.get("scenario_id") or scenario.get("id", ""),
             "name": scenario.get("name", ""),
+            "actor": scenario.get("actor", ""),
             "flow": flow,
         }
 
     @staticmethod
-    def _build_visual_digest(visual_reference: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        return [
-            {
-                "image_path": item.get("image_path", ""),
-                "analysis": str(item.get("analysis", "") or ""),
-            }
-            for item in visual_reference
-            if isinstance(item, dict)
-        ]
+    def _build_visual_digest(visual_reference: list[Any]) -> list[dict[str, Any]]:
+        digest: list[dict[str, Any]] = []
+        for item in visual_reference:
+            if isinstance(item, dict):
+                digest.append(
+                    {
+                        "image_path": item.get("image_path") or item.get("path", ""),
+                        "label": str(item.get("label", "") or ""),
+                        "analysis": str(item.get("analysis", "") or ""),
+                    }
+                )
+                continue
+            image_path = str(item or "").strip()
+            if image_path:
+                digest.append({"image_path": image_path, "label": "", "analysis": ""})
+        return digest
 
-    def _build_acceptance_gate(self, node_id: str, req_data: dict[str, Any]) -> str:
+    def _resolve_role_catalog(self, node_id: str, req_data: dict[str, Any]) -> list[dict[str, Any]]:
+        store = self._store()
+        current = req_data
+        current_id = node_id
+        visited: set[str] = set()
+        while isinstance(current, dict) and current_id and current_id not in visited:
+            visited.add(current_id)
+            roles = [dict(item) for item in current.get("roles") or [] if isinstance(item, dict)]
+            if roles:
+                return roles
+            parent_id = str(current.get("parent_id") or "").strip()
+            if not parent_id or store is None:
+                break
+            current_id = parent_id
+            current = store.get_requirement(parent_id) or {}
+        return []
+
+    @staticmethod
+    def _build_permission_contract(
+        req_data: dict[str, Any],
+        role_catalog: list[dict[str, Any]],
+    ) -> dict[str, Any] | None:
+        permissions = req_data.get("permissions")
+        if permissions is None or permissions == "":
+            return None
+        role_ids = [
+            str(item.get("id") or "").strip()
+            for item in role_catalog
+            if str(item.get("id") or "").strip()
+        ]
+        is_all = isinstance(permissions, str) and permissions.strip().upper() == "ALL"
+        allowed_roles = role_ids if is_all else [
+            str(item or "").strip()
+            for item in (permissions if isinstance(permissions, list) else [])
+            if str(item or "").strip()
+        ]
+        denied_roles = [role_id for role_id in role_ids if role_id not in allowed_roles]
+        is_leaf = not bool(req_data.get("children_ids"))
+        return {
+            "declared_permissions": permissions,
+            "role_catalog_available": bool(role_ids),
+            "allowed_roles": allowed_roles,
+            "denied_roles": denied_roles,
+            "node_scope": "leaf" if is_leaf else "non_leaf",
+            "anonymous_access": (
+                "Permissions describe role access only; derive anonymous allow/deny behavior from the description and scenarios."
+            ),
+            "enforcement": (
+                "Enforce authorization at the owned server/API/function boundary before data is returned or state changes; "
+                "UI visibility is supplementary."
+                if is_leaf
+                else
+                "This non-leaf node remains UI/composition-only: express role-aware composition and entry points, "
+                "and delegate server authorization to leaf children or an existing backend owner; do not create an "
+                "API/function boundary for this node."
+            ),
+        }
+
+    def _build_acceptance_gate(
+        self,
+        node_id: str,
+        req_data: dict[str, Any],
+        reference_catalog: list[dict[str, Any]] | None = None,
+    ) -> str:
         scenarios = req_data.get("scenarios") or []
         visual_reference = req_data.get("visual_reference") or []
+        images = req_data.get("images") or []
+        references = reference_catalog or []
+        role_catalog = self._resolve_role_catalog(node_id, req_data)
+        permission_contract = self._build_permission_contract(req_data, role_catalog)
+        primary_outcomes = [
+            "Implement the current node's owned behavior, not just a renderable shell.",
+            "Use real owned runtime wiring for fetched or persisted data when this node owns that chain.",
+            "If runtime data is not owned here, render explicit loading, empty, or error states instead of fake records.",
+        ]
+        if permission_contract:
+            if permission_contract["node_scope"] == "leaf":
+                primary_outcomes.append(
+                    "Enforce declared role, anonymous-access, and data-scope rules at the owned backend boundary; UI hiding alone is insufficient."
+                )
+            else:
+                primary_outcomes.append(
+                    "Keep this non-leaf node UI/composition-only: reflect declared access in composition and entry points, "
+                    "while delegating server enforcement to leaf children or an existing backend owner."
+                )
+        if req_data.get("state_flow"):
+            primary_outcomes.append(
+                "Use state_flow as the required state vocabulary and implement only transitions supported by the description or scenarios."
+            )
+        if references:
+            primary_outcomes.append(
+                "Read the available declared reference documents that affect this node before finalizing artifacts; "
+                "do not invent content for unavailable references."
+            )
         gate = {
             "req_id": req_data.get("req_id", node_id),
-            "primary_outcomes": [
-                "Implement the current node's owned behavior, not just a renderable shell.",
-                "Use real owned runtime wiring for fetched or persisted data when this node owns that chain.",
-                "If runtime data is not owned here, render explicit loading, empty, or error states instead of fake records.",
-            ],
+            "primary_outcomes": primary_outcomes,
             "scenario_targets": [
                 str(item.get("name", "")).strip()
                 for item in scenarios
@@ -169,7 +269,7 @@ class ContextPipeline:
             ],
             "visual_rule": (
                 "Use visual reference for layout and style only; do not copy screenshot business data."
-                if visual_reference
+                if visual_reference or images
                 else "No visual-reference-specific acceptance rule."
             ),
             "forbidden_shortcuts": [
@@ -179,20 +279,50 @@ class ContextPipeline:
                 "placeholder-only panels presented as complete features",
             ],
         }
+        if permission_contract:
+            gate["permission_contract"] = permission_contract
+        if req_data.get("state_flow"):
+            gate["state_vocabulary"] = req_data.get("state_flow")
+        if references:
+            gate["reference_rule"] = (
+                "Reference declaration order and ancestry provide provenance, not implicit priority. "
+                "Follow precedence stated by the requirements or source documents; otherwise record the chosen interpretation."
+            )
         return "<acceptance_gate>\n" + self._compact_json(gate) + "\n</acceptance_gate>"
 
-    def _build_requirement_focus(self, node_id: str, req_data: dict[str, Any]) -> str:
+    def _build_requirement_focus(
+        self,
+        node_id: str,
+        req_data: dict[str, Any],
+        reference_catalog: list[dict[str, Any]] | None = None,
+    ) -> str:
         scenarios = req_data.get("scenarios") or []
         visual_reference = req_data.get("visual_reference") or []
+        references = reference_catalog or []
+        role_catalog = self._resolve_role_catalog(node_id, req_data)
+        permission_contract = self._build_permission_contract(req_data, role_catalog)
         focus = {
             "req_id": req_data.get("req_id", node_id),
             "name": req_data.get("name", ""),
+            "type": req_data.get("type", ""),
             "description": req_data.get("description", ""),
             "dependencies": req_data.get("dependencies", []),
             "children_ids": req_data.get("children_ids", []),
+            "permissions": req_data.get("permissions"),
+            "state_flow": req_data.get("state_flow", []),
+            "images": req_data.get("images", []),
+            "references": req_data.get("references", []),
             "scenario_count": len(scenarios),
+            "image_count": len(req_data.get("images") or []),
             "visual_reference_count": len(visual_reference),
+            "reference_count": len(req_data.get("references") or []),
+            "available_reference_count": sum(1 for item in references if item.get("available")),
+            "inherited_reference_count": sum(1 for item in references if item.get("relation") == "ancestor"),
         }
+        if role_catalog:
+            focus["role_catalog"] = role_catalog
+        if permission_contract:
+            focus["permission_contract"] = permission_contract
         parts = ["<requirement_focus>", self._compact_json(focus)]
         if scenarios:
             parts.extend(
@@ -212,6 +342,22 @@ class ContextPipeline:
             )
         parts.append("</requirement_focus>")
         return "\n".join(parts)
+
+    def get_reference_catalog(
+        self,
+        node_id: str,
+        req_data: dict[str, Any] | None = None,
+    ) -> list[dict[str, Any]]:
+        store = self._store()
+        requirement = req_data or (store.get_requirement(node_id) if store is not None else None)
+        if not isinstance(requirement, dict):
+            return []
+        return build_reference_catalog(
+            node_id=node_id,
+            requirement_data=requirement,
+            store=store,
+            requirements_dir=self.config.requirements_dir,
+        )
 
     def _with_scenarios_from_store(self, node_id: str, req_data: dict[str, Any]) -> dict[str, Any]:
         scenarios = [item for item in req_data.get("scenarios") or [] if isinstance(item, dict)]
@@ -470,12 +616,20 @@ class ContextPipeline:
         if not req_data:
             return f"<error>Requirement node {node_id} not found in database.</error>"
         req_data = self._with_scenarios_from_store(node_id, req_data)
+        reference_catalog = self.get_reference_catalog(node_id, req_data)
 
         context_parts = [
-            self._build_requirement_focus(node_id, req_data),
-            self._build_acceptance_gate(node_id, req_data),
+            self._build_requirement_focus(node_id, req_data, reference_catalog),
+            self._build_acceptance_gate(node_id, req_data, reference_catalog),
             self.cache.get_or_compute(node_id, "tech_stack_context", self._get_tech_stack_context),
         ]
+        if reference_catalog:
+            context_parts.insert(
+                1,
+                "<reference_catalog>\n"
+                + self._compact_json(reference_catalog)
+                + "\n</reference_catalog>",
+            )
         project_structure = self.cache.get_or_compute(
             node_id,
             f"project_structure::{agent_type}",
@@ -632,12 +786,14 @@ def set_context_runtime(runtime: Any | None) -> None:
 def set_context_config(
     *,
     workspace_dir: str | None = None,
+    requirements_dir: str | None = None,
     app_type: str | None = None,
     web_port: int | None = None,
     android_package: str | None = None,
 ) -> None:
     context_pipeline.configure(
         workspace_dir=workspace_dir,
+        requirements_dir=requirements_dir,
         app_type=app_type,
         web_port=web_port,
         android_package=android_package,

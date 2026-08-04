@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any, Literal
 from urllib.parse import urlparse
 
@@ -15,6 +15,7 @@ from pydantic import BaseModel, Field, create_model
 from agents.context import AgentRuntimeContext
 from agents.model_factory import create_arc_chat_model
 from core.path_compat import normalize_windows_extended_prefix_path, normalize_windows_extended_prefix_text
+from core.reference_documents import REFERENCE_PREFIX
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -85,6 +86,8 @@ def build_stage_agent(
     response_format: object | None,
     workspace_root: str,
     writable_roots: list[str],
+    reference_root: str | None = None,
+    readable_reference_paths: list[str] | None = None,
     skills: list[str] | None = None,
     memory: list[str] | None = None,
     tools: list[object] | None = None,
@@ -107,6 +110,15 @@ def build_stage_agent(
             root_dir=str(skills_root),
             virtual_mode=True,
         )
+    resolved_reference_root = None
+    if reference_root:
+        candidate = Path(reference_root).expanduser().resolve()
+        if candidate.is_dir():
+            resolved_reference_root = candidate
+            routes[f"{REFERENCE_PREFIX}/"] = FilesystemBackend(
+                root_dir=str(candidate),
+                virtual_mode=True,
+            )
     backend = CompositeBackend(default=StateBackend(), routes=routes)
 
     resolved_model = create_arc_chat_model(model)
@@ -121,7 +133,11 @@ def build_stage_agent(
         tools=tools or [],
         skills=_resolve_source_paths(skills, root, skills_root, default=[f"{SKILLS_PREFIX}/"]),
         memory=_resolve_source_paths(memory, root, skills_root, default=[]),
-        permissions=_build_filesystem_permissions(root, writable_roots),
+        permissions=_build_filesystem_permissions(
+            root,
+            writable_roots,
+            readable_reference_paths=readable_reference_paths if resolved_reference_root else None,
+        ),
         context_schema=AgentRuntimeContext,
         response_format=_resolve_response_format(response_format),
     )
@@ -153,7 +169,12 @@ def _apply_unambiguous_read_file_format() -> None:
     _READ_FILE_FORMAT_PATCHED = True
 
 
-def _build_filesystem_permissions(root: Path, writable_roots: list[str]) -> list[Any]:
+def _build_filesystem_permissions(
+    root: Path,
+    writable_roots: list[str],
+    *,
+    readable_reference_paths: list[str] | None = None,
+) -> list[Any]:
     permissions: list[Any] = [
         FilesystemPermission(
             operations=["read", "write"],
@@ -196,7 +217,29 @@ def _build_filesystem_permissions(root: Path, writable_roots: list[str]) -> list
             paths=[SKILLS_PREFIX, f"{SKILLS_PREFIX}/**"],
             mode="allow",
         ),
+        FilesystemPermission(
+            operations=["write"],
+            paths=[REFERENCE_PREFIX, f"{REFERENCE_PREFIX}/**"],
+            mode="deny",
+        ),
     ]
+
+    reference_paths = sorted(
+        {
+            _normalize_virtual_path(path)
+            for path in (readable_reference_paths or [])
+            if str(path or "").strip().replace("\\", "/").startswith(f"{REFERENCE_PREFIX}/")
+            and ".." not in PurePosixPath(str(path or "").replace("\\", "/")).parts
+        }
+    )
+    if reference_paths:
+        permissions.append(
+            FilesystemPermission(
+                operations=["read"],
+                paths=reference_paths,
+                mode="allow",
+            )
+        )
 
     write_paths = [
         virtual_path

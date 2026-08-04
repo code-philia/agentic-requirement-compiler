@@ -1,0 +1,67 @@
+id: SYS-REVIEW
+name: Review System
+type: MODULE
+description: Minimal schema-extension fixture.
+images:
+  - label: System overview
+    path: ./reference/workflow.svg
+references:
+  - label: Global review standard
+    path: ./reference_docs/global-standard.md
+roles:
+  - id: USER
+    name: User
+  - id: REVIEWER
+    name: Reviewer
+  - id: ADMIN
+    name: Administrator
+children:
+  - id: MOD-REVIEW
+    name: Review Module
+    type: MODULE
+    description: All declared roles can enter the module.
+    permissions: ALL
+    images: []
+    children:
+      - id: FLOW-APPROVAL
+        name: Approval Flow
+        type: WORKFLOW
+        description: A reviewer submits a draft and an administrator approves it.
+        permissions:
+          - REVIEWER
+          - ADMIN
+        images:
+          - label: Approval workspace
+            path: ./reference/workflow.svg
+        references:
+          - path: ./reference_docs/approval-policy.txt
+        state_flow:
+          - DRAFT
+          - SUBMITTED
+          - APPROVED
+        scenarios:
+          - id: SCENARIO-EXPLICIT
+            name: Submit a draft
+            actor: REVIEWER
+            steps:
+              - keyword: GIVEN
+                actor: REVIEWER
+                content: A draft exists.
+              - keyword: WHEN
+                actor: REVIEWER
+                content: The reviewer submits the draft.
+              - keyword: THEN
+                actor: ADMIN
+                content: The draft waits for administrator approval.
+          - name: Approve a submission
+            actor: ADMIN
+            steps:
+              - keyword: GIVEN
+                actor: ADMIN
+                content: A submitted draft exists.
+              - keyword: WHEN
+                actor: ADMIN
+                content: The administrator approves it.
+              - keyword: THEN
+                actor: USER
+                content: The approved result becomes visible.

@@ -71,6 +71,7 @@ class WorkflowPhaseRunner:
                     "name": requirement_data.get("name", ""),
                     "description": requirement_data.get("description", ""),
                     "visual_reference": requirement_data.get("visual_reference") or [],
+                    "references": requirement_data.get("references") or [],
                     "children_ids": requirement_data.get("children_ids") or [],
                     "dependencies": requirement_data.get("dependencies") or [],
                 },

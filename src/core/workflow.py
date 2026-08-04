@@ -12,6 +12,7 @@ from app_type_handler import create_app_type_handler, normalize_app_type
 from context.context_pipeline import context_pipeline
 from core import utils
 from core.phases import WorkflowPhaseRunner
+from core.reference_documents import audit_requirement_tree_references
 from core.service import configure_runtime
 from core.utils import (
     build_commit_message,
@@ -121,7 +122,20 @@ class ARCWorkflowManager:
     async def load_requirement_tree(self) -> dict[str, Any] | None:
         await self._log("RequirementLoader", f"Reading requirements file: {self.requirement_path}")
         try:
-            return load_requirements(self.requirement_path)
+            requirement_tree = load_requirements(self.requirement_path)
+            for issue in audit_requirement_tree_references(
+                requirement_tree,
+                Path(self.requirement_path).expanduser().resolve().parent,
+            ):
+                label = f" ({issue['label']})" if issue.get("label") else ""
+                path = issue.get("path") or "<missing path>"
+                await self._log(
+                    "RequirementLoader",
+                    f"Reference unavailable{label}: {path} — {issue['error']}",
+                    status="warning",
+                    node_id=issue.get("node_id"),
+                )
+            return requirement_tree
         except Exception as exc:
             await self._log("RequirementLoader", f"Error while reading requirements file: {exc}", "error")
             return None
@@ -140,6 +154,7 @@ class ARCWorkflowManager:
         self.runtime = configure_runtime(
             project_dir=self.workspace_path,
             traceability_dir=traceability_dir,
+            requirements_dir=str(Path(self.requirement_path).expanduser().resolve().parent),
             app_type=self.app_type,
             web_port=self.web_port,
         )
@@ -171,6 +186,7 @@ class ARCWorkflowManager:
         self.runtime = configure_runtime(
             project_dir=self.workspace_path,
             traceability_dir=traceability_dir,
+            requirements_dir=str(Path(self.requirement_path).expanduser().resolve().parent),
             app_type=self.app_type,
             web_port=self.web_port,
         )
