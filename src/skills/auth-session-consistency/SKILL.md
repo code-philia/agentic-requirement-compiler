@@ -20,3 +20,4 @@ Use this skill when a leaf node owns authentication/session behavior.
 9. Do not satisfy authenticated-state requirements with only a page-local success banner, fake user object, local fallback array, or hardcoded header text.
 10. Keep cookies/tokens/session records consistent across UI client, API responses, service logic, and DB schema.
 11. Preserve parent shell ownership: if the header/shell is parent-designed, return and use that reused UI interface with callers/callees linked to leaf-owned auth/session interfaces.
+12. Inspect auth-owned files in path order: login/register or account page, shared header/navigation, session provider/store, auth API client, auth route, auth service, then session persistence/schema. Do not scan unrelated feature directories.

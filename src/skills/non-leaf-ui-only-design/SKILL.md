@@ -22,3 +22,5 @@ Non-leaf UI-only design must stay thin. The purpose is to give children a stable
 9. Keep `test_focus` minimal: smoke-level renderability, presence of the parent shell, and absence of fake child data are enough.
 10. The interface `type` must be one of `UI`, `API`, `FUNC`, or `DB`; for non-leaf UI-only design, default to `UI`.
 11. Keep data dynamic or placeholder-neutral; never copy screenshot rows as business data.
+12. Start with the parent route/page and its direct style and composition files: typically `frontend/src/App.tsx`, the current page in `frontend/src/pages/`, its direct components, and `frontend/src/index.css`. Read only the smallest set needed to place the shell.
+13. Do not inspect backend, database, API client, test harness, package manifest, or child feature implementation for a UI-only node unless a current-node failure names that file.
