@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 
-from context.prompts.common import app_runtime_contract, code_quality_policy, compiler_background, code_task_exploration_policy, reasoning_reflection_policy, section, whole_app_policy, workspace_tool_policy
+from agents.context.prompts.common import app_runtime_contract, code_quality_policy, compiler_background, code_task_exploration_policy, reasoning_reflection_policy, section, whole_app_policy, workspace_tool_policy
 
 
 def get_system_prompt() -> str:

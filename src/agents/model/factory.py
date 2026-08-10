@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from agents.openai_api_adapter import build_openai_chat_model
+from agents.model.openai_api_adapter import build_openai_chat_model
 
 
 def create_arc_chat_model(model: str | object, *, api_mode: str | None = None) -> str | object:

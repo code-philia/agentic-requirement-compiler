@@ -8,15 +8,15 @@ from typing import Any, Awaitable, Callable
 
 from pydantic import BaseModel, Field
 
-from agents.context import AgentRuntimeContext
-from agents.factory import build_stage_agent
-from agents.runners import ainvoke_stage_agent
-from agents.skill_selection import SKILLS_SOURCE, test_generation_skills
-from context.context_pipeline import context_pipeline
-from context.prompts.common import stage_skill_activation_policy
-from context.prompts.test_generator import get_system_prompt, get_user_prompt
-from tools.result_parsers import normalize_test_manifest_payload
-from tools.traceability_tools import build_traceability_tools
+from agents.context.pipeline import context_pipeline
+from agents.context.prompts.common import stage_skill_activation_policy
+from agents.context.prompts.test_generator import get_system_prompt, get_user_prompt
+from agents.results import normalize_test_manifest_payload
+from agents.runtime.contracts import AgentRuntimeContext
+from agents.runtime.factory import build_stage_agent
+from agents.runtime.runners import ainvoke_stage_agent
+from agents.skills.selection import SKILLS_SOURCE, test_generation_skills
+from agents.tools.traceability import build_traceability_tools
 
 
 LogCallback = Callable[[str, str, str | None, str | None], Awaitable[None] | None]

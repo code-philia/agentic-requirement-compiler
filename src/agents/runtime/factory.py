@@ -12,9 +12,9 @@ from deepagents.backends.filesystem import _raise_if_symlink_loop
 from langchain.agents.middleware.types import AgentMiddleware
 from pydantic import BaseModel, Field, create_model
 
-from agents.context import AgentRuntimeContext
-from agents.model_factory import create_arc_chat_model
-from agents.stage_discipline import StageDisciplineMiddleware
+from agents.model.factory import create_arc_chat_model
+from agents.runtime.contracts import AgentRuntimeContext
+from agents.runtime.stage_discipline import StageDisciplineMiddleware
 from core.path_compat import normalize_windows_extended_prefix_path, normalize_windows_extended_prefix_text
 
 if TYPE_CHECKING:
@@ -423,7 +423,7 @@ def _to_virtual_workspace_path(path: str, root: Path) -> str:
 
 
 def _compiler_skills_root() -> Path:
-    return Path(__file__).resolve().parents[1] / "skills"
+    return Path(__file__).resolve().parents[2] / "skills"
 
 
 def _normalize_virtual_path(path: str) -> str:

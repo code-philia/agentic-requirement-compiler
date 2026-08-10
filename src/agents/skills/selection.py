@@ -72,5 +72,5 @@ def has_auth_context(value: object) -> bool:
 def available_skill_names(names: list[str]) -> list[str]:
     """Keep declared skills in order and omit missing instruction files."""
 
-    root = Path(__file__).resolve().parents[1] / "skills"
+    root = Path(__file__).resolve().parents[2] / "skills"
     return [name for name in dict.fromkeys(names) if (root / name / "SKILL.md").is_file()]

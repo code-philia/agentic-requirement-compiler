@@ -6,15 +6,15 @@ import os
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
-from agents.context import AgentRuntimeContext
-from agents.factory import build_stage_agent
-from agents.runners import ainvoke_stage_agent
-from agents.skill_selection import SKILLS_SOURCE, implementation_skills
-from context.context_pipeline import context_pipeline
-from context.prompts.common import stage_skill_activation_policy
-from context.prompts.test_driven_developer import get_system_prompt, get_user_prompt
-from tools.runtime_tools import build_run_build_tool as build_system_run_build_tool
-from tools.traceability_tools import build_traceability_tools
+from agents.context.pipeline import context_pipeline
+from agents.context.prompts.common import stage_skill_activation_policy
+from agents.context.prompts.test_driven_developer import get_system_prompt, get_user_prompt
+from agents.runtime.contracts import AgentRuntimeContext
+from agents.runtime.factory import build_stage_agent
+from agents.runtime.runners import ainvoke_stage_agent
+from agents.skills.selection import SKILLS_SOURCE, implementation_skills
+from agents.tools.build import build_run_build_tool as build_system_run_build_tool
+from agents.tools.traceability import build_traceability_tools
 
 
 LogCallback = Callable[[str, str, str | None, str | None], Awaitable[None] | None]

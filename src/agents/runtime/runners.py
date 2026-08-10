@@ -9,9 +9,8 @@ from typing import Any, Awaitable, Callable
 
 from pydantic import BaseModel
 
-from agents.context import AgentRuntimeContext
-from agents.openai_api_adapter import should_disable_streaming_for_openai_mode
-from tools.logging import format_json_for_log, log_to_logger
+from agents.runtime.contracts import AgentRuntimeContext
+from core.logging import format_json_for_log, log_to_logger
 
 
 LogCallback = Callable[[str, str, str | None, str | None], Awaitable[None] | None]
@@ -71,6 +70,7 @@ async def ainvoke_stage_agent(
         context=context,
         config=build_agent_config(thread_id),
     )
+    await _log_completed_tool_batches(log_cb, result, label=run_label, node_id=context.node_id)
     await _log_agent_trace(log_cb, result, label=run_label, thread_id=thread_id, node_id=context.node_id)
     payload = extract_payload(result)
     duration_ms = (time.perf_counter() - started_at) * 1000.0
@@ -356,16 +356,14 @@ async def _log_stream_event(
     data = event.get("data") if isinstance(event.get("data"), dict) else {}
 
     if event_name in {"on_chat_model_stream", "on_llm_stream"}:
-        chunk_text = _message_content_text(data.get("chunk"))
-        if chunk_text:
-            await _emit_log(log_cb, label, f"model> {_truncate_text(chunk_text, max_chars=1200)}", node_id=node_id)
+        # The model is configured for non-streaming output. Ignore any provider
+        # chunks that still arrive and render the complete response on *_end.
         return None
 
     if event_name in {"on_chat_model_end", "on_llm_end"}:
-        output = data.get("output")
-        message_text = _message_content_text(output)
-        if message_text:
-            await _emit_log(log_cb, label, f"model-final> {_truncate_text(message_text, max_chars=2000)}", node_id=node_id)
+        text = _message_content_text(data.get("output"))
+        if text:
+            await _emit_log(log_cb, label, f"model-final> {_truncate_text(text, max_chars=2400)}", node_id=node_id)
         return None
 
     if event_name == "on_tool_start":
@@ -430,6 +428,66 @@ async def _log_agent_trace(
         await _emit_log(log_cb, label, f"agent trace is empty: thread_id={thread_id}", node_id=node_id)
         return
     await _emit_log(log_cb, label, f"agent trace: thread_id={thread_id}\n{formatted}", node_id=node_id)
+
+
+async def _log_completed_tool_batches(
+    log_cb: LogCallback | None,
+    result: dict[str, Any],
+    *,
+    label: str,
+    node_id: str,
+) -> None:
+    """Emit each completed tool-call batch from a non-streaming agent result."""
+
+    messages = result.get("messages", []) if isinstance(result, dict) else []
+    pending: list[dict[str, str]] = []
+    for message in messages if isinstance(messages, list) else []:
+        calls = _extract_tool_calls(message)
+        if calls:
+            await _emit_tool_batch(log_cb, label, pending, node_id=node_id)
+            pending = [
+                {
+                    "id": str(call.get("id", "") or call.get("tool_call_id", "")),
+                    "name": str(call.get("name", "") or call.get("tool_name", "") or "unknown"),
+                    "args": _truncate_text(_stringify_tool_args(call.get("args")), max_chars=1200),
+                    "result": "",
+                }
+                for call in calls
+            ]
+            continue
+
+        if _message_role(message) != "tool" or not pending:
+            continue
+        tool_call_id = getattr(message, "tool_call_id", None)
+        if tool_call_id is None and isinstance(message, dict):
+            tool_call_id = message.get("tool_call_id")
+        matched = next((item for item in pending if item["id"] and item["id"] == str(tool_call_id or "")), None)
+        target = matched or next((item for item in pending if not item["result"]), None)
+        if target is not None:
+            target["result"] = _truncate_text(_message_content_text(message), max_chars=2000)
+        if all(item["result"] for item in pending):
+            await _emit_tool_batch(log_cb, label, pending, node_id=node_id)
+            pending = []
+
+    await _emit_tool_batch(log_cb, label, pending, node_id=node_id)
+
+
+async def _emit_tool_batch(
+    log_cb: LogCallback | None,
+    label: str,
+    tools: list[dict[str, str]],
+    *,
+    node_id: str,
+) -> None:
+    if not tools:
+        return
+    payload = {
+        "tools": [
+            {"name": item["name"], "args": item["args"], "result": item["result"] or "[no result returned]"}
+            for item in tools
+        ]
+    }
+    await _emit_log(log_cb, label, f"tool-batch> {json.dumps(payload, ensure_ascii=False)}", node_id=node_id)
 
 
 def _log_agent_trace_sync(
@@ -685,23 +743,11 @@ def _emit_log_sync(
 def _should_stream(stream: bool | None) -> bool:
     if stream is not None:
         return stream
-    value = os.environ.get("ARC_AGENT_STREAM", "").strip().lower()
-    if _should_disable_streaming_for_responses_api():
-        return False
-    if value in {"1", "true", "yes", "on"}:
-        return True
-    if value in {"0", "false", "no", "off"}:
-        return False
     return True
 
 
-def _should_disable_streaming_for_responses_api() -> bool:
-    return should_disable_streaming_for_openai_mode()
-
-
 def _should_use_sync_stream_v3() -> bool:
-    value = os.environ.get("ARC_AGENT_SYNC_STREAM_V3", "").strip().lower()
-    return value in {"1", "true", "yes", "on"}
+    return False
 
 
 def build_agent_config(thread_id: str) -> dict[str, Any]:

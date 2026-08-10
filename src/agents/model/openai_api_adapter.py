@@ -9,7 +9,7 @@ from openai import APIConnectionError, APIError, APIStatusError, APITimeoutError
 from langchain_openai import ChatOpenAI
 from pydantic import PrivateAttr
 
-from agents.compatible_openai import CompatibleChatOpenAI
+from agents.model.compatible_openai import CompatibleChatOpenAI
 
 
 OpenAIAPIMode = Literal["responses", "chat_completions"]
