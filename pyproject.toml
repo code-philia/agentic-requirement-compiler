@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "arc-compiler"
-version = "1.1.0"
+version = "1.2.0"
 description = "Agentic Requirement Compiler"
 requires-python = ">=3.11"
 dependencies = [
@@ -38,12 +38,8 @@ include = [
   "app_type_handler.*",
   "arcbench_agent_runtime",
   "arcbench_agent_runtime.*",
-  "context",
-  "context.*",
   "core",
   "core.*",
-  "tools",
-  "tools.*",
 ]
 
 [tool.setuptools.package-data]

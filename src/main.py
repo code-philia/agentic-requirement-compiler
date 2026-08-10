@@ -277,7 +277,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--version",
         action="version",
-        version="ARC 1.1.0",
+        version="ARC 1.2.0",
     )
     
     subparsers = parser.add_subparsers(
