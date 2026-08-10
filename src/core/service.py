@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import Any
 
 from arcbench_agent_runtime.runtime import AgentRuntime
-from context.context_pipeline import set_context_config, set_context_runtime
+from agents.context.pipeline import set_context_config, set_context_runtime
 
 
 _runtime: AgentRuntime | None = None

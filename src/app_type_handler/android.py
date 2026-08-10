@@ -5,7 +5,8 @@ import re
 import shutil
 
 from core.service import get_runtime
-from core.utils import finalize_subprocess, get_android_package, set_android_package
+from core.config import get_android_package, set_android_package
+from core.processes import finalize_subprocess
 
 from .base import AppTypeHandler
 
@@ -272,7 +273,7 @@ class AndroidAppType(AppTypeHandler):
         return cls.default_stack_summary()
 
     async def _extract_android_package_name_via_llm(self) -> str:
-        from core.utils import load_requirements
+        from core.files import load_requirements
 
         all_reqs = []
         if self.requirement_path and os.path.exists(self.requirement_path):

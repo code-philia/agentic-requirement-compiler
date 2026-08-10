@@ -5,12 +5,12 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable
 
 from app_type_handler import create_app_type_handler
-from context.context_pipeline import context_pipeline
-from core import utils
+from agents.context.pipeline import context_pipeline
+from core import sessions
 from core.service import get_runtime
 from core.path_compat import normalize_windows_extended_prefix_text
 from core.visual_analysis import analyze_and_attach_visual_references
-from tools.result_parsers import parse_test_results
+from app_type_handler.test_results import parse_test_results
 
 
 LogCallback = Callable[[str, str, str | None, str | None], Awaitable[None] | None]
@@ -291,7 +291,7 @@ class WorkflowPhaseRunner:
         node_id: str,
         tests: list[dict[str, Any]],
     ) -> bool:
-        previous_failure_summary = str(utils.load_node_session(node_id).get("recent_failure_summary", "") or "")
+        previous_failure_summary = str(sessions.load_node_session(node_id).get("recent_failure_summary", "") or "")
         groups: dict[str, list[dict[str, Any]]] = {}
         for test in tests:
             test_type = str(test.get("type", "") or "").strip()
@@ -429,7 +429,7 @@ class WorkflowPhaseRunner:
         max_sessions = max(1, TDD_RUN_TESTS_BUDGET * len(ordered_types))
         for ordered_type in ordered_types:
             active_test_type = ordered_type
-            previous_failure_summary = str(utils.load_node_session(node_id).get("recent_failure_summary", "") or "")
+            previous_failure_summary = str(sessions.load_node_session(node_id).get("recent_failure_summary", "") or "")
             while parse_test_results(result_by_type.get(ordered_type, "")).get("exit_code") != 0:
                 used_before = usage_by_type.get(ordered_type, 0)
                 if used_before >= TDD_RUN_TESTS_BUDGET:
@@ -703,7 +703,7 @@ class WorkflowPhaseRunner:
                 self.traceability.set_interface_implemented(interface_id, True)
 
     def _update_node_session(self, node_id: str, patch: dict[str, Any]) -> None:
-        utils.merge_node_session(node_id, patch)
+        sessions.merge_node_session(node_id, patch)
         context_pipeline.cache.invalidate_db_layers(node_id)
 
     async def _log(

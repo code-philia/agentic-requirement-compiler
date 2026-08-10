@@ -11,7 +11,7 @@ from typing import Any, Awaitable, Callable
 
 from openai import OpenAI
 
-from core import utils
+from core import files
 from core.service import get_runtime
 
 
@@ -187,11 +187,11 @@ def _visual_cache_path(workspace_path: str) -> Path:
 
 
 def _load_visual_cache(workspace_path: str) -> dict[str, Any]:
-    return utils.read_json_file(_visual_cache_path(workspace_path)) or {}
+    return files.read_json_file(_visual_cache_path(workspace_path)) or {}
 
 
 def _save_visual_cache(workspace_path: str, cache: dict[str, Any]) -> None:
-    utils.write_json_file(_visual_cache_path(workspace_path), cache)
+    files.write_json_file(_visual_cache_path(workspace_path), cache)
 
 
 def _build_visual_cache_key(full_path: Path) -> str:

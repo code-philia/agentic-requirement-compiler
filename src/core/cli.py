@@ -1,251 +1,19 @@
 from __future__ import annotations
 
-import asyncio
 import json
 import os
 import re
-import shutil
 import sys
 import threading
 import time
 from pathlib import Path
-from typing import Any, Awaitable, Callable
+from typing import Any, Callable
 
-import yaml
 from colorama import Fore, Style, init as colorama_init
 
-from context.context_pipeline import set_context_config
-from tools.logging import append_debug_log, write_terminal_log
+from core.logging import append_debug_log, write_terminal_log
 
-
-LogCallback = Callable[[str, str, str | None, str | None], Awaitable[None] | None]
 colorama_init()
-
-_workspace_root = Path(os.environ.get("ARC_WORKSPACE_ROOT", ".")).expanduser().resolve()
-_app_type = os.environ.get("ARC_APP_TYPE", "web").strip().lower() or "web"
-_web_port = int(os.environ.get("ARC_WEB_PORT", "3301") or 3301)
-_android_package = os.environ.get("ARC_ANDROID_PACKAGE", "com.example.template").strip() or "com.example.template"
-
-
-def load_project_env(env_path: str | os.PathLike[str] | None = None) -> None:
-    """Load a simple KEY=VALUE .env file without overriding existing variables."""
-
-    path = Path(env_path) if env_path else Path.cwd() / ".env"
-    if path.exists():
-        for raw_line in path.read_text(encoding="utf-8", errors="replace").splitlines():
-            line = raw_line.strip()
-            if not line or line.startswith("#") or "=" not in line:
-                continue
-            key, value = line.split("=", 1)
-            key = key.strip()
-            value = value.strip().strip('"').strip("'")
-            if key and key not in os.environ:
-                os.environ[key] = value
-    _copy_env_if_missing("OPENAI_KEY", "OPENAI_API_KEY")
-    _copy_env_if_missing("OPENAI_BASE_URL", "OPENAI_API_BASE")
-
-
-def _copy_env_if_missing(source: str, target: str) -> None:
-    source_value = os.environ.get(source, "").strip()
-    target_value = os.environ.get(target, "").strip()
-    if source_value and not target_value:
-        os.environ[target] = source_value
-
-
-def load_requirements(requirement_path: str | os.PathLike[str]) -> dict[str, Any]:
-    path = Path(requirement_path)
-    with path.open("r", encoding="utf-8") as file:
-        payload = yaml.safe_load(file) or {}
-    if not isinstance(payload, dict):
-        raise ValueError(f"Requirement file must contain a mapping: {path}")
-    if isinstance(payload.get("root"), dict):
-        payload = payload["root"]
-    if "id" not in payload and isinstance(payload.get("requirement"), dict):
-        payload = payload["requirement"]
-    if not str(payload.get("id", "")).strip():
-        raise ValueError(f"Requirement root node id is missing: {path}")
-    return payload
-
-
-def read_json_file(path: str | os.PathLike[str]) -> dict[str, Any] | None:
-    candidate = Path(path)
-    if not candidate.exists():
-        return None
-    try:
-        with candidate.open("r", encoding="utf-8") as file:
-            payload = json.load(file)
-    except (OSError, json.JSONDecodeError):
-        return None
-    return payload if isinstance(payload, dict) else None
-
-
-def write_json_file(path: str | os.PathLike[str], payload: dict[str, Any]) -> None:
-    candidate = Path(path)
-    candidate.parent.mkdir(parents=True, exist_ok=True)
-    tmp_path = candidate.with_suffix(candidate.suffix + ".tmp")
-    with tmp_path.open("w", encoding="utf-8") as file:
-        json.dump(payload, file, ensure_ascii=False, indent=2)
-        file.write("\n")
-    tmp_path.replace(candidate)
-
-
-def set_workspace_root(path: str | os.PathLike[str]) -> None:
-    global _workspace_root
-    _workspace_root = Path(path).expanduser().resolve()
-    os.environ["ARC_WORKSPACE_ROOT"] = str(_workspace_root)
-    set_context_config(workspace_dir=str(_workspace_root))
-
-
-def get_workspace_root() -> str:
-    return str(_workspace_root)
-
-
-def get_abs_path(path: str | os.PathLike[str]) -> str:
-    candidate = Path(path)
-    if candidate.is_absolute():
-        return str(candidate.resolve())
-    return str((_workspace_root / candidate).resolve())
-
-
-def set_app_type(app_type: str) -> None:
-    global _app_type
-    _app_type = (app_type or "web").strip().lower() or "web"
-    os.environ["ARC_APP_TYPE"] = _app_type
-    set_context_config(app_type=_app_type)
-
-
-def get_app_type() -> str:
-    return _app_type
-
-
-def set_web_port(port: int | str) -> None:
-    global _web_port
-    _web_port = int(port)
-    os.environ["ARC_WEB_PORT"] = str(_web_port)
-    set_context_config(web_port=_web_port)
-
-
-def get_web_port() -> int:
-    return _web_port
-
-
-def get_web_base_url() -> str:
-    return f"http://localhost:{_web_port}"
-
-
-def build_web_runtime_env() -> dict[str, str]:
-    return {
-        "PORT": str(_web_port),
-        "ARC_WEB_PORT": str(_web_port),
-        "BASE_URL": get_web_base_url(),
-        "VITE_API_BASE_URL": get_web_base_url(),
-    }
-
-
-def set_android_package(package_name: str) -> None:
-    global _android_package
-    _android_package = str(package_name or "").strip() or "com.example.template"
-    os.environ["ARC_ANDROID_PACKAGE"] = _android_package
-    set_context_config(android_package=_android_package)
-
-
-def get_android_package() -> str:
-    return _android_package
-
-
-async def finalize_subprocess(process: Any, *, force_kill: bool = False) -> None:
-    if process is None or getattr(process, "returncode", None) is not None:
-        return
-    if force_kill:
-        process.kill()
-    else:
-        process.terminate()
-    try:
-        await asyncio.wait_for(process.wait(), timeout=3.0)
-    except asyncio.TimeoutError:
-        process.kill()
-        await process.wait()
-
-
-async def check_prerequisites(app_type: str, log_cb: LogCallback | None = None) -> bool:
-    normalized = (app_type or "web").strip().lower()
-    from app_type_handler import get_app_type_handler_class
-
-    required = get_app_type_handler_class(normalized).prerequisite_commands()
-    missing = [command for command in required if shutil.which(command) is None]
-    if missing:
-        await _emit_log(
-            log_cb,
-            "System",
-            f"Missing required command(s) for app_type={normalized}: {', '.join(missing)}",
-            status="error",
-        )
-        return False
-    await _emit_log(log_cb, "System", f"Prerequisite check passed for app_type={normalized}.")
-    return True
-
-
-def load_node_session(node_id: str) -> dict[str, Any]:
-    path = _node_session_path(node_id)
-    if not path.exists():
-        return {}
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return {}
-    return payload if isinstance(payload, dict) else {}
-
-
-def save_node_session(node_id: str, payload: dict[str, Any]) -> None:
-    path = _node_session_path(node_id)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp_path = path.with_suffix(path.suffix + ".tmp")
-    tmp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    tmp_path.replace(path)
-
-
-def merge_node_session(node_id: str, patch: dict[str, Any]) -> dict[str, Any]:
-    current = load_node_session(node_id)
-    merged = _deep_merge_dict(current, patch)
-    save_node_session(node_id, merged)
-    return merged
-
-
-def build_commit_message(node_id: str, phase: str, requirement_data: dict[str, Any]) -> str:
-    name = str(requirement_data.get("name") or node_id).strip()
-    normalized_phase = str(phase or "").strip().lower()
-    return f"{node_id} ({normalized_phase}): {name}"
-
-
-def _node_session_path(node_id: str) -> Path:
-    safe_node_id = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(node_id or "").strip()) or "node"
-    return _workspace_root / ".arc" / "node_sessions" / f"{safe_node_id}.json"
-
-
-def _deep_merge_dict(base: dict[str, Any], patch: dict[str, Any]) -> dict[str, Any]:
-    result = dict(base)
-    for key, value in patch.items():
-        if isinstance(value, dict) and isinstance(result.get(key), dict):
-            result[key] = _deep_merge_dict(result[key], value)
-        else:
-            result[key] = value
-    return result
-
-
-async def _emit_log(
-    log_cb: LogCallback | None,
-    agent_name: str,
-    message: str,
-    status: str | None = None,
-    node_id: str | None = None,
-) -> None:
-    if log_cb is None:
-        return
-    result = log_cb(agent_name, message, status, node_id)
-    if asyncio.iscoroutine(result):
-        await result
-
-
 # ======================================================================================
 # CLI progress view
 # ======================================================================================
@@ -400,10 +168,8 @@ class _CliProgressView:
             return None
         tool_name = match.group(1).strip() or "unknown"
         detail = self._summarize_tool_args(match.group(2))
-        _spinner.start(f"{self._plain_node(active_node)} | {self._pretty_agent(agent)} | {tool_name}")
         tool_line = stage_line("Tool Call", f"{tool_name} {detail}".strip(), "info")
-        self._emit_transient_tool(tool_line)
-        return None
+        return self._emit_once(tool_line)
 
     def _render_tool_result_event(self, message: str, stage_line: Callable[[str, str, str], str]) -> str | None:
         match = re.match(r"tool-result>\s*([^\s]+)\s+result=(.*)", message, flags=re.DOTALL)
@@ -412,8 +178,29 @@ class _CliProgressView:
         tool_name = match.group(1).strip() or "unknown"
         result = self._clip(match.group(2), 140)
         result_line = stage_line("Tool Result", f"{tool_name} -> {result}", "ok")
-        self._emit_transient_tool(result_line)
-        return None
+        return self._emit_once(result_line)
+
+    def _render_tool_batch_event(self, message: str, stage_line: Callable[[str, str, str], str]) -> str | None:
+        raw = message.split("tool-batch>", 1)[1].strip()
+        try:
+            payload = json.loads(raw)
+        except json.JSONDecodeError:
+            return stage_line("Tool Batch", self._clip(raw, 240), "warn")
+        tools = payload.get("tools") if isinstance(payload, dict) else []
+        if not isinstance(tools, list) or not tools:
+            return None
+
+        lines = [stage_line("Tool Batch", f"{len(tools)} completed call(s)", "info")]
+        for index, tool in enumerate(tools, start=1):
+            if not isinstance(tool, dict):
+                continue
+            name = self._clip(str(tool.get("name", "") or "unknown"), 48)
+            args = self._clip(str(tool.get("args", "") or ""), 280)
+            result = self._clip(str(tool.get("result", "") or ""), 360)
+            lines.append(stage_line("", f"{index}. {name}"))
+            lines.append(stage_line("", f"   args: {args or '{}'}"))
+            lines.append(stage_line("", f"   result: {result or '[empty]'}", "ok"))
+        return self._emit_once("\n".join(lines))
 
     def _render_stream_messages(self, message: str, stage_line: Callable[[str, str, str], str]) -> str | None:
         body = message.split("stream messages:", 1)[1] if "stream messages:" in message else message
@@ -709,6 +496,10 @@ class _CliProgressView:
             test_match = re.match(r"System test execution \(([^)]+)\):\s*(.+)", message)
             if test_match:
                 return self._emit_once(stage_line("Verify", f"{test_match.group(1)} :: {self._compact_path(test_match.group(2))}"))
+        if agent == "Traceability" and message.startswith(("Query interfaces", "Query interface", "Search interfaces")):
+            return None
+        if agent == "Compiler" and message == "System is executing build verification.":
+            return None
 
         if agent == "InterfaceDesigner" and message.startswith("Running interface design"):
             return self._emit_once(stage_line("Design", "InterfaceDesigner is shaping interfaces", "agent"))
@@ -764,10 +555,15 @@ class _CliProgressView:
             self._close_tool_batch()
             _spinner.start(f"{self._plain_node(active_node)} | {self._pretty_agent(agent)}")
             return None
+        if message.startswith("tool-batch>"):
+            return self._persistent(self._render_tool_batch_event(message, stage_line))
         if message.startswith("tool-call>"):
             return self._persistent(self._render_tool_call_event(agent, message, active_node, stage_line))
         if message.startswith("tool-result>"):
             return self._persistent(self._render_tool_result_event(message, stage_line))
+        if message.startswith("model-final>"):
+            content = message.split("model-final>", 1)[1]
+            return self._persistent(self._emit_once(stage_line("Model", self._clip(content, 800), "agent")))
         if message.startswith("model>"):
             return self._persistent(self._emit_once(stage_line("Model", self._clip(message.split("model>", 1)[1], 160), "agent")))
         if message.startswith("stream messages:"):
@@ -884,15 +680,15 @@ def cli_log(
         _progress_view.clear_transient_block()
         write_terminal_log(agent_name, message, status=status, node_id=node_id)
         return
-    
-    # Check if this is a transient tool message (handled separately)
-    is_tool_event = message.startswith("tool-call>") or message.startswith("tool-result>")
-    
+
+    if "agent call end" in message:
+        _spinner.stop()
     rendered = _progress_view.render(agent_name, message, status=status, node_id=node_id)
     if rendered:
-        if not is_tool_event:
-            _spinner.stop()
+        _spinner.stop()
         print(rendered, flush=True)
+        if message.startswith("tool-result>"):
+            _spinner.start(f"{_progress_view._plain_node(node_id)} | {_progress_view._pretty_agent(agent_name)}")
 
 
 def print_compilation_summary(

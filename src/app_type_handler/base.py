@@ -53,7 +53,7 @@ class AppTypeHandler(ABC):
         return True
 
     async def check_prerequisites(self) -> bool:
-        from core.utils import check_prerequisites
+        from core.processes import check_prerequisites
 
         return await check_prerequisites(self.name, self.log_cb)
 

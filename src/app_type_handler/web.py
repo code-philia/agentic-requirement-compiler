@@ -11,7 +11,8 @@ import inspect
 from typing import Awaitable, Callable
 
 from .base import AppTypeHandler
-from core.utils import build_web_runtime_env, finalize_subprocess, get_web_base_url, get_web_port
+from core.config import build_web_runtime_env, get_web_base_url, get_web_port
+from core.processes import finalize_subprocess
 
 async def _emit_log(log_cb: Callable[..., Awaitable[None] | None], *args) -> None:
     result = log_cb(*args)

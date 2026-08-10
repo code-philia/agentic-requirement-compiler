@@ -10,15 +10,15 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from app_type_handler import list_app_types, normalize_app_type
-from core.utils import (
+from core.cli import (
     cli_log,
     init_debug_logger,
     print_cli_banner,
     print_cli_startup,
     print_compilation_summary,
-    set_web_port,
     stop_cli_spinner,
 )
+from core.config import set_web_port
 from core.workflow import ARCWorkflowManager
 
 
@@ -240,7 +240,7 @@ def build_doctor_parser(subparsers) -> None:
 def cmd_doctor(args: argparse.Namespace) -> int:
     """Execute doctor subcommand."""
     _ensure_dotenv_loaded()
-    from config_validator import print_health_check
+    from core.config import print_health_check
     return print_health_check()
 
 
@@ -262,7 +262,7 @@ def build_config_parser(subparsers) -> None:
 
 def cmd_config(args: argparse.Namespace) -> int:
     """Execute config subcommand."""
-    from config_validator import interactive_config_setup
+    from core.config import interactive_config_setup
     return interactive_config_setup()
 
 

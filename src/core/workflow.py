@@ -9,21 +9,14 @@ from agents.interface_designer import InterfaceDesigner
 from agents.test_driven_developer import TestDrivenDeveloper
 from agents.test_generator import TestGenerator
 from app_type_handler import create_app_type_handler, normalize_app_type
-from context.context_pipeline import context_pipeline
-from core import utils
+from agents.context.pipeline import context_pipeline
+from core import commits, config, files, sessions
 from core.phases import WorkflowPhaseRunner
 from core.service import configure_runtime
-from core.utils import (
-    build_commit_message,
-    load_project_env,
-    load_requirements,
-    read_json_file,
-    set_app_type,
-    set_web_port,
-    set_workspace_root,
-    write_json_file,
-)
-from tools.logging import append_debug_log, write_terminal_log
+from core.commits import build_commit_message
+from core.config import load_project_env, set_app_type, set_web_port, set_workspace_root
+from core.files import load_requirements, read_json_file, write_json_file
+from core.logging import append_debug_log, write_terminal_log
 
 
 load_project_env()
@@ -290,7 +283,7 @@ class ARCWorkflowManager:
 
             if task_ok:
                 task["status"] = TASK_COMPLETED
-                utils.merge_node_session(node_id, {"resume_context": {}})
+                sessions.merge_node_session(node_id, {"resume_context": {}})
                 new_state = self._resolve_completed_node_state(node_id, phase)
                 self._set_node_state(queue_state["node_states"], node_id, new_state)
                 self._save_processing_queue(queue_state)
@@ -419,7 +412,7 @@ class ARCWorkflowManager:
                     queue_state["node_states"][node_id] = fallback_state
                     if self.runtime is not None:
                         self.runtime.traceability.upsert_node_state(node_id, fallback_state)
-                    utils.merge_node_session(
+                    sessions.merge_node_session(
                         node_id,
                         {
                             "resume_context": {
@@ -529,7 +522,7 @@ class ARCWorkflowManager:
         self.runtime.traceability.clear_node_design_artifacts(node_id)
         self.runtime.traceability.reset_test_pass_statuses_for_requirement(node_id)
         self._set_node_state(queue_state["node_states"], node_id, NODE_UNSEEN)
-        utils.merge_node_session(
+        sessions.merge_node_session(
             node_id,
             {
                 "interfaces": [],
@@ -555,7 +548,7 @@ class ARCWorkflowManager:
         implement_task["status"] = TASK_PENDING
         self.runtime.traceability.reset_test_pass_statuses_for_requirement(node_id)
         self._set_node_state(queue_state["node_states"], node_id, NODE_DESIGNED)
-        utils.merge_node_session(
+        sessions.merge_node_session(
             node_id,
             {
                 "phase_status": {"implement": "pending"},
@@ -575,7 +568,7 @@ class ARCWorkflowManager:
         design_task["status"] = TASK_PENDING
         implement_task["status"] = TASK_PENDING
         self._set_node_state(queue_state["node_states"], node_id, NODE_UNSEEN)
-        utils.merge_node_session(
+        sessions.merge_node_session(
             node_id,
             {
                 "phase_status": {"design": "pending", "test": "pending", "implement": "pending"},
