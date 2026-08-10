@@ -9,7 +9,9 @@ from typing import Any, Awaitable, Callable
 from agents.context import AgentRuntimeContext
 from agents.factory import build_stage_agent
 from agents.runners import ainvoke_stage_agent
+from agents.skill_selection import SKILLS_SOURCE, implementation_skills
 from context.context_pipeline import context_pipeline
+from context.prompts.common import stage_skill_activation_policy
 from context.prompts.test_driven_developer import get_system_prompt, get_user_prompt
 from tools.runtime_tools import build_run_build_tool as build_system_run_build_tool
 from tools.traceability_tools import build_traceability_tools
@@ -74,8 +76,6 @@ class TestDrivenDeveloper:
             or os.getcwd()
         ).expanduser().resolve())
         app_type = (self.app_type or context_pipeline.config.app_type or os.environ.get("ARC_APP_TYPE") or "web").strip().lower()
-        skill_root = Path(__file__).resolve().parents[1] / "skills"
-        skill_names = ["tdd-test-failure-repair", "auth-session-consistency"]
 
         def normalize_requested_path(value: Any) -> str:
             path = str(value or "").strip().replace("\\", "/")
@@ -97,6 +97,10 @@ class TestDrivenDeveloper:
         )
         interface_contract = context_pipeline.get_interface_contract_context(node_id)
         context_text = "\n\n".join(part.strip() for part in (static_context, dynamic_context) if part.strip())
+        selected_skill_names = implementation_skills(
+            interface_contract=interface_contract,
+            previous_failure_summary=previous_failure_summary,
+        )
 
         async def run_tests(test_type: str | None = None, test_files: list[str] | None = None) -> str:
             """Run current-node tests. Optionally pass a test_type or exact test_files from the manifest."""
@@ -180,12 +184,16 @@ class TestDrivenDeveloper:
         traceability_tools = build_traceability_tools(node_id=node_id, log_cb=self.log_cb)
         agent = build_stage_agent(
             name="test_driven_developer",
+            stage="implementation",
             model=self.model,
-            system_prompt=get_system_prompt(),
+            system_prompt="\n\n".join(
+                [get_system_prompt(), stage_skill_activation_policy(selected_skill_names)]
+            ),
             response_format=None,
             workspace_root=workspace_root,
             writable_roots=[workspace_root],
-            skills=[f"/skills/{name}/" for name in skill_names if (skill_root / name / "SKILL.md").exists()],
+            skills=[SKILLS_SOURCE] if selected_skill_names else [],
+            permitted_skill_names=selected_skill_names,
             memory=[],
             tools=[run_tests, run_build, *traceability_tools],
         )
@@ -198,6 +206,7 @@ class TestDrivenDeveloper:
             node_tests=current_node_tests,
             previous_failure_summary=previous_failure_summary,
         )
+        await self._log(f"skill-permitted: {', '.join(selected_skill_names) or 'none'}", node_id=node_id)
         await self._log("Invoking TDD implementation.", node_id=node_id)
         payload = await ainvoke_stage_agent(
             agent,

@@ -10,7 +10,9 @@ from pydantic import BaseModel, Field
 from agents.context import AgentRuntimeContext
 from agents.factory import build_stage_agent
 from agents.runners import ainvoke_stage_agent
+from agents.skill_selection import SKILLS_SOURCE, interface_design_skills
 from context.context_pipeline import context_pipeline
+from context.prompts.common import stage_skill_activation_policy
 from context.prompts.interface_designer import get_system_prompt, get_user_prompt
 from tools.traceability_tools import build_traceability_tools
 
@@ -57,10 +59,7 @@ class InterfaceDesigner:
             or os.getcwd()
         ).expanduser().resolve())
         app_type = (self.app_type or context_pipeline.config.app_type or os.environ.get("ARC_APP_TYPE") or "web").strip().lower()
-        skill_root = Path(__file__).resolve().parents[1] / "skills"
-        is_non_leaf = bool(requirement_data.get("children_ids"))
-        skill_names = ["non-leaf-ui-only-design"] if is_non_leaf else ["leaf-full-design"]
-        skill_names.append("auth-session-consistency")
+        selected_skill_names = interface_design_skills(requirement_data)
         context_pipeline.configure(
             workspace_dir=workspace_root,
             app_type=app_type,
@@ -73,12 +72,16 @@ class InterfaceDesigner:
 
         agent = build_stage_agent(
             name="interface_designer",
+            stage="interface_design",
             model=self.model,
-            system_prompt=get_system_prompt(),
+            system_prompt="\n\n".join(
+                [get_system_prompt(), stage_skill_activation_policy(selected_skill_names)]
+            ),
             response_format=InterfaceDesignResponse,
             workspace_root=workspace_root,
             writable_roots=[workspace_root],
-            skills=[f"/skills/{name}/" for name in skill_names if (skill_root / name / "SKILL.md").exists()],
+            skills=[SKILLS_SOURCE] if selected_skill_names else [],
+            permitted_skill_names=selected_skill_names,
             memory=[],
             tools=build_traceability_tools(node_id=node_id, log_cb=self.log_cb),
         )
@@ -87,6 +90,7 @@ class InterfaceDesigner:
             requirement_data=requirement_data,
             dynamic_context=context_text,
         )
+        await self._log(f"skill-permitted: {', '.join(selected_skill_names) or 'none'}", node_id=node_id)
         await self._log("Invoking interface design.", node_id=node_id)
         payload = await ainvoke_stage_agent(
             agent,

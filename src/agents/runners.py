@@ -369,12 +369,16 @@ async def _log_stream_event(
         return None
 
     if event_name == "on_tool_start":
+        tool_input = data.get("input")
         await _emit_log(
             log_cb,
             label,
-            f"tool-call> {name or 'unknown'} args={_truncate_text(_stringify_tool_args(data.get('input')), max_chars=1000)}",
+            f"tool-call> {name or 'unknown'} args={_truncate_text(_stringify_tool_args(tool_input), max_chars=1000)}",
             node_id=node_id,
         )
+        skill_name = _skill_name_from_read_call(name, tool_input)
+        if skill_name:
+            await _emit_log(log_cb, label, f"skill-loaded: {skill_name}", node_id=node_id)
         return None
 
     if event_name == "on_tool_end":
@@ -391,6 +395,16 @@ async def _log_stream_event(
         if isinstance(output, dict) and _is_agent_state_with_payload(output):
             return output
     return None
+
+
+def _skill_name_from_read_call(tool_name: str, tool_input: Any) -> str:
+    """Return the selected skill name when the model reads its instruction file."""
+
+    if tool_name != "read_file" or not isinstance(tool_input, dict):
+        return ""
+    file_path = str(tool_input.get("file_path") or tool_input.get("path") or "").strip().replace("\\", "/")
+    match = re.fullmatch(r"/skills/([^/]+)/SKILL\.md", file_path)
+    return match.group(1) if match else ""
 
 
 def _is_agent_state_with_payload(state: dict[str, Any]) -> bool:

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from context.prompts.common import app_runtime_contract, compiler_background, code_task_exploration_policy, reasoning_reflection_policy, response_contract, section, task_context_block, whole_app_policy, workspace_tool_policy
+from context.prompts.common import app_runtime_contract, code_quality_policy, compiler_background, code_task_exploration_policy, reasoning_reflection_policy, response_contract, section, task_context_block, whole_app_policy, workspace_tool_policy
 
 
 def get_system_prompt() -> str:
@@ -11,13 +11,14 @@ def get_system_prompt() -> str:
             compiler_background(),
             reasoning_reflection_policy(),
             whole_app_policy(),
+            code_quality_policy(),
             section(
                 "InterfaceDesigner Role",
                 [
                     "Position: first agent stage for a requirement node.",
                     "Input: current requirement node, inherited context, existing interfaces, source summaries, and visual/scenario references.",
-                    "Goal: design the current node's owned or reused interface contracts and materialize any minimal owner skeleton required for later tests and implementation.",
-                    "Boundary: define ownership and compilable scaffolds; do not run tests, implement full behavior, or rewrite child-owned responsibilities.",
+                    "Goal: design the current node's owned or reused interface contracts and materialize only the minimal owner skeleton required to make those contracts addressable later.",
+                    "Hard boundary: define ownership and small compilable scaffolds only. Do not implement complete business behavior, validation, persistence, authentication, integration wiring, or test fixes; TestDrivenDeveloper owns all of that work.",
                     "Leaf nodes own the smallest executable chain required by the requirement and may span UI -> API -> FUNC -> DB interfaces when those layers are actually owned.",
                     "Non-leaf nodes that reach this agent have visual references and are UI/composition nodes only; materialize the visual shell and style boundary, and do not design API, FUNC, or DB contracts.",
                     "Auth/session expansion belongs to leaf nodes that own executable authentication behavior. A non-leaf node mentioning auth/session as entry-point, shell, navigation, or child context stays UI-only.",
@@ -38,9 +39,9 @@ def get_system_prompt() -> str:
                     "For leaf auth/session requirements, design or reuse connected interfaces for global UI session state/provider, auth/session API boundary, service/session creation or loading logic, and session persistence when those layers are relevant.",
                     "For leaf commerce/account/product requirements, design or reuse connected interfaces for visible UI state, HTTP/API boundary, service logic, and persistence/runtime data when the scenario reads or mutates durable app state.",
                     "If a parent-designed shell/header displays authentication state, include that reused UI interface in the leaf node's returned interfaces and connect it through callers/callees to leaf-owned auth/session interfaces.",
-                    "Write or edit only lightweight interface skeletons. Do not implement full validation, persistence, authentication, or business behavior during DESIGN; leave full behavior for TestDrivenDeveloper.",
+                    "Write or edit only a few lightweight interface skeletons. A skeleton may declare types, signatures, routes, exports, props, and explicit TODO/unsupported boundaries; it must not contain a feature-complete business flow. Leave complete implementation and every test repair for TestDrivenDeveloper.",
                     "If an owned file is already roughly over 500 lines, do not place a new feature-sized skeleton inside it unless it is only a connector. Prefer a new cohesive component, hook, API client, service, repository, or route module wired from the large file.",
-                    "Before returning, reflect on the interface graph: every new interface should have a clear caller/callee relation, owning file, downstream test target, and role in the eventual working app.",
+                    "Before returning, assess the interface graph using evidence already gathered: every new interface should have a clear caller/callee relation, owning file, downstream test target, and role in the eventual working app. Do not reread files just to self-review.",
                     "Return interface schemas with stable ids and enough specification for tests to target them.",
                 ],
             ),
@@ -80,6 +81,7 @@ def get_user_prompt(
                     "If this is a non-leaf node without visual references, return an empty interface list without reading or editing files; the workflow normally skips that case before this prompt.",
                     "Design and materialize the current node's owned interfaces, and include reused parent/dependency interfaces that this node will implement, extend, or call.",
                     "Return `summary`, `interfaces`, and `files_written`.",
+                    "Use the response to record contracts that would require more than a small skeleton. Do not turn DESIGN into an implementation pass; TestDrivenDeveloper will implement the complete behavior and repair tests.",
                     "Leaf interfaces may span UI, API, FUNC, and DB only when the requirement truly owns those layers; if the UI shell was parent-designed, include that reused UI interface in this node's returned interfaces so downstream tests and implementation can use it.",
                     "If this leaf node changes authenticated state, the interface set must represent the global session/auth path, not only the initiating page. Include session loading/current-user API and shared UI auth state interfaces when they are required for system consistency.",
                     "If this leaf node reads or mutates cart, checkout, account, product, order, catalog, inventory, or other durable user/domain data, the interface set must represent the connected app path. Do not model it only as component-local state.",

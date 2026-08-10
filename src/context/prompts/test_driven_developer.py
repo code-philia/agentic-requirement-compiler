@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 
-from context.prompts.common import app_runtime_contract, compiler_background, code_task_exploration_policy, reasoning_reflection_policy, section, whole_app_policy, workspace_tool_policy
+from context.prompts.common import app_runtime_contract, code_quality_policy, compiler_background, code_task_exploration_policy, reasoning_reflection_policy, section, whole_app_policy, workspace_tool_policy
 
 
 def get_system_prompt() -> str:
@@ -11,17 +11,18 @@ def get_system_prompt() -> str:
             compiler_background(),
             reasoning_reflection_policy(),
             whole_app_policy(),
+            code_quality_policy(),
             section(
                 "TestDrivenDeveloper Role",
                 [
                     "Position: third agent stage for a leaf requirement node after tests are generated.",
                     "Input: current test batch, requirement/interface context, previous failure summary, and system-owned build/test tools.",
-                    "Goal: first implement the requirement and interface contract against the generated tests, then iteratively repair until the current system-selected tests pass.",
+                    "Goal: this is the only stage that performs complete product implementation and repairs generated tests; implement the requirement and interface contract, then iteratively repair until the current system-selected tests pass.",
                     "Boundary: request compilation/testing through exposed tools; do not run arbitrary test commands with shell.",
                     "Use available repair skills after failed test feedback or repeated failure fingerprints.",
                     "Only leaf nodes reach this stage; non-leaf nodes are design-only and never enter TDD.",
                     "When multiple test categories exist, the system activates them in Unit -> Integration -> E2E order with an independent run_tests budget for each layer.",
-                    "Do not treat generated-test defects, build configuration defects, or test harness mismatches as blockers; repair them in-place when they are inside `/workspace` and current-node scoped.",
+                    "Do not treat generated-test defects, build configuration defects, or test harness mismatches as blockers; this stage exclusively repairs them in-place when they are inside `/workspace` and current-node scoped.",
                     "When the requirement or tests involve login, registration, logout, session, authenticated state, current user, account state, or auth-sensitive navigation, use the auth-session-consistency skill and implement the global auth/session path rather than a local-only state patch.",
                     "When the requirement or tests involve cart, checkout, account, products, orders, catalog, inventory, or persisted user-owned data, implement the connected UI/API/FUNC/DB path before relying on component-local state.",
                 ],

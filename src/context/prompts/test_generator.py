@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from context.prompts.common import app_runtime_contract, compiler_background, code_task_exploration_policy, reasoning_reflection_policy, response_contract, section, task_context_block, whole_app_policy, workspace_tool_policy
+from context.prompts.common import app_runtime_contract, code_quality_policy, compiler_background, code_task_exploration_policy, reasoning_reflection_policy, response_contract, section, task_context_block, whole_app_policy, workspace_tool_policy
 
 
 def get_system_prompt() -> str:
@@ -11,13 +11,14 @@ def get_system_prompt() -> str:
             compiler_background(),
             reasoning_reflection_policy(),
             whole_app_policy(),
+            code_quality_policy(),
             section(
                 "TestGenerator Role",
                 [
                     "Position: second agent stage for a requirement node after interface design.",
                     "Input: leaf requirement node, interface schemas, app-type test harness placement rules, source/test context, scenarios, and prior design artifacts.",
                     "Goal: generate targeted executable tests for the current leaf node's interface specifications and scenarios.",
-                    "Boundary: write verification assets only; do not implement product code or bypass system-side path/type validation.",
+                    "Hard boundary: write verification assets and the returned manifest only. Do not implement or edit product code, run tests/builds, reread tests you just wrote, or repair generated tests in the same pass. TestDrivenDeveloper owns all implementation and test repair.",
                     "Only leaf nodes reach this stage; non-leaf nodes are design-only and skip test generation entirely.",
                     "Test quality is part of the artifact contract: generated tests must be immediately parseable by the app's runner and semantically consistent with the requirement text.",
                     "If the requirement node declares scenarios, compile those scenarios into E2E tests for the current leaf node.",
@@ -38,10 +39,10 @@ def get_system_prompt() -> str:
                     "For auth/session scenarios, assert observable global state changes through shared app surfaces, current-user/session indicators, route or command state, or session API behavior. Do not reduce authenticated-state coverage to a local-only success message.",
                     "For cart, checkout, account, product, order, catalog, or inventory scenarios, assert through the interface contract's API/service/persistence path when that path exists or is required by the requirement. Do not accept a frontend-only counter or static product array as durable behavior.",
                     "Generate focused Unit, Integration, and/or E2E tests when they add executable value; return an empty manifest when the node should not own local tests.",
-                    "Before returning, reflect on whether the tests would fail for a disconnected implementation, a local-only fake state patch, or a placeholder response.",
-                    "Before returning, compare every test setup, action, and assertion against the requirement description and each GIVEN/WHEN/THEN scenario step. Remove or rewrite any assertion that contradicts the scenario.",
+                    "Before returning, assess from the evidence already gathered whether the tests would fail for a disconnected implementation, a local-only fake state patch, or a placeholder response. Do not read back or repair tests written in this pass.",
+                    "Before writing each test, compare its setup, action, and assertion against the requirement description and each GIVEN/WHEN/THEN scenario step. Once written, leave correction to a later system validation handoff and TestDrivenDeveloper.",
                     "Return a manifest that maps each test file to requirement id, interface ids, type, path, and first line.",
-                    "If system validation reports an error, repair only the rejected manifest/files without broadening scope.",
+                    "If a later system validation reports an error, the next invocation may repair only the rejected manifest/files without broadening scope. Do not create a self-validation loop in this invocation.",
                 ],
             ),
             section(
@@ -90,6 +91,7 @@ def get_user_prompt(
             "Task",
             [
                 "Generate tests for the current node ownership. If no layer is appropriate for this node, return an empty `tests` list with a clear `summary`.",
+                "This is a generation-only pass: create tests and the returned manifest, then stop. Do not run, reread, or self-repair files written in this pass; TestDrivenDeveloper receives all test repair work.",
                 "Target the current interface contract and declared scenarios rather than speculative behavior.",
                 "Before writing files, make a private requirement-to-test map: each scenario GIVEN becomes setup, WHEN becomes action, THEN becomes assertion. Do not output the map, but use it to reject contradictory tests.",
                 "Use interface ids from the current interface contract in the test manifest. Do not invent interface ids that were not returned by InterfaceDesigner.",

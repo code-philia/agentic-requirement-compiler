@@ -5,8 +5,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 from urllib.parse import urlparse
 
-from deepagents import FilesystemPermission, HarnessProfile, create_deep_agent, register_harness_profile
-from deepagents.backends import CompositeBackend, FilesystemBackend, LocalShellBackend, StateBackend
+from deepagents import GeneralPurposeSubagentProfile, FilesystemPermission, HarnessProfile, create_deep_agent, register_harness_profile
+from deepagents.backends import CompositeBackend, FilesystemBackend, StateBackend
 from deepagents._models import get_model_provider
 from deepagents.backends.filesystem import _raise_if_symlink_loop
 from langchain.agents.middleware.types import AgentMiddleware
@@ -14,6 +14,7 @@ from pydantic import BaseModel, Field, create_model
 
 from agents.context import AgentRuntimeContext
 from agents.model_factory import create_arc_chat_model
+from agents.stage_discipline import StageDisciplineMiddleware
 from core.path_compat import normalize_windows_extended_prefix_path, normalize_windows_extended_prefix_text
 
 if TYPE_CHECKING:
@@ -25,10 +26,9 @@ if TYPE_CHECKING:
 
 WORKSPACE_PREFIX = "/workspace"
 SKILLS_PREFIX = "/skills"
-DISABLED_BUILTIN_TOOLS = frozenset({"write_todos"})
+DISABLED_BUILTIN_TOOLS = frozenset({"execute", "write_todos"})
 _WINDOWS_PATH_COMPAT_APPLIED = False
 _READ_FILE_FORMAT_PATCHED = False
-
 
 class OpenAIGlobSchema(BaseModel):
     """OpenAI-compatible schema for the glob tool."""
@@ -80,12 +80,14 @@ class DisableToolsMiddleware(AgentMiddleware[Any, Any, Any]):
 def build_stage_agent(
     *,
     name: str,
+    stage: Literal["interface_design", "test_generation", "implementation"],
     model: str | object,
     system_prompt: str,
     response_format: object | None,
     workspace_root: str,
     writable_roots: list[str],
     skills: list[str] | None = None,
+    permitted_skill_names: list[str] | None = None,
     memory: list[str] | None = None,
     tools: list[object] | None = None,
 ):
@@ -95,10 +97,9 @@ def build_stage_agent(
     _apply_unambiguous_read_file_format()
     root = Path(workspace_root).expanduser().resolve()
     routes = {
-        f"{WORKSPACE_PREFIX}/": LocalShellBackend(
+        f"{WORKSPACE_PREFIX}/": FilesystemBackend(
             root_dir=str(root),
             virtual_mode=True,
-            inherit_env=True,
         ),
     }
     skills_root = _compiler_skills_root()
@@ -111,17 +112,29 @@ def build_stage_agent(
 
     resolved_model = create_arc_chat_model(model)
     _register_arc_tool_exclusions(model=model, resolved_model=resolved_model)
+    resolved_skills = _resolve_source_paths(skills, root, skills_root, default=[f"{SKILLS_PREFIX}/"])
 
     return create_deep_agent(
         name=name,
         model=resolved_model,
         backend=backend,
         system_prompt=system_prompt,
-        middleware=[DisableToolsMiddleware(disabled=DISABLED_BUILTIN_TOOLS)],
+        middleware=[
+            StageDisciplineMiddleware(stage=stage),
+            DisableToolsMiddleware(disabled=DISABLED_BUILTIN_TOOLS),
+        ],
         tools=tools or [],
-        skills=_resolve_source_paths(skills, root, skills_root, default=[f"{SKILLS_PREFIX}/"]),
+        skills=resolved_skills,
         memory=_resolve_source_paths(memory, root, skills_root, default=[]),
-        permissions=_build_filesystem_permissions(root, writable_roots),
+        permissions=_build_filesystem_permissions(
+            root,
+            writable_roots,
+            skill_instruction_paths=_resolve_skill_instruction_paths(
+                resolved_skills,
+                skills_root,
+                permitted_skill_names=permitted_skill_names,
+            ),
+        ),
         context_schema=AgentRuntimeContext,
         response_format=_resolve_response_format(response_format),
     )
@@ -153,7 +166,12 @@ def _apply_unambiguous_read_file_format() -> None:
     _READ_FILE_FORMAT_PATCHED = True
 
 
-def _build_filesystem_permissions(root: Path, writable_roots: list[str]) -> list[Any]:
+def _build_filesystem_permissions(
+    root: Path,
+    writable_roots: list[str],
+    *,
+    skill_instruction_paths: list[str],
+) -> list[Any]:
     permissions: list[Any] = [
         FilesystemPermission(
             operations=["read", "write"],
@@ -191,12 +209,16 @@ def _build_filesystem_permissions(root: Path, writable_roots: list[str]) -> list
             paths=[WORKSPACE_PREFIX, f"{WORKSPACE_PREFIX}/**"],
             mode="allow",
         ),
-        FilesystemPermission(
-            operations=["read"],
-            paths=[SKILLS_PREFIX, f"{SKILLS_PREFIX}/**"],
-            mode="allow",
-        ),
     ]
+
+    if skill_instruction_paths:
+        permissions.append(
+            FilesystemPermission(
+                operations=["read"],
+                paths=skill_instruction_paths,
+                mode="allow",
+            )
+        )
 
     write_paths = [
         virtual_path
@@ -223,6 +245,43 @@ def _build_filesystem_permissions(root: Path, writable_roots: list[str]) -> list
     return permissions
 
 
+def _resolve_skill_instruction_paths(
+    sources: list[str],
+    skills_root: Path,
+    *,
+    permitted_skill_names: list[str] | None = None,
+) -> list[str]:
+    """Allow direct reads only for stage-selected skill instruction files.
+
+    Deep Agents discovers frontmatter by scanning skill *source* directories. ARC
+    therefore passes `/skills/` as the source, then constrains model tool access
+    to the exact instruction files selected for the current stage.
+    """
+
+    if permitted_skill_names is not None:
+        paths = [
+            f"{SKILLS_PREFIX}/{name}/SKILL.md"
+            for name in dict.fromkeys(permitted_skill_names)
+            if (skills_root / name / "SKILL.md").is_file()
+        ]
+        return paths
+
+    paths: list[str] = []
+    for source in sources:
+        normalized = _normalize_virtual_path(source).rstrip("/")
+        if not normalized.startswith(f"{SKILLS_PREFIX}/") and normalized != SKILLS_PREFIX:
+            continue
+        if normalized == SKILLS_PREFIX:
+            for skill_file in skills_root.glob("*/SKILL.md"):
+                paths.append(f"{SKILLS_PREFIX}/{skill_file.parent.name}/SKILL.md")
+            continue
+        if normalized.endswith("/SKILL.md"):
+            paths.append(normalized)
+        else:
+            paths.append(f"{normalized}/SKILL.md")
+    return list(dict.fromkeys(paths))
+
+
 def _expand_write_permission_paths(path: str, root: Path) -> list[str]:
     normalized = _to_virtual_workspace_path(path, root).rstrip("/") or WORKSPACE_PREFIX
     return [normalized, f"{normalized}/**"]
@@ -231,7 +290,10 @@ def _expand_write_permission_paths(path: str, root: Path) -> list[str]:
 def _register_arc_tool_exclusions(*, model: Any, resolved_model: Any) -> None:
     """Remove built-in agent tools that ARC does not want to expose."""
 
-    profile = HarnessProfile(excluded_tools=DISABLED_BUILTIN_TOOLS)
+    profile = HarnessProfile(
+        excluded_tools=DISABLED_BUILTIN_TOOLS,
+        general_purpose_subagent=GeneralPurposeSubagentProfile(enabled=False),
+    )
     registered: set[str] = set()
     if isinstance(model, str):
         provider, model_name = _split_model_name(model)
@@ -290,8 +352,6 @@ def _apply_windows_filesystem_path_compat() -> None:
 
     FilesystemBackend._resolve_path = _resolve_path_with_windows_compat  # type: ignore[method-assign]
     FilesystemBackend._to_virtual_path = _to_virtual_path_with_windows_compat  # type: ignore[method-assign]
-    LocalShellBackend._resolve_path = _resolve_path_with_windows_compat  # type: ignore[method-assign]
-    LocalShellBackend._to_virtual_path = _to_virtual_path_with_windows_compat  # type: ignore[method-assign]
     _WINDOWS_PATH_COMPAT_APPLIED = True
 
 
