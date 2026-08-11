@@ -1,0 +1,3 @@
+[submodule "arc-template"]
+	path = src/arc-template
+	url = https://github.com/Weiyu-Kong/arc-template.git

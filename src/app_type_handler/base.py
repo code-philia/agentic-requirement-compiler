@@ -6,6 +6,11 @@ from abc import ABC, abstractmethod
 from typing import Awaitable, Callable
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+TEMPLATE_ID_BY_APP_TYPE = {
+    "web": "web-react-express",
+    "android": "mobile-android-java",
+    "cli": "cli-python",
+}
 
 LogCallback = Callable[[str, str, str | None, str | None], Awaitable[None] | None]
 
@@ -14,7 +19,9 @@ def _resolve_templates_root() -> str:
     env_root = os.environ.get("ARC_AGENT_TEMPLATES_ROOT", "").strip()
     if env_root:
         return os.path.abspath(env_root)
-    return os.path.abspath(os.path.join(BASE_DIR, "..", "templates"))
+    return os.path.abspath(
+        os.path.join(BASE_DIR, "..", "arc-template", "templates")
+    )
 
 
 class AppTypeHandler(ABC):
@@ -34,7 +41,12 @@ class AppTypeHandler(ABC):
 
     @classmethod
     def template_dir(cls) -> str:
-        return os.path.join(_resolve_templates_root(), cls.name)
+        template_id = TEMPLATE_ID_BY_APP_TYPE.get(cls.name)
+        if template_id is None:
+            raise ValueError(
+                f"No external template mapping is configured for app_type={cls.name!r}."
+            )
+        return os.path.join(_resolve_templates_root(), template_id)
 
     async def initialize_workspace(self) -> bool:
         prereqs_ok = await self.check_prerequisites()

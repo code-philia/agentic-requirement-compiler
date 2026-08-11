@@ -41,6 +41,3 @@ include = [
   "core",
   "core.*",
 ]
-
-[tool.setuptools.package-data]
-templates = ["**/*", "**/.*"]

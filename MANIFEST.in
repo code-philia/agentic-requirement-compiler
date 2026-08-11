@@ -2,4 +2,3 @@ include README.md
 include LICENSE
 include .env_example
 include src/requirements.txt
-recursive-include src/templates * .*
