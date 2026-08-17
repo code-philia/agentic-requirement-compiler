@@ -295,6 +295,10 @@ That is the technical direction behind ARC's requirement graph modeling, test-fi
 }
 ```
 
+## Contact
+
+For questions about ARC or the accompanying research, please contact Yun Lin at <lin_yun@sjtu.edu.cn> or Weiyu Kong at <kwy160034@sjtu.edu.cn>.
+
 ## Contributing
 
 ARC is currently best understood as a set of ideas and a framework for requirement-driven software generation.
