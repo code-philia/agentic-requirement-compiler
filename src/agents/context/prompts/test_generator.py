@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from agents.context.prompts.common import app_runtime_contract, code_quality_policy, compiler_background, code_task_exploration_policy, reasoning_reflection_policy, response_contract, section, task_context_block, whole_app_policy, workspace_tool_policy
+from agents.context.prompts.common import app_runtime_contract, code_quality_policy, compiler_background, code_task_exploration_policy, reasoning_reflection_policy, requirement_data_policy, response_contract, section, task_context_block, whole_app_policy, workspace_tool_policy
 
 
 def get_system_prompt() -> str:
@@ -11,6 +11,7 @@ def get_system_prompt() -> str:
             compiler_background(),
             reasoning_reflection_policy(),
             whole_app_policy(),
+            requirement_data_policy(),
             code_quality_policy(),
             section(
                 "TestGenerator Role",
@@ -25,6 +26,7 @@ def get_system_prompt() -> str:
                     "Leaf-node tests must assert the requirement's target behavior, not the temporary DESIGN scaffold. Never assert `NOT_IMPLEMENTED`, HTTP 501, placeholder payloads, TODO text, or no-op behavior as a passing outcome.",
                     "When tests involve login, registration, logout, session, authenticated state, current user, account state, or auth-sensitive navigation, use the auth-session-consistency skill and test the global auth/session contract.",
                     "When tests involve cart, checkout, account, products, orders, catalog, inventory, or persisted user-owned data, test the connected runtime path rather than page-local state alone.",
+                    "When a GIVEN depends on pre-existing records or relationships described in natural language, treat them as normal seeded application state. Do not expose a fixture DSL, infer hidden evaluator data, or replace the database prerequisite with frontend constants.",
                     "Decide whether Unit, Integration, E2E, or no node-local tests are appropriate from the current interface contract and scenarios.",
                 ],
             ),
@@ -38,6 +40,7 @@ def get_system_prompt() -> str:
                     "For each declared scenario, generate or extend an E2E test that exercises the user-visible or command-visible flow and asserted outcome through the real app runtime.",
                     "For auth/session scenarios, assert observable global state changes through shared app surfaces, current-user/session indicators, route or command state, or session API behavior. Do not reduce authenticated-state coverage to a local-only success message.",
                     "For cart, checkout, account, product, order, catalog, or inventory scenarios, assert through the interface contract's API/service/persistence path when that path exists or is required by the requirement. Do not accept a frontend-only counter or static product array as durable behavior.",
+                    "For scenarios that read seeded records, exercise the normal application startup and UI/API path; do not write directly to the database or call hidden seed endpoints from generated tests unless the explicit test-harness contract requires that setup.",
                     "Generate focused Unit, Integration, and/or E2E tests when they add executable value; return an empty manifest when the node should not own local tests.",
                     "Before returning, assess from the evidence already gathered whether the tests would fail for a disconnected implementation, a local-only fake state patch, or a placeholder response. Do not read back or repair tests written in this pass.",
                     "Before writing each test, compare its setup, action, and assertion against the requirement description and each GIVEN/WHEN/THEN scenario step. Once written, leave correction to a later system validation handoff and TestDrivenDeveloper.",
@@ -65,6 +68,7 @@ def get_system_prompt() -> str:
                     "If the requirement does not mention an exact label, route, role, seed record, or message, either derive it from an interface contract or choose a minimal stable accessible contract that an implementation can satisfy without contradicting the requirement.",
                     "Do not add extra product obligations that are not in the current node, its interfaces, or its declared dependencies. Avoid testing future child-owned behavior from a parent or sibling requirement.",
                     "When tests need preconditions from dependencies, set them up as facts or use existing dependency interfaces; do not assert dependency behavior as the current node's main outcome.",
+                    "When a scenario says records already exist, keep that state in test setup assumptions and assert the user-visible consequence. Only create data through the UI/API when the scenario explicitly describes a create action.",
                     "If any proposed assertion feels like a convenience for the test rather than a requirement outcome, remove it or move it to setup.",
                 ],
             ),

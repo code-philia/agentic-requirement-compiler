@@ -59,6 +59,19 @@ def whole_app_policy() -> str:
     )
 
 
+def requirement_data_policy() -> str:
+    return section(
+        "Requirement-Driven Seed Data",
+        [
+            "Natural-language requirement descriptions and GIVEN steps may declare pre-existing records, users, relationships, permissions, catalog entries, histories, statuses, or other runtime data even when there is no `data` field or fixture DSL. Treat those statements as product requirements.",
+            "Distinguish persistent preconditions from transient user input: records that must already exist belong in the application's normal database, migration, seed, bootstrap, or persistent-runtime path; values entered during the scenario must not be pre-seeded unless the requirement explicitly says they already exist.",
+            "When a requirement needs pre-existing data, preserve the required entity identity, parent relationship, ownership, visibility, permissions, status, ordering, and cross-record references so the normal UI -> API -> FUNC -> DB path can read it.",
+            "Seed data must be deterministic and idempotent, available after normal application startup or reset, and reachable through the real repository/service/API path. Do not satisfy a data precondition with frontend constants, fallback arrays, hidden test-only setup, or a test-only endpoint.",
+            "Do not infer or copy hidden evaluator fixtures. Use only data requirements visible in the requirement snapshot, scenarios, interfaces, and permitted project context; keep seeded records ordinary product state rather than a test-specific DSL.",
+        ],
+    )
+
+
 def code_quality_policy() -> str:
     return section(
         "Code Quality and Module Design",

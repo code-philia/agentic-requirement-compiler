@@ -160,6 +160,7 @@ class ContextPipeline:
             "primary_outcomes": [
                 "Implement the current node's owned behavior, not just a renderable shell.",
                 "Use real owned runtime wiring for fetched or persisted data when this node owns that chain.",
+                "When the requirement or GIVEN steps describe pre-existing data, provide deterministic idempotent database or persistent-runtime seed/bootstrap records with the required relationships and make them reachable through the normal application path.",
                 "If runtime data is not owned here, render explicit loading, empty, or error states instead of fake records.",
             ],
             "scenario_targets": [
@@ -175,6 +176,7 @@ class ContextPipeline:
             "forbidden_shortcuts": [
                 "hardcoded sample rows",
                 "fallback arrays that bypass the owned path",
+                "frontend-only seed data or test-only database setup used as a substitute for application initialization",
                 "fake success messages detached from real writes",
                 "placeholder-only panels presented as complete features",
             ],

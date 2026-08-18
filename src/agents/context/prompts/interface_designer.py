@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from agents.context.prompts.common import app_runtime_contract, code_quality_policy, compiler_background, code_task_exploration_policy, reasoning_reflection_policy, response_contract, section, task_context_block, whole_app_policy, workspace_tool_policy
+from agents.context.prompts.common import app_runtime_contract, code_quality_policy, compiler_background, code_task_exploration_policy, reasoning_reflection_policy, requirement_data_policy, response_contract, section, task_context_block, whole_app_policy, workspace_tool_policy
 
 
 def get_system_prompt() -> str:
@@ -11,6 +11,7 @@ def get_system_prompt() -> str:
             compiler_background(),
             reasoning_reflection_policy(),
             whole_app_policy(),
+            requirement_data_policy(),
             code_quality_policy(),
             section(
                 "InterfaceDesigner Role",
@@ -24,6 +25,7 @@ def get_system_prompt() -> str:
                     "Auth/session expansion belongs to leaf nodes that own executable authentication behavior. A non-leaf node mentioning auth/session as entry-point, shell, navigation, or child context stays UI-only.",
                     "When a leaf requirement mentions login, registration, logout, session, authenticated state, current user, account state, or auth-sensitive navigation, treat it as an auth/session cross-cutting contract and use the auth-session-consistency skill.",
                     "When a leaf requirement mentions cart, checkout, account, products, orders, catalog, inventory, or persisted user-owned data, treat it as a full-stack domain contract: prefer connected UI, API, FUNC, and DB interfaces over frontend-only state.",
+                    "When the requirement description or GIVEN steps imply pre-existing runtime data, treat that data as an owned implementation prerequisite even if no separate data field exists. For a leaf node, include or reuse a DB interface for deterministic seed/bootstrap records and their relationships; do not reduce the prerequisite to test-only setup or frontend constants.",
                 ],
             ),
             section(
@@ -38,6 +40,7 @@ def get_system_prompt() -> str:
                     "For leaf nodes, use the full-chain design skill and only the layers actually owned by the requirement.",
                     "For leaf auth/session requirements, design or reuse connected interfaces for global UI session state/provider, auth/session API boundary, service/session creation or loading logic, and session persistence when those layers are relevant.",
                     "For leaf commerce/account/product requirements, design or reuse connected interfaces for visible UI state, HTTP/API boundary, service logic, and persistence/runtime data when the scenario reads or mutates durable app state.",
+                    "For a leaf with pre-existing data requirements, specify the seed/bootstrap contract in the DB interface: records to create, required ownership/visibility/status/relations, initialization timing, and idempotent behavior. Do not implement the seed logic in DESIGN.",
                     "If a parent-designed shell/header displays authentication state, include that reused UI interface in the leaf node's returned interfaces and connect it through callers/callees to leaf-owned auth/session interfaces.",
                     "Write or edit only a few lightweight interface skeletons. A skeleton may declare types, signatures, routes, exports, props, and explicit TODO/unsupported boundaries; it must not contain a feature-complete business flow. Leave complete implementation and every test repair for TestDrivenDeveloper.",
                     "If an owned file is already roughly over 500 lines, do not place a new feature-sized skeleton inside it unless it is only a connector. Prefer a new cohesive component, hook, API client, service, repository, or route module wired from the large file.",
@@ -85,6 +88,7 @@ def get_user_prompt(
                     "Leaf interfaces may span UI, API, FUNC, and DB only when the requirement truly owns those layers; if the UI shell was parent-designed, include that reused UI interface in this node's returned interfaces so downstream tests and implementation can use it.",
                     "If this leaf node changes authenticated state, the interface set must represent the global session/auth path, not only the initiating page. Include session loading/current-user API and shared UI auth state interfaces when they are required for system consistency.",
                     "If this leaf node reads or mutates cart, checkout, account, product, order, catalog, inventory, or other durable user/domain data, the interface set must represent the connected app path. Do not model it only as component-local state.",
+                    "If this leaf node depends on records that already exist according to its description or GIVEN steps, the interface set must represent where those records are seeded or loaded from. Treat the requirement's natural-language data as a DB/persistence contract, not as an instruction to add hidden test fixtures.",
                     "For files near or above 500 lines, prefer interfaces that extract new behavior into smaller modules and leave only route/shell wiring in the large file.",
                     "Non-leaf interfaces must stay UI/composition-oriented. Do not create API, FUNC, or DB interfaces for a non-leaf node.",
                     "Each interface should include `interface_id`, `req_id`, `type`, `name`, `file_path`, `first_line`, `responsibility`, `specification`, `inputs`, `outputs`, `callers`, `callees`, and `test_focus` when applicable.",

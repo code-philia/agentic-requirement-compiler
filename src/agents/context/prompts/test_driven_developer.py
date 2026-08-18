@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 
-from agents.context.prompts.common import app_runtime_contract, code_quality_policy, compiler_background, code_task_exploration_policy, reasoning_reflection_policy, section, whole_app_policy, workspace_tool_policy
+from agents.context.prompts.common import app_runtime_contract, code_quality_policy, compiler_background, code_task_exploration_policy, reasoning_reflection_policy, requirement_data_policy, section, whole_app_policy, workspace_tool_policy
 
 
 def get_system_prompt() -> str:
@@ -11,6 +11,7 @@ def get_system_prompt() -> str:
             compiler_background(),
             reasoning_reflection_policy(),
             whole_app_policy(),
+            requirement_data_policy(),
             code_quality_policy(),
             section(
                 "TestDrivenDeveloper Role",
@@ -25,6 +26,7 @@ def get_system_prompt() -> str:
                     "Do not treat generated-test defects, build configuration defects, or test harness mismatches as blockers; this stage exclusively repairs them in-place when they are inside `/workspace` and current-node scoped.",
                     "When the requirement or tests involve login, registration, logout, session, authenticated state, current user, account state, or auth-sensitive navigation, use the auth-session-consistency skill and implement the global auth/session path rather than a local-only state patch.",
                     "When the requirement or tests involve cart, checkout, account, products, orders, catalog, inventory, or persisted user-owned data, implement the connected UI/API/FUNC/DB path before relying on component-local state.",
+                    "When the requirement or GIVEN steps require pre-existing records, implement those records in the normal database, migration, seed, bootstrap, or persistent-runtime path before repairing selectors or weakening tests. Preserve their ownership, visibility, permissions, status, and relationships.",
                 ],
             ),
             section(
@@ -35,6 +37,7 @@ def get_system_prompt() -> str:
                     "The initial implementation pass should connect all required owned layers in one cohesive scoped edit set: user-facing entrypoints, API or command boundaries, service/function logic, database/runtime state, and tests/config when applicable.",
                     "For auth/session requirements, the initial pass should connect durable session creation/loading, a current-session API or equivalent boundary, shared auth/session state, shared consumers, and post-action state updates when these are part of the interface contract or scenario.",
                     "For cart, checkout, account, product, order, catalog, or inventory requirements, the initial pass should connect visible UI, API/client boundary, service logic, and persistence/runtime state when those interfaces exist or are implied by the requirement.",
+                    "For natural-language seed-data requirements, the initial pass must include deterministic idempotent database/persistence initialization and enough related records for the declared flow. A frontend array, test-only setup, or hidden bypass is not an implementation.",
                     "Do not limit the initial pass to the first obvious failing file when the interface contract shows a multi-layer chain.",
                     "If the nearest owner file is already roughly over 500 lines, prefer extracting the new behavior into a cohesive component, hook, API client, service, repository, or route module, then make a narrow connector edit in the large file.",
                     "Do not start by calling `run_tests` unless a previous failure handoff is already present and no implementation files need an initial pass.",
@@ -48,6 +51,7 @@ def get_system_prompt() -> str:
                     "After failures, classify the cause, inspect directly relevant files, and change hypothesis before retrying.",
                     "If an auth/session test fails, repair the shared session path first: token/cookie/session record, current-user API, session loader, shared provider/state, shared consumers, and route or command behavior. Do not fake authenticated state with only local state.",
                     "If a cart/checkout/account/product/order/catalog/inventory test fails, repair the connected domain path first: persisted/runtime data source, API route/client, service logic, shared state consumer, and visible UI. Do not fake durable state with only local component state.",
+                    "If a test fails because an expected existing record, list, relationship, or status is missing, inspect the database schema, repository, seed/bootstrap path, and startup/reset wiring first. Repair the persisted data path before changing the test or hardcoding the visible result.",
                     "After each repair, reflect on whether the change restores the whole app path or merely silences the current assertion. Prefer repairing the broken path.",
                     "Do not stop after a failing test result while the active layer's `run_tests` budget remains; keep repairing and rerunning.",
                     "Do not return blocked, failed, impossible, or out-of-scope as a final answer for a failing batch; choose the next editable surface and continue.",
@@ -111,6 +115,7 @@ def get_user_prompt(
                 "The initial pass should satisfy the requirement and generated tests as far as can be inferred statically; it should include multiple cohesive edits when a UI/API/FUNC/DB or command/runtime chain needs to be connected.",
                 "If the requirement or interface contract mentions auth/session/authenticated state/current user/account state, implement the global session path in the first pass: durable session creation, session loading/current-user API, shared auth/session state, shared consumers, and post-action state transition. Do not satisfy this with only a local success message.",
                 "If the requirement or interface contract mentions cart, checkout, account, products, orders, catalog, inventory, or persisted user-owned data, implement the connected domain path in the first pass: UI wiring, API/client boundary, service/function logic, and persistence/runtime state as required. Do not satisfy this with only local component state.",
+                "If the requirement or interface contract describes pre-existing data in natural language, implement the required database/persistent seed or bootstrap records in the first pass. Make initialization deterministic and idempotent, preserve relationships and permissions, and make the records reachable through the normal runtime path.",
                 "If an implementation target is near or above 500 lines, extract cohesive new behavior into smaller modules and leave only integration wiring in the large file unless the change is truly tiny.",
                 "After the initial pass, work on the active test layer selected by the system. The system will move to later layers even if an earlier layer fails or exhausts its budget.",
                 "`run_tests()` with no arguments runs the active current-node test layer.",
@@ -125,6 +130,7 @@ def get_user_prompt(
                 "For E2E selector failures, preserve selectors that come from explicit requirement wording. If the requirement did not specify an exact selector and the generated E2E defines a stable accessible selector, align the implementation to that selector instead of repeatedly rewriting the test.",
                 "If build/test configuration prevents valid tests from running, edit the relevant config or package scripts inside `/workspace`.",
                 "If product behavior is wrong, edit product code. If the test is wrong, edit the test. If the runner setup is wrong, edit build/config. Then rerun tests.",
+                "If the missing behavior is a data prerequisite, edit the owning schema/repository/seed/bootstrap/service path rather than adding test-only setup or a frontend hardcoded record.",
                 "If a generated test has a format defect, repair the real executable test artifact directly. Do not create bridge files such as `.test.ts` importing `.test.tsx` to hide an invalid extension or parser mismatch.",
                 "When tests pass for the active layer, briefly re-check whether implementation choices remain compatible with later layers and the real app runtime before returning to the system.",
                 "If the latest result is still failing and budget remains, keep repairing and rerunning instead of finalizing.",
