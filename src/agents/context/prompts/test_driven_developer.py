@@ -121,7 +121,7 @@ def get_user_prompt(
                 "`run_tests()` with no arguments runs the active current-node test layer.",
                 "You may call `run_tests(test_type='Unit'|'Integration'|'E2E')` only for the active layer; the tool will reject attempts to run a non-active layer.",
                 "You may call `run_tests(test_files=[...])` to run specific current-node test files from the manifest.",
-                "Each test layer has a fixed `run_tests` budget of 20 calls. Use each failed run to inspect the named files, make a concrete repair, and only then spend the next call.",
+                "Each test layer has a fixed `run_tests` budget of 10 calls. Use each failed run to inspect the named files, make a concrete repair, and only then spend the next call.",
                 "Do not use `run_tests` as the first action unless this batch has a previous failure handoff and the implementation has already had an initial pass.",
                 "Use the current interface contract, generated tests, and latest raw failure output to localize the problem before searching beyond the failing layer.",
                 "After a failed `run_tests`, inspect the failing test file and the nearest owner file named or implied by the error before any broader search.",

@@ -18,7 +18,7 @@ Use this skill after `run_tests` reports a failing current batch.
 7. Make one minimal contract-preserving fix, then call `run_tests` again.
 8. Do not stop after failing runs while the active layer's tool budget remains. Do not declare blocked, failed, impossible, or out-of-scope as a final answer.
 9. Say `IMPLEMENTED` only when the system indicates the active layer passed and no scheduled layer remains blocked by the current session.
-10. Each current-node test layer has an independent `run_tests` budget of 20 calls. After a failure, spend enough effort to localize and repair the cause before consuming the next call.
+10. Each current-node test layer has an independent `run_tests` budget of 10 calls. After a failure, spend enough effort to localize and repair the cause before consuming the next call.
 11. For auth/session failures, use the auth-session-consistency skill and repair the shared session path first: session persistence, current-session API, client session loader, global provider/state, shell/header consumers, and route behavior.
 12. If Playwright reports an unknown fixture parameter, inspect the `test.extend` block and make the fixture name and `use(...)` value match before rerunning.
 13. If Playwright or Testing Library reports multiple matches for a label, do not retry with a broader selector. Use an exact accessible role, a stable id, or a scoped locator that identifies one element.

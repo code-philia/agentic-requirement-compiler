@@ -14,7 +14,7 @@ from app_type_handler.test_results import parse_test_results
 
 
 LogCallback = Callable[[str, str, str | None, str | None], Awaitable[None] | None]
-TDD_RUN_TESTS_BUDGET = 20
+TDD_RUN_TESTS_BUDGET = 10
 ALLOWED_INTERFACE_TYPES = {"UI", "API", "FUNC", "DB"}
 TDD_BATCH_ORDER = ("Unit", "Integration", "E2E")
 
