@@ -1,0 +1,75 @@
+id: ROOT
+name: Small Train Ticket Booking System
+type: FOLDER
+description: >-
+  A small web-based ticket booking system covering user authentication, train search and result display,
+  and basic booking capabilities.
+dependencies: []
+children:
+  - id: REQ-1
+    name: Public Homepage and User Authentication
+    type: FOLDER
+    description: >-
+      Defines the public homepage, shared navigation, authentication entry points, and session-related public APIs.
+      This node can guide generation of the shared header, route entry points, login/register entry styling,
+      and shared logic for session loading.
+      Optional visual reference: ![image](./reference/homepage.png)
+    dependencies: []
+    children:
+      - id: REQ-1.1
+        name: User Registration
+        type: ATOMIC
+        description: >-
+          An unauthenticated visitor can open the registration page, fill in username, email, password,
+          and confirm password, and submit the registration form.
+          The system must validate the input, create and persist a user account, establish a login session,
+          and move the UI into an authenticated state after success.
+          Invalid input or duplicate accounts must return explicit errors and must not create a new user record.
+          Optional visual reference: ![image](./reference/register.png)
+        dependencies: []
+        scenarios:
+          - name: Successfully register a new user
+            steps:
+              - keyword: GIVEN
+                content: The visitor is on a public page and is currently not logged in.
+              - keyword: WHEN
+                content: The user opens the registration page, enters a unique username, a valid email, matching passwords, and submits the form.
+              - keyword: THEN
+                content: The system creates and persists the new user, establishes a login session, and moves the UI into an authenticated state.
+          - name: Reject duplicate accounts or invalid input
+            steps:
+              - keyword: GIVEN
+                content: The visitor is on the registration page, and the username or email already exists, or required fields are incomplete, or the two passwords do not match.
+              - keyword: WHEN
+                content: The user submits the registration form.
+              - keyword: THEN
+                content: The system returns explicit validation or conflict feedback and does not create a new user record or login session.
+
+      - id: REQ-1.2
+        name: User Login
+        type: ATOMIC
+        description: >-
+          A visitor with an existing account can open the login page and sign in using a username or email plus password.
+          The system must validate credentials, load the persisted user, establish a login session,
+          and move the UI into an authenticated state after success.
+          Invalid credentials must not create a session.
+          Optional visual reference: ![image](./reference/login.png)
+        dependencies:
+          - REQ-1.1
+        scenarios:
+          - name: Log in with a valid account
+            steps:
+              - keyword: GIVEN
+                content: The visitor is on a public page and already has a valid persisted account.
+              - keyword: WHEN
+                content: The user opens the login page, enters the correct username or email and password, and submits the form.
+              - keyword: THEN
+                content: The system validates the credentials, establishes a session, and moves the UI into an authenticated state.
+          - name: Reject invalid login credentials
+            steps:
+              - keyword: GIVEN
+                content: The visitor is on the login page but enters a wrong password, wrong account, or incomplete credentials.
+              - keyword: WHEN
+                content: The user submits the login form.
+              - keyword: THEN
+                content: The system returns authentication failure feedback and does not create a logged-in session.
