@@ -179,6 +179,8 @@ arc compile example/ticketbooking-demo -o workspace/demo \
 #### Available Commands
 
 - **`arc compile`** - Compile requirements into a working application
+- **`arc monitor`** - Live terminal progress monitor for a compilation workspace: `arc monitor <output-dir>` renders runner state, queue tasks, nodes, interfaces, tests, events, and the log tail, plus requirement-tree and interface-call graphs (`1`/`2` switch views, Enter inspects full untruncated details, `q` quits)
+- **`arc timeline`** - Step-through timeline and bottleneck analysis of a compilation: `arc timeline <output-dir>` replays the event stream on a time axis (gantt of per-node phase durations with a live "now" marker), ranks the slowest phases, per-agent total time, and idle gaps, and lets you step through every event (`←`/`→`) or autoplay (`space`). Drill into any phase (`Enter`) to see its agent calls and each tool call with its own duration — including the tool-execution vs model-thinking split that shows where the minutes actually go
 - **`arc config`** - Configure ARC interactively (create/update .env)
 - **`arc doctor`** - Check configuration and environment health
 

@@ -7,7 +7,6 @@ import shutil
 import sys
 import time
 from dataclasses import dataclass
-from pathlib import Path
 
 from app_type_handler import list_app_types, normalize_app_type
 from core.cli import (
@@ -267,6 +266,51 @@ def cmd_config(args: argparse.Namespace) -> int:
 
 
 # ============================================================
+# Subcommand: monitor
+# ============================================================
+def build_monitor_parser(subparsers) -> None:
+    parser = subparsers.add_parser(
+        "monitor",
+        help="Live terminal progress monitor for a compilation workspace",
+        description=(
+            "Render live compilation progress (queue, nodes, interfaces, tests, "
+            "events, logs, graphs) from an ARC output workspace."
+        ),
+    )
+    parser.add_argument("output_dir", help="ARC output workspace directory (contains .arc/)")
+    parser.set_defaults(func=cmd_monitor)
+
+
+def cmd_monitor(args: argparse.Namespace) -> int:
+    """Execute monitor subcommand."""
+    from core.monitor import main as monitor_main
+    return monitor_main([args.output_dir], prog="arc monitor")
+
+
+# ============================================================
+# Subcommand: timeline
+# ============================================================
+def build_timeline_parser(subparsers) -> None:
+    parser = subparsers.add_parser(
+        "timeline",
+        help="Step-through timeline and bottleneck analysis of a compilation",
+        description=(
+            "Replay the event stream of an ARC output workspace, visualize phase "
+            "durations on a time axis, and rank bottlenecks (slowest phases, agent "
+            "time, idle gaps)."
+        ),
+    )
+    parser.add_argument("output_dir", help="ARC output workspace directory (contains .arc/)")
+    parser.set_defaults(func=cmd_timeline)
+
+
+def cmd_timeline(args: argparse.Namespace) -> int:
+    """Execute timeline subcommand."""
+    from core.timeline import main as timeline_main
+    return timeline_main([args.output_dir], prog="arc timeline")
+
+
+# ============================================================
 # Main CLI entry
 # ============================================================
 def build_parser() -> argparse.ArgumentParser:
@@ -288,6 +332,8 @@ def build_parser() -> argparse.ArgumentParser:
     
     build_compile_parser(subparsers)
     build_doctor_parser(subparsers)
+    build_monitor_parser(subparsers)
+    build_timeline_parser(subparsers)
     
     return parser
 
