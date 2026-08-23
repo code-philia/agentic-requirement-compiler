@@ -63,6 +63,7 @@ async def ainvoke_stage_agent(
                 f"agent call end: duration_ms={duration_ms:.1f}, payload={format_json_for_log(stream_payload)}",
                 node_id=context.node_id,
             )
+            await _log_call_usage(log_cb, run_label, node_id=context.node_id)
             return stream_payload
 
     result = await agent.ainvoke(
@@ -87,7 +88,36 @@ async def ainvoke_stage_agent(
         f"agent call end: duration_ms={duration_ms:.1f}, payload={format_json_for_log(payload)}",
         node_id=context.node_id,
     )
+    await _log_call_usage(log_cb, run_label, node_id=context.node_id)
     return payload
+
+
+async def _log_call_usage(log_cb: LogCallback | None, run_label: str, *, node_id: str) -> None:
+    from agents.model.openai_api_adapter import drain_usage
+
+    records = drain_usage()
+    if not records:
+        return
+    for index, record in enumerate(records, start=1):
+        await _emit_log(log_cb, run_label, _format_llm_usage_line(record, index), node_id=node_id)
+    prompt = sum(r.get("prompt_tokens", 0) for r in records)
+    completion = sum(r.get("completion_tokens", 0) for r in records)
+    total = sum(r.get("total_tokens", 0) for r in records)
+    cached = sum(r.get("cached_tokens", 0) for r in records)
+    model = next((r.get("model") for r in records if r.get("model")), "")
+    line = f"agent usage: prompt_tokens={prompt} completion_tokens={completion} total_tokens={total} cached_tokens={cached} llm_calls={len(records)}"
+    if model:
+        line += f" model={model}"
+    await _emit_log(log_cb, run_label, line, node_id=node_id)
+
+
+def _format_llm_usage_line(record: dict[str, Any], call_index: int) -> str:
+    prompt = int(record.get("prompt_tokens", 0) or 0)
+    cached = int(record.get("cached_tokens", 0) or 0)
+    cache_rate = cached / prompt * 100 if prompt else 0.0
+    line = f"llm usage: call={call_index} prompt_tokens={prompt} completion_tokens={int(record.get('completion_tokens', 0) or 0)} total_tokens={int(record.get('total_tokens', 0) or 0)} cached_tokens={cached} cache_rate={cache_rate:.1f}%"
+    model = str(record.get("model", "") or "").strip()
+    return line + (f" model={model}" if model else "")
 
 
 def extract_payload(result: dict[str, Any]) -> dict[str, Any]:

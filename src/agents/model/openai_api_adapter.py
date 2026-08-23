@@ -14,6 +14,7 @@ from agents.model.compatible_openai import CompatibleChatOpenAI
 
 OpenAIAPIMode = Literal["responses", "chat_completions"]
 _PROMPT_CACHE_RUN_ID = ""
+_PENDING_USAGE: list[dict[str, int]] = []
 
 
 def set_prompt_cache_run_id(run_id: str) -> None:
@@ -27,6 +28,53 @@ def prompt_cache_key() -> str:
     if not _PROMPT_CACHE_RUN_ID:
         return ""
     return f"arc-run:{_PROMPT_CACHE_RUN_ID}"[:64]
+
+
+def record_usage(llm_output: dict | None, model: str = "") -> None:
+    """Normalize and record token usage from a langchain ChatResult."""
+    if not isinstance(llm_output, dict):
+        return
+    usage = llm_output.get("token_usage")
+    if not isinstance(usage, dict):
+        usage = llm_output.get("usage")
+    if not isinstance(usage, dict):
+        return
+    prompt = _first_int(usage, "prompt_tokens", "input_tokens")
+    completion = _first_int(usage, "completion_tokens", "output_tokens")
+    total = _first_int(usage, "total_tokens")
+    if total is None and prompt is not None and completion is not None:
+        total = prompt + completion
+    if total is None:
+        return
+    cached = _nested_int(usage, ("prompt_tokens_details", "cached_tokens"), ("input_tokens_details", "cached_tokens"))
+    _PENDING_USAGE.append({"prompt_tokens": prompt or 0, "completion_tokens": completion or 0, "total_tokens": total, "cached_tokens": cached or 0, "model": model.strip()})
+
+
+def _first_int(usage: dict, *keys: str) -> int | None:
+    for key in keys:
+        value = usage.get(key)
+        if isinstance(value, (int, float)) and value > 0:
+            return int(value)
+    return None
+
+
+def _nested_int(usage: dict, *paths: tuple[str, ...]) -> int | None:
+    for path in paths:
+        node: object = usage
+        for key in path:
+            if not isinstance(node, dict):
+                node = None
+                break
+            node = node.get(key)
+        if isinstance(node, (int, float)) and node > 0:
+            return int(node)
+    return None
+
+
+def drain_usage() -> list[dict[str, int]]:
+    records = list(_PENDING_USAGE)
+    _PENDING_USAGE.clear()
+    return records
 
 
 _TRUTHY = {"1", "true", "yes", "on", "responses", "response", "responses_api"}
@@ -76,13 +124,17 @@ class ARCChatOpenAI(ChatOpenAI):
 
     async def _agenerate(self, messages, stop=None, run_manager=None, **kwargs):  # type: ignore[override]
         try:
-            return await super()._agenerate(messages, stop=stop, run_manager=run_manager, **kwargs)
+            result = await super()._agenerate(messages, stop=stop, run_manager=run_manager, **kwargs)
+            record_usage(getattr(result, "llm_output", None), model=self._arc_model_name)
+            return result
         except Exception as exc:
             _raise_model_api_exception(exc, api_mode=self._arc_api_mode, model=self._arc_model_name)
 
     def _generate(self, messages, stop=None, run_manager=None, **kwargs):  # type: ignore[override]
         try:
-            return super()._generate(messages, stop=stop, run_manager=run_manager, **kwargs)
+            result = super()._generate(messages, stop=stop, run_manager=run_manager, **kwargs)
+            record_usage(getattr(result, "llm_output", None), model=self._arc_model_name)
+            return result
         except Exception as exc:
             _raise_model_api_exception(exc, api_mode=self._arc_api_mode, model=self._arc_model_name)
 
@@ -100,13 +152,17 @@ class ARCCompatibleChatOpenAI(CompatibleChatOpenAI):
 
     async def _agenerate(self, messages, stop=None, run_manager=None, **kwargs):  # type: ignore[override]
         try:
-            return await super()._agenerate(messages, stop=stop, run_manager=run_manager, **kwargs)
+            result = await super()._agenerate(messages, stop=stop, run_manager=run_manager, **kwargs)
+            record_usage(getattr(result, "llm_output", None), model=self._arc_model_name)
+            return result
         except Exception as exc:
             _raise_model_api_exception(exc, api_mode=self._arc_api_mode, model=self._arc_model_name)
 
     def _generate(self, messages, stop=None, run_manager=None, **kwargs):  # type: ignore[override]
         try:
-            return super()._generate(messages, stop=stop, run_manager=run_manager, **kwargs)
+            result = super()._generate(messages, stop=stop, run_manager=run_manager, **kwargs)
+            record_usage(getattr(result, "llm_output", None), model=self._arc_model_name)
+            return result
         except Exception as exc:
             _raise_model_api_exception(exc, api_mode=self._arc_api_mode, model=self._arc_model_name)
 
