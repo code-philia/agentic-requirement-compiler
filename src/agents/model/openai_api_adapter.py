@@ -13,6 +13,22 @@ from agents.model.compatible_openai import CompatibleChatOpenAI
 
 
 OpenAIAPIMode = Literal["responses", "chat_completions"]
+_PROMPT_CACHE_RUN_ID = ""
+
+
+def set_prompt_cache_run_id(run_id: str) -> None:
+    """Set the compile-run identifier used for provider cache affinity."""
+    global _PROMPT_CACHE_RUN_ID
+    _PROMPT_CACHE_RUN_ID = str(run_id or "").strip()
+
+
+def prompt_cache_key() -> str:
+    """Return the stable, run-scoped provider cache key."""
+    if not _PROMPT_CACHE_RUN_ID:
+        return ""
+    return f"arc-run:{_PROMPT_CACHE_RUN_ID}"[:64]
+
+
 _TRUTHY = {"1", "true", "yes", "on", "responses", "response", "responses_api"}
 _FALSY = {"0", "false", "no", "off", "chat", "chat_completion", "chat_completions", "chat/completions"}
 
@@ -117,6 +133,9 @@ def build_openai_chat_model(
         "arc_api_mode": config.api_mode,
         "arc_model_name": config.model_name,
     }
+    cache_key = prompt_cache_key()
+    if cache_key:
+        kwargs["model_kwargs"] = {"prompt_cache_key": cache_key}
     if config.base_url:
         kwargs["base_url"] = config.base_url
     if config.api_key:

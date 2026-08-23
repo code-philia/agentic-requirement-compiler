@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import os
 import shutil
+import uuid
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
 from agents.interface_designer import InterfaceDesigner
 from agents.test_driven_developer import TestDrivenDeveloper
 from agents.test_generator import TestGenerator
+from agents.model.openai_api_adapter import set_prompt_cache_run_id
 from app_type_handler import create_app_type_handler, normalize_app_type
 from agents.context.pipeline import context_pipeline
 from core import commits, config, files, sessions
@@ -55,6 +57,8 @@ class ARCWorkflowManager:
         log_cb: LogCallback | None = None,
     ) -> None:
         self.workspace_path = str(Path(workspace_path).expanduser().resolve())
+        self.run_id = uuid.uuid4().hex
+        set_prompt_cache_run_id(self.run_id)
         self.requirement_path = str(Path(requirement_path).expanduser().resolve()) if requirement_path else ""
         self.app_type = normalize_app_type(app_type)
         self.web_port = int(web_port)
