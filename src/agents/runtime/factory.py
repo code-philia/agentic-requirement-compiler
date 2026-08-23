@@ -110,7 +110,7 @@ def build_stage_agent(
         )
     backend = CompositeBackend(default=StateBackend(), routes=routes)
 
-    resolved_model = create_arc_chat_model(model)
+    resolved_model = create_arc_chat_model(model, prompt_cache_scope=stage)
     _register_arc_tool_exclusions(model=model, resolved_model=resolved_model)
     resolved_skills = _resolve_source_paths(skills, root, skills_root, default=[f"{SKILLS_PREFIX}/"])
 

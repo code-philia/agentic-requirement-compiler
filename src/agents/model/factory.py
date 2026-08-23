@@ -3,7 +3,12 @@ from __future__ import annotations
 from agents.model.openai_api_adapter import build_openai_chat_model
 
 
-def create_arc_chat_model(model: str | object, *, api_mode: str | None = None) -> str | object:
+def create_arc_chat_model(
+    model: str | object,
+    *,
+    api_mode: str | None = None,
+    prompt_cache_scope: str = "general",
+) -> str | object:
     if not isinstance(model, str):
         return model
 
@@ -11,7 +16,11 @@ def create_arc_chat_model(model: str | object, *, api_mode: str | None = None) -
     if provider not in ("", "openai"):
         return model
 
-    return build_openai_chat_model(model_name, api_mode=api_mode)
+    return build_openai_chat_model(
+        model_name,
+        api_mode=api_mode,
+        prompt_cache_scope=prompt_cache_scope,
+    )
 
 
 def _split_model_name(model: str) -> tuple[str, str]:

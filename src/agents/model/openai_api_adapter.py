@@ -13,21 +13,15 @@ from agents.model.compatible_openai import CompatibleChatOpenAI
 
 
 OpenAIAPIMode = Literal["responses", "chat_completions"]
-_PROMPT_CACHE_RUN_ID = ""
 _PENDING_USAGE: list[dict[str, int]] = []
 
 
-def set_prompt_cache_run_id(run_id: str) -> None:
-    """Set the compile-run identifier used for provider cache affinity."""
-    global _PROMPT_CACHE_RUN_ID
-    _PROMPT_CACHE_RUN_ID = str(run_id or "").strip()
-
-
-def prompt_cache_key() -> str:
-    """Return the stable, run-scoped provider cache key."""
-    if not _PROMPT_CACHE_RUN_ID:
-        return ""
-    return f"arc-run:{_PROMPT_CACHE_RUN_ID}"[:64]
+def prompt_cache_key(scope: str = "general") -> str:
+    """Return a stable versioned key for similar stage prompt prefixes."""
+    normalized = str(scope or "").strip().lower().replace("_", "-")
+    normalized = normalized or "general"
+    namespace = os.getenv("ARC_PROMPT_CACHE_NAMESPACE", "arc-v1").strip() or "arc-v1"
+    return f"{namespace}:{normalized}"[:64]
 
 
 def record_usage(llm_output: dict | None, model: str = "") -> None:
@@ -173,6 +167,7 @@ def build_openai_chat_model(
     api_mode: str | None = None,
     base_url: str | None = None,
     api_key: str | None = None,
+    prompt_cache_scope: str = "general",
 ) -> ChatOpenAI:
     config = resolve_openai_adapter_config(
         model_name=model_name,
@@ -189,9 +184,7 @@ def build_openai_chat_model(
         "arc_api_mode": config.api_mode,
         "arc_model_name": config.model_name,
     }
-    cache_key = prompt_cache_key()
-    if cache_key:
-        kwargs["model_kwargs"] = {"prompt_cache_key": cache_key}
+    kwargs["model_kwargs"] = {"prompt_cache_key": prompt_cache_key(prompt_cache_scope)}
     if config.base_url:
         kwargs["base_url"] = config.base_url
     if config.api_key:
