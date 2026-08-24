@@ -3,10 +3,12 @@ from __future__ import annotations
 import inspect
 import json
 import os
+import re
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
 from agents.context.pipeline import context_pipeline
+from agents.context.global_memory import GlobalProjectMemory
 from agents.context.prompts.common import stage_skill_activation_policy
 from agents.context.prompts.test_driven_developer import get_system_prompt, get_user_prompt
 from agents.runtime.contracts import AgentRuntimeContext
@@ -61,6 +63,8 @@ class TestDrivenDeveloper:
         run_tests_usage: dict[str, int] | None = None,
         stop_on_test_budget_exhausted: bool = True,
         run_tests_executor: Callable[[str | None, list[str] | None], Awaitable[str]] | None = None,
+        protect_test_files: bool = False,
+        continue_across_layers: bool = False,
     ) -> str:
         self._last_run_tests_result = None
         self._last_run_tests_exit_code = None
@@ -76,6 +80,7 @@ class TestDrivenDeveloper:
             or os.getcwd()
         ).expanduser().resolve())
         app_type = (self.app_type or context_pipeline.config.app_type or os.environ.get("ARC_APP_TYPE") or "web").strip().lower()
+        write_latch = {"passed": False, "budget_exhausted": False, "advance_required": False}
 
         def normalize_requested_path(value: Any) -> str:
             path = str(value or "").strip().replace("\\", "/")
@@ -105,7 +110,18 @@ class TestDrivenDeveloper:
         async def run_tests(test_type: str | None = None, test_files: list[str] | None = None) -> str:
             """Run current-node tests. Optionally pass a test_type or exact test_files from the manifest."""
 
-            requested_type = str(test_type or self._current_test_type).strip()
+            if write_latch["passed"] and self._last_run_tests_result:
+                return (
+                    self._last_run_tests_result
+                    + "\n\nARC_STOP_CONDITION:\n"
+                    + "- This layer already passed. No additional test execution or file edit is allowed.\n"
+                    + "- Return exactly IMPLEMENTED now.\n"
+                )
+
+            requested_type = str(
+                test_type
+                or ("" if continue_across_layers else self._current_test_type)
+            ).strip()
             requested_files = [
                 path
                 for value in (test_files or [])
@@ -166,11 +182,37 @@ class TestDrivenDeveloper:
             ) if run_tests_executor is None else await run_tests_executor(requested_type, requested_files or None)
             self._last_run_tests_result = result
             self._last_run_tests_exit_code = self._extract_exit_code(result)
+            batch_match = re.search(r"Batch Test Type:\s*(Unit|Integration|E2E)", result, re.IGNORECASE)
+            effective_type = batch_match.group(1).title() if batch_match else requested_type or self._current_test_type
+            if effective_type.upper() == "E2E":
+                effective_type = "E2E"
+            effective_files = requested_files or [
+                str(item.get("file_path", "") or "").strip()
+                for item in current_node_tests
+                if str(item.get("type", "") or "").strip().casefold() == effective_type.casefold()
+                and str(item.get("file_path", "") or "").strip()
+            ]
+            self._current_test_type = effective_type
+            write_latch["passed"] = self._last_run_tests_exit_code == 0 and (
+                not continue_across_layers or "ARC_IMPLEMENT_SESSION_COMPLETE" in result
+            )
+            write_latch["advance_required"] = "ARC_TEST_LAYER_BUDGET_EXHAUSTED_CONTINUE" in result
+            write_latch["budget_exhausted"] = (
+                "ARC_TEST_BUDGET_EXHAUSTED" in result and not write_latch["advance_required"]
+            )
             self._record_failure_state(result)
+            store = context_pipeline._store()
+            if store is not None:
+                GlobalProjectMemory(workspace_root, store).record_test_result(
+                    requirement=node_id,
+                    test_type=effective_type,
+                    test_files=effective_files,
+                    output=result,
+                )
             return result
 
         if self.app_handler is None:
-            async def run_build() -> str:
+            async def system_run_build() -> str:
                 """Run system-defined build verification when an app handler is configured."""
 
                 return (
@@ -179,7 +221,25 @@ class TestDrivenDeveloper:
                     "System build runner is not configured for this TDD session.\n"
                 )
         else:
-            run_build = build_system_run_build_tool(app_handler=self.app_handler, node_id=node_id, log_cb=self.log_cb)
+            system_run_build = build_system_run_build_tool(
+                app_handler=self.app_handler,
+                node_id=node_id,
+                log_cb=self.log_cb,
+            )
+
+        async def run_build() -> str:
+            """Run build verification and retain actionable compiler failures."""
+
+            result = await system_run_build()
+            store = context_pipeline._store()
+            if store is not None:
+                GlobalProjectMemory(workspace_root, store).record_test_result(
+                    requirement=node_id,
+                    test_type="Build",
+                    test_files=[],
+                    output=result,
+                )
+            return result
 
         traceability_tools = build_traceability_tools(node_id=node_id, log_cb=self.log_cb)
         agent = build_stage_agent(
@@ -196,7 +256,22 @@ class TestDrivenDeveloper:
             permitted_skill_names=selected_skill_names,
             memory=[],
             tools=[run_tests, run_build, *traceability_tools],
+            protected_write_paths=self._current_test_files if protect_test_files else None,
+            write_block_reason=lambda: (
+                "The active test layer has already passed. Stop without further edits and return IMPLEMENTED."
+                if write_latch["passed"]
+                else (
+                    "The prior layer exhausted its budget and the system advanced. Call run_tests now for the next layer before editing."
+                    if write_latch["advance_required"]
+                    else (
+                        "The final test layer exhausted its execution budget. Stop editing and return the required continuation handoff."
+                        if write_latch["budget_exhausted"]
+                        else None
+                    )
+                )
+            ),
         )
+        has_work_packet = '"work_packets":[' in context_text and '"work_packets":[]' not in context_text
         message = get_user_prompt(
             node_id=node_id,
             dynamic_context=context_text,
@@ -204,7 +279,14 @@ class TestDrivenDeveloper:
             test_files=self._current_test_files,
             test_type=test_type,
             node_tests=current_node_tests,
-            previous_failure_summary=previous_failure_summary,
+            previous_failure_summary=(
+                ""
+                if has_work_packet
+                else previous_failure_summary
+            ),
+            run_tests_budget=run_tests_budget,
+            protect_test_files=protect_test_files,
+            has_work_packet=has_work_packet,
         )
         await self._log(f"skill-permitted: {', '.join(selected_skill_names) or 'none'}", node_id=node_id)
         await self._log("Invoking TDD implementation.", node_id=node_id)

@@ -179,12 +179,73 @@ arc compile example/ticketbooking-demo -o workspace/demo \
 #### Available Commands
 
 - **`arc compile`** - Compile requirements into a working application
+- **`arc micro-run`** - Clone a generated-project Git checkpoint into a new folder and run one or all implementation test layers with hard agent-session and test-attempt budgets
+- **`arc memory-eval`** - Re-render and score the current global-memory design against an existing run without invoking a model: `arc memory-eval <output-dir> --node <requirement-id>`
 - **`arc monitor`** - Live terminal progress monitor for a compilation workspace: `arc monitor <output-dir>` renders runner state, queue tasks, nodes, interfaces, tests, events, and the log tail, plus requirement-tree and interface-call graphs (`1`/`2` switch views, Enter inspects full untruncated details, `q` quits)
 - **`arc timeline`** - Step-through timeline and bottleneck analysis of a compilation: `arc timeline <output-dir>` replays the event stream on a time axis (gantt of per-node phase durations with a live "now" marker), ranks the slowest phases, per-agent total time, and idle gaps, and lets you step through every event (`←`/`→`) or autoplay (`space`). Drill into any phase (`Enter`) to see its agent calls and each tool call with its own duration — including the tool-execution vs model-thinking split that shows where the minutes actually go
 - **`arc config`** - Configure ARC interactively (create/update .env)
 - **`arc doctor`** - Check configuration and environment health
 
 Run `arc --help` or `arc compile --help` for detailed usage.
+
+To iterate on agent context or memory without repeating a full compilation, use a checkpoint micro-run. Each experiment gets a fresh output folder, while ignored dependency directories are reused from the source output:
+
+```bash
+arc micro-run outputs/ticketbooking-demo-minimal example/ticketbooking-demo-minimal \
+  -o outputs/ticketbooking-demo-minimal-micro-1 \
+  --ref <generated-project-git-ref> \
+  --node REQ-1.1 \
+  --layer E2E \
+  --test-budget 2 \
+  --max-agent-sessions 2 \
+  --port 3324
+```
+
+The run writes `.arc/micro-run-report.json` with elapsed time, token and cache usage, configurable cost estimates, test executions, files read/written, changed files, and whether the restored handoff's expected target was used. Registered tests are immutable during a micro-run so the same checkpoint remains comparable across memory designs.
+
+For `--layer All`, ARC keeps one TestDrivenDeveloper invocation alive while it
+advances Unit -> Integration -> E2E. Set `--max-agent-sessions 1` to make this a
+hard continuity check. ARC starts another agent only as recovery after the live
+agent exits, a provider failure, or a final unresolved handoff.
+
+Use `arc memory-eval` between paid micro-runs. It reports packet size, actionable-field completeness, expected-target use, and how many duplicated raw-failure bytes the current context design avoids.
+
+Use the cheapest feedback tier that can falsify the change:
+
+| Iteration tier | Typical time | Model cost | Use for |
+| --- | ---: | ---: | --- |
+| Focused unit/context tests | under 1 minute | none | memory schema, filtering, admission, and prompt rules |
+| Offline `memory-eval` or system test replay | 1–3 minutes | none | packet size, target selection, runner correctness, final regressions |
+| One-layer checkpoint micro-run | 2–8 minutes | low | whether an agent follows a packet and repairs the named failure |
+| One-session whole-IMPLEMENT checkpoint | about 2–7 minutes | low | cross-layer continuity and a fast promoted-design signal |
+| Whole-IMPLEMENT checkpoint A/B | 15–25 minutes per arm | high | promoted designs only; final time/token/cost/success comparison |
+
+Model-visible global memory is deliberately bounded: a compact requirement
+neighborhood, an interface-link diagram, verified owner/test patterns, and at
+most the relevant current/parent/dependency repair packets. Full interface and
+test specifications remain in traceability and are not copied into memory.
+
+Generated tests pass a deterministic admission gate before IMPLEMENT begins.
+ARC checks file placement/existence, executable cases and assertions, placeholder
+or tautological assertions, scenario-to-E2E traceability, and known runner-specific
+hazards such as isolated Playwright cookie contexts and ambiguous page-wide text
+locators. A rejected artifact receives one focused TestGenerator correction pass.
+Execution commands are never accepted from model output: the selected app-stack
+adapter derives and logs runner, working directory, normalized targets,
+environment, and exact command from manifest `type` plus `file_path`.
+
+For a controlled whole-IMPLEMENT comparison, run the same pre-IMPLEMENT
+checkpoint twice. `--fresh-implement` removes later failure handoffs; `--memory`
+changes only global-memory rendering and persistence:
+
+```bash
+arc micro-run <source-output> <requirements> -o <memory-on-output> \
+  --ref <pre-implement-ref> --node REQ-1.1 --layer All \
+  --test-budget 5 --max-agent-sessions 6 --fresh-implement --memory on
+arc micro-run <source-output> <requirements> -o <memory-off-output> \
+  --ref <pre-implement-ref> --node REQ-1.1 --layer All \
+  --test-budget 5 --max-agent-sessions 6 --fresh-implement --memory off
+```
 
 #### Main Arguments
 

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Literal, NotRequired, TypedDict
+from typing import Any, Callable, Literal, NotRequired, TypedDict
 
 from langchain.agents.middleware.types import AgentMiddleware, ToolCallRequest
 from langchain_core.messages import ToolMessage
@@ -26,8 +26,20 @@ class StageDisciplineMiddleware(AgentMiddleware[StageDisciplineState, Any, Any])
 
     state_schema = StageDisciplineState
 
-    def __init__(self, *, stage: Literal["interface_design", "test_generation", "implementation"]) -> None:
+    def __init__(
+        self,
+        *,
+        stage: Literal["interface_design", "test_generation", "implementation"],
+        protected_write_paths: list[str] | None = None,
+        write_block_reason: Callable[[], str | None] | None = None,
+    ) -> None:
         self._stage = stage
+        self._protected_write_paths = {
+            _canonical_workspace_path(path)
+            for path in (protected_write_paths or [])
+            if _canonical_workspace_path(path)
+        }
+        self._write_block_reason = write_block_reason
         self._read_ranges: dict[str, list[tuple[int, int]]] = {}
         self._written_paths: set[str] = set()
         self._failed_paths: set[str] = set()
@@ -90,6 +102,15 @@ class StageDisciplineMiddleware(AgentMiddleware[StageDisciplineState, Any, Any])
         path = _discipline_path(args)
         if not path:
             return None
+        if self._write_block_reason is not None:
+            reason = self._write_block_reason()
+            if reason:
+                return reason
+        if _canonical_workspace_path(path) in self._protected_write_paths:
+            return (
+                f"Checkpoint micro-runs treat {path} as immutable evidence. "
+                "Repair product code or configuration instead."
+            )
         if path in self._written_paths and not self._path_unlocked(path):
             return (
                 f"Repeated write blocked: {path} was already changed in this stage. "
@@ -181,6 +202,13 @@ class StageDisciplineMiddleware(AgentMiddleware[StageDisciplineState, Any, Any])
 def _discipline_path(args: dict[str, Any]) -> str:
     raw = str(args.get("file_path", "") or "").replace("\\", "/").strip()
     return raw if raw.startswith("/") else f"/{raw}" if raw else ""
+
+
+def _canonical_workspace_path(value: str) -> str:
+    normalized = str(value or "").replace("\\", "/").strip()
+    if normalized.startswith("/workspace/"):
+        normalized = normalized[len("/workspace/") :]
+    return normalized.lstrip("/")
 
 
 def _as_nonnegative_int(value: Any, *, default: int) -> int:

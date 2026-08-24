@@ -511,6 +511,7 @@ def attach_usage(tl: Timeline) -> None:
 # Known OpenAI per-1M prices: (input, output, cached_input). Cache price
 # missing for a few legacy models — falls back to the input price.
 _MODEL_PRICES: dict[str, tuple[float, float, float]] = {
+    "gpt-5.4": (2.50, 15.00, 0.25),
     "gpt-4o": (2.50, 10.00, 1.25),
     "gpt-4o-mini": (0.15, 0.60, 0.075),
     "gpt-4.1": (2.00, 8.00, 0.50),

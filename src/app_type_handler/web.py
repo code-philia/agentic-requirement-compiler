@@ -166,7 +166,11 @@ def _build_web_test_execution(test_type: str, file_path: str, workspace_path: st
 
 def _build_web_group_execution(test_type: str, file_paths: list[str], workspace_path: str) -> dict[str, str]:
     normalized_type = (test_type or "").strip().lower()
-    requested_files = [str(path or "").strip() for path in file_paths if str(path or "").strip()]
+    requested_files = list(dict.fromkeys(
+        str(path or "").strip()
+        for path in file_paths
+        if str(path or "").strip()
+    ))
 
     if normalized_type in {"unit", "integration"}:
         backend_targets: list[str] = []
@@ -187,6 +191,10 @@ def _build_web_group_execution(test_type: str, file_paths: list[str], workspace_
             "frontend_working_directory": os.path.join(workspace_path, "frontend"),
             "backend_targets": backend_targets,
             "frontend_targets": frontend_targets,
+            "commands": [
+                *([f"backend: npx vitest run {' '.join(backend_targets)}"] if backend_targets else []),
+                *([f"frontend: npx vitest run {' '.join(frontend_targets)}"] if frontend_targets else []),
+            ],
             "backend_requested_files": [
                 file_path for file_path in requested_files if _resolve_web_test_target(file_path, workspace_path)[0] == os.path.join(workspace_path, "backend")
             ],
@@ -205,6 +213,7 @@ def _build_web_group_execution(test_type: str, file_paths: list[str], workspace_
             "requested_test_files": requested_files,
             "working_directory": os.path.join(workspace_path, "backend"),
             "resolved_targets": resolved_targets,
+            "commands": [f"backend: npx playwright test {' '.join(resolved_targets)}"],
             "requested_resolved_pairs": [
                 {"requested_file": file_path, "resolved_target": _normalize_backend_test_path(file_path)}
                 for file_path in requested_files
@@ -240,6 +249,8 @@ def _prepend_group_execution_header(execution: dict[str, str], test_result: str)
         "Requested Test Files:",
     ]
     lines.extend(f"- {file_path}" for file_path in execution.get("requested_test_files", []))
+    lines.append("System-Derived Commands:")
+    lines.extend(f"- {command}" for command in execution.get("commands", []))
 
     if execution["runner"] == "Vitest":
         lines.append(f"Backend Working Directory: {execution['backend_working_directory']}")
@@ -631,6 +642,46 @@ async def _prepare_e2e_database(workspace_path: str, runtime_env: dict[str, str]
     return _extract_exit_code(prepare_output) == 0, prepare_output
 
 
+def _read_backend_startup_log(log_path: str, *, max_chars: int = 8000) -> str:
+    try:
+        with open(log_path, "r", encoding="utf-8", errors="replace") as log_file:
+            content = log_file.read()
+    except OSError:
+        return ""
+    if len(content) <= max_chars:
+        return content.strip()
+    return ("...[EARLIER BACKEND OUTPUT TRUNCATED]...\n" + content[-max_chars:]).strip()
+
+
+async def _wait_for_backend_start(
+    process: asyncio.subprocess.Process,
+    *,
+    host: str,
+    port: int,
+    timeout: float,
+) -> tuple[bool, int | None]:
+    """Return immediately when the backend listens or its launcher exits."""
+    server_task = asyncio.create_task(_wait_for_tcp_server(host, port, timeout=timeout))
+    exit_task = asyncio.create_task(process.wait())
+    try:
+        done, _ = await asyncio.wait(
+            {server_task, exit_task},
+            timeout=timeout + 0.25,
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        if server_task in done and server_task.result() and process.returncode is None:
+            return True, None
+        if exit_task in done:
+            return False, process.returncode
+        if server_task in done:
+            return False, process.returncode
+        return False, process.returncode
+    finally:
+        for task in (server_task, exit_task):
+            if not task.done():
+                task.cancel()
+
+
 async def _start_backend_runtime(
     workspace_path: str,
     runtime_env: dict[str, str],
@@ -651,12 +702,16 @@ async def _start_backend_runtime(
     except RuntimeError as exc:
         return None, start_command, str(exc), ""
 
+    startup_log_path = os.path.join(workspace_path, ".arc", "e2e-backend-startup.log")
+    os.makedirs(os.path.dirname(startup_log_path), exist_ok=True)
+    startup_log = None
     try:
+        startup_log = open(startup_log_path, "wb")
         backend_process = await asyncio.create_subprocess_shell(
             start_command,
             cwd=backend_path,
-            stdout=asyncio.subprocess.DEVNULL,
-            stderr=asyncio.subprocess.DEVNULL,
+            stdout=startup_log,
+            stderr=asyncio.subprocess.STDOUT,
             env={
                 **os.environ,
                 **runtime_env,
@@ -664,17 +719,31 @@ async def _start_backend_runtime(
         )
     except Exception as exc:
         return None, start_command, f"Failed to start backend runtime with `{start_command}`: {str(exc)}", ""
+    finally:
+        if startup_log is not None:
+            startup_log.close()
 
-    server_ready = await _wait_for_tcp_server("127.0.0.1", get_web_port(), timeout=20.0)
+    server_ready, early_exit_code = await _wait_for_backend_start(
+        backend_process,
+        host="127.0.0.1",
+        port=get_web_port(),
+        timeout=20.0,
+    )
     if not server_ready:
+        startup_output = _read_backend_startup_log(startup_log_path)
         cleanup_note = ""
         try:
             cleanup_note = await _terminate_process(backend_process, port=get_web_port())
         except Exception as cleanup_exc:
             cleanup_note = f"Backend runtime cleanup after failed startup also failed: {cleanup_exc}"
         return None, start_command, (
-            f"Failed to start backend runtime with `{start_command}` on port {get_web_port()} "
-            "within 20 seconds.\n"
+            f"Failed to start backend runtime with `{start_command}` on port {get_web_port()}.\n"
+            + (
+                f"Backend launcher exited before listening with exit code {early_exit_code}.\n"
+                if early_exit_code is not None
+                else "Backend did not listen within 20 seconds.\n"
+            )
+            + f"=== Backend Startup Output ===\n{startup_output or 'No backend output was captured.'}\n"
             f"{startup_cleanup_note}\n"
             f"{cleanup_note}"
         ), ""
@@ -729,7 +798,8 @@ class WebAppType(AppTypeHandler):
             "  - Backend Vitest tests: backend/tests/...",
             "  - Frontend Vitest tests: frontend/tests/...",
             "  - Playwright E2E tests: backend/test-e2e/...",
-            "  - Database-using tests must allocate an isolated test DB through the scaffold.",
+            "  - Unit/Integration database tests allocate an isolated test DB through the scaffold.",
+            "  - ARC owns Playwright E2E database preparation, backend startup, and cleanup.",
             "  - Prefer entrypoints, route files, and owner files before broader search.",
         ]
 
@@ -746,7 +816,13 @@ class WebAppType(AppTypeHandler):
             "Unit tests: place under `frontend/tests/...` for UI/unit code or `backend/tests/...` for backend/service code.",
             "Integration tests: place under `frontend/tests/...` for frontend integration or `backend/tests/...` for API/service/database integration.",
             "E2E tests: place under `backend/test-e2e/...` and use a JavaScript or TypeScript test filename.",
-            "Database-using tests must use the app-type-provided isolated test harness/scaffold.",
+            "System-generated execution commands are fixed by this stack: backend Unit/Integration use `npx vitest run <backend-relative targets>` from `backend`; frontend Unit/Integration use the same command from `frontend`; E2E uses `npx playwright test <backend-relative targets>` from `backend` after build, isolated DB preparation, and backend startup.",
+            "Do not generate shell commands in the manifest. ARC derives runner, working directory, target normalization, environment, and command from `type` plus `file_path`.",
+            "Playwright's standalone `request` fixture does not share cookies with `page`; auth/session flows must assert visible shared UI or use `page.context().request`.",
+            "Scope error-message assertions to a dedicated role such as `alert` or `status`; do not use broad page-wide text regexes that also match labels and helper copy.",
+            "Unit/Integration database tests may use the app-type-provided test harness/scaffold inside their Vitest process.",
+            "ARC owns the Playwright E2E lifecycle: it builds the frontend, prepares an isolated database, exports the database environment, starts the backend, runs Playwright, and cleans up.",
+            "E2E spec files must not import or invoke the application database harness, read or set `ARC_DB_FILE`/`ARC_E2E_DB_PATH`, prepare/reset/clean the database, or start/stop the backend. Use unique test data and only normal browser or public application API actions; rely on ARC's prepared runtime.",
         ]
 
     def validate_test_path(self, test_type: str, file_path: str) -> str | None:
@@ -764,6 +840,104 @@ class WebAppType(AppTypeHandler):
                 "Web E2E tests must live under `backend/test-e2e/...` and use a JavaScript or TypeScript source filename. "
                 f"Received: {file_path}"
             )
+        return None
+
+    def validate_test_content(self, test_type: str, file_path: str) -> str | None:
+        missing = super().validate_test_content(test_type, file_path)
+        if missing:
+            return missing
+        absolute_path = os.path.join(self.workspace_path, str(file_path or "").lstrip("/"))
+        try:
+            with open(absolute_path, "r", encoding="utf-8") as test_file:
+                content = test_file.read()
+        except OSError as exc:
+            return f"Generated test file cannot be read: {file_path}: {exc}"
+        if not re.search(r"\b(?:test|it)\s*\(", content):
+            return f"Generated test has no executable test()/it() case: {file_path}"
+        if "expect(" not in content:
+            return f"Generated test has no behavioral assertion: {file_path}"
+        if re.search(r"expect\(\s*(?:true|1)\s*\)\.(?:toBe|toEqual)\(\s*(?:true|1)\s*\)", content):
+            return f"Generated test contains a tautological assertion instead of observable behavior: {file_path}"
+        if re.search(r"NOT_IMPLEMENTED|placeholder|status\s*\)?\s*\.toBe\(501\)", content, re.IGNORECASE):
+            return f"Generated test asserts placeholder behavior instead of the requirement: {file_path}"
+        degenerate_branch = re.search(
+            r"\?\s*(undefined|null|true|false)\s*:\s*\1\b|\?\s*(['\"]{2})\s*:\s*\2",
+            content,
+            re.IGNORECASE,
+        )
+        if degenerate_branch:
+            return (
+                f"Generated test contains a degenerate conditional whose two branches are identical "
+                f"(`{degenerate_branch.group(0)}`): {file_path}. Supply a real collaborator/fixture value and "
+                "assert the advertised contract; do not make the call structurally meaningless."
+            )
+
+        normalized_type = str(test_type or "").strip().casefold()
+        if normalized_type == "unit" and re.search(
+            r"(?:const|let)\s+\w*(?:exec|callback|handler)\w*\s*=\s*async\b.{0,1200}?"
+            r"\b(?:harness|fixture)\.(?:setup|reset)\s*\(",
+            content,
+            re.IGNORECASE | re.DOTALL,
+        ):
+            return (
+                f"Generated Unit test uses a fake callback that re-enters the application test harness/bootstrap: "
+                f"{file_path}. This is circular verification because setup may invoke the interface under test. "
+                "Make the fake only record its inputs/outputs, then assert those captured contract values directly."
+            )
+        if normalized_type in {"unit", "integration"} and re.search(
+            r"\brequire\(\s*['\"]vitest['\"]\s*\)",
+            content,
+        ):
+            return (
+                f"Generated Vitest file imports Vitest through CommonJS require(), which fails before tests load: {file_path}. "
+                "Use an ESM `import { ... } from 'vitest'`; if CommonJS application modules must be loaded, use "
+                "`createRequire(import.meta.url)` only for those application imports."
+            )
+
+        if normalized_type == "e2e":
+            if "page." not in content:
+                return f"Web E2E test does not exercise the browser page: {file_path}"
+            quality_errors: list[str] = []
+            uses_isolated_request = bool(
+                re.search(r"async\s*\(\s*\{[^}]*\bpage\b[^}]*\brequest\b[^}]*\}", content, re.DOTALL)
+                and re.search(r"(?<![.\w])request\.(?:get|post|put|delete|fetch)\s*\(", content)
+                and re.search(r"/api/[^'\"`]*session", content, re.IGNORECASE)
+            )
+            if uses_isolated_request:
+                quality_errors.append(
+                    "E2E auth/session test mixes browser page actions with Playwright's isolated `request` fixture. "
+                    "That fixture does not share the page cookie jar. Verify through visible shared UI or use "
+                    "`page.context().request` for a cookie-aware API assertion."
+                )
+            broad_text = re.search(r"(?:page\.)?getByText\s*\(\s*/([^/\n]+)/[a-z]*\s*\)", content)
+            if broad_text and broad_text.group(1).count("|") >= 2:
+                quality_errors.append(
+                    "E2E test uses an unscoped broad getByText regex. "
+                    "Assert a dedicated role/status surface first (for example `getByRole('alert')`) and then match its text."
+                )
+            owns_e2e_database_lifecycle = bool(
+                re.search(
+                    r"(?:from\s+|require\(\s*)['\"][^'\"]*(?:database[/\\]+(?:test[_-]?)?harness|test[_-]harness)[^'\"]*['\"]",
+                    content,
+                    re.IGNORECASE,
+                )
+                or re.search(r"\bcreate(?:Runtime|Test)DatabaseHarness\s*\(", content)
+                or re.search(r"\b(?:ARC_DB_FILE|ARC_E2E_DB_PATH)\b", content)
+                or re.search(
+                    r"(?:from\s+|require\(\s*)['\"](?:sqlite3|better-sqlite3)['\"]",
+                    content,
+                    re.IGNORECASE,
+                )
+            )
+            if owns_e2e_database_lifecycle:
+                quality_errors.append(
+                    "E2E spec takes ownership of the database lifecycle. ARC already prepares an isolated database, "
+                    "exports its environment, starts the backend, and cleans up. Remove database harness/driver imports, "
+                    "ARC database environment access, and spec-local setup/reset/cleanup; use unique data through the "
+                    "browser or public application API against ARC's prepared runtime."
+                )
+            if quality_errors:
+                return f"Generated E2E test-quality errors in {file_path}: " + " ".join(quality_errors)
         return None
 
     async def post_template_setup(self) -> bool:
@@ -848,6 +1022,7 @@ class WebAppType(AppTypeHandler):
             if not build_ok:
                 return _prepend_test_execution_header(
                     execution,
+                    "Exit Code: 1\n\n"
                     "Frontend build failed before E2E startup.\n\n"
                     f"=== Frontend Build ===\n{frontend_build_output}",
                 )
@@ -859,6 +1034,7 @@ class WebAppType(AppTypeHandler):
             if not database_ready:
                 return _prepend_test_execution_header(
                     execution,
+                    "Exit Code: 1\n\n"
                     "E2E database preparation failed before backend startup.\n\n"
                     f"=== Frontend Build ===\n{frontend_build_output}\n\n"
                     f"=== E2E Runtime Env ===\nDB Path: {e2e_runtime_env.get('ARC_E2E_DB_PATH', 'unknown')}\n\n"
@@ -874,6 +1050,7 @@ class WebAppType(AppTypeHandler):
             if backend_process is None:
                 return _prepend_test_execution_header(
                     execution,
+                    "Exit Code: 1\n\n"
                     "Failed to start backend server for E2E testing.\n\n"
                     f"=== Frontend Build ===\n{frontend_build_output}\n\n"
                     f"=== Database Prepare ===\n{database_prepare_output}\n\n"
@@ -983,6 +1160,7 @@ class WebAppType(AppTypeHandler):
         if not build_ok:
             return _prepend_group_execution_header(
                 execution,
+                "Exit Code: 1\n\n"
                 "Frontend build failed before E2E startup.\n\n"
                 f"=== Frontend Build ===\n{frontend_build_output}",
             )
@@ -998,6 +1176,7 @@ class WebAppType(AppTypeHandler):
         if not database_ready:
             return _prepend_group_execution_header(
                 execution,
+                "Exit Code: 1\n\n"
                 "E2E database preparation failed before backend startup.\n\n"
                 f"=== Frontend Build ===\n{frontend_build_output}\n\n"
                 f"=== E2E Runtime Env ===\nDB Path: {e2e_runtime_env.get('ARC_E2E_DB_PATH', 'unknown')}\n\n"
@@ -1053,7 +1232,7 @@ class WebAppType(AppTypeHandler):
                 f"{playwright_result}"
             )
         except Exception as exc:
-            return f"Failed to start grouped E2E execution: {str(exc)}"
+            return f"Exit Code: 1\nSTDERR:\nFailed to start grouped E2E execution: {str(exc)}"
         finally:
             try:
                 backend_cleanup_note = await _terminate_process(backend_process, port=get_web_port())
@@ -1114,7 +1293,8 @@ class WebAppType(AppTypeHandler):
             "  * Vitest: Used for backend Unit and Integration testing.\n"
             "  * Supertest: Used with Vitest for API route testing.\n"
             "  * Playwright: Used for End-to-End (E2E) testing, located in `backend/test-e2e`, configured by `backend/playwright.config.js`, and expected to use `process.env.PLAYWRIGHT_BASE_URL`.\n"
-            "  * If a test uses the database, it must create an isolated test DB via the scaffold, prepare test data through the scaffold, and clean the test DB up after the suite finishes.\n"
+            "  * Vitest Unit/Integration database tests create an isolated test DB via the scaffold and clean it up after the suite.\n"
+            "  * Playwright E2E is runner-owned: ARC prepares the isolated DB, exports `ARC_DB_FILE`, starts the backend, runs Playwright, and cleans up. E2E specs consume that running app and must not import the DB harness/driver or manage the DB/server lifecycle.\n"
         )
 
     @classmethod

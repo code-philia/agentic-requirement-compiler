@@ -13,6 +13,11 @@ from agents.model.compatible_openai import CompatibleChatOpenAI
 
 
 OpenAIAPIMode = Literal["responses", "chat_completions"]
+
+# Token-usage capture: every LLM call records its usage here; the runtime
+# drains it after each agent call and writes it to the debug log so the
+# timeline can show tokens per call. Module-level is fine because ARC runs
+# agent calls sequentially.
 _PENDING_USAGE: list[dict[str, int]] = []
 
 
@@ -25,7 +30,7 @@ def prompt_cache_key(scope: str = "general") -> str:
 
 
 def record_usage(llm_output: dict | None, model: str = "") -> None:
-    """Normalize and record token usage from a langchain ChatResult."""
+    """Normalize and record token usage from a langchain ChatResult.llm_output."""
     if not isinstance(llm_output, dict):
         return
     usage = llm_output.get("token_usage")
@@ -40,8 +45,20 @@ def record_usage(llm_output: dict | None, model: str = "") -> None:
         total = prompt + completion
     if total is None:
         return
-    cached = _nested_int(usage, ("prompt_tokens_details", "cached_tokens"), ("input_tokens_details", "cached_tokens"))
-    _PENDING_USAGE.append({"prompt_tokens": prompt or 0, "completion_tokens": completion or 0, "total_tokens": total, "cached_tokens": cached or 0, "model": model.strip()})
+    cached = _nested_int(
+        usage,
+        ("prompt_tokens_details", "cached_tokens"),
+        ("input_tokens_details", "cached_tokens"),
+    )
+    _PENDING_USAGE.append(
+        {
+            "prompt_tokens": prompt or 0,
+            "completion_tokens": completion or 0,
+            "total_tokens": total,
+            "cached_tokens": cached or 0,
+            "model": (model or "").strip(),
+        }
+    )
 
 
 def _first_int(usage: dict, *keys: str) -> int | None:
@@ -183,6 +200,11 @@ def build_openai_chat_model(
         "output_version": "responses/v1" if config.api_mode == "responses" else "v0",
         "arc_api_mode": config.api_mode,
         "arc_model_name": config.model_name,
+        # Fail fast on a stalled provider instead of hanging the whole compile:
+        # request_timeout caps each LLM call; max_retries allows transient
+        # failures to be retried before the node is marked failed.
+        "request_timeout": _env_int("ARC_REQUEST_TIMEOUT", 300),
+        "max_retries": _env_int("ARC_MAX_RETRIES", 2),
     }
     kwargs["model_kwargs"] = {"prompt_cache_key": prompt_cache_key(prompt_cache_scope)}
     if config.base_url:
@@ -192,6 +214,16 @@ def build_openai_chat_model(
 
     model_class = ARCCompatibleChatOpenAI if config.sse_text_compat else ARCChatOpenAI
     return model_class(**kwargs)
+
+
+def _env_int(name: str, default: int) -> int:
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return default
+    try:
+        return max(1, int(raw))
+    except ValueError:
+        return default
 
 
 def resolve_openai_adapter_config(

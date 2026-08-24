@@ -18,7 +18,7 @@ Use this skill after `run_tests` reports a failing current batch.
 7. Make one minimal contract-preserving fix, then call `run_tests` again.
 8. Do not stop after failing runs while the active layer's tool budget remains. Do not declare blocked, failed, impossible, or out-of-scope as a final answer.
 9. Say `IMPLEMENTED` only when the system indicates the active layer passed and no scheduled layer remains blocked by the current session.
-10. Each current-node test layer has an independent `run_tests` budget of 10 calls. After a failure, spend enough effort to localize and repair the cause before consuming the next call.
+10. Each current-node test layer has a system-configured `run_tests` budget. Trust the current task prompt's exact budget. After a failure, spend enough effort to localize and repair the cause before consuming the next call.
 11. For auth/session failures, use the auth-session-consistency skill and repair the shared session path first: session persistence, current-session API, client session loader, global provider/state, shell/header consumers, and route behavior.
 12. If Playwright reports an unknown fixture parameter, inspect the `test.extend` block and make the fixture name and `use(...)` value match before rerunning.
 13. If Playwright or Testing Library reports multiple matches for a label, do not retry with a broader selector. Use an exact accessible role, a stable id, or a scoped locator that identifies one element.
@@ -27,3 +27,5 @@ Use this skill after `run_tests` reports a failing current batch.
 16. For cart, checkout, account, product, order, catalog, inventory, or persisted user-owned data failures, repair the connected domain path first: data source, API route/client, service logic, persistence/runtime state, shared consumer, and visible UI.
 17. If the failure is a missing pre-existing record, relationship, permission, status, or list item described by the requirement, inspect and repair the schema/repository/seed/bootstrap/startup path first. Do not patch the UI with hardcoded rows or add test-only database setup.
 18. Begin each repair with the failing manifest test, its direct owner file, the current-node interface contract, and the exact failure output. Read configuration, shared runtime, or neighboring layers only when that evidence points there; do not restart project-wide exploration.
+19. When a work packet includes `attempted_changes` or `do_not_repeat`, do not repeat those repairs. Explain a different falsifiable hypothesis through your next edit.
+20. If malformed input followed by a submit click produces neither the application's custom alert nor an API call, inspect native browser constraint validation before changing API/error plumbing. Inputs such as `type="email"` can prevent the form submit handler from running; when the application owns explicit accessible validation feedback, use an intentional `noValidate`/validation strategy so the handler can render it.

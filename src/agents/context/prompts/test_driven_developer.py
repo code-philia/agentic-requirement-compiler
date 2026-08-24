@@ -23,6 +23,7 @@ def get_system_prompt() -> str:
                     "Use available repair skills after failed test feedback or repeated failure fingerprints.",
                     "Only leaf nodes reach this stage; non-leaf nodes are design-only and never enter TDD.",
                     "When multiple test categories exist, the system activates them in Unit -> Integration -> E2E order with an independent run_tests budget for each layer.",
+                    "Stay in the same agent session as the system advances through those layers; retain the requirement working set instead of restarting exploration at each layer.",
                     "Do not treat generated-test defects, build configuration defects, or test harness mismatches as blockers; this stage exclusively repairs them in-place when they are inside `/workspace` and current-node scoped.",
                     "When the requirement or tests involve login, registration, logout, session, authenticated state, current user, account state, or auth-sensitive navigation, use the auth-session-consistency skill and implement the global auth/session path rather than a local-only state patch.",
                     "When the requirement or tests involve cart, checkout, account, products, orders, catalog, inventory, or persisted user-owned data, implement the connected UI/API/FUNC/DB path before relying on component-local state.",
@@ -43,6 +44,8 @@ def get_system_prompt() -> str:
                     "Do not start by calling `run_tests` unless a previous failure handoff is already present and no implementation files need an initial pass.",
                     "After the initial implementation pass, work on the currently active test layer selected by the system.",
                     "Treat the latest raw `run_tests` output and compiler feedback as the primary failure evidence.",
+                    "After a failing `run_build`, follow the first compiler-reported source/config path and symbol before searching elsewhere; inspect its directly imported owner only if that first file does not explain the error.",
+                    "Use the same bounded repair loop for build failures: classify the first error, inspect the named file, make one concrete edit, and rerun the build before expanding scope.",
                     "If failure output names a file, symbol, stack frame, or config path, inspect those first and keep the search local.",
                     "Do not restart broad codebase exploration after a failure. Follow the failure output to the nearest test, product file, config file, or interface owner.",
                     "Make one minimal contract-preserving change at a time; the change may be in product code, generated tests, or build/test configuration.",
@@ -66,7 +69,8 @@ def get_system_prompt() -> str:
                 [
                     "The only successful final assistant message is exactly `IMPLEMENTED`.",
                     "Return `IMPLEMENTED` only after the latest `run_tests` output for the current batch passed with Exit Code: 0.",
-                    "If the system test budget is exhausted, return a concise handoff containing the latest failure fingerprint and the next concrete edit target.",
+                    "If the system test budget is exhausted, return a concise handoff using exactly these labels: `LATEST_FAILURE:`, `ATTEMPTED_CHANGE:`, `OBSERVED_OUTCOME:`, `DO_NOT_REPEAT:`, `NEXT_FILE:`, and `NEXT_ACTION:`.",
+                    "`DO_NOT_REPEAT` must name the failed hypothesis, not merely the edited file. `NEXT_ACTION` must state a different falsifiable repair hypothesis.",
                     "Do not return JSON for this stage.",
                 ],
             ),
@@ -83,6 +87,9 @@ def get_user_prompt(
     test_type: str,
     node_tests: list[dict],
     previous_failure_summary: str = "",
+    run_tests_budget: int | None = None,
+    protect_test_files: bool = False,
+    has_work_packet: bool = False,
 ) -> str:
     ordered_layers: list[dict[str, object]] = []
     for layer in ("Unit", "Integration", "E2E"):
@@ -107,22 +114,38 @@ def get_user_prompt(
     ])
     if previous_failure_summary.strip():
         sections.append(f"### Latest Failure Evidence\n{previous_failure_summary.strip()}")
+    budget_text = str(run_tests_budget) if run_tests_budget is not None else "the system-configured number of"
+    protected_test_policy = (
+        "The registered test files are immutable evidence in this checkpoint micro-run. "
+        "Do not edit them; repair product code or configuration."
+        if protect_test_files
+        else "Generated tests may be repaired when evidence shows the test itself is invalid."
+    )
+    initial_pass_policy = (
+        "This is a repair continuation with a structured work packet. Skip the initial full-chain implementation pass. "
+        "Start with the packet's NEXT_FILE and failing test, perform its NEXT_ACTION, and expand to a directly connected file only when fresh evidence requires it."
+        if has_work_packet
+        else "First perform an initial full-chain implementation pass: read the requirement context, current interface contract, all generated test files in the manifest, nearest product files, and relevant config; then implement the required behavior and interface wiring before the first test run."
+    )
     sections.append(
         section(
             "Task",
             [
-                "First perform an initial full-chain implementation pass: read the requirement context, current interface contract, all generated test files in the manifest, nearest product files, and relevant config; then implement the required behavior and interface wiring before the first test run.",
+                initial_pass_policy,
                 "The initial pass should satisfy the requirement and generated tests as far as can be inferred statically; it should include multiple cohesive edits when a UI/API/FUNC/DB or command/runtime chain needs to be connected.",
                 "If the requirement or interface contract mentions auth/session/authenticated state/current user/account state, implement the global session path in the first pass: durable session creation, session loading/current-user API, shared auth/session state, shared consumers, and post-action state transition. Do not satisfy this with only a local success message.",
                 "If the requirement or interface contract mentions cart, checkout, account, products, orders, catalog, inventory, or persisted user-owned data, implement the connected domain path in the first pass: UI wiring, API/client boundary, service/function logic, and persistence/runtime state as required. Do not satisfy this with only local component state.",
                 "If the requirement or interface contract describes pre-existing data in natural language, implement the required database/persistent seed or bootstrap records in the first pass. Make initialization deterministic and idempotent, preserve relationships and permissions, and make the records reachable through the normal runtime path.",
                 "If an implementation target is near or above 500 lines, extract cohesive new behavior into smaller modules and leave only integration wiring in the large file unless the change is truly tiny.",
                 "After the initial pass, work on the active test layer selected by the system. The system will move to later layers even if an earlier layer fails or exhausts its budget.",
+                "When a layer passes or exhausts its local budget, the run_tests tool may advance its active layer immediately. If it reports a next layer, continue in this same session with `run_tests()`; do not search from scratch, edit between layers, or return a handoff yet.",
                 "`run_tests()` with no arguments runs the active current-node test layer.",
                 "You may call `run_tests(test_type='Unit'|'Integration'|'E2E')` only for the active layer; the tool will reject attempts to run a non-active layer.",
                 "You may call `run_tests(test_files=[...])` to run specific current-node test files from the manifest.",
-                "Each test layer has a fixed `run_tests` budget of 10 calls. Use each failed run to inspect the named files, make a concrete repair, and only then spend the next call.",
+                f"This test layer has a fixed `run_tests` budget of {budget_text} calls. Use each failed run to inspect the named files, make a concrete repair, and only then spend the next call.",
+                protected_test_policy,
                 "Do not use `run_tests` as the first action unless this batch has a previous failure handoff and the implementation has already had an initial pass.",
+                "On a resumed checkpoint with a structured handoff, trust its verified history: read the exact `NEXT_FILE` and the failing test first, then at most one directly adjacent owner before the first edit or validation. Do not reread tests from layers recorded as passing.",
                 "Use the current interface contract, generated tests, and latest raw failure output to localize the problem before searching beyond the failing layer.",
                 "After a failed `run_tests`, inspect the failing test file and the nearest owner file named or implied by the error before any broader search.",
                 "If the same failure fingerprint repeats, change the hypothesis or move one layer across the UI/API/FUNC/DB chain instead of retrying adjacent edits.",
@@ -132,11 +155,11 @@ def get_user_prompt(
                 "If product behavior is wrong, edit product code. If the test is wrong, edit the test. If the runner setup is wrong, edit build/config. Then rerun tests.",
                 "If the missing behavior is a data prerequisite, edit the owning schema/repository/seed/bootstrap/service path rather than adding test-only setup or a frontend hardcoded record.",
                 "If a generated test has a format defect, repair the real executable test artifact directly. Do not create bridge files such as `.test.ts` importing `.test.tsx` to hide an invalid extension or parser mismatch.",
-                "When tests pass for the active layer, briefly re-check whether implementation choices remain compatible with later layers and the real app runtime before returning to the system.",
+                "When `run_tests` reports `ARC_IMPLEMENT_SESSION_COMPLETE`, stop immediately: do not inspect, edit, build, or run tests again. Return exactly `IMPLEMENTED` only when it also reports all layers passed; otherwise return the required continuation handoff.",
                 "If the latest result is still failing and budget remains, keep repairing and rerunning instead of finalizing.",
                 "Do not return blocked, failed, impossible, or out-of-scope. The only successful final answer is `IMPLEMENTED` after a passing latest `run_tests`.",
                 "Do not say `IMPLEMENTED` unless the latest `run_tests` output passed with Exit Code: 0.",
-                "If the `run_tests` tool itself reports budget exhaustion, return a concise continuation handoff with the latest failure and next edit target; otherwise continue working.",
+                "If `run_tests` reports `ARC_TEST_LAYER_BUDGET_EXHAUSTED_CONTINUE`, call `run_tests()` immediately for the newly active layer and continue in the same session. Return a concise continuation handoff only when the final scheduled layer exhausts its budget.",
             ],
         )
     )

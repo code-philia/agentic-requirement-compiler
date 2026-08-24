@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import os
 import shutil
 import sys
@@ -224,6 +225,107 @@ async def cmd_compile(args: argparse.Namespace) -> int:
 
 
 # ============================================================
+# Subcommand: micro-run
+# ============================================================
+def build_micro_run_parser(subparsers) -> None:
+    parser = subparsers.add_parser(
+        "micro-run",
+        help="Run one bounded test layer from a generated-project checkpoint",
+        description=(
+            "Clone an ARC output Git checkpoint into a new folder and run one node/test "
+            "layer with hard agent-session and test-attempt budgets."
+        ),
+    )
+    parser.add_argument("source_output", help="Existing ARC output workspace with Git checkpoints")
+    parser.add_argument("requirement_path", help="Path to requirements directory or YAML file")
+    parser.add_argument("-o", "--output-dir", required=True, help="New isolated micro-run workspace")
+    parser.add_argument("--ref", required=True, dest="git_ref", help="Generated-project Git checkpoint")
+    parser.add_argument("--node", required=True, dest="node_id", help="Requirement node ID")
+    parser.add_argument("--layer", required=True, choices=("Unit", "Integration", "E2E", "All"))
+    parser.add_argument("--test-budget", type=int, default=2, help="Maximum run_tests calls (default: 2)")
+    parser.add_argument(
+        "--max-agent-sessions",
+        type=int,
+        default=1,
+        help="Maximum primary-agent invocations (default: 1)",
+    )
+    parser.add_argument("-t", "--type", dest="app_type", default="web")
+    parser.add_argument("--port", type=int, default=3321)
+    parser.add_argument(
+        "--memory",
+        choices=("on", "off"),
+        default="on",
+        help="Enable or disable only global project memory for controlled comparisons",
+    )
+    parser.add_argument(
+        "--fresh-implement",
+        action="store_true",
+        help="Remove historical failure handoffs and start at the selected pre-IMPLEMENT ref",
+    )
+    parser.add_argument(
+        "--allow-test-repair",
+        action="store_true",
+        help="Allow repair of contradictory generated tests, matching normal compile behavior",
+    )
+    parser.set_defaults(func=cmd_micro_run)
+
+
+async def cmd_micro_run(args: argparse.Namespace) -> int:
+    """Execute one isolated checkpoint experiment."""
+    _ensure_dotenv_loaded()
+    from core.checkpoint_micro_run import execute_checkpoint_micro_run, prepare_checkpoint
+
+    _, requirement_path, _ = _locate_requirement_file(args.requirement_path)
+    output_dir = os.path.abspath(args.output_dir)
+    prepare_checkpoint(
+        source_workspace=args.source_output,
+        output_workspace=output_dir,
+        git_ref=args.git_ref,
+        node_id=args.node_id,
+        restore_handoff=not args.fresh_implement,
+    )
+    os.environ["ARC_GLOBAL_MEMORY_ENABLED"] = "1" if args.memory == "on" else "0"
+    normalized_app_type = normalize_app_type(args.app_type)
+    set_web_port(args.port)
+    init_debug_logger(output_dir, reset_existing=True)
+    try:
+        report = await execute_checkpoint_micro_run(
+            workspace=output_dir,
+            requirement_path=requirement_path,
+            node_id=args.node_id,
+            test_type=None if args.layer == "All" else args.layer,
+            run_tests_budget=args.test_budget,
+            max_agent_sessions=args.max_agent_sessions,
+            app_type=normalized_app_type,
+            web_port=args.port,
+            log_cb=cli_log,
+            protect_test_files=not args.allow_test_repair,
+        )
+    finally:
+        stop_cli_spinner()
+    print(json.dumps(report, ensure_ascii=False, indent=2))
+    return 0 if report.get("ok") else 1
+
+
+def build_memory_eval_parser(subparsers) -> None:
+    parser = subparsers.add_parser(
+        "memory-eval",
+        help="Evaluate current memory rendering against an existing run without an LLM",
+    )
+    parser.add_argument("output_dir", help="Existing ARC output workspace")
+    parser.add_argument("--node", required=True, dest="node_id", help="Requirement node ID")
+    parser.set_defaults(func=cmd_memory_eval)
+
+
+def cmd_memory_eval(args: argparse.Namespace) -> int:
+    from core.checkpoint_micro_run import evaluate_memory_workspace
+
+    report = evaluate_memory_workspace(args.output_dir, args.node_id)
+    print(json.dumps(report, ensure_ascii=False, indent=2))
+    return 0
+
+
+# ============================================================
 # Subcommand: doctor
 # ============================================================
 def build_doctor_parser(subparsers) -> None:
@@ -331,6 +433,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     
     build_compile_parser(subparsers)
+    build_micro_run_parser(subparsers)
+    build_memory_eval_parser(subparsers)
     build_doctor_parser(subparsers)
     build_monitor_parser(subparsers)
     build_timeline_parser(subparsers)

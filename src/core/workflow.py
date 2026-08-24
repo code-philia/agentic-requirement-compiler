@@ -168,6 +168,10 @@ class ARCWorkflowManager:
             web_port=self.web_port,
         )
         self.runtime.traceability.init_store(reset=False)
+        # Resume can target a workspace whose .git is missing (fresh dir,
+        # manually cleared, or copied). Without it, `git add .` discovers the
+        # outer ARC repo and dies on its ignored `outputs/` path.
+        self.runtime.git.ensure_repo(create_initial_commit=False)
         self.runtime.events.mark_run_resumed("ARC compilation resumed from processing queue.")
 
     async def start_compilation(

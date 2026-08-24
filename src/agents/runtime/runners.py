@@ -16,6 +16,10 @@ from core.logging import format_json_for_log, log_to_logger
 LogCallback = Callable[[str, str, str | None, str | None], Awaitable[None] | None]
 DEFAULT_RECURSION_LIMIT = 5000
 
+# Last logged model-input block per (label, node_id), so repeated LLM
+# round-trips within one agent call log the prompt only once.
+_LAST_MODEL_INPUT: dict[tuple[str, str], str] = {}
+
 
 async def ainvoke_stage_agent(
     agent: Any,
@@ -37,6 +41,15 @@ async def ainvoke_stage_agent(
         f"agent call start: thread_id={thread_id}",
         node_id=context.node_id,
     )
+    if _should_log_full_agent_trace():
+        # The full assembled prompt this agent call receives (context blocks +
+        # instruction). Large, so only under ARC_DEBUG_AGENT_TRACE=1.
+        await _emit_log(
+            log_cb,
+            run_label,
+            f"agent prompt: thread_id={thread_id}\n{message}",
+            node_id=context.node_id,
+        )
 
     if _should_stream(stream):
         stream_payload = await _try_astream_stage_agent(
@@ -64,6 +77,7 @@ async def ainvoke_stage_agent(
                 node_id=context.node_id,
             )
             await _log_call_usage(log_cb, run_label, node_id=context.node_id)
+            _LAST_MODEL_INPUT.pop((run_label, context.node_id), None)
             return stream_payload
 
     result = await agent.ainvoke(
@@ -89,23 +103,41 @@ async def ainvoke_stage_agent(
         node_id=context.node_id,
     )
     await _log_call_usage(log_cb, run_label, node_id=context.node_id)
+    _LAST_MODEL_INPUT.pop((run_label, context.node_id), None)
     return payload
 
 
-async def _log_call_usage(log_cb: LogCallback | None, run_label: str, *, node_id: str) -> None:
-    from agents.model.openai_api_adapter import drain_usage
+async def _log_call_usage(
+    log_cb: LogCallback | None,
+    run_label: str,
+    *,
+    node_id: str,
+) -> None:
+    """Drain accumulated LLM token usage for this agent call into the debug log."""
+    try:
+        from agents.model.openai_api_adapter import drain_usage
 
-    records = drain_usage()
+        records = drain_usage()
+    except ImportError:
+        return
     if not records:
         return
     for index, record in enumerate(records, start=1):
-        await _emit_log(log_cb, run_label, _format_llm_usage_line(record, index), node_id=node_id)
+        await _emit_log(
+            log_cb,
+            run_label,
+            _format_llm_usage_line(record, index),
+            node_id=node_id,
+        )
     prompt = sum(r.get("prompt_tokens", 0) for r in records)
     completion = sum(r.get("completion_tokens", 0) for r in records)
     total = sum(r.get("total_tokens", 0) for r in records)
     cached = sum(r.get("cached_tokens", 0) for r in records)
     model = next((r.get("model") for r in records if r.get("model")), "")
-    line = f"agent usage: prompt_tokens={prompt} completion_tokens={completion} total_tokens={total} cached_tokens={cached} llm_calls={len(records)}"
+    line = (
+        f"agent usage: prompt_tokens={prompt} completion_tokens={completion} "
+        f"total_tokens={total} cached_tokens={cached} llm_calls={len(records)}"
+    )
     if model:
         line += f" model={model}"
     await _emit_log(log_cb, run_label, line, node_id=node_id)
@@ -115,9 +147,16 @@ def _format_llm_usage_line(record: dict[str, Any], call_index: int) -> str:
     prompt = int(record.get("prompt_tokens", 0) or 0)
     cached = int(record.get("cached_tokens", 0) or 0)
     cache_rate = cached / prompt * 100 if prompt else 0.0
-    line = f"llm usage: call={call_index} prompt_tokens={prompt} completion_tokens={int(record.get('completion_tokens', 0) or 0)} total_tokens={int(record.get('total_tokens', 0) or 0)} cached_tokens={cached} cache_rate={cache_rate:.1f}%"
+    line = (
+        f"llm usage: call={call_index} prompt_tokens={prompt} "
+        f"completion_tokens={int(record.get('completion_tokens', 0) or 0)} "
+        f"total_tokens={int(record.get('total_tokens', 0) or 0)} "
+        f"cached_tokens={cached} cache_rate={cache_rate:.1f}%"
+    )
     model = str(record.get("model", "") or "").strip()
-    return line + (f" model={model}" if model else "")
+    if model:
+        line += f" model={model}"
+    return line
 
 
 def extract_payload(result: dict[str, Any]) -> dict[str, Any]:
@@ -385,6 +424,19 @@ async def _log_stream_event(
     name = str(event.get("name", "") or "")
     data = event.get("data") if isinstance(event.get("data"), dict) else {}
 
+    if event_name in {"on_chat_model_start", "on_llm_start"}:
+        # Prompt the model received (system + human only, history dropped).
+        # Only under ARC_DEBUG_AGENT_TRACE=1; deduplicated so repeated
+        # round-trips inside one call don't each re-log the same block.
+        if _should_log_full_agent_trace():
+            text = _format_model_input(data.get("input"))
+            if text:
+                key = (label, node_id)
+                if _LAST_MODEL_INPUT.get(key) != text:
+                    _LAST_MODEL_INPUT[key] = text
+                    await _emit_log(log_cb, label, f"model input:\n{text}", node_id=node_id)
+        return None
+
     if event_name in {"on_chat_model_stream", "on_llm_stream"}:
         # The model is configured for non-streaming output. Ignore any provider
         # chunks that still arrive and render the complete response on *_end.
@@ -540,14 +592,34 @@ def _should_log_full_agent_trace() -> bool:
     return str(os.environ.get("ARC_DEBUG_AGENT_TRACE", "")).strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _format_model_input(messages: Any, roles: tuple[str, ...] = ("system", "human")) -> str:
+    """Format the prompt messages sent to the model.
+
+    Only the system template and the human instruction are kept by default —
+    the growing tool history is dropped to keep logs small.
+    """
+    if not isinstance(messages, list) or not messages:
+        return ""
+    blocks: list[str] = []
+    for index, message in enumerate(messages, start=1):
+        role = _message_role(message)
+        if role not in roles:
+            continue
+        lines = [f"[{index}] {role.upper()}"]
+        content = _message_content_text(message)
+        if content:
+            lines.append("content:")
+            lines.append(_indent_block(content))
+        blocks.append("\n".join(lines))
+    return "\n".join(blocks)
+
+
 def _format_message_trace(messages: list[Any]) -> str:
     if not isinstance(messages, list) or not messages:
         return ""
     blocks: list[str] = []
     for index, message in enumerate(messages, start=1):
         role = _message_role(message)
-        if role == "human":
-            continue
         lines = [f"[{index}] {role.upper()}"]
         tool_calls = _extract_tool_calls(message)
         if tool_calls:

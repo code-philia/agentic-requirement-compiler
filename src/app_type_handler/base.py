@@ -161,6 +161,13 @@ class AppTypeHandler(ABC):
         """Return an error message when a generated test path is invalid."""
         return None
 
+    def validate_test_content(self, test_type: str, file_path: str) -> str | None:
+        """Return an error when a generated test is structurally unsafe or missing."""
+        absolute_path = os.path.join(self.workspace_path, str(file_path or "").lstrip("/"))
+        if not os.path.isfile(absolute_path):
+            return f"Generated test file does not exist: {file_path}"
+        return None
+
     @classmethod
     def prerequisite_commands(cls) -> list[str]:
         return []

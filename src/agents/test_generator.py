@@ -29,6 +29,10 @@ class TestManifestItem(BaseModel):
     type: str = Field(description="Unit, Integration, or E2E.")
     file_path: str = Field(description="Workspace-relative test file path.")
     first_line: str = Field(default="", description="Exact first line in the written test file.")
+    scenario_id: str | None = Field(
+        default=None,
+        description="Exact scenario id/name covered by this test, when the requirement declares scenarios.",
+    )
 
 
 class TestGenerationResponse(BaseModel):
@@ -63,6 +67,7 @@ class TestGenerator:
         requirement_data: dict[str, Any],
         *,
         preloaded_source: str | None = None,
+        validation_feedback: str = "",
     ) -> tuple[list[dict[str, Any]] | None, str]:
         workspace_root = str(Path(
             self.workspace_root
@@ -104,6 +109,7 @@ class TestGenerator:
             requirement_data=requirement_data,
             dynamic_context=context_text,
             interface_contract=interface_contract,
+            validation_feedback=validation_feedback,
         )
         await self._log(f"skill-permitted: {', '.join(selected_skill_names) or 'none'}", node_id=node_id)
         await self._log("Invoking test generation.", node_id=node_id)

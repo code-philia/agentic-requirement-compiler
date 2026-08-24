@@ -86,10 +86,17 @@ def get_user_prompt(
     requirement_data: dict[str, Any],
     dynamic_context: str,
     interface_contract: str = "",
+    validation_feedback: str = "",
 ) -> str:
     sections = []
     if interface_contract.strip():
         sections.append(f"### Current Interface Contract\n{interface_contract.strip()}")
+    if validation_feedback.strip():
+        sections.append(
+            "### System Test-Admission Rejection\n"
+            + validation_feedback.strip()
+            + "\nRepair only the rejected test artifact/manifest contract, preserving requirement intent and stable test ids."
+        )
     sections.append(
         section(
             "Task",
@@ -109,6 +116,7 @@ def get_user_prompt(
                 "Do not assert absence of an element, route, or state when the requirement declares it should be visible, available, or usable as a precondition.",
                 "Return `summary`, `tests`, and `files_written`.",
                 "Each test manifest item must include `test_id`, `req_id`, `interface_ids`, `type`, `file_path`, and `first_line`.",
+                "For every declared scenario, include an E2E manifest item whose `scenario_id` exactly matches that scenario's `scenario_id`, `id`, or—when neither exists—its `name`. This is a system-validated traceability contract.",
                 "Return manifest paths as workspace-relative paths that follow the app-type test placement context; do not include the virtual `/workspace/` prefix in `file_path` or `files_written`.",
                 "Every `test_id` must be globally stable and include the current node id.",
                 "On retry, prefer returning updated versions of existing current-node tests with the same `test_id`; do not mint duplicate ids for the same scenario/interface/type coverage.",

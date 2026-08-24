@@ -118,8 +118,8 @@ def workspace_tool_policy() -> str:
             "The current agent state caches a compact summary for every read path. Reuse the earlier tool result and that cache rather than reading the same path again.",
             "Read before editing. `read_file` returns raw source without line-number prefixes; copy its indentation exactly. Prefer a unique 1-3 line `old_string` from the immediately preceding read, then use `edit_file` for existing files and `write_file` only for genuinely new files.",
             "Prefer stage-specific system tools such as `run_tests` or `run_build` for build/test feedback when they are explicitly available.",
-            "Read-only traceability tools are available: `get_interfaces_for_requirement(req_id)`, `get_interface(interface_id)`, and `search_interfaces(keyword, req_id?, interface_type?, limit?)`.",
-            "Use traceability tools when interface context is missing, stale, or ambiguous; they return raw database interface records, including original `content`, without summarization.",
+            "Read-only traceability tools are available. Start with `get_requirement_context(req_id)` for a compact parent/child/dependency plus interface/test view. Use `get_interfaces_for_requirement`, `get_interface`, or `search_interfaces` only when the compact view is insufficient.",
+            "Traceability tools are for missing, stale, or ambiguous context. Do not call them when the current work packet and interface contract already identify the owner and next action.",
         ],
     )
 

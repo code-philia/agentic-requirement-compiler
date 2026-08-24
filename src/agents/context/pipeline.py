@@ -6,6 +6,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
+from agents.context.global_memory import GlobalProjectMemory
+
 
 @dataclass
 class ContextConfig:
@@ -90,6 +92,12 @@ class ContextPipeline:
 
     def _store(self):
         return getattr(self.runtime, "traceability", None)
+
+    def _get_global_project_memory(self, node_id: str) -> str:
+        store = self._store()
+        if store is None:
+            return ""
+        return GlobalProjectMemory(self.config.workspace_dir, store).refresh(node_id=node_id)
 
     @staticmethod
     def _get_app_type_handler_class(app_type: str):
@@ -427,8 +435,6 @@ class ContextPipeline:
                     "implemented": bool(iface.get("implemented")),
                     "responsibility": self._truncate_text(content.get("responsibility", ""), 180),
                     "specification": self._truncate_text(content.get("specification", ""), 220),
-                    "callers": self._limit_string_list(content.get("callers") or [], limit=3, item_limit=80),
-                    "callees": self._limit_string_list(content.get("callees") or [], limit=3, item_limit=80),
                 }
             )
             if len(cards) >= self.max_related_interfaces:
@@ -474,6 +480,7 @@ class ContextPipeline:
         req_data = self._with_scenarios_from_store(node_id, req_data)
 
         context_parts = [
+            self._get_global_project_memory(node_id),
             self._build_requirement_focus(node_id, req_data),
             self._build_acceptance_gate(node_id, req_data),
             self.cache.get_or_compute(node_id, "tech_stack_context", self._get_tech_stack_context),
@@ -548,13 +555,17 @@ class ContextPipeline:
             if test_cards:
                 context_parts.append(test_cards)
 
-        recent_failure_summary = self.cache.get_or_compute(
-            node_id,
-            "recent_failure_summary",
-            lambda: self._get_recent_failure_summary(node_id),
-        )
-        if recent_failure_summary:
-            context_parts.append(recent_failure_summary)
+        # TDD receives one structured work packet from global memory. Repeating the
+        # same raw session failure here and again in its task prompt wastes tokens
+        # and can present stale, conflicting hypotheses.
+        if agent_type != "TestDrivenDeveloper":
+            recent_failure_summary = self.cache.get_or_compute(
+                node_id,
+                "recent_failure_summary",
+                lambda: self._get_recent_failure_summary(node_id),
+            )
+            if recent_failure_summary:
+                context_parts.append(recent_failure_summary)
 
         return "\n\n".join(part for part in context_parts if part)
 
