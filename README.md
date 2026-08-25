@@ -26,6 +26,11 @@
 - <font color="#598f91"><strong>In progress</strong></font> Integrating ARC into the visual web experience for a more interactive development workflow.
 - <font color="#939ca3"><strong>Planned</strong></font> Extend ARC into a VS Code plugin so requirement compilation fits directly into day-to-day coding.
 
+## Replication Benchmark (ARC-Bench)
+
+The performance of ARC can be validated on [ARC-Bench](https://github.com/code-philia/arc-bench), which consists of a number of applications, their requirements, corresponding validation tests, and reference behavior (via web domain address).
+
+
 ## Why ARC
 
 Most AI coding workflows are still prompt-centric. A model reads a large requirement document, tries to infer structure implicitly, and produces code in one or a few broad passes.
