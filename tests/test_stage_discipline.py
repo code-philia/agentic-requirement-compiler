@@ -28,3 +28,18 @@ def test_dynamic_write_guard_stops_edits_after_passing_validation():
 
     blocked = middleware._validate_write({"file_path": "/workspace/frontend/src/App.tsx"})
     assert blocked == "The test layer already passed."
+
+
+def test_tdd_red_and_green_modes_separate_test_and_product_writes():
+    mode = {"value": "red"}
+    middleware = StageDisciplineMiddleware(stage="tdd", tdd_mode=lambda: mode["value"])
+
+    assert middleware._validate_write({"file_path": "/workspace/backend/tests/auth.test.js"}) is None
+    assert "RED mode" in middleware._validate_write({"file_path": "/workspace/backend/src/auth.js"})
+
+    mode["value"] = "green"
+    assert middleware._validate_write({"file_path": "/workspace/backend/src/auth.js"}) is None
+    assert "GREEN mode" in middleware._validate_write({"file_path": "/workspace/backend/tests/auth.test.js"})
+
+    mode["value"] = "sealed"
+    assert "sealed" in middleware._validate_write({"file_path": "/workspace/backend/src/auth.js"})

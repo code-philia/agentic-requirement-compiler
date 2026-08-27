@@ -80,7 +80,7 @@ class DisableToolsMiddleware(AgentMiddleware[Any, Any, Any]):
 def build_stage_agent(
     *,
     name: str,
-    stage: Literal["interface_design", "test_generation", "implementation"],
+    stage: Literal["interface_design", "test_generation", "implementation", "tdd"],
     model: str | object,
     system_prompt: str,
     response_format: object | None,
@@ -92,6 +92,7 @@ def build_stage_agent(
     tools: list[object] | None = None,
     protected_write_paths: list[str] | None = None,
     write_block_reason: "Callable[[], str | None] | None" = None,
+    tdd_mode: "Callable[[], str] | None" = None,
 ):
     """Create an agent instance with ARC's first-batch filesystem policy."""
 
@@ -126,6 +127,7 @@ def build_stage_agent(
                 stage=stage,
                 protected_write_paths=protected_write_paths,
                 write_block_reason=write_block_reason,
+                tdd_mode=tdd_mode,
             ),
             DisableToolsMiddleware(disabled=DISABLED_BUILTIN_TOOLS),
         ],

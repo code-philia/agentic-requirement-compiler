@@ -29,9 +29,10 @@ class StageDisciplineMiddleware(AgentMiddleware[StageDisciplineState, Any, Any])
     def __init__(
         self,
         *,
-        stage: Literal["interface_design", "test_generation", "implementation"],
+        stage: Literal["interface_design", "test_generation", "implementation", "tdd"],
         protected_write_paths: list[str] | None = None,
         write_block_reason: Callable[[], str | None] | None = None,
+        tdd_mode: Callable[[], str] | None = None,
     ) -> None:
         self._stage = stage
         self._protected_write_paths = {
@@ -40,6 +41,7 @@ class StageDisciplineMiddleware(AgentMiddleware[StageDisciplineState, Any, Any])
             if _canonical_workspace_path(path)
         }
         self._write_block_reason = write_block_reason
+        self._tdd_mode = tdd_mode
         self._read_ranges: dict[str, list[tuple[int, int]]] = {}
         self._written_paths: set[str] = set()
         self._failed_paths: set[str] = set()
@@ -111,6 +113,21 @@ class StageDisciplineMiddleware(AgentMiddleware[StageDisciplineState, Any, Any])
                 f"Checkpoint micro-runs treat {path} as immutable evidence. "
                 "Repair product code or configuration instead."
             )
+        if self._stage == "tdd":
+            mode = str(self._tdd_mode() if self._tdd_mode is not None else "green").strip().lower()
+            test_asset = _is_test_asset(path)
+            if mode == "red" and not test_asset:
+                return (
+                    "TDD RED mode may change only tests and test configuration. "
+                    "Produce an executable failing test before editing product code."
+                )
+            if mode == "green" and test_asset:
+                return (
+                    "TDD GREEN mode seals admitted tests. Repair product code; "
+                    "test changes require returning to RED against the baseline checkpoint."
+                )
+            if mode == "sealed":
+                return "The RED checkpoint is sealed. Stop editing until ARC starts GREEN mode."
         if path in self._written_paths and not self._path_unlocked(path):
             return (
                 f"Repeated write blocked: {path} was already changed in this stage. "

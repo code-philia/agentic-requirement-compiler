@@ -4,6 +4,18 @@ import re
 from typing import Any
 
 
+_INVALID_TEST_PATTERNS = (
+    ("no_tests_collected", r"\(0 test\)|Tests\s+no tests|No tests found"),
+    ("invalid_test_module", r"Vitest cannot be imported in a CommonJS module|failed to load (?:test|suite)"),
+    ("invalid_fixture", r"unknown fixture|has unknown parameter|fixture .{0,80} not found"),
+    ("ambiguous_oracle", r"strict mode violation|resolved to \d+ elements"),
+)
+_HARNESS_PATTERNS = (
+    ("e2e_preparation", r"E2E database preparation failed"),
+    ("runtime_startup", r"Backend did not become ready|backend startup.{0,80}timed out|EADDRINUSE"),
+)
+
+
 def parse_test_results(test_output: str) -> dict[str, Any]:
     """Parse ARC test-run output into a compact status structure."""
 
@@ -57,6 +69,24 @@ def parse_test_results(test_output: str) -> dict[str, Any]:
         elif stripped.startswith(("FAIL ", "✗", "×", "✕")) or " FAILED" in stripped:
             result["failed"].append(stripped)
     return result
+
+
+def classify_red_result(test_output: str) -> dict[str, str]:
+    """Conservatively decide whether a pre-implementation failure is a usable RED."""
+    parsed = parse_test_results(test_output)
+    if parsed["exit_code"] == 0:
+        return {"kind": "baseline_green", "reason": "The test already passes on the pre-requirement baseline."}
+    output = test_output or ""
+    for reason, pattern in _INVALID_TEST_PATTERNS:
+        if re.search(pattern, output, re.IGNORECASE | re.DOTALL):
+            return {"kind": "invalid_test", "reason": reason}
+    for reason, pattern in _HARNESS_PATTERNS:
+        if re.search(pattern, output, re.IGNORECASE | re.DOTALL):
+            return {"kind": "invalid_harness", "reason": reason}
+    return {
+        "kind": "valid_red",
+        "reason": "The runner and harness reached a behavior-level failure.",
+    }
 
 
 def _extract_exit_code(output: str) -> int:
