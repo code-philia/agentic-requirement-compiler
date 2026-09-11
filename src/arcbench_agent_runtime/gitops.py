@@ -93,6 +93,10 @@ class GitClient:
                 ".arc/*",
                 "!.arc/traceability/",
                 "!.arc/traceability/**",
+                "!.arc/node_sessions/",
+                "!.arc/node_sessions/**",
+                "!.arc/processing_queue.json",
+                "!.arc/visual_analysis_cache.json",
                 ARC_GITIGNORE_END,
             ]
         )
