@@ -225,3 +225,14 @@ class AppTypeHandler(ABC):
     def read_stack_summary(cls, project_path: str) -> str:
         del project_path
         return cls.parse_stack_summary(cls.build_stack_block())
+
+    @classmethod
+    def run_instructions(
+        cls,
+        *,
+        web_port: int | None = None,
+        android_package: str | None = None,
+    ) -> list[str]:
+        """Return the user-facing steps for launching the generated application."""
+        del web_port, android_package
+        return []

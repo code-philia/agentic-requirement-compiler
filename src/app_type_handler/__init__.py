@@ -42,3 +42,15 @@ def create_app_type_handler(
 
 def read_stack_summary(project_path: str, app_type: str) -> str:
     return get_app_type_handler_class(app_type).read_stack_summary(project_path)
+
+
+def get_run_instructions(
+    app_type: str,
+    *,
+    web_port: int | None = None,
+    android_package: str | None = None,
+) -> list[str]:
+    return get_app_type_handler_class(app_type).run_instructions(
+        web_port=web_port,
+        android_package=android_package,
+    )

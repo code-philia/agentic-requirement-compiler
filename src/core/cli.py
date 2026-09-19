@@ -695,6 +695,8 @@ def print_compilation_summary(
     result: dict,
     output_dir: str,
     elapsed_seconds: float,
+    *,
+    run_instructions: list[str] | None = None,
 ) -> None:
     """Print enhanced compilation summary with statistics."""
     print(f"\n{Fore.BLUE}{'━' * 78}{Style.RESET_ALL}")
@@ -748,6 +750,9 @@ def print_compilation_summary(
         print(f"  • Fix requirement issues and retry: arc compile <input> -o {output_dir} --resume --retry-failed")
     elif result.get("ok"):
         print(f"\n{Fore.GREEN}✓ Compilation successful{Style.RESET_ALL}")
-        # TODO: Add app-specific run instructions
+        if run_instructions:
+            print(f"\n{Fore.WHITE}How to run:{Style.RESET_ALL}")
+            for line in run_instructions:
+                print(f"  • {line}")
     
     print(f"{Fore.BLUE}{'━' * 78}{Style.RESET_ALL}\n")
