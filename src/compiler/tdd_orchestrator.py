@@ -116,6 +116,8 @@ class NodeTDDResult:
     changed_files: list[str] = field(default_factory=list)
     impacted_requirements: list[str] = field(default_factory=list)
     layer_outcomes: dict[str, str] = field(default_factory=dict)
+    checkpoint_files: list[str] = field(default_factory=list)
+    incomplete_targets: list[str] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
     artifacts: dict[str, str] = field(default_factory=dict)
     schema_version: int = NODE_TDD_SCHEMA_VERSION
@@ -330,6 +332,20 @@ class NodeTDDOrchestrator:
         # never needs a combined oversized frontend/backend payload.
         return [self.implementation_agent, self.frontend_implementation_agent]
 
+    def _repair_mode(self, layer: str | None, agent: ImplementationAgent) -> str:
+        normalized_layer = str(layer or "").upper()
+        if normalized_layer == "UNIT":
+            return "UNIT_REPAIR"
+        if normalized_layer == "INTEGRATION":
+            return "INTEGRATION_REPAIR"
+        if normalized_layer == "E2E":
+            return (
+                "E2E_FRONTEND_REPAIR"
+                if agent is self.frontend_implementation_agent
+                else "E2E_BACKEND_REPAIR"
+            )
+        return "TDD"
+
     def run_node(self, requirement_id: str) -> NodeTDDResult:
         """Generate this node's tests and drive only this node to acceptance."""
 
@@ -511,6 +527,7 @@ class NodeTDDOrchestrator:
                             failure_reports=tuple(cluster),
                             failure_analysis_text=failure_analysis_text,
                             iteration=patch_iteration,
+                            mode=self._repair_mode(active_layer, implementation_agent),
                             design_context=self._design_context(requirement_id),
                             previous_patch_metadata=previous_patch_metadata,
                             retry_feedback=retry_feedback,
@@ -742,11 +759,12 @@ class NodeTDDOrchestrator:
             )
 
             self._transition(requirement_id, "AGGREGATE_FRONTEND_IMPLEMENTING")
-            changed, errors, batch_count = self._implement_frontend_aggregate_batches(
+            changed, errors, batch_count, remaining_targets = self._implement_frontend_aggregate_batches(
                 requirement_id,
                 frontend_targets,
                 requirement,
             )
+            result.incomplete_targets = list(remaining_targets)
             if errors:
                 return self._finish(
                     result,
@@ -792,7 +810,7 @@ class NodeTDDOrchestrator:
         requirement_id: str,
         writable_targets: list[dict[str, Any]],
         requirement: dict[str, Any],
-    ) -> tuple[set[str], list[str], int]:
+    ) -> tuple[set[str], list[str], int, list[str]]:
         """Implement aggregate frontend targets one module per model call.
 
         Aggregate requirements do not have a failing test to narrow the scope,
@@ -916,14 +934,47 @@ class NodeTDDOrchestrator:
                         "current frontend module."
                     ]
                     continue
+
+                # Every aggregate edit is compile-gated independently.  If the
+                # current batch breaks typecheck, restore the previous aggregate
+                # checkpoint and retry only this target; earlier compilable
+                # batches remain intact.
+                typecheck = self.test_runner.run_workspace_typecheck()
+                if typecheck.status != "PASSED":
+                    checkpoint = self._node_checkpoints.get(requirement_id)
+                    if checkpoint is not None:
+                        self.file_patcher.restore(checkpoint.sources)
+                        changed_files.clear()
+                        changed_files.update(checkpoint.changed_files)
+                    detail = (
+                        typecheck.stderr
+                        or typecheck.stdout
+                        or typecheck.error
+                        or "workspace typecheck failed"
+                    )
+                    retry_feedback = [
+                        "The aggregate patch was applied but failed workspace typecheck; "
+                        "repair only the current frontend target using the latest source.",
+                        str(detail)[-4000:],
+                    ]
+                    continue
+
                 remaining.difference_update(applied_ids)
                 changed_files.update(_normalize_path(value) for value in applied.changed_files)
+                self._node_checkpoints[requirement_id] = _CompilableCheckpoint(
+                    sources=self.file_patcher.snapshot(self._checkpoint_files(requirement_id)),
+                    changed_files=sorted(changed_files),
+                )
+                self._log.info(
+                    f"ARC4554 AGGREGATE_COMPILE_CHECKPOINT_UPDATED requirement={requirement_id} "
+                    f"module={module_id} changed_files={len(changed_files)}"
+                )
                 target_completed = True
                 break
             if not target_completed:
                 errors.extend(retry_feedback)
                 break
-        return changed_files, errors, model_attempts
+        return changed_files, errors, model_attempts, sorted(remaining)
 
     def _verify_aggregate_patch(
         self,
@@ -1678,6 +1729,9 @@ class NodeTDDOrchestrator:
             "AGGREGATE_ACCEPTED",
             "NO_IMPLEMENTATION_REQUIRED",
         }:
+            checkpoint = self._node_checkpoints.get(result.requirement_id)
+            if checkpoint is not None:
+                result.checkpoint_files = sorted(checkpoint.sources)
             self._node_checkpoints.pop(result.requirement_id, None)
             self._accepted_results[result.requirement_id] = copy.deepcopy(result)
         else:
@@ -1696,6 +1750,7 @@ class NodeTDDOrchestrator:
         restored, errors = self.file_patcher.restore(checkpoint.sources)
         if restored:
             result.changed_files = list(checkpoint.changed_files)
+            result.checkpoint_files = sorted(checkpoint.sources)
             self._log.info(
                 f"ARC4554 NODE_PRESERVED_COMPILE_CHECKPOINT requirement={result.requirement_id} "
                 f"status={result.status} checkpoint_files={len(restored)}"

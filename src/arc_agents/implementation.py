@@ -92,6 +92,14 @@ IMPLEMENTATION_INSTRUCTIONS = """You are a senior software engineer specializing
 test-driven backend implementation and cross-layer defect repair.
 Implement the smallest coherent code change for the supplied requirement and implementation mode.
 
+Mode semantics:
+- UNIT_REPAIR fixes a failing unit test using backend business source.
+- INTEGRATION_REPAIR fixes a failing integration test using the complete backend surface.
+- E2E_BACKEND_REPAIR fixes server/API/DB evidence from an end-to-end failure.
+- E2E_FRONTEND_REPAIR fixes browser/UI evidence from an end-to-end failure.
+- INITIAL_IMPLEMENTATION performs the first coverage pass before business tests run.
+- AGGREGATE handles non-atomic frontend composition without creating new compiler glue.
+
 When implementation_mode is INITIAL_IMPLEMENTATION, this is the first coverage pass before
 business tests run. Implement the one supplied target module from its requirement and contract;
 do not wait for a failure report and do not redesign unrelated modules. The compiler will typecheck
@@ -215,6 +223,11 @@ Return exactly one JSON object and no prose:
 
 FRONTEND_IMPLEMENTATION_INSTRUCTIONS = """You are a senior frontend product engineer and UI implementation specialist.
 Implement the current requirement's frontend experience as a coherent, runnable UI.
+
+Mode semantics:
+- INITIAL_IMPLEMENTATION builds the first complete frontend target before E2E tests.
+- E2E_FRONTEND_REPAIR fixes direct browser/UI evidence while preserving declared routes and API clients.
+- AGGREGATE completes non-atomic page, layout, navigation, and shared-state composition.
 
 When implementation_phase is INITIAL_IMPLEMENTATION, implement the supplied frontend target as
 the requirement's first coverage pass before E2E tests run. Complete the target from the supplied
@@ -430,12 +443,25 @@ class ImplementationAgent:
             errors.append(
                 "ARC4530 IMPLEMENTATION_CONTEXT_INVALID: requirement payload id does not match."
             )
-        if mode not in {"TDD", "AGGREGATE", "INITIAL_IMPLEMENTATION"}:
+        if mode not in {
+            "TDD",
+            "UNIT_REPAIR",
+            "INTEGRATION_REPAIR",
+            "E2E_BACKEND_REPAIR",
+            "E2E_FRONTEND_REPAIR",
+            "AGGREGATE",
+            "INITIAL_IMPLEMENTATION",
+        }:
             errors.append(
-                "ARC4530 IMPLEMENTATION_CONTEXT_INVALID: mode must be TDD, "
-                "AGGREGATE, or INITIAL_IMPLEMENTATION."
+                "ARC4530 IMPLEMENTATION_CONTEXT_INVALID: unsupported implementation mode."
             )
-        if mode == "TDD" and request.test_manifest.get("status") != "TESTS_FROZEN":
+        if mode in {
+            "TDD",
+            "UNIT_REPAIR",
+            "INTEGRATION_REPAIR",
+            "E2E_BACKEND_REPAIR",
+            "E2E_FRONTEND_REPAIR",
+        } and request.test_manifest.get("status") != "TESTS_FROZEN":
             errors.append(
                 "ARC4530 IMPLEMENTATION_CONTEXT_INVALID: Test Manifest is not frozen."
             )
@@ -521,14 +547,10 @@ class ImplementationAgent:
             if str(value).strip()
         }
         if requested_target_ids:
-            unknown_target_ids = sorted(requested_target_ids - writable_ids)
-            if unknown_target_ids:
-                errors.append(
-                    "ARC4530 IMPLEMENTATION_CONTEXT_INVALID: requested initial "
-                    f"target(s) are not writable for {requirement_id}: "
-                    f"{unknown_target_ids}."
-                )
-            writable_ids &= requested_target_ids
+            # The request already carries the finite source cards for this call.
+            # Do not reject a target because an older ownership projection did
+            # not classify it as writable; the exact file set is the scope.
+            writable_ids = set(requested_target_ids) & set(bindings)
         read_only_ids = {
             str(value) for value in requirement_targets.get("read_only", []) if str(value)
         }
@@ -573,10 +595,6 @@ class ImplementationAgent:
         # by this requirement. Failure localization is routing evidence only; it
         # must not hide a caller, callee, or sibling that is several hops away.
         layer_scope = "ALL_REQUIREMENT_OWNED_WRITABLE_MODULES"
-        if not relevant_writable:
-            errors.append(
-                f"ARC4530 IMPLEMENTATION_CONTEXT_INVALID: {requirement_id} has no writable targets."
-            )
         # Show every dependency owned by another requirement. They remain
         # read-only, but hiding them makes cross-requirement failures look like
         # missing implementation context.
@@ -623,7 +641,13 @@ class ImplementationAgent:
             writable_cards.append(card)
 
         frozen_tests, test_errors = ([], [])
-        if mode == "TDD":
+        if mode in {
+            "TDD",
+            "UNIT_REPAIR",
+            "INTEGRATION_REPAIR",
+            "E2E_BACKEND_REPAIR",
+            "E2E_FRONTEND_REPAIR",
+        }:
             frozen_tests, test_errors = self._frozen_tests(
                 requirement_id,
                 request.test_manifest,
@@ -669,8 +693,15 @@ class ImplementationAgent:
             "requirement_id": requirement_id,
             "iteration": request.iteration,
             "implementation_phase": (
-                "INITIAL_IMPLEMENTATION"
-                if mode == "INITIAL_IMPLEMENTATION"
+                mode
+                if mode in {
+                    "INITIAL_IMPLEMENTATION",
+                    "UNIT_REPAIR",
+                    "INTEGRATION_REPAIR",
+                    "E2E_BACKEND_REPAIR",
+                    "E2E_FRONTEND_REPAIR",
+                    "AGGREGATE",
+                }
                 else ("FRONTEND_BOOTSTRAP" if bootstrap_failure else "TDD_REPAIR")
             ),
             "requirement": request.requirement,

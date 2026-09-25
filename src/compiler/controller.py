@@ -1250,6 +1250,9 @@ class Compiler:
             resume=str(request.start_from).upper() == "TDD",
         )
         tdd_failed_nodes: list[str] = []
+        atomic_layer_outcomes: dict[str, dict[str, str]] = {}
+        atomic_checkpoints: dict[str, list[str]] = {}
+        atomic_blocked_nodes: dict[str, str] = {}
         for requirement_id in order:
             await self._log(
                 "NodeTDDOrchestrator",
@@ -1258,6 +1261,10 @@ class Compiler:
             )
             node_result = orchestrator.run_node(requirement_id)
             states[requirement_id] = node_result.status
+            atomic_layer_outcomes[requirement_id] = dict(node_result.layer_outcomes)
+            atomic_checkpoints[requirement_id] = list(node_result.checkpoint_files)
+            if node_result.status.startswith("BLOCKED_"):
+                atomic_blocked_nodes[requirement_id] = node_result.status
             for name, path in node_result.artifacts.items():
                 artifact_name = (
                     f"tdd_result:{requirement_id}" if name == "result" else name
@@ -1328,6 +1335,8 @@ class Compiler:
             )
 
         aggregate_failed_nodes: list[str] = []
+        aggregate_incomplete_targets: dict[str, list[str]] = {}
+        aggregate_checkpoints: dict[str, list[str]] = {}
         aggregate_accepted_nodes: list[str] = []
         aggregate_noop_nodes: list[str] = []
         for requirement_id in folder_order:
@@ -1338,6 +1347,9 @@ class Compiler:
             )
             node_result = orchestrator.run_aggregate_node(requirement_id)
             states[requirement_id] = node_result.status
+            aggregate_checkpoints[requirement_id] = list(node_result.checkpoint_files)
+            if node_result.status == "AGGREGATE_IMPLEMENTATION_INCOMPLETE":
+                aggregate_incomplete_targets[requirement_id] = list(node_result.incomplete_targets)
             for name, path in node_result.artifacts.items():
                 if name == "result":
                     artifacts[f"aggregate_result:{requirement_id}"] = path
@@ -1369,7 +1381,12 @@ class Compiler:
                 f"were processed; atomic_failed={sorted(set(tdd_failed_nodes))}; "
                 f"aggregate_failed={sorted(set(aggregate_failed_nodes))}; "
                 f"aggregate_accepted={aggregate_accepted_nodes}; "
-                f"aggregate_noop={aggregate_noop_nodes}.",
+                f"aggregate_noop={aggregate_noop_nodes}; "
+                f"atomic_layer_outcomes={atomic_layer_outcomes}; "
+                f"atomic_blocked={atomic_blocked_nodes}; "
+                f"atomic_checkpoints={atomic_checkpoints}; "
+                f"aggregate_incomplete_targets={aggregate_incomplete_targets}; "
+                f"aggregate_checkpoints={aggregate_checkpoints}.",
                 "warning",
             )
         else:
@@ -1377,9 +1394,11 @@ class Compiler:
                 "Compiler",
                 "IMPLEMENTATION_COMPLETE: every atomic and aggregate requirement was "
                 f"processed; aggregate_accepted={aggregate_accepted_nodes}; "
-                f"aggregate_noop={aggregate_noop_nodes}.",
+                f"aggregate_noop={aggregate_noop_nodes}; "
+                f"atomic_layer_outcomes={atomic_layer_outcomes}; "
+                f"atomic_checkpoints={atomic_checkpoints}; "
+                f"aggregate_checkpoints={aggregate_checkpoints}.",
             )
-
         await self._log(
             "Compiler",
             "Running final PROJECT_BUILD so frontend/dist contains the implemented UI served by the backend.",
