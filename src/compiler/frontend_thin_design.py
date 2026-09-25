@@ -414,11 +414,18 @@ def _context_audit(
 
 
 def validate_thin_frontend_design(frontend_ir: dict[str, Any], *, expected_requirement_ids: set[str] | None = None, backend_api_ids: set[str] | None = None) -> list[FrontendDesignIssue]:
+    """Validate only semantic architecture facts.
+
+    Components, journeys, API usages, and requirement links are compiler
+    projections. They are intentionally not cross-validated here; doing so
+    would recreate the old multi-table consistency gate and make a derived
+    representation able to reject an otherwise usable frontend design.
+    """
     errors = shape_errors(frontend_ir)
     if errors:
         return [_issue(FrontendDesignErrorCode.IR_INVALID, message) for message in errors]
     issues: list[FrontendDesignIssue] = []
-    for table in ("screens", "journeys", "shared_state_policies"):
+    for table in ("screens", "shared_state_policies"):
         ids = [str(row["id"]) for row in frontend_ir[table]]
         if len(ids) != len(set(ids)):
             issues.append(_issue(FrontendDesignErrorCode.SYMBOL_DUPLICATE, f"{table} contains duplicate ids."))
@@ -429,20 +436,17 @@ def validate_thin_frontend_design(frontend_ir: dict[str, Any], *, expected_requi
         if route in routes:
             issues.append(_issue(FrontendDesignErrorCode.ROUTE_CONFLICT, f"Route {route!r} is shared by {routes[route]} and {screen_id}."))
         routes[route] = screen_id
-    states = {str(row["id"]) for row in frontend_ir["shared_state_policies"]}
     visuals = {str(row["id"]) for row in frontend_ir["visual_references"]}
-    apis = backend_api_ids
     placement_keys: list[tuple[str, str | None]] = []
     for placement in frontend_ir["placements"]:
         requirement_id = str(placement["requirement_id"])
         screen_id = placement["screen_id"]
-        component_id = placement["component_id"]
         placement_keys.append((requirement_id, None if screen_id is None else str(screen_id)))
         if expected_requirement_ids is not None and requirement_id not in expected_requirement_ids:
             issues.append(_issue(FrontendDesignErrorCode.REFERENCE_UNKNOWN, f"Placement references unknown requirement {requirement_id}."))
         if screen_id is not None and str(screen_id) not in screens:
             issues.append(_issue(FrontendDesignErrorCode.REFERENCE_UNKNOWN, f"Placement for {requirement_id} references unknown screen {screen_id}."))
-        if placement["strategy"] == "CREATE_FEATURE_COMPONENT" and (screen_id is None or component_id is None):
+        if placement["strategy"] == "CREATE_FEATURE_COMPONENT" and screen_id is None:
             issues.append(_issue(FrontendDesignErrorCode.COMPONENT_DECISION_INVALID, f"Placement for {requirement_id} must identify a screen and component."))
         if placement["strategy"] == "NO_FRONTEND_IMPLEMENTATION" and (screen_id is not None or component_id is not None):
             issues.append(_issue(FrontendDesignErrorCode.COMPONENT_DECISION_INVALID, f"NO_FRONTEND_IMPLEMENTATION placement for {requirement_id} cannot identify a screen or component."))
@@ -453,41 +457,11 @@ def validate_thin_frontend_design(frontend_ir: dict[str, Any], *, expected_requi
         if placed_requirements != expected_requirement_ids:
             issues.append(_issue(FrontendDesignErrorCode.REQUIREMENT_UNCOVERED, f"Placement coverage mismatch: missing={sorted(expected_requirement_ids - placed_requirements)} extra={sorted(placed_requirements - expected_requirement_ids)}."))
     for screen_id, screen in screens.items():
-        if apis is not None:
-            issues.extend(_unknown(screen_id, "API", screen["required_api_ids"], apis, FrontendDesignErrorCode.API_DEPENDENCY_INVALID))
         issues.extend(_unknown(screen_id, "visual", screen["visual_reference_ids"], visuals, FrontendDesignErrorCode.REFERENCE_UNKNOWN))
         for navigation in screen["navigation_targets"]:
             target_route = str(navigation["target_route"])
             if target_route != "/" and target_route not in routes:
                 issues.append(_issue(FrontendDesignErrorCode.REFERENCE_UNKNOWN, f"Screen {screen_id} navigates to unknown route {target_route}."))
-    for journey in frontend_ir["journeys"]:
-        if journey["source_screen_id"] not in screens:
-            issues.append(_issue(FrontendDesignErrorCode.REFERENCE_UNKNOWN, f"Journey {journey['id']} references unknown screen {journey['source_screen_id']}."))
-        if apis is not None and journey["api_id"] is not None and journey["api_id"] not in apis:
-            issues.append(_issue(FrontendDesignErrorCode.API_DEPENDENCY_INVALID, f"Journey {journey['id']} references unknown API {journey['api_id']}."))
-        success_route = journey["success_target_route"]
-        if success_route is not None and success_route != "/" and success_route not in routes:
-            issues.append(_issue(FrontendDesignErrorCode.REFERENCE_UNKNOWN, f"Journey {journey['id']} references unknown success route {success_route}."))
-    for usage in frontend_ir["api_usages"]:
-        if usage["screen_id"] not in screens or (apis is not None and usage["api_id"] not in apis):
-            issues.append(_issue(FrontendDesignErrorCode.API_DEPENDENCY_INVALID, f"Invalid API usage {usage['screen_id']} -> {usage['api_id']}."))
-    usage_pairs = {(str(row["screen_id"]), str(row["api_id"])) for row in frontend_ir["api_usages"]}
-    for screen_id, screen in screens.items():
-        missing = [api_id for api_id in screen["required_api_ids"] if (screen_id, str(api_id)) not in usage_pairs]
-        if missing:
-            issues.append(_issue(FrontendDesignErrorCode.API_DEPENDENCY_INVALID, f"Screen {screen_id} has APIs without api_usages: {missing}."))
-    links = {str(row["requirement_id"]): row for row in frontend_ir["requirement_links"]}
-    if len(links) != len(frontend_ir["requirement_links"]):
-        issues.append(_issue(FrontendDesignErrorCode.SYMBOL_DUPLICATE, "requirement_links contains duplicate requirement ids."))
-    if expected_requirement_ids is not None and set(links) != expected_requirement_ids:
-        issues.append(_issue(FrontendDesignErrorCode.REQUIREMENT_UNCOVERED, f"Requirement links mismatch: missing={sorted(expected_requirement_ids - set(links))} extra={sorted(set(links) - expected_requirement_ids)}."))
-    for rid, link in links.items():
-        issues.extend(_unknown(rid, "screen", link["screen_ids"], set(screens), FrontendDesignErrorCode.REFERENCE_UNKNOWN))
-        issues.extend(_unknown(rid, "shared state", link["shared_state_ids"], states, FrontendDesignErrorCode.REFERENCE_UNKNOWN))
-        issues.extend(_unknown(rid, "visual", link["visual_reference_ids"], visuals, FrontendDesignErrorCode.REFERENCE_UNKNOWN))
-        if link["ui_scope"] == "UI_REQUIRED" and not link["screen_ids"]:
-            issues.append(_issue(FrontendDesignErrorCode.REQUIREMENT_UNCOVERED, f"UI_REQUIRED requirement {rid} has no screen."))
-    issues.extend(validate_screen_components(frontend_ir))
     return issues
 
 
@@ -1193,56 +1167,6 @@ def _canonicalize_frontend_associations(
     frontend_ir["requirement_links"] = links
 
 
-def validate_screen_components(frontend_ir: dict[str, Any]) -> list[FrontendDesignIssue]:
-    """Check the screen -> component partition that owns every writable UI unit.
-
-    The table is optional: a thin design is valid before partitioning. Once any
-    component exists the partition must be total - every screen requirement,
-    API, and observable state belongs to exactly one component of that screen.
-    """
-
-    components = [row for row in frontend_ir.get("screen_components", []) if isinstance(row, dict)]
-    if not components:
-        return []
-    screens = {str(row["id"]): row for row in frontend_ir.get("screens", []) if isinstance(row, dict)}
-    stores = {str(row["id"]) for row in frontend_ir.get("shared_state_policies", []) if isinstance(row, dict)}
-    issues: list[FrontendDesignIssue] = []
-    component_ids = [str(row.get("id", "")) for row in components]
-    if len(component_ids) != len(set(component_ids)):
-        issues.append(_issue(FrontendDesignErrorCode.SYMBOL_DUPLICATE, "screen_components contains duplicate ids."))
-    by_screen: dict[str, list[dict[str, Any]]] = {}
-    for component in components:
-        component_id = str(component.get("id", ""))
-        screen_id = str(component.get("screen_id", ""))
-        screen = screens.get(screen_id)
-        if screen is None:
-            issues.append(_issue(FrontendDesignErrorCode.REFERENCE_UNKNOWN, f"Component {component_id} references unknown screen {screen_id}."))
-            continue
-        by_screen.setdefault(screen_id, []).append(component)
-        requirement_ids = [str(value) for value in component.get("requirement_ids", [])]
-        if not requirement_ids:
-            issues.append(_issue(FrontendDesignErrorCode.COMPONENT_DECISION_INVALID, f"Component {component_id} owns no requirement."))
-        outside = sorted(set(requirement_ids) - {str(value) for value in screen["requirement_ids"]})
-        if outside:
-            issues.append(_issue(FrontendDesignErrorCode.COMPONENT_DECISION_INVALID, f"Component {component_id} owns requirements that {screen_id} does not serve: {outside}."))
-        route_inputs = {str(row.get("semantic_id", "")) for row in screen["route_inputs"] if isinstance(row, dict)}
-        issues.extend(_unknown(component_id, "route input", [str(row.get("semantic_id", "")) for row in component.get("inputs", []) if isinstance(row, dict)], route_inputs, FrontendDesignErrorCode.REFERENCE_UNKNOWN))
-        issues.extend(_unknown(component_id, "API", component.get("required_api_ids", []), {str(value) for value in screen["required_api_ids"]}, FrontendDesignErrorCode.API_DEPENDENCY_INVALID))
-        issues.extend(_unknown(component_id, "shared state", component.get("shared_state_ids", []), stores, FrontendDesignErrorCode.REFERENCE_UNKNOWN))
-        issues.extend(_unknown(component_id, "visual", component.get("visual_reference_ids", []), {str(value) for value in screen["visual_reference_ids"]}, FrontendDesignErrorCode.REFERENCE_UNKNOWN))
-        issues.extend(_unknown(component_id, "observable state", component.get("observable_states", []), {str(value) for value in screen["observable_states"]}, FrontendDesignErrorCode.COMPONENT_DECISION_INVALID))
-    for screen_id, screen in sorted(screens.items()):
-        rows = by_screen.get(screen_id, [])
-        if not rows:
-            if screen["requirement_ids"]:
-                issues.append(_issue(FrontendDesignErrorCode.REQUIREMENT_UNCOVERED, f"Screen {screen_id} has no component; every screen is partitioned into components."))
-            continue
-        issues.extend(_partition_issues(screen_id, "requirement", [str(value) for value in screen["requirement_ids"]], rows, "requirement_ids"))
-        issues.extend(_partition_issues(screen_id, "API", [str(value) for value in screen["required_api_ids"]], rows, "required_api_ids"))
-        issues.extend(_partition_issues(screen_id, "observable state", [str(value) for value in screen["observable_states"]], rows, "observable_states"))
-    return issues
-
-
 def materialize_screen_components(
     frontend_ir: dict[str, Any],
     requirement_ir: dict[str, Any],
@@ -1333,20 +1257,6 @@ def materialize_screen_components(
 def _component_token(value: str) -> str:
     text = re.sub(r"[^A-Za-z0-9]+", " ", str(value)).strip()
     return "".join(part[:1].upper() + part[1:] for part in text.split()) or "Feature"
-
-
-def _partition_issues(screen_id: str, label: str, expected: list[str], components: list[dict[str, Any]], key: str) -> list[FrontendDesignIssue]:
-    """Require every screen-level value to be owned by exactly one component."""
-
-    allocated: list[str] = [str(value) for row in components for value in row.get(key, [])]
-    missing = sorted(set(expected) - set(allocated))
-    duplicated = sorted({value for value in allocated if allocated.count(value) > 1})
-    issues: list[FrontendDesignIssue] = []
-    if missing:
-        issues.append(_issue(FrontendDesignErrorCode.REQUIREMENT_UNCOVERED, f"Screen {screen_id} leaves {label} values unassigned to a component: {missing}."))
-    if duplicated:
-        issues.append(_issue(FrontendDesignErrorCode.COMPONENT_DECISION_INVALID, f"Screen {screen_id} assigns {label} values to more than one component: {duplicated}."))
-    return issues
 
 
 def project_frontend_runtime_ir(frontend_ir: dict[str, Any]) -> dict[str, Any]:
