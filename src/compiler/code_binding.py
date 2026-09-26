@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import copy
-import json
 import re
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
@@ -31,7 +30,6 @@ class CodeBindingLowerer:
         output_root: Path,
         requirement_ir: dict[str, Any],
         dependency_graph: dict[str, Any],
-        database_schema: dict[str, Any],
         design_ir: dict[str, Any],
         frontend_ir: dict[str, Any],
         backend_symbol_registry: dict[str, Any],
@@ -45,7 +43,7 @@ class CodeBindingLowerer:
         errors: list[str] = []
         root = output_root.expanduser().resolve()
 
-        backend_symbols = _index_rows(
+        _index_rows(
             backend_symbol_registry.get("symbols"), "id", "backend symbols", errors
         )
         type_definitions = _index_rows(
@@ -110,13 +108,7 @@ class CodeBindingLowerer:
         )
 
         owner_map = _frontend_owner_map(frontend_ir)
-        type_bindings = _backend_type_bindings(
-            type_definitions,
-            backend_symbols,
-            backend_modules,
-            database_schema,
-            errors,
-        )
+        type_bindings = _backend_type_bindings(type_definitions)
         type_by_id = {str(row["type_id"]): row for row in type_bindings}
 
         bindings: list[dict[str, Any]] = []
@@ -135,19 +127,13 @@ class CodeBindingLowerer:
             route = copy.deepcopy(backend_routes.get(module_id)) if kind == "API" else None
             binding = {
                 "module_id": module_id,
-                "source_ir_id": module_id,
-                "owner_requirement": owner,
                 "owner_requirements": [owner] if owner else [],
                 "kind": kind,
                 "file": str(lowered.get("path", "")),
                 "symbol": symbol,
-                "typescript_kind": "function",
-                "export": "named",
-                "exported_symbols": _strings(lowered.get("exports")),
                 "input_type": input_type,
                 "output_type": output_type,
                 "props_type": None,
-                "public_signature": _backend_signature(kind, symbol, input_type, output_type),
                 "route": _compact_backend_route(route),
                 "callees": _strings(module.get("callees")),
             }
@@ -178,33 +164,20 @@ class CodeBindingLowerer:
                 bindings.append(
                     {
                         "module_id": ui_id,
-                        "source_ir_id": ui_id,
-                        "owner_requirement": owners[0] if len(owners) == 1 else None,
                         "owner_requirements": owners,
                         "kind": kind,
                         "file": str(location.get("path", "")),
                         "symbol": symbol,
-                        "typescript_kind": "function",
-                        "export": "named",
-                        "exported_symbols": [
-                            symbol,
-                            str(location.get("props_symbol", "")),
-                        ],
                         "input_type": None,
                         "output_type": None,
                         "props_type": props_type,
-                        "public_signature": (
-                            f"{symbol}(props: {props_type['symbol']})"
-                            if props_type is not None
-                            else f"{symbol}()"
-                        ),
                         "route": _compact_frontend_route(frontend_routes.get(ui_id)),
                         "callees": relationships,
                     }
                 )
 
         store_rows = _index_rows(frontend_ir.get("stores"), "id", "Frontend stores", errors)
-        for store_id, store in sorted(store_rows.items()):
+        for store_id in sorted(store_rows):
             location = frontend_store_locations.get(store_id)
             if location is None:
                 errors.append(
@@ -218,43 +191,21 @@ class CodeBindingLowerer:
             ]
             store_types = [row for row in store_types if row is not None]
             type_bindings.extend(
-                _frontend_declared_types(store_types, owners, frontend_symbols)
+                _frontend_declared_types(store_types)
             )
-            exported_symbols = [
-                str(location.get(key, ""))
-                for key in (
-                    "state_symbol",
-                    "actions_symbol",
-                    "value_symbol",
-                    "initial_symbol",
-                    "runtime_symbol",
-                )
-                if str(location.get(key, "")).strip()
-            ]
             bindings.append(
                 {
                     "module_id": store_id,
-                    "source_ir_id": store_id,
-                    "owner_requirement": owners[0] if len(owners) == 1 else None,
                     "owner_requirements": owners,
                     "kind": "STORE",
                     "file": str(location.get("path", "")),
                     "symbol": str(location.get("runtime_symbol", "")),
-                    "typescript_kind": "const",
-                    "export": "named",
-                    "exported_symbols": exported_symbols,
                     "input_type": None,
                     "output_type": None,
                     "props_type": None,
-                    "public_signature": (
-                        f"{location.get('runtime_symbol', '')}: "
-                        f"{location.get('value_symbol', '')}"
-                    ),
                     "route": None,
                     "callees": [],
                     "store_types": store_types,
-                    "state_fields": copy.deepcopy(store.get("state", [])),
-                    "actions": copy.deepcopy(store.get("actions", [])),
                 }
             )
 
@@ -277,18 +228,13 @@ class CodeBindingLowerer:
                 {
                     "module_id": client_id,
                     "source_ir_id": api_id,
-                    "owner_requirement": owner or None,
                     "owner_requirements": [owner] if owner else [],
                     "kind": "API_CLIENT",
                     "file": str(location.get("path", "")),
                     "symbol": symbol,
-                    "typescript_kind": "function",
-                    "export": "named",
-                    "exported_symbols": [symbol],
                     "input_type": input_type,
                     "output_type": output_type,
                     "props_type": None,
-                    "public_signature": _client_signature(symbol, input_type, output_type),
                     "route": _compact_backend_route(backend_routes.get(api_id)),
                     "callees": [api_id],
                 }
@@ -301,9 +247,7 @@ class CodeBindingLowerer:
             )
             if reference is not None:
                 ui_type_rows.extend(
-                    _frontend_declared_types(
-                        [reference], sorted(owner_map.get(ui_id, set())), frontend_symbols
-                    )
+                    _frontend_declared_types([reference])
                 )
         type_bindings.extend(ui_type_rows)
         type_bindings = _deduplicate_type_bindings(type_bindings, errors)
@@ -324,14 +268,12 @@ class CodeBindingLowerer:
             binding_by_id,
             errors,
         )
-        file_index = _file_index(bindings, type_bindings)
         registry = {
             "schema_version": CODE_BINDING_SCHEMA_VERSION,
             "status": CODE_BINDING_READY if not errors else "CODE_BINDING_INVALID",
             "code_bindings": bindings,
             "type_bindings": type_bindings,
             "requirement_targets": requirement_targets,
-            "file_index": file_index,
         }
         return CodeBindingResult(registry=registry, errors=list(dict.fromkeys(errors)))
 
@@ -342,7 +284,6 @@ class CodeTargetResolver:
     def __init__(self, registry: dict[str, Any]) -> None:
         if not isinstance(registry, dict) or registry.get("status") != CODE_BINDING_READY:
             raise ValueError("Code Binding Registry is not ready.")
-        self._registry = copy.deepcopy(registry)
         self._bindings = {
             str(row["module_id"]): row
             for row in registry.get("code_bindings", [])
@@ -358,18 +299,6 @@ class CodeTargetResolver:
             for row in registry.get("requirement_targets", [])
             if isinstance(row, dict) and row.get("requirement_id")
         }
-        self._files = {
-            str(row["file"]): row
-            for row in registry.get("file_index", [])
-            if isinstance(row, dict) and row.get("file")
-        }
-
-    @classmethod
-    def from_file(cls, path: str | Path) -> "CodeTargetResolver":
-        payload = json.loads(Path(path).read_text(encoding="utf-8"))
-        if not isinstance(payload, dict):
-            raise ValueError("Code Binding Registry must be a JSON object.")
-        return cls(payload)
 
     def resolve(self, module_id: str) -> dict[str, Any] | None:
         row = self._bindings.get(str(module_id))
@@ -385,12 +314,12 @@ class CodeTargetResolver:
             raise KeyError(f"Unknown requirement: {requirement_id}")
         owned_targets = [
             copy.deepcopy(self._bindings[module_id])
-            for module_id in row.get("owned", [])
+            for module_id in row.get("writable", [])
             if module_id in self._bindings
         ]
         dependency_targets = [
             copy.deepcopy(self._bindings[module_id])
-            for module_id in row.get("dependencies", [])
+            for module_id in row.get("read_only", [])
             if module_id in self._bindings
         ]
         type_ids = _referenced_type_ids([*owned_targets, *dependency_targets])
@@ -405,98 +334,12 @@ class CodeTargetResolver:
             ],
         }
 
-    def resolve_file(self, file: str) -> dict[str, Any] | None:
-        row = self._files.get(str(file).replace("\\", "/"))
-        return copy.deepcopy(row) if row is not None else None
-
-
 def resolve_requirement_targets(
     registry: dict[str, Any], requirement_id: str
 ) -> dict[str, Any]:
     return CodeTargetResolver(registry).resolve_requirement_targets(requirement_id)
 
 
-def validate_code_binding_registry(
-    registry: dict[str, Any],
-    *,
-    output_root: Path,
-    expected_requirement_ids: set[str] | None = None,
-) -> list[str]:
-    """Validate a persisted registry before a downstream start probe reuses it."""
-
-    errors: list[str] = []
-    if registry.get("schema_version") != CODE_BINDING_SCHEMA_VERSION:
-        errors.append(
-            "ARC4308 CODE_BINDING_REUSE_INVALID: unsupported schema version "
-            f"{registry.get('schema_version')!r}."
-        )
-    if registry.get("status") != CODE_BINDING_READY:
-        errors.append(
-            "ARC4308 CODE_BINDING_REUSE_INVALID: registry status is not "
-            f"{CODE_BINDING_READY}."
-        )
-
-    raw_bindings = registry.get("code_bindings")
-    raw_types = registry.get("type_bindings")
-    raw_requirements = registry.get("requirement_targets")
-    if not isinstance(raw_bindings, list) or any(
-        not isinstance(row, dict) for row in raw_bindings
-    ):
-        errors.append(
-            "ARC4308 CODE_BINDING_REUSE_INVALID: code_bindings must be a list of objects."
-        )
-        bindings: list[dict[str, Any]] = []
-    else:
-        bindings = copy.deepcopy(raw_bindings)
-    if not isinstance(raw_types, list) or any(
-        not isinstance(row, dict) for row in raw_types
-    ):
-        errors.append(
-            "ARC4308 CODE_BINDING_REUSE_INVALID: type_bindings must be a list of objects."
-        )
-        type_bindings: list[dict[str, Any]] = []
-    else:
-        type_bindings = copy.deepcopy(raw_types)
-    if not isinstance(raw_requirements, list) or any(
-        not isinstance(row, dict) for row in raw_requirements
-    ):
-        errors.append(
-            "ARC4308 CODE_BINDING_REUSE_INVALID: requirement_targets must be a list of objects."
-        )
-        requirement_targets: list[dict[str, Any]] = []
-    else:
-        requirement_targets = copy.deepcopy(raw_requirements)
-
-    binding_by_id = _unique_bindings(bindings, errors)
-    type_rows = _deduplicate_type_bindings(type_bindings, errors)
-    requirement_by_id = _index_rows(
-        requirement_targets,
-        "requirement_id",
-        "Code Binding requirement targets",
-        errors,
-    )
-    if expected_requirement_ids is not None and set(requirement_by_id) != set(
-        expected_requirement_ids
-    ):
-        errors.append(
-            "ARC4308 CODE_BINDING_REUSE_INVALID: requirement coverage differs; "
-            f"missing={sorted(expected_requirement_ids - set(requirement_by_id))}, "
-            f"extra={sorted(set(requirement_by_id) - expected_requirement_ids)}."
-        )
-
-    _validate_requirement_permissions(
-        list(requirement_by_id.values()),
-        binding_by_id,
-        errors,
-    )
-
-    _validate_sources(
-        output_root.expanduser().resolve(),
-        list(binding_by_id.values()),
-        type_rows,
-        errors,
-    )
-    return list(dict.fromkeys(errors))
 
 
 def _referenced_type_ids(targets: list[dict[str, Any]]) -> list[str]:
@@ -519,78 +362,28 @@ def _referenced_type_ids(targets: list[dict[str, Any]]) -> list[str]:
 
 def _backend_type_bindings(
     definitions: dict[str, dict[str, Any]],
-    symbols: dict[str, dict[str, Any]],
-    modules: dict[str, dict[str, Any]],
-    database_schema: dict[str, Any],
-    errors: list[str],
 ) -> list[dict[str, Any]]:
-    module_owners = {
-        module_id: str(module.get("owner_requirement", ""))
-        for module_id, module in modules.items()
-    }
-    entity_owners = {
-        str(entity.get("key", "")): _strings(entity.get("requirement_ids"))
-        for entity in database_schema.get("entities", [])
-        if isinstance(entity, dict)
-    }
-    rows: list[dict[str, Any]] = []
-    for type_id, definition in sorted(definitions.items()):
-        symbol = symbols.get(type_id, {})
-        consumers = _strings(symbol.get("consumers"))
-        owners = sorted(
-            {
-                module_owners[consumer]
-                for consumer in consumers
-                if module_owners.get(consumer)
-            }
-        )
-        entity = str(symbol.get("entity", ""))
-        owners = sorted(set(owners) | set(entity_owners.get(entity, [])))
-        rows.append(
-            {
-                "type_id": type_id,
-                "kind": str(definition.get("kind", "")),
-                "file": str(definition.get("path", "")),
-                "symbol": str(definition.get("symbol", "")),
-                "typescript_kind": str(symbol.get("typescript_kind", "type")),
-                "export": "named",
-                "owner_requirements": owners,
-                "consumers": consumers,
-                "fields": copy.deepcopy(symbol.get("fields", [])),
-            }
-        )
-    if set(definitions) - {str(row["type_id"]) for row in rows}:
-        errors.append("ARC4303 TYPE_BINDING_COVERAGE_INVALID: backend types are incomplete.")
-    return rows
+    return [
+        {
+            "type_id": type_id,
+            "file": str(definition.get("path", "")),
+            "symbol": str(definition.get("symbol", "")),
+        }
+        for type_id, definition in sorted(definitions.items())
+    ]
 
 
 def _frontend_declared_types(
     references: list[dict[str, Any]],
-    owners: list[str],
-    symbols: dict[str, dict[str, Any]],
 ) -> list[dict[str, Any]]:
-    rows: list[dict[str, Any]] = []
-    for reference in references:
-        type_id = str(reference.get("type_id", ""))
-        symbol = symbols.get(type_id, {})
-        rows.append(
-            {
-                "type_id": type_id,
-                "kind": str(symbol.get("kind", "FRONTEND_TYPE")),
-                "file": str(reference.get("file", "")),
-                "symbol": str(reference.get("symbol", "")),
-                "typescript_kind": str(symbol.get("typescript_kind", "interface")),
-                "export": "named",
-                "owner_requirements": owners,
-                "consumers": [str(symbol.get("owner_id", ""))]
-                if symbol.get("owner_id")
-                else [],
-                "fields": copy.deepcopy(symbol.get("fields", [])),
-                "events": copy.deepcopy(symbol.get("events", [])),
-                "actions": copy.deepcopy(symbol.get("actions", [])),
-            }
-        )
-    return rows
+    return [
+        {
+            "type_id": str(reference.get("type_id", "")),
+            "file": str(reference.get("file", "")),
+            "symbol": str(reference.get("symbol", "")),
+        }
+        for reference in references
+    ]
 
 
 def _type_reference(type_id: Any, types: dict[str, dict[str, Any]]) -> dict[str, Any] | None:
@@ -634,36 +427,6 @@ def _frontend_contract_reference(
     if reference is not None and not reference.get("symbol") and type_symbol:
         reference["symbol"] = str(type_symbol)
     return reference
-
-
-def _backend_signature(
-    kind: str,
-    symbol: str,
-    input_type: dict[str, Any] | None,
-    output_type: dict[str, Any] | None,
-) -> str:
-    input_symbol = str((input_type or {}).get("symbol") or "unknown")
-    output_symbol = str((output_type or {}).get("symbol") or "void")
-    if kind == "API":
-        response_symbol = str((output_type or {}).get("symbol") or "unknown")
-        return (
-            f"{symbol}(req: Request<Record<string, string>, {response_symbol}, "
-            f"{input_symbol}>, res: Response<{response_symbol}>): Promise<void>"
-        )
-    parameter = f"input: {input_symbol}" if input_type is not None else ""
-    return f"{symbol}({parameter}): Promise<{output_symbol}>"
-
-
-def _client_signature(
-    symbol: str,
-    input_type: dict[str, Any] | None,
-    output_type: dict[str, Any] | None,
-) -> str:
-    parameter = (
-        f"request: {input_type.get('symbol')}" if input_type is not None else ""
-    )
-    result = str((output_type or {}).get("symbol") or "void")
-    return f"{symbol}({parameter}): Promise<{result}>"
 
 
 def _compact_backend_route(route: dict[str, Any] | None) -> dict[str, Any] | None:
@@ -823,8 +586,6 @@ def _requirement_targets(
         rows.append(
             {
                 "requirement_id": requirement_id,
-                "owned": sorted(owned),
-                "dependencies": sorted(reachable),
                 "writable": sorted(owned),
                 "read_only": sorted(reachable),
             }
@@ -923,17 +684,8 @@ def _validate_requirement_permissions(
     known_modules = set(binding_by_id)
     for row in requirement_targets:
         requirement_id = str(row.get("requirement_id", "")).strip()
-        owned = set(_strings(row.get("owned")))
         writable = set(_strings(row.get("writable")))
-        dependencies = set(_strings(row.get("dependencies")))
         read_only = set(_strings(row.get("read_only")))
-
-        if owned != writable or dependencies != read_only:
-            errors.append(
-                "ARC4306 CODE_BINDING_OWNERSHIP_INVALID: "
-                f"{requirement_id} has inconsistent owned/writable or "
-                "dependencies/read_only targets."
-            )
         overlap = sorted(writable & read_only)
         if overlap:
             errors.append(
@@ -941,7 +693,7 @@ def _validate_requirement_permissions(
                 f"{requirement_id} marks modules as both writable and read-only "
                 f"{overlap}."
             )
-        referenced = owned | writable | dependencies | read_only
+        referenced = writable | read_only
         unknown = sorted(referenced - known_modules)
         if unknown:
             errors.append(
@@ -959,11 +711,6 @@ def _validate_requirement_permissions(
             for value in _strings(binding.get("owner_requirements"))
             if value in known_requirements
         }
-        if not semantic_owners:
-            fallback_owner = str(binding.get("owner_requirement", "")).strip()
-            if fallback_owner in known_requirements:
-                semantic_owners.add(fallback_owner)
-
         owners = sorted(set(writable_owners.get(module_id, [])))
         if semantic_owners and len(owners) != 1:
             errors.append(
@@ -983,24 +730,6 @@ def _validate_requirement_permissions(
                     "ARC4306 CODE_BINDING_OWNERSHIP_INVALID: "
                     f"{module_id} is missing from semantic owner {requirement_id}."
                 )
-
-
-def _file_index(
-    bindings: list[dict[str, Any]], type_bindings: list[dict[str, Any]]
-) -> list[dict[str, Any]]:
-    rows: dict[str, dict[str, Any]] = {}
-    for binding in bindings:
-        file = str(binding.get("file", ""))
-        row = rows.setdefault(file, {"file": file, "module_ids": [], "type_ids": []})
-        row["module_ids"].append(str(binding.get("module_id", "")))
-    for binding in type_bindings:
-        file = str(binding.get("file", ""))
-        row = rows.setdefault(file, {"file": file, "module_ids": [], "type_ids": []})
-        row["type_ids"].append(str(binding.get("type_id", "")))
-    for row in rows.values():
-        row["module_ids"] = sorted(set(row["module_ids"]))
-        row["type_ids"] = sorted(set(row["type_ids"]))
-    return [rows[key] for key in sorted(rows) if key]
 
 
 def _validate_coverage(
@@ -1109,11 +838,6 @@ def _deduplicate_type_bindings(
             continue
         if existing is None:
             result[type_id] = row
-        else:
-            existing["owner_requirements"] = sorted(
-                set(_strings(existing.get("owner_requirements")))
-                | set(_strings(row.get("owner_requirements")))
-            )
     return [result[key] for key in sorted(result)]
 
 
@@ -1165,5 +889,4 @@ __all__ = [
     "CodeBindingResult",
     "CodeTargetResolver",
     "resolve_requirement_targets",
-    "validate_code_binding_registry",
 ]

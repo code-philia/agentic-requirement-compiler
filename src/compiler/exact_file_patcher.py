@@ -3,21 +3,10 @@ from __future__ import annotations
 import hashlib
 import os
 import tempfile
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
-from typing import Any
 
-from arc_agents.contracts import ProposedPatch
-
-
-FILE_PATCHER_SCHEMA_VERSION = 1
-
-
-@dataclass(slots=True)
-class AppliedFileEdit:
-    file: str
-    before_sha256: str
-    after_sha256: str
+from arc_agents.contracts import ProposedEdit, ProposedPatch
 
 
 @dataclass(slots=True)
@@ -25,24 +14,11 @@ class FilePatchResult:
     requirement_id: str
     status: str
     changed_files: list[str] = field(default_factory=list)
-    changed_modules: list[str] = field(default_factory=list)
-    applied_edits: list[AppliedFileEdit] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
-    warnings: list[str] = field(default_factory=list)
-    schema_version: int = FILE_PATCHER_SCHEMA_VERSION
 
     @property
     def ok(self) -> bool:
         return self.status == "APPLIED" and not self.errors
-
-    @property
-    def rejected_changes(self) -> list[str]:
-        """Compatibility accessor for callers that display patching errors."""
-
-        return self.errors
-
-    def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
 
 
 @dataclass(slots=True)
@@ -51,8 +27,6 @@ class _PendingFile:
     target: Path
     original: str
     updated: str
-    before_sha256: str
-    after_sha256: str
 
 
 class ExactFilePatcher:
@@ -69,18 +43,12 @@ class ExactFilePatcher:
     def __init__(self, output_root: Path) -> None:
         self.output_root = output_root.expanduser().resolve()
 
-    def apply(
-        self,
-        patch: ProposedPatch,
-        *,
-        code_binding_registry: dict[str, Any] | None = None,
-        dry_run: bool = False,
-    ) -> FilePatchResult:
+    def apply(self, patch: ProposedPatch) -> FilePatchResult:
         requirement_id = str(patch.requirement_id).strip()
         if not patch.edits:
             return self._failed(requirement_id, ["PATCH_EMPTY: no edits were proposed."])
 
-        edits_by_file: dict[str, list[Any]] = {}
+        edits_by_file: dict[str, list[ProposedEdit]] = {}
         for edit in patch.edits:
             relative = _safe_relative_file(str(edit.file))
             if relative is None:
@@ -90,10 +58,7 @@ class ExactFilePatcher:
                 )
             edits_by_file.setdefault(relative, []).append(edit)
 
-        module_ids_by_file = _module_ids_by_file(code_binding_registry or {})
         pending: list[_PendingFile] = []
-        applied_edits: list[AppliedFileEdit] = []
-        warnings: list[str] = []
 
         for relative, edits in edits_by_file.items():
             target = (self.output_root / relative).resolve()
@@ -111,8 +76,12 @@ class ExactFilePatcher:
                 )
 
             before_sha256 = hashlib.sha256(original.encode("utf-8")).hexdigest()
+            if any(edit.expected_sha256 != before_sha256 for edit in edits):
+                return self._failed(
+                    requirement_id,
+                    [f"PATCH_SOURCE_CHANGED: {relative} changed since the implementation context was built."],
+                )
             updated = original
-            file_edits: list[AppliedFileEdit] = []
             for edit in edits:
                 candidate, error = _replace_exact(
                     updated,
@@ -125,31 +94,17 @@ class ExactFilePatcher:
                         [f"PATCH_SEARCH_FAILED: {relative}: {error}"],
                     )
                 if candidate == updated:
-                    warnings.append(f"PATCH_NO_CHANGES: ignored no-op edit for {relative}.")
                     continue
                 updated = candidate
-                file_edits.append(
-                    AppliedFileEdit(
-                        file=relative,
-                        before_sha256=before_sha256,
-                        after_sha256="",
-                    )
-                )
 
             if updated == original:
                 continue
-            after_sha256 = hashlib.sha256(updated.encode("utf-8")).hexdigest()
-            for edit in file_edits:
-                edit.after_sha256 = after_sha256
-            applied_edits.extend(file_edits)
             pending.append(
                 _PendingFile(
                     relative=relative,
                     target=target,
                     original=original,
                     updated=updated,
-                    before_sha256=before_sha256,
-                    after_sha256=after_sha256,
                 )
             )
 
@@ -157,26 +112,9 @@ class ExactFilePatcher:
             return self._failed(
                 requirement_id,
                 ["PATCH_NO_CHANGES: proposed edits did not change any source file."],
-                warnings=warnings,
             )
 
         changed_files = [row.relative for row in pending]
-        changed_modules = sorted(
-            {
-                module_id
-                for relative in changed_files
-                for module_id in module_ids_by_file.get(relative, [relative])
-            }
-        )
-        if dry_run:
-            return FilePatchResult(
-                requirement_id=requirement_id,
-                status="APPLIED",
-                changed_files=changed_files,
-                changed_modules=changed_modules,
-                applied_edits=applied_edits,
-                warnings=warnings,
-            )
 
         written: list[_PendingFile] = []
         try:
@@ -192,16 +130,13 @@ class ExactFilePatcher:
                     rollback_errors.append(f"{row.relative}: {rollback_exc}")
             message = f"PATCH_WRITE_FAILED: {exc}"
             if rollback_errors:
-                message += f"; rollback failed for {rollback_errors}"
-            return self._failed(requirement_id, [message], warnings=warnings)
+                message += f"\nPATCH_ROLLBACK_FAILED: {rollback_errors}"
+            return self._failed(requirement_id, [message])
 
         return FilePatchResult(
             requirement_id=requirement_id,
             status="APPLIED",
             changed_files=changed_files,
-            changed_modules=changed_modules,
-            applied_edits=applied_edits,
-            warnings=warnings,
         )
 
     def snapshot(self, relative_files: list[str]) -> dict[str, str]:
@@ -245,14 +180,11 @@ class ExactFilePatcher:
     def _failed(
         requirement_id: str,
         errors: list[str],
-        *,
-        warnings: list[str] | None = None,
     ) -> FilePatchResult:
         return FilePatchResult(
             requirement_id=requirement_id,
             status="FAILED",
             errors=list(dict.fromkeys(errors)),
-            warnings=list(dict.fromkeys(warnings or [])),
         )
 
 
@@ -287,18 +219,6 @@ def _replace_exact(source: str, *, search: str, replacement: str) -> tuple[str, 
     updated = normalized_source.replace(normalized_search, normalized_replacement, 1)
     newline = "\r\n" if "\r\n" in source else "\n"
     return updated.replace("\n", newline), None
-
-
-def _module_ids_by_file(registry: dict[str, Any]) -> dict[str, list[str]]:
-    result: dict[str, list[str]] = {}
-    for row in registry.get("code_bindings", []):
-        if not isinstance(row, dict):
-            continue
-        relative = _safe_relative_file(str(row.get("file", "")))
-        module_id = str(row.get("module_id", "")).strip()
-        if relative and module_id:
-            result.setdefault(relative, []).append(module_id)
-    return result
 
 
 def _read_source(path: Path) -> str:

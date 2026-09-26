@@ -20,7 +20,6 @@ SEED_DATA_PATTERN = re.compile(
 class PreprocessingResult:
     requirement_ir: dict[str, Any]
     dependency_graph: dict[str, Any]
-    normalized_tree: dict[str, Any]
     errors: list[str] = field(default_factory=list)
 
     @property
@@ -39,7 +38,7 @@ class RequirementPreprocessor:
             payload = yaml.safe_load(source_bytes.decode("utf-8")) or {}
         except (OSError, UnicodeError, yaml.YAMLError) as exc:
             errors.append(_format_error("ARC1001", f"Cannot parse requirement document: {exc}", source=str(source_path)))
-            return PreprocessingResult({}, {}, {}, errors)
+            return PreprocessingResult({}, {}, errors)
 
         if isinstance(payload, dict) and isinstance(payload.get("root"), dict):
             payload = payload["root"]
@@ -47,11 +46,11 @@ class RequirementPreprocessor:
             payload = payload["requirement"]
         if not isinstance(payload, dict):
             errors.append(_format_error("ARC1002", "Requirement document root must be a mapping.", source=str(source_path)))
-            return PreprocessingResult({}, {}, {}, errors)
+            return PreprocessingResult({}, {}, errors)
 
         nodes: dict[str, dict[str, Any]] = {}
         node_order: list[str] = []
-        normalized_tree = self._normalize_node(
+        root_id = self._normalize_node(
             payload,
             parent_id=None,
             pointer="/",
@@ -60,7 +59,6 @@ class RequirementPreprocessor:
             node_order=node_order,
             errors=errors,
         )
-        root_id = str(normalized_tree.get("id") or "")
         self._validate_dependencies(nodes, errors)
 
         atomic_ids = sorted(node_id for node_id, node in nodes.items() if node["type"] == "ATOMIC")
@@ -88,19 +86,8 @@ class RequirementPreprocessor:
             "atomic_units": atomic_ids,
             "folder_nodes": folder_ids,
             "nodes": dict(sorted(nodes.items())),
-            "seed_fixtures": [
-                fixture
-                for node_id in node_order
-                for fixture in nodes.get(node_id, {}).get("seed_fixtures", [])
-            ],
         }
         dependency_graph = {
-            "schema_version": 1,
-            "root_id": root_id or None,
-            "requirements": {
-                node_id: sorted(node["dependencies"])
-                for node_id, node in sorted(nodes.items())
-            },
             "requirement_dependencies": dict(sorted(requirement_dependencies.items())),
             "atomic_dependencies": dict(sorted(effective_dependencies.items())),
             "implementation_waves": waves,
@@ -108,7 +95,7 @@ class RequirementPreprocessor:
         }
         if not root_id:
             errors.append(_format_error("ARC1003", "Requirement root id is missing.", source=str(source_path)))
-        return PreprocessingResult(requirement_ir, dependency_graph, normalized_tree, errors)
+        return PreprocessingResult(requirement_ir, dependency_graph, errors)
 
     def _normalize_node(
         self,
@@ -120,7 +107,7 @@ class RequirementPreprocessor:
         nodes: dict[str, dict[str, Any]],
         node_order: list[str],
         errors: list[str],
-    ) -> dict[str, Any]:
+    ) -> str:
         node_id = str(raw.get("id") or raw.get("req_id") or "").strip()
         source = f"{source_name}#{pointer}"
         if not node_id:
@@ -175,12 +162,12 @@ class RequirementPreprocessor:
             nodes[node_id] = node
             node_order.append(node_id)
 
-        normalized_children: list[dict[str, Any]] = []
+        child_ids: list[str] = []
         for index, child in enumerate(raw_children):
             if not isinstance(child, dict):
                 errors.append(_format_error("ARC1107", "Requirement child must be a mapping.", node_id=node_id, source=f"{source}/{index}"))
                 continue
-            normalized_child = self._normalize_node(
+            child_id = self._normalize_node(
                 child,
                 parent_id=node_id,
                 pointer=f"{pointer.rstrip('/')}/children/{index}",
@@ -189,20 +176,9 @@ class RequirementPreprocessor:
                 node_order=node_order,
                 errors=errors,
             )
-            normalized_children.append(normalized_child)
-        node["children_ids"] = [child["id"] for child in normalized_children]
-        return {
-            "id": node_id,
-            "name": node["name"],
-            "type": node_type,
-            "description": description,
-            "dependencies": dependencies,
-            "visual_reference": visual_references,
-            "scenarios": scenarios,
-            "seed_fixtures": seed_fixtures,
-            "source": node["source"],
-            "children": normalized_children,
-        }
+            child_ids.append(child_id)
+        node["children_ids"] = child_ids
+        return node_id
 
     @staticmethod
     def _normalize_scenarios(value: Any, node_id: str, source: str, errors: list[str]) -> list[dict[str, Any]]:
@@ -225,7 +201,6 @@ class RequirementPreprocessor:
             steps = raw.get("steps") if isinstance(raw.get("steps"), list) else []
             scenarios.append({
                 "id": scenario_id,
-                "scenario_id": scenario_id,
                 "name": str(raw.get("name") or scenario_id).strip(),
                 "steps": [
                     {
@@ -262,14 +237,14 @@ class RequirementPreprocessor:
         without asking a model to invent paths, ids, or hidden repository data.
         """
 
-        declarations: list[tuple[str, Any]] = []
+        declarations: list[Any] = []
         if explicit is not None:
             values = explicit if isinstance(explicit, list) else [explicit]
             for value in values:
                 if isinstance(value, str) and value.strip():
-                    declarations.append(("seed_data", value.strip()))
+                    declarations.append(value.strip())
                 elif isinstance(value, dict):
-                    declarations.append(("seed_data", value))
+                    declarations.append(value)
                 else:
                     errors.append(
                         _format_error(
@@ -281,14 +256,14 @@ class RequirementPreprocessor:
                     )
         if explicit is None:
             declarations.extend(
-                ("description", match.group(1).strip())
+                match.group(1).strip()
                 for match in SEED_DATA_PATTERN.finditer(description)
                 if match.group(1).strip()
             )
 
         fixtures: list[dict[str, Any]] = []
         seen: set[str] = set()
-        for index, (origin, declaration) in enumerate(declarations, start=1):
+        for declaration in declarations:
             if isinstance(declaration, dict):
                 normalized = _normalize_seed_mapping(declaration)
                 text = str(normalized.get("description") or "").strip()
@@ -296,22 +271,13 @@ class RequirementPreprocessor:
                 text = str(declaration).strip().rstrip()
                 normalized = {"description": text}
             canonical = repr(normalized)
-            digest = hashlib.sha256(
-                f"{requirement_id}\0{index}\0{canonical}".encode("utf-8")
-            ).hexdigest()[:12]
-            fixture_id = f"FIXTURE.{_fixture_token(requirement_id)}.{digest}"
-            if fixture_id in seen:
+            if canonical in seen:
                 continue
-            seen.add(fixture_id)
-            fixtures.append(
-                {
-                    "id": fixture_id,
-                    "requirement_id": requirement_id,
-                    "description": text,
-                    "records": normalized.get("records", []),
-                    "source": {"kind": origin, "location": source},
-                }
-            )
+            seen.add(canonical)
+            fixtures.append({
+                "description": text,
+                "records": normalized.get("records", []),
+            })
         return fixtures
 
     @staticmethod
@@ -427,22 +393,26 @@ def _normalize_seed_mapping(value: dict[str, Any]) -> dict[str, Any]:
             }
         ]
     records: list[dict[str, Any]] = []
+    if raw_records is not None and not isinstance(raw_records, list):
+        records.append({"entity": "", "values": raw_records})
     for raw in raw_records if isinstance(raw_records, list) else []:
         if not isinstance(raw, dict):
+            records.append({"entity": "", "values": raw})
             continue
         entity = str(raw.get("entity") or "").strip()
-        values = raw.get("values")
-        if not entity or not isinstance(values, dict):
-            continue
+        values = raw.get("values", {})
         records.append(
             {
                 "entity": entity,
-                "values": {
-                    str(key): item
-                    for key, item in sorted(values.items(), key=lambda pair: str(pair[0]))
-                    if str(key).strip()
-                    and isinstance(item, (str, int, float, bool, type(None)))
-                },
+                "values": (
+                    {
+                        str(key): item
+                        for key, item in sorted(values.items(), key=lambda pair: str(pair[0]))
+                        if str(key).strip()
+                    }
+                    if isinstance(values, dict)
+                    else values
+                ),
             }
         )
     if not description and records:
@@ -450,11 +420,6 @@ def _normalize_seed_mapping(value: dict[str, Any]) -> dict[str, Any]:
             f"{record['entity']} {record['values']}" for record in records
         )
     return {"description": description, "records": records}
-
-
-def _fixture_token(value: str) -> str:
-    token = re.sub(r"[^A-Za-z0-9]+", "_", value).strip("_").upper()
-    return token or "REQUIREMENT"
 
 
 def _format_error(code: str, message: str, *, node_id: str | None = None, source: str | None = None) -> str:

@@ -19,11 +19,6 @@ def _as_str_list(value: Any) -> list[str]:
     return [str(item).strip() for item in _as_list(value) if str(item).strip()]
 
 
-def _as_optional_str(value: Any) -> str | None:
-    normalized = str(value or "").strip()
-    return normalized or None
-
-
 class TraceabilityStore:
     """Persist requirement-owned traceability in one canonical table."""
 
@@ -62,7 +57,7 @@ class TraceabilityStore:
         for requirement_id, entity_fields in sorted(links.items()):
             row = requirements.get(requirement_id)
             if not isinstance(row, dict):
-                row = {"req_id": requirement_id, "id": requirement_id}
+                row = {}
             row["database"] = {
                 str(entity): sorted({str(field) for field in fields})
                 for entity, fields in sorted(entity_fields.items())
@@ -89,7 +84,7 @@ class TraceabilityStore:
         for requirement_id, design_links in sorted(links.items()):
             row = requirements.get(requirement_id)
             if not isinstance(row, dict):
-                row = {"req_id": requirement_id, "id": requirement_id}
+                row = {}
             row["design"] = {
                 key: sorted({str(value) for value in values if str(value).strip()})
                 for key, values in sorted(design_links.items())
@@ -111,7 +106,7 @@ class TraceabilityStore:
         for requirement_id, frontend_links in sorted(links.items()):
             row = requirements.get(requirement_id)
             if not isinstance(row, dict):
-                row = {"req_id": requirement_id, "id": requirement_id}
+                row = {}
             frontend_design = {
                 key: sorted({str(value) for value in values if str(value).strip()})
                 for key, values in sorted(frontend_links.items())
@@ -135,7 +130,7 @@ class TraceabilityStore:
                 continue
             row = requirements.get(requirement_id)
             if not isinstance(row, dict):
-                row = {"req_id": requirement_id, "id": requirement_id}
+                row = {}
             row.setdefault("tests", [])
             path = str(item.get("test_file", ""))
             if path and path not in row["tests"]:
@@ -160,47 +155,8 @@ class TraceabilityStore:
             })
         return result
 
-    def store_requirement_tree(self, requirement_tree: dict[str, Any]) -> None:
-        """Replace normalized requirements while preserving compiler-owned links."""
+    def store_requirement_ids(self, requirement_ids: list[str]) -> None:
+        """Register IDs; the full requirement tree lives in preprocessing IR."""
 
-        existing_requirements = self._read_requirements()
-        requirements: dict[str, Any] = {}
-
-        def walk(node: dict[str, Any], parent_id: str | None = None) -> None:
-            req_id = str(node.get("id") or node.get("req_id") or "").strip()
-            if not req_id:
-                return
-            children = [child for child in _as_list(node.get("children")) if isinstance(child, dict)]
-            row: dict[str, Any] = {
-                "req_id": req_id,
-                "id": req_id,
-                "name": str(node.get("name") or "").strip(),
-                "type": str(node.get("type") or "ATOMIC").strip().upper(),
-                "description": str(node.get("description") or "").strip(),
-                "visual_reference": _as_str_list(node.get("visual_reference")),
-                "scenarios": [
-                    dict(item)
-                    for item in _as_list(node.get("scenarios"))
-                    if isinstance(item, dict)
-                ],
-                "parent_id": _as_optional_str(parent_id),
-                "children_ids": [
-                    str(child.get("id") or child.get("req_id") or "").strip()
-                    for child in children
-                    if str(child.get("id") or child.get("req_id") or "").strip()
-                ],
-                "dependencies": _as_str_list(node.get("dependencies")),
-                "source": dict(node["source"]) if isinstance(node.get("source"), dict) else None,
-            }
-            existing = existing_requirements.get(req_id)
-            if isinstance(existing, dict):
-                for key in ("database", "design", "frontend_design", "tests"):
-                    if isinstance(existing.get(key), dict):
-                        row[key] = existing[key]
-            requirements[req_id] = row
-            for child in children:
-                walk(child, req_id)
-
-        walk(requirement_tree)
-        self._write_requirements(requirements)
-        self.events.notify_traceability_changed("requirement_tree_stored")
+        self._write_requirements({requirement_id: {} for requirement_id in sorted(set(requirement_ids))})
+        self.events.notify_traceability_changed("requirements_registered")

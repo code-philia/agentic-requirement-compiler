@@ -29,12 +29,10 @@ ERROR_CODES = {"DB": "ARC350", "FUNC": "ARC360", "API": "ARC370"}
 RUNTIME_ERRORS_PATH = "backend/src/runtime/errors.ts"
 RUNTIME_IDS_PATH = "backend/src/runtime/ids.ts"
 RUNTIME_CLOCK_PATH = "backend/src/runtime/clock.ts"
-RUNTIME_STUBS_PATH = "backend/src/runtime/stubs.ts"
 RUNTIME_FILES = (
     RUNTIME_ERRORS_PATH,
     RUNTIME_IDS_PATH,
     RUNTIME_CLOCK_PATH,
-    RUNTIME_STUBS_PATH,
 )
 
 # Zero value per design type.  A stub answers with the emptiest well-typed value
@@ -52,7 +50,7 @@ ZERO_VALUES: dict[str, str] = {
 }
 
 # Every backend module receives the same cross-cutting runtime. Owning these here
-# keeps identity, time and failure reporting out of the implementation agent's
+# keeps identity, time and error handling out of the implementation agent's
 # hands: it can use them, it cannot reinvent them.
 RUNTIME_IMPORTS: tuple[tuple[str, str], ...] = (
     ("NotImplementedError", RUNTIME_ERRORS_PATH),
@@ -60,7 +58,6 @@ RUNTIME_IMPORTS: tuple[tuple[str, str], ...] = (
     ("newId", RUNTIME_IDS_PATH),
     ("now", RUNTIME_CLOCK_PATH),
     ("nowIso", RUNTIME_CLOCK_PATH),
-    ("recordStubHit", RUNTIME_STUBS_PATH),
 )
 
 # Drizzle predicate/ordering helpers a repository realistically needs. Importing
@@ -253,7 +250,6 @@ class ModuleSkeletonLowerer:
             "status": status,
             "module_kind": kind,
             "modules": manifest_modules,
-            "planned_files": sorted(sources),
             "generated_files": [] if errors else sorted(sources),
         }
         return ModuleSkeletonResult(
@@ -642,8 +638,7 @@ def _render_module(
         #
         # An unimplemented route answers with the zero value of its own contract
         # rather than a 501.  A node whose screens merely traverse a not-yet-built
-        # route then still renders, and the recorded stub hit lets the compiler tell
-        # "my code is wrong" apart from "my dependency does not exist yet".
+        # route then still renders.
         lines.extend(
             [
                 f"export async function {function_name}(",
@@ -653,7 +648,6 @@ def _render_module(
                 "  void req;",
                 "  void res;",
                 "  try {",
-                f'    recordStubHit("{module_id}", res);',
                 *_stub_response_lines(output_contract, output_name),
                 "  } catch (error) {",
                 "    sendError(res, error);",
@@ -673,7 +667,6 @@ def _render_module(
         lines.append("  void input;")
     lines.extend(
         [
-            f'  recordStubHit("{module_id}");',
             f'  throw new NotImplementedError("{module_id}");',
             "}",
             "",

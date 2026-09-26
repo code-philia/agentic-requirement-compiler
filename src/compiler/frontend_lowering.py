@@ -712,8 +712,6 @@ class FrontendSkeletonLowerer:
         manifest = {
             "schema_version": FRONTEND_MANIFEST_SCHEMA_VERSION,
             "status": FRONTEND_MANIFEST_GENERATED if not errors else "FRONTEND_MANIFEST_FAILED",
-            "symbol_registry_status": symbol_registry.get("status"),
-            "file_registry_status": file_registry.get("status"),
             "files": [
                 {
                     **copy.deepcopy(files[path]),
@@ -729,17 +727,6 @@ class FrontendSkeletonLowerer:
                 "proxy_prefix": "/api",
                 "vite_config": "frontend/vite.config.ts",
             },
-            "api_dependencies": copy.deepcopy(frontend_ir.get("api_dependencies", [])),
-            "api_clients": [copy.deepcopy(api_locations[key]) for key in sorted(api_locations)],
-            "stores": [copy.deepcopy(store_locations[key]) for key in sorted(store_locations)],
-            "design_coverage": {
-                "layouts": sorted(layouts),
-                "pages": sorted(pages),
-                "components": sorted(components),
-                "stores": sorted(stores),
-                "api_clients": sorted(api_locations),
-            },
-            "generated_files": [] if errors else sorted(sources),
         }
         return FrontendLoweringResult(
             route_registry=route_registry,

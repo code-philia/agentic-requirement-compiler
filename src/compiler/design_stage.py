@@ -7,14 +7,12 @@ import hashlib
 import json
 import os
 import re
-import shutil
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
 from core.logging import SynchronousLog
-from arcbench_agent_runtime.jsonio import write_json_atomic
 
 from .model_client import StructuredModel, describe_model_error
 from .trace_payload import format_payload_trace
@@ -471,7 +469,6 @@ class DesignPass:
         self._model = model
         arc_root = artifact_root.expanduser().resolve()
         self._log = SynchronousLog("DesignPass", workspace_root=arc_root.parent)
-        self._partial_root = arc_root / "design" / ".partial"
         self._local_retries = _env_int("ARC_STRUCTURED_OUTPUT_RETRY_COUNT", 2, 0, 10)
         self._reopen_budget = _env_int("ARC_DESIGN_REOPEN_COUNT", 2, 0, 6)
         self._trace_enabled = _env_flag("ARC_DESIGN_TRACE", True)
@@ -487,7 +484,6 @@ class DesignPass:
         dependencies = dependency_graph.get("atomic_dependencies", {})
         order = [node for wave in _waves(requirement_ir, dependency_graph) for node in wave]
         state = DesignState()
-        shutil.rmtree(self._partial_root, ignore_errors=True)
         all_issues: list[DesignIssue] = []
         warnings: list[str] = []
         self._soft_warnings = []
@@ -562,7 +558,6 @@ class DesignPass:
             state = collapsed
             warnings.extend(collapse_warnings)
             states[requirement_id] = "DESIGN_VALIDATED"
-            self._persist_requirement_checkpoint(state, requirement_id)
 
         warnings.extend(self._soft_warnings)
         final_issues = all_issues
@@ -581,31 +576,6 @@ class DesignPass:
         errors = [f"{issue.code}: {issue.message}" for issue in final_issues]
         return DesignPassResult(design, states, errors, warnings)
 
-    def _persist_requirement_checkpoint(
-        self,
-        state: DesignState,
-        requirement_id: str,
-    ) -> None:
-        design = state.to_ir()
-        payload = {
-            "schema_version": 1,
-            "status": "DESIGN_VALIDATED",
-            "requirement": next(
-                (
-                    copy.deepcopy(row)
-                    for row in design.get("requirements", [])
-                    if str(row.get("id", "")) == requirement_id
-                ),
-                {},
-            ),
-            "modules": [
-                copy.deepcopy(row)
-                for row in design.get("modules", [])
-                if str(row.get("owner_requirement", "")) == requirement_id
-            ],
-        }
-        token = re.sub(r"[^a-z0-9]+", "-", requirement_id.lower()).strip("-") or "requirement"
-        write_json_atomic(self._partial_root / f"{token}.json", payload)
 
     def _compile_requirement(
         self,

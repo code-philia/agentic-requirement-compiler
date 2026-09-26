@@ -29,11 +29,7 @@ class ARCWorkflowManager:
         self.web_port = int(web_port)
         self.log_cb = log_cb or _default_log_cb
 
-    async def start_compilation(
-        self,
-        *,
-        start_from: str = "PREPROCESSING",
-    ) -> dict[str, object]:
+    async def start_compilation(self) -> dict[str, object]:
         run_id = uuid.uuid4().hex
         set_run_id(run_id)
         await self._log("Compiler", "ARC compilation started.")
@@ -43,7 +39,7 @@ class ARCWorkflowManager:
         runtime.traceability.init_store()
         runtime.events.mark_run_started(
             "ARC deterministic compiler run started.",
-            phase=start_from,
+            phase="PROJECT",
         )
 
         compiler = Compiler(runtime, self.log_cb)
@@ -52,7 +48,6 @@ class ARCWorkflowManager:
                 requirement_path=self.requirement_path,
                 output_dir=self.workspace_path,
                 web_port=self.web_port,
-                start_from=start_from,
             )
         )
         if result.ok:

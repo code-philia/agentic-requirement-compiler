@@ -90,10 +90,8 @@ class ProjectBuilder:
     def _command_output(stdout: str | bytes | None, stderr: str | bytes | None) -> str:
         def normalize(value: str | bytes | None) -> str:
             if isinstance(value, bytes):
-                return value.decode("utf-8", errors="replace").strip()
-            return str(value or "").strip()
+                return value.decode("utf-8", errors="replace")
+            return str(value or "")
 
         detail = "\n".join(part for part in (normalize(stdout), normalize(stderr)) if part)
-        if len(detail) > 12000:
-            return detail[-12000:]
         return detail

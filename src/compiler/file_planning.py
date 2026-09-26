@@ -26,7 +26,6 @@ SYSTEM_FILES = (
     ("backend/src/runtime/errors.ts", "RUNTIME_ERRORS", "SKELETON_COMPILER"),
     ("backend/src/runtime/ids.ts", "RUNTIME_IDS", "SKELETON_COMPILER"),
     ("backend/src/runtime/clock.ts", "RUNTIME_CLOCK", "SKELETON_COMPILER"),
-    ("backend/src/runtime/stubs.ts", "RUNTIME_STUBS", "SKELETON_COMPILER"),
     ("backend/src/index.ts", "BACKEND_ROOT_BARREL", "SKELETON_COMPILER"),
     ("backend/src/app.ts", "APPLICATION", "SKELETON_COMPILER"),
     ("backend/src/server.ts", "SERVER", "SKELETON_COMPILER"),

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from dataclasses import dataclass, field
@@ -60,7 +61,7 @@ class FixtureLowerer:
 
         sources["backend/src/fixtures/index.ts"] = _render_index(imports)
         sources["backend/init-db.mjs"] = _render_database_initializer(
-            database_manifest.get("initialization", {}).get("statements", []), sets
+            database_manifest.get("initialization", {}).get("statements", [])
         )
         return FixtureLoweringResult(sources=sources)
 
@@ -75,10 +76,10 @@ def fixture_source_paths(fixture_ir: dict[str, Any]) -> list[str]:
     return sorted(set(paths))
 
 
-def _render_database_initializer(statements: list[str], fixture_sets: list[dict[str, Any]]) -> str:
+def _render_database_initializer(statements: list[str]) -> str:
     return "\n".join([
         'import Database from "better-sqlite3";',
-        'import { mkdirSync } from "node:fs";',
+        'import { mkdirSync, readFileSync } from "node:fs";',
         'import { dirname, resolve } from "node:path";',
         "",
         'const databaseUrl = (process.env.DATABASE_URL ?? "./data/app.db").trim();',
@@ -86,7 +87,7 @@ def _render_database_initializer(statements: list[str], fixture_sets: list[dict[
         'if (databaseUrl !== ":memory:") mkdirSync(dirname(resolve(databaseUrl)), { recursive: true });',
         'const database = new Database(databaseUrl);',
         f'const statements = {json.dumps(statements, ensure_ascii=False)};',
-        f'const fixtureSets = {json.dumps(fixture_sets, ensure_ascii=False)};',
+        'const { fixture_sets: fixtureSets } = JSON.parse(readFileSync(new URL("../.arc/fixtures/fixture_ir.json", import.meta.url), "utf8"));',
         "try {",
         '  database.pragma("foreign_keys = OFF");',
         "  database.transaction(() => {",
@@ -105,9 +106,10 @@ def _render_database_initializer(statements: list[str], fixture_sets: list[dict[
         '        }',
         '        const columns = entries.map(([field]) => quote(field)).join(", ");',
         '        const placeholders = entries.map(() => "?").join(", ");',
-        '        const condition = entries.map(([field]) => quote(field) + " IS ?").join(" AND ");',
         "        const values = entries.map(([, value]) => value);",
-        '        database.prepare("INSERT INTO " + table + " (" + columns + ") SELECT " + placeholders + " WHERE NOT EXISTS (SELECT 1 FROM " + table + " WHERE " + condition + ")").run(...values, ...values);',
+        '        const lookup = entries.some(([field]) => field === "id") ? entries.filter(([field]) => field === "id") : entries;',
+        '        const match = lookup.map(([field]) => quote(field) + " IS ?").join(" AND ");',
+        '        database.prepare("INSERT INTO " + table + " (" + columns + ") SELECT " + placeholders + " WHERE NOT EXISTS (SELECT 1 FROM " + table + " WHERE " + match + ")").run(...values, ...lookup.map(([, value]) => value));',
         "      }",
         "    }",
         "  })();",
@@ -124,7 +126,7 @@ def _render_index(imports: list[tuple[str, str]]) -> str:
         'import { sqliteDatabase } from "../db/client.js";',
         *[f'import {{ {symbol} }} from {json.dumps(specifier)};' for symbol, specifier in imports],
         "",
-        "type FixtureValue = string | number | boolean | null | Readonly<Record<string, unknown>>;",
+        "type FixtureValue = string | number | boolean | null | Readonly<Record<string, unknown>> | readonly unknown[];",
         "interface FixtureRow {",
         "  entity_key: string;",
         "  values: Readonly<Record<string, FixtureValue>>;",
@@ -150,9 +152,14 @@ def _render_index(imports: list[tuple[str, str]]) -> str:
         '        const columns = entries.map(([field]) => `"${field.replaceAll(\'"\', \'""\')}"`).join(", ");',
         '        const placeholders = entries.map(() => "?").join(", ");',
         '        const table = `"${row.entity_key.replaceAll(\'"\', \'""\')}"`;',
-        "        sqliteDatabase.prepare(`INSERT INTO ${table} (${columns}) VALUES (${placeholders})`).run(",
-        "          ...entries.map(([, value]) => value),",
-        "        );",
+        '        if (!entries.length) {',
+        '          if (!sqliteDatabase.prepare(`SELECT 1 FROM ${table} LIMIT 1`).get()) sqliteDatabase.exec(`INSERT INTO ${table} DEFAULT VALUES`);',
+        '          continue;',
+        '        }',
+        '        const lookup = entries.some(([field]) => field === "id") ? entries.filter(([field]) => field === "id") : entries;',
+        "        const match = lookup.map(([field]) => '\"' + field.replaceAll('\"', '\"\"') + '\" IS ?').join(\" AND \");",
+        '        const values = entries.map(([, value]) => value);',
+        '        sqliteDatabase.prepare(`INSERT INTO ${table} (${columns}) SELECT ${placeholders} WHERE NOT EXISTS (SELECT 1 FROM ${table} WHERE ${match})`).run(...values, ...lookup.map(([, value]) => value));',
         "      }",
         "    }",
         "});",
@@ -171,11 +178,12 @@ def _render_index(imports: list[tuple[str, str]]) -> str:
 
 
 def _path_token(value: str) -> str:
-    return re.sub(r"[^a-z0-9]+", "-", value.lower()).strip("-") or "requirement"
+    name = re.sub(r"[^a-z0-9]+", "-", value.lower()).strip("-") or "requirement"
+    return f"{name}-{hashlib.sha256(value.encode('utf-8')).hexdigest()[:8]}"
 
 
 def _identifier_token(value: str) -> str:
     token = re.sub(r"[^A-Za-z0-9]+", "_", value).strip("_")
     if not token or token[0].isdigit():
         token = f"requirement_{token}"
-    return token
+    return f"{token}_{hashlib.sha256(value.encode('utf-8')).hexdigest()[:8]}"

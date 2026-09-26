@@ -2,14 +2,13 @@
 
 from .controller import Compiler
 from .code_binding import CodeTargetResolver, resolve_requirement_targets
-from .exact_file_patcher import AppliedFileEdit, ExactFilePatcher, FilePatchResult
+from .exact_file_patcher import ExactFilePatcher, FilePatchResult
 from .models import CompilationRequest
 from .test_runner import TestRunResult, TestRunner, TestSelection
-from .tdd_orchestrator import NodeTDDOrchestrator, NodeTDDPolicy, NodeTDDResult
+from .tdd_orchestrator import NodeTDDOrchestrator, NodeTDDPolicy, TDDStageResult
 from arc_agents.contracts import ProposedEdit, ProposedPatch
 
 __all__ = [
-    "AppliedFileEdit",
     "CodeTargetResolver",
     "CompilationRequest",
     "Compiler",
@@ -17,7 +16,7 @@ __all__ = [
     "FilePatchResult",
     "NodeTDDOrchestrator",
     "NodeTDDPolicy",
-    "NodeTDDResult",
+    "TDDStageResult",
     "ProposedEdit",
     "ProposedPatch",
     "TestRunResult",

@@ -263,7 +263,7 @@ def test_workspace_spec(
                 "  webServer: {\n"
                 '      command: "npm run build -w @arc/frontend && npm run start -w @arc/backend",\n'
                 '      url: "http://127.0.0.1:" + e2ePort + "/__arc/health",\n'
-                '      env: { DATABASE_URL: ":memory:", NODE_ENV: "test", PORT: e2ePort, ARC_STUB_LOG: process.env.ARC_STUB_LOG ?? "" },\n'
+                '      env: { DATABASE_URL: ":memory:", NODE_ENV: "test", PORT: e2ePort },\n'
                 "      reuseExistingServer: false,\n"
                 "      timeout: 60_000,\n"
                 '      stdout: "pipe",\n'
@@ -286,77 +286,42 @@ def test_workspace_spec(
                 '}\n'
             ),
             "support/e2e.ts": (
-                'import { test as base, expect } from "@playwright/test";\n'
-                'import { resetE2EState } from "./runtime.js";\n'
-                'import { recordE2EProgress } from "./progress.js";\n\n'
-                'export const test = base.extend<{ arcIsolation: void }>({\n'
-                '  arcIsolation: [async ({ page }, use) => {\n'
-                '    page.on("console", message => {\n'
-                '      if (message.type() === "error") recordE2EProgress({ event: "console_error", error: message.text() });\n'
-                '    });\n'
-                '    page.on("pageerror", error => recordE2EProgress({ event: "page_error", error: error.message }));\n'
-                '    page.on("request", request => {\n'
-                '      if (new URL(request.url()).pathname.startsWith("/api/")) recordE2EProgress({ event: "api_request", url: request.url(), method: request.method() });\n'
-                '    });\n'
-                '    page.on("response", response => {\n'
-                '      if (new URL(response.url()).pathname.startsWith("/api/")) recordE2EProgress({ event: "api_response", url: response.url(), status: String(response.status()) });\n'
-                '    });\n'
-                '    page.on("requestfailed", request => recordE2EProgress({ event: "request_failed", url: request.url(), error: request.failure()?.errorText }));\n'
-                '    await resetE2EState(page);\n'
-                '    await use();\n'
-                '  }, { auto: true }],\n'
-                '});\n'
-                'export { expect };\n'
+                "import { test as base, expect } from \"@playwright/test\";\n"
+                "import { resetE2EState } from \"./runtime.js\";\n"
+                "\n"
+                "export const test = base.extend<{ arcIsolation: void }>({\n"
+                "  arcIsolation: [async ({ page }, use) => {\n"
+                "    page.on(\"console\", message => { if (message.type() === \"error\") console.error(message.text()); });\n"
+                "    page.on(\"pageerror\", error => console.error(error));\n"
+                "    page.on(\"requestfailed\", request => console.error(request.url(), request.failure()?.errorText));\n"
+                "    await resetE2EState(page);\n"
+                "    await use();\n"
+                "  }, { auto: true }],\n"
+                "});\n"
+                "export { expect };\n"
             ),
             "support/progress-reporter.ts": (
-                'import type { Reporter, TestCase, TestResult, TestStep, FullResult, TestError } from "@playwright/test/reporter";\n'
-                'import { recordE2EProgress } from "./progress.js";\n\n'
-                'class ProgressReporter implements Reporter {\n'
-                '  printsToStdio(): boolean { return false; }\n'
-                '  onBegin(): void { recordE2EProgress({ event: "run_begin" }); }\n'
-                '  onTestBegin(test: TestCase): void {\n'
-                '    recordE2EProgress({ event: "test_begin", test: test.title, file: test.location.file });\n'
-                '  }\n'
-                '  onStepBegin(test: TestCase, _result: TestResult, step: TestStep): void {\n'
-                '    recordE2EProgress({ event: "step_begin", test: test.title, category: step.category, step: step.title, file: step.location?.file ?? test.location.file, line: String(step.location?.line ?? test.location.line) });\n'
-                '  }\n'
-                '  onStepEnd(test: TestCase, _result: TestResult, step: TestStep): void {\n'
-                '    recordE2EProgress({ event: "step_end", test: test.title, category: step.category, step: step.title, file: step.location?.file ?? test.location.file, line: String(step.location?.line ?? test.location.line), error: step.error?.message });\n'
-                '  }\n'
-                '  onTestEnd(test: TestCase, result: TestResult): void {\n'
-                '    recordE2EProgress({ event: "test_end", test: test.title, status: result.status, error: result.error?.message });\n'
-                '  }\n'
-                '  onError(error: TestError): void {\n'
-                '    recordE2EProgress({ event: "run_error", error: error.message });\n'
-                '  }\n'
-                '  onEnd(result: FullResult): void {\n'
-                '    recordE2EProgress({ event: "run_end", status: result.status });\n'
-                '  }\n'
-                '}\n\n'
-                'export default ProgressReporter;\n'
-            ),
-            "support/progress.ts": (
-                'import { appendFileSync } from "node:fs";\n\n'
-                'export function recordE2EProgress(event: Record<string, string | undefined>): void {\n'
-                '  const path = process.env.ARC_E2E_PROGRESS_LOG;\n'
-                '  if (!path) return;\n'
-                '  try {\n'
-                '    appendFileSync(path, [new Date().toISOString(), ...Object.entries(event).map(([key, value]) => key + "=" + (value ?? ""))].join(" ") + "\\n", "utf8");\n'
-                '  } catch { /* Diagnostic recording must not change test behavior. */ }\n'
-                '}\n'
+                "import type { Reporter, TestCase, TestResult, TestStep } from \"@playwright/test/reporter\";\n"
+                "\n"
+                "class ProgressReporter implements Reporter {\n"
+                "  printsToStdio(): boolean { return true; }\n"
+                "  onTestBegin(test: TestCase): void {\n"
+                "    console.error(`Running ${test.location.file}:${test.location.line} ${test.title}`);\n"
+                "  }\n"
+                "  onStepBegin(test: TestCase, _result: TestResult, step: TestStep): void {\n"
+                "    const location = step.location ?? test.location;\n"
+                "    console.error(`${location.file}:${location.line} ${step.title}`);\n"
+                "  }\n"
+                "}\n"
+                "\n"
+                "export default ProgressReporter;\n"
             ),
             "support/seed.ts": (
                 'import { readFile } from "node:fs/promises";\n\n'
-                "export interface SeedReference {\n"
-                "  fixture_key: string;\n"
-                "  field: string;\n"
-                "}\n\n"
                 "export interface SeedRow {\n"
-                "  id: string;\n"
                 "  entity_key: string;\n"
                 "  fixture_key: string;\n"
-                "  insert_order: number;\n"
-                "  values: Record<string, string | number | boolean | null | SeedReference>;\n"
+                "  values: Record<string, unknown>;\n"
                 "}\n\n"
                 "export interface SeedFixtureSet {\n"
                 "  id: string;\n"
@@ -364,7 +329,6 @@ def test_workspace_spec(
                 "  name: string;\n"
                 "  rows: SeedRow[];\n"
                 "}\n\n"
-                "let fixtureCache: SeedFixtureSet[] | undefined;\n\n"
                 "export async function seedFixturesForRequirement(\n"
                 "  requirementId: string,\n"
                 "): Promise<SeedFixtureSet[]> {\n"
@@ -374,8 +338,7 @@ def test_workspace_spec(
                 '      "utf8",\n'
                 "    ),\n"
                 "  ) as { fixture_sets?: SeedFixtureSet[] };\n"
-                "  fixtureCache ??= payload.fixture_sets ?? [];\n"
-                "  return fixtureCache.filter((fixture) => fixture.requirement_id === requirementId);\n"
+                "  return (payload.fixture_sets ?? []).filter((fixture) => fixture.requirement_id === requirementId);\n"
                 "}\n\n"
                 "export async function seedRequirement(\n"
                 "  requirementId: string,\n"
@@ -419,7 +382,7 @@ class ProjectInitializationResult:
 
 
 class ProjectInitializer:
-    """Materialize the Stage 2.5 workspace without using ARC project templates."""
+    """Materialize the fixed, buildable workspace before requirement processing."""
 
     _DEFAULT_COMMAND_TIMEOUT_SECONDS = 300.0
     _COMMAND_HEARTBEAT_SECONDS = 15.0
@@ -428,7 +391,9 @@ class ProjectInitializer:
         "package.json",
         "package-lock.json",
         "node_modules",
+        ".git",
         ".gitignore",
+        "README.md",
         ".env.example",
         "frontend",
         "backend",
@@ -487,7 +452,6 @@ class ProjectInitializer:
             self._validate_staged_project()
             self._promote()
             self._install_promoted_workspace()
-            self._test_browser_installed = self._install_test_browser_if_enabled()
             artifacts = self._emit_manifests()
             self._cleanup_staging()
             return ProjectInitializationResult(ok=True, status=PROJECT_STATUS, artifacts=artifacts)
@@ -618,6 +582,17 @@ class ProjectInitializer:
 
         backend_src = self.staged_project / "backend" / "src"
         backend_src.mkdir(parents=True, exist_ok=True)
+        self._write_text(
+            backend_src / "server.ts",
+            'import express from "express";\n'
+            'import { fileURLToPath } from "node:url";\n\n'
+            'const app = express();\n'
+            'const frontendDist = fileURLToPath(new URL("../../frontend/dist/", import.meta.url));\n'
+            'app.get("/__arc/health", (_request, response) => response.json({ status: "ok" }));\n'
+            'app.use(express.static(frontendDist));\n'
+            'app.use((_request, response) => response.sendFile("index.html", { root: frontendDist }));\n'
+            f'app.listen(Number(process.env.PORT ?? {self.web_port}));\n',
+        )
         self._write_json(self.staged_project / "backend" / "tsconfig.json", self._backend_tsconfig())
         self._write_text(
             self.staged_project / "backend" / "drizzle.config.ts",
@@ -643,7 +618,17 @@ class ProjectInitializer:
         )
         self._write_text(
             self.staged_project / ".gitignore",
-            "node_modules/\ndist/\ndata/\n.env\n.arc/staging/\n",
+            "node_modules/\ndist/\n*.tsbuildinfo\ndata/\n.env\n"
+            ".arc/debug.log\n.arc/runner-events.jsonl\n"
+            ".arc/model_logs/\n.arc/runtime/test-output/\n",
+        )
+        self._write_text(
+            self.staged_project / "README.md",
+            "# Generated application\n\n"
+            "Generated by the ARC requirement compiler.\n\n"
+            "- Build: \u0060npm run build\u0060\n"
+            "- Typecheck: \u0060npm run typecheck\u0060\n"
+            "- Start: \u0060npm run start -w @arc/backend\u0060\n",
         )
         for lockfile in self.staged_project.glob("*/package-lock.json"):
             self._remove_exact(lockfile)
@@ -686,21 +671,6 @@ class ProjectInitializer:
                 f"expected {expected_tests}, resolved {actual_tests}.",
             )
 
-    def _install_test_browser_if_enabled(self) -> bool:
-        if self.environment.get("ARC_TEST_INSTALL_BROWSER", "1").strip().lower() in {
-            "0",
-            "false",
-            "no",
-            "off",
-            "",
-        }:
-            return False
-        self._run(
-            ["npm", "exec", "-w", "@arc/tests", "--", "playwright", "install", "chromium"],
-            cwd=self.output_root,
-        )
-        return True
-
     def _validate_staged_project(self) -> None:
         expected = (
             "package.json",
@@ -720,7 +690,6 @@ class ProjectInitializer:
             "tests/support/runtime.ts",
             "tests/support/e2e.ts",
             "tests/support/progress-reporter.ts",
-            "tests/support/progress.ts",
             "tests/support/seed.ts",
             "tests/support/setup.ts",
         )
@@ -778,40 +747,7 @@ class ProjectInitializer:
             self._promoted_targets.append(target)
 
     def _emit_manifests(self) -> dict[str, str]:
-        stack_profile_path = self.project_artifact_root / "stack-profile.json"
         project_manifest_path = self.project_artifact_root / "project-manifest.json"
-        stack_profile = {
-            "schemaVersion": 1,
-            "id": PROJECT_PROFILE_ID,
-            "applicationType": "web",
-            "packageManager": "npm",
-            "workspaceLayout": "npm-workspaces",
-            "frontend": {
-                "language": "typescript",
-                "buildTool": "vite",
-                "ui": "react-18",
-                "routing": "react-router",
-                "styling": "tailwindcss-4",
-            },
-            "backend": {
-                "language": "typescript",
-                "runtime": "node",
-                "moduleSystem": "NodeNext",
-                "webFramework": "express",
-                "servesFrontendDist": True,
-                "validation": "zod",
-                "database": "sqlite",
-                "orm": "drizzle",
-            },
-            "shared": {"contracts": "zod", "typescriptProject": True},
-            "tests": {
-                "unit": "vitest",
-                "integration": "vitest+supertest",
-                "e2e": "playwright",
-                "browserInstalled": self._test_browser_installed,
-            },
-            "versions": self.catalog.to_dict(),
-        }
         project_manifest = {
             "schemaVersion": 1,
             "status": PROJECT_STATUS,
@@ -820,7 +756,7 @@ class ProjectInitializer:
             "packageManager": "npm",
             "lockfile": "package-lock.json",
             "testEnvironment": {
-                "status": "TEST_ENVIRONMENT_READY",
+                "status": "TEST_ENVIRONMENT_PENDING",
                 "workspace": "tests",
                 "browserInstalled": self._test_browser_installed,
                 "versions": {
@@ -900,10 +836,8 @@ class ProjectInitializer:
         }
         self._validate_manifest_paths(project_manifest)
         self._project_artifact_owned = True
-        write_json_atomic(stack_profile_path, stack_profile)
         write_json_atomic(project_manifest_path, project_manifest)
         return {
-            "project_stack_profile": str(stack_profile_path),
             "project_manifest": str(project_manifest_path),
         }
 

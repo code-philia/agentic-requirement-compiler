@@ -140,7 +140,6 @@ class TypeLowerer:
             "schema_version": TYPE_MANIFEST_SCHEMA_VERSION,
             "status": TYPES_GENERATED if not errors else "TYPE_LOWERING_FAILED",
             "definitions": sorted(definitions, key=lambda item: item["symbol_id"]),
-            "planned_files": sorted(sources),
             "generated_files": [] if errors else sorted(sources),
         }
         return TypeLoweringResult(
@@ -176,7 +175,6 @@ class DatabaseSchemaLowerer:
 
         sources: dict[str, str] = {}
         tables: list[dict[str, Any]] = []
-        application_constraints = _application_constraints(database_schema)
 
         if not errors:
             _validate_entity_coverage(entities, entity_symbols, errors)
@@ -247,8 +245,6 @@ class DatabaseSchemaLowerer:
                     warnings,
                 ) if not errors else [],
             },
-            "application_constraints": application_constraints,
-            "planned_files": sorted(sources),
             "generated_files": [] if errors else sorted(sources),
         }
         return DatabaseSchemaLoweringResult(
@@ -559,14 +555,6 @@ def _validate_entity_coverage(
         )
 
 
-def _application_constraints(schema: dict[str, Any]) -> list[dict[str, Any]]:
-    return [
-        copy.deepcopy(constraint)
-        for constraint in schema.get("constraints", [])
-        if isinstance(constraint, dict) and constraint.get("enforcement") == "APPLICATION"
-    ]
-
-
 def _render_database_entity_file(
     entity: dict[str, Any],
     constraints: list[dict[str, Any]],
@@ -731,7 +719,6 @@ def _unique_constraints(
         if (
             not isinstance(constraint, dict)
             or constraint.get("type") not in {"UNIQUE", "COMPOSITE_UNIQUE"}
-            or constraint.get("enforcement") != "DATABASE"
         ):
             continue
         references = [str(value) for value in constraint.get("fields", [])]

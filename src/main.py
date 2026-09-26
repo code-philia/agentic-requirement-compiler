@@ -21,12 +21,6 @@ def _get_repo_root() -> str:
     return os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 
 
-def _should_reset_debug_log(*, start_from: str) -> bool:
-    """Keep one continuous log when a debug boundary reuses prior artifacts."""
-
-    return start_from == "PREPROCESSING"
-
-
 def _ensure_dotenv_loaded() -> None:
     """Load .env file if present, respecting ARC_ENV_FILE override."""
     from dotenv import load_dotenv
@@ -96,22 +90,6 @@ def build_compile_parser(subparsers) -> None:
         action="store_true",
         help="Remove existing output directory before compilation",
     )
-    parser.add_argument(
-        "--start-from",
-        choices=(
-            "preprocessing",
-            "database",
-            "design",
-            "frontend",
-            "project",
-            "skeleton",
-            "tdd",
-        ),
-        default="preprocessing",
-        help=(
-            "Debug probe: reuse validated artifacts before this stage and continue in the existing output directory"
-        ),
-    )
     parser.set_defaults(func=cmd_compile)
 
 
@@ -119,10 +97,6 @@ async def cmd_compile(args: argparse.Namespace) -> int:
     """Execute compile subcommand."""
     _ensure_dotenv_loaded()
     web_port = _resolve_web_port(args.port)
-    
-    if args.clean and args.start_from != "preprocessing":
-        print("Error: --clean cannot be combined with --start-from after preprocessing")
-        return 2
     
     # Normalize paths
     requirement_path = _locate_requirement_file(args.requirement_path)
@@ -132,15 +106,11 @@ async def cmd_compile(args: argparse.Namespace) -> int:
     if args.clean and os.path.exists(output_dir):
         shutil.rmtree(output_dir)
     
-    start_from = args.start_from.upper()
-    
     # Print banner and startup info
     print_cli_banner()
     log_path = init_debug_logger(
         output_dir,
-        reset_existing=_should_reset_debug_log(
-            start_from=start_from,
-        ),
+        reset_existing=True,
     )
     print_cli_startup(
         project_path=output_dir,
@@ -158,7 +128,7 @@ async def cmd_compile(args: argparse.Namespace) -> int:
         web_port=web_port,
         log_cb=cli_log,
     )
-    result = await workflow_manager.start_compilation(start_from=start_from)
+    result = await workflow_manager.start_compilation()
     
     elapsed = time.time() - start_time
     print_compilation_summary(result, output_dir, elapsed)

@@ -6,7 +6,7 @@ import os
 import socket
 import subprocess
 import time
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import Any, Mapping
 
@@ -20,16 +20,12 @@ from .process_utils import (
 from .test_generation import TEST_ENVIRONMENT_READY, TEST_LAYERS, TESTS_FROZEN
 
 
-TEST_RUNNER_SCHEMA_VERSION = 1
-
-
 @dataclass(frozen=True, slots=True)
 class TestSelection:
     """Select one requirement's frozen tests without repository discovery."""
 
     requirement_id: str
     layers: tuple[str, ...] = ()
-    include_typecheck: bool = False
     stop_on_failure: bool = True
 
 
@@ -45,12 +41,6 @@ class TestCommandResult:
     stdout: str = ""
     stderr: str = ""
     error: str | None = None
-    timed_out: bool = False
-    stub_hits: list[str] = field(default_factory=list)
-    capture_stdout_path: str | None = None
-    capture_stderr_path: str | None = None
-    capture_progress_path: str | None = None
-    capture_stub_path: str | None = None
 
 
 @dataclass(slots=True)
@@ -61,24 +51,14 @@ class TestRunResult:
     selected_files: list[str]
     commands: list[TestCommandResult] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
-    stub_hits: list[str] = field(default_factory=list)
     duration_ms: int = 0
-    schema_version: int = TEST_RUNNER_SCHEMA_VERSION
 
     @property
     def ok(self) -> bool:
         return self.status == "PASSED" and not self.errors
 
-    def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
-
-
 class TestRunner:
-    """Run an exact, integrity-checked test selection from the frozen manifest.
-
-    Business-test failures may be collected across layers; typecheck failures
-    still stop execution because later diagnostics would be misleading.
-    """
+    """Run exact, integrity-checked tests from the frozen manifest."""
 
     def __init__(
         self,
@@ -89,9 +69,6 @@ class TestRunner:
         self.output_root = output_root.expanduser().resolve()
         self.environment = dict(os.environ if environment is None else environment)
         self.environment.setdefault("CI", "1")
-        # Each command gets its own absolute stub ledger in _execute. Reusing a
-        # workspace-wide log lets another runner or a lingering server write
-        # into the current command's evidence.
         self._log = SynchronousLog("TestRunner", workspace_root=self.output_root)
         self._timeouts = {
             "TYPECHECK": _bounded_float(
@@ -129,7 +106,6 @@ class TestRunner:
         selection: TestSelection,
         *,
         test_manifest: dict[str, Any] | None = None,
-        environment_manifest: dict[str, Any] | None = None,
     ) -> TestRunResult:
         """Run only the selected requirement files, stopping at the first failed layer."""
 
@@ -140,11 +116,14 @@ class TestRunner:
             self.output_root / ".arc" / "tests" / "test_manifest.json",
             "ARC4501 TEST_MANIFEST_INVALID",
         )
-        environment, environment_errors = self._load_manifest(
-            environment_manifest,
-            self.output_root / ".arc" / "tests" / "environment_manifest.json",
+        project, environment_errors = self._load_manifest(
+            None,
+            self.output_root / ".arc" / "project" / "project-manifest.json",
             "ARC4502 TEST_ENVIRONMENT_INVALID",
         )
+        environment = project.get("testEnvironment")
+        if not isinstance(environment, dict):
+            environment = {}
         errors = [*manifest_errors, *environment_errors]
         if not requirement_id:
             errors.append("ARC4503 TEST_SELECTION_INVALID: requirement_id is required.")
@@ -193,20 +172,6 @@ class TestRunner:
         if errors:
             result.duration_ms = round((time.perf_counter() - started) * 1000)
             return result
-
-        if selection.include_typecheck:
-            typecheck = self._execute(
-                phase="TYPECHECK",
-                layer=None,
-                command=["npm", "run", "typecheck"],
-                test_files=selected_files,
-                timeout=self._timeouts["TYPECHECK"],
-            )
-            result.commands.append(typecheck)
-            # A failed typecheck invalidates subsequent test results; do not
-            # execute them merely because business-test collection is enabled.
-            if typecheck.status != "PASSED":
-                return self._finish(result, started)
 
         for layer in TEST_LAYERS:
             if layer not in selected_layers:
@@ -299,13 +264,9 @@ class TestRunner:
         capture_root = self.output_root / ".arc" / "runtime" / "test-output"
         capture_root.mkdir(parents=True, exist_ok=True)
         capture_id = f"{phase.lower()}-{str(layer or 'none').lower()}-{os.getpid()}-{time.time_ns()}"
-        stub_log_path = capture_root / f"{capture_id}.stub-hits.log"
-        progress_path = capture_root / f"{capture_id}.progress.log"
         process_environment = dict(self.environment)
-        process_environment["ARC_STUB_LOG"] = str(stub_log_path)
         is_e2e = str(layer or "").upper() == "E2E"
         if is_e2e:
-            process_environment["ARC_E2E_PROGRESS_LOG"] = str(progress_path)
             try:
                 with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
                     listener.bind(("127.0.0.1", 0))
@@ -331,29 +292,23 @@ class TestRunner:
             if "pw:api" not in debug_channels:
                 debug_channels.append("pw:api")
             process_environment["DEBUG"] = ",".join(debug_channels)
-        stdout_path = capture_root / f"{capture_id}.stdout.log"
-        stderr_path = capture_root / f"{capture_id}.stderr.log"
-        stdout_file = None
-        stderr_file = None
+        output_path = capture_root / f"{capture_id}.output.log"
+        output_file = None
         try:
-            stdout_file = stdout_path.open("w", encoding="utf-8", errors="replace")
-            stderr_file = stderr_path.open("w", encoding="utf-8", errors="replace")
+            output_file = output_path.open("w", encoding="utf-8", errors="replace")
             process = subprocess.Popen(
                 actual_command,
                 cwd=str(self.output_root),
                 env=process_environment,
-                stdout=stdout_file,
-                stderr=stderr_file,
+                stdout=output_file,
+                stderr=subprocess.STDOUT,
                 **process_group_kwargs(),
             )
-            stdout_file.close()
-            stderr_file.close()
-            stdout_file = None
-            stderr_file = None
+            output_file.close()
+            output_file = None
         except OSError as exc:
-            for capture_handle in (stdout_file, stderr_file):
-                if capture_handle is not None:
-                    capture_handle.close()
+            if output_file is not None:
+                output_file.close()
             duration_ms = round((time.perf_counter() - started) * 1000)
             self._log.info(
                 f"FINISHED phase={phase} layer={layer or '-'} status=ERROR "
@@ -368,8 +323,6 @@ class TestRunner:
                 returncode=None,
                 duration_ms=duration_ms,
                 error=f"ARC4508 TEST_COMMAND_FAILED: {exc}",
-                capture_stdout_path=str(stdout_path),
-                capture_stderr_path=str(stderr_path),
             )
         try:
             process.communicate(timeout=timeout)
@@ -383,9 +336,8 @@ class TestRunner:
                     process.wait(timeout=5.0)
                 except subprocess.TimeoutExpired:
                     pass
-            stdout = _read_capture_file(stdout_path)
-            stderr = _read_capture_file(stderr_path)
-            stub_hits = self._collect_stub_hits(stub_log_path)
+            stdout = _read_capture_file(output_path)
+            stderr = ""
             duration_ms = round((time.perf_counter() - started) * 1000)
             is_test_timeout = phase == "EXECUTION"
             status = "FAILED" if is_test_timeout else "ERROR"
@@ -416,18 +368,11 @@ class TestRunner:
                     if is_test_timeout
                     else f"ARC4507 TEST_COMMAND_TIMEOUT: exceeded {timeout:g}s."
                 ),
-                timed_out=True,
-                stub_hits=stub_hits,
-                capture_stdout_path=str(stdout_path),
-                capture_stderr_path=str(stderr_path),
-                capture_progress_path=str(progress_path) if is_e2e else None,
-                capture_stub_path=str(stub_log_path),
             )
         except OSError as exc:
             terminate_process_tree(process)
-            stdout = _read_capture_file(stdout_path)
-            stderr = _read_capture_file(stderr_path)
-            stub_hits = self._collect_stub_hits(stub_log_path)
+            stdout = _read_capture_file(output_path)
+            stderr = ""
             duration_ms = round((time.perf_counter() - started) * 1000)
             self._log.info(
                 f"FINISHED phase={phase} layer={layer or '-'} status=ERROR "
@@ -444,21 +389,14 @@ class TestRunner:
                 stdout=stdout,
                 stderr=stderr,
                 error=f"ARC4508 TEST_COMMAND_FAILED: {exc}",
-                stub_hits=stub_hits,
-                capture_stdout_path=str(stdout_path),
-                capture_stderr_path=str(stderr_path),
-                capture_progress_path=str(progress_path) if is_e2e else None,
-                capture_stub_path=str(stub_log_path),
             )
-        stdout = _read_capture_file(stdout_path)
-        stderr = _read_capture_file(stderr_path)
+        stdout = _read_capture_file(output_path)
+        stderr = ""
         duration_ms = round((time.perf_counter() - started) * 1000)
-        stub_hits = self._collect_stub_hits(stub_log_path)
-        status = "PASSED" if process.returncode == 0 and not stub_hits else "FAILED"
+        status = "PASSED" if process.returncode == 0 else "FAILED"
         self._log.info(
             f"FINISHED phase={phase} layer={layer or '-'} status={status} "
-            f"returncode={process.returncode} duration_ms={duration_ms} "
-            f"stub_hits={len(stub_hits)}"
+            f"returncode={process.returncode} duration_ms={duration_ms}"
         )
         return TestCommandResult(
             phase=phase,
@@ -470,26 +408,9 @@ class TestRunner:
             duration_ms=duration_ms,
             stdout=stdout,
             stderr=stderr,
-            stub_hits=stub_hits,
-            capture_stdout_path=str(stdout_path),
-            capture_stderr_path=str(stderr_path),
-            capture_progress_path=str(progress_path) if is_e2e else None,
-            capture_stub_path=str(stub_log_path),
         )
-
-    def _collect_stub_hits(self, stub_log_path: Path) -> list[str]:
-        """Read the module ids that answered from a skeleton during this command."""
-
-        try:
-            raw = stub_log_path.read_text(encoding="utf-8", errors="replace")
-        except OSError:
-            return []
-        return sorted({line.strip() for line in raw.splitlines() if line.strip()})
 
     def _finish(self, result: TestRunResult, started: float) -> TestRunResult:
-        result.stub_hits = sorted(
-            {value for row in result.commands for value in row.stub_hits}
-        )
         result.status = (
             "PASSED"
             if result.commands and all(row.status == "PASSED" for row in result.commands)

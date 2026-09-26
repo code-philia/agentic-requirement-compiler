@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import os
+import re
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -90,8 +91,9 @@ exactly as supplied. Include every non-nullable field that has no default, excep
 primary keys, row ids, insert order, and timestamps/defaults. Use fixture_key to name a row. A field may reference a
 previous row with {"fixture_key":"...","field":"id"}. Do not emit SQL, TypeScript, table names, column names,
 routes, implementation behavior, or undeclared example records. Return exactly one JSON object and no prose.
-If none of the declared records can be mapped to an entity in the supplied local schema, return
-{"fixture_sets":[]} so the compiler can continue without inventing database entities.
+If a declared record cannot be mapped to the local schema, do not invent another entity
+or alter its values. The compiler will reject unmatched declarations. Return an empty
+fixture_sets array only for a declaration explicitly requesting an empty starting database.
 """
 
 
@@ -99,7 +101,6 @@ If none of the declared records can be mapped to an entity in the supplied local
 class FixturePassResult:
     fixture_ir: dict[str, Any]
     errors: list[str] = field(default_factory=list)
-    warnings: list[str] = field(default_factory=list)
 
     @property
     def ok(self) -> bool:
@@ -119,7 +120,6 @@ class FixturePass:
     ) -> FixturePassResult:
         sets: list[dict[str, Any]] = []
         errors: list[str] = []
-        warnings: list[str] = []
         nodes = requirement_ir.get("nodes", {})
         for requirement_id in requirement_ir.get("atomic_units", []):
             node = nodes.get(requirement_id, {}) if isinstance(nodes, dict) else {}
@@ -128,27 +128,39 @@ class FixturePass:
                 continue
             local_schema = schema_for_requirement(database_schema, str(requirement_id))
             explicit = _explicit_decision(declarations)
-            decision = explicit or self._decide(
-                str(requirement_id),
-                node,
-                declarations,
-                local_schema,
-                errors,
-            )
-            if decision is None:
-                continue
-            compiled, local_errors, local_warnings = _compile_decision(
+            prose = [
+                declaration for declaration in declarations
+                if not declaration.get("records") and not _is_empty_seed(declaration)
+            ]
+            decision = explicit or {"fixture_sets": []}
+            if prose:
+                inferred = self._decide(
+                    str(requirement_id), node, prose, local_schema, errors,
+                )
+                if inferred is None:
+                    continue
+                if not any(fixture_set.get("rows") for fixture_set in inferred["fixture_sets"]):
+                    errors.append(
+                        f"ARC2402 FIXTURE_INVALID: {requirement_id}: declared seed data produced no rows."
+                    )
+                decision["fixture_sets"].extend(inferred["fixture_sets"])
+            compiled, local_errors = _compile_decision(
                 str(requirement_id), decision, local_schema
             )
             sets.extend(compiled)
             errors.extend(local_errors)
-            warnings.extend(local_warnings)
+            if not any(fixture_set["rows"] for fixture_set in compiled) and not all(
+                _is_empty_seed(declaration) for declaration in declarations
+            ):
+                errors.append(
+                    f"ARC2402 FIXTURE_INVALID: {requirement_id}: declared seed data produced no rows."
+                )
         fixture_ir = {
             "schema_version": FIXTURE_IR_SCHEMA_VERSION,
             "status": FIXTURE_STATUS if not errors else "FIXTURE_FAILED",
             "fixture_sets": sets,
         }
-        return FixturePassResult(fixture_ir, list(dict.fromkeys(errors)), list(dict.fromkeys(warnings)))
+        return FixturePassResult(fixture_ir, list(dict.fromkeys(errors)))
 
     def _decide(
         self,
@@ -186,7 +198,7 @@ class FixturePass:
             if isinstance(decision.get("fixture_sets"), list):
                 return decision
             feedback = [
-                "fixture_sets must be an array; use [] when no declared entity matches the local schema."
+                "fixture_sets must be an array; do not omit unmatched declarations."
             ]
         errors.append(
             f"ARC2402 FIXTURE_INVALID: {requirement_id}: "
@@ -195,62 +207,11 @@ class FixturePass:
         return None
 
 
-def attach_fixture_sets(requirement_ir: dict[str, Any], fixture_ir: dict[str, Any]) -> None:
-    by_requirement: dict[str, list[dict[str, Any]]] = {}
-    for row in fixture_ir.get("fixture_sets", []):
-        if isinstance(row, dict):
-            by_requirement.setdefault(str(row.get("requirement_id", "")), []).append(copy.deepcopy(row))
-    nodes = requirement_ir.get("nodes", {})
-    if not isinstance(nodes, dict):
-        return
-    requirement_ir["seed_fixtures"] = [
-        copy.deepcopy(row)
-        for row in fixture_ir.get("fixture_sets", [])
-        if isinstance(row, dict)
-    ]
-    for requirement_id, node in nodes.items():
-        if isinstance(node, dict):
-            node["seed_fixtures"] = by_requirement.get(str(requirement_id), [])
-
-
-def validate_fixture_ir(
-    fixture_ir: dict[str, Any],
-    database_schema: dict[str, Any],
-    *,
-    expected_requirement_ids: set[str],
-) -> list[str]:
-    if fixture_ir.get("status") != FIXTURE_STATUS:
-        return ["Fixture IR status is not FIXTURES_FROZEN."]
-    errors: list[str] = []
-    seen_ids: set[str] = set()
-    for fixture_set in fixture_ir.get("fixture_sets", []):
-        if not isinstance(fixture_set, dict):
-            errors.append("Fixture set must be an object.")
-            continue
-        set_id = str(fixture_set.get("id", ""))
-        requirement_id = str(fixture_set.get("requirement_id", ""))
-        if not set_id or set_id in seen_ids:
-            errors.append(f"Invalid or duplicate fixture set id: {set_id!r}.")
-        seen_ids.add(set_id)
-        if requirement_id not in expected_requirement_ids:
-            errors.append(f"Unknown fixture requirement: {requirement_id!r}.")
-        _, row_errors, _ = _compile_decision(
-            requirement_id,
-            {"fixture_sets": [{"name": fixture_set.get("name", "seed"), "rows": fixture_set.get("rows", [])}]},
-            schema_for_requirement(database_schema, requirement_id),
-            preserve_compiler_rows=True,
-        )
-        errors.extend(row_errors)
-    return list(dict.fromkeys(errors))
-
-
 def _compile_decision(
     requirement_id: str,
     decision: dict[str, Any],
     local_schema: dict[str, Any],
-    *,
-    preserve_compiler_rows: bool = False,
-) -> tuple[list[dict[str, Any]], list[str], list[str]]:
+) -> tuple[list[dict[str, Any]], list[str]]:
     entities = {
         str(entity.get("key", "")): entity
         for entity in local_schema.get("entities", [])
@@ -258,7 +219,6 @@ def _compile_decision(
     }
     compiled: list[dict[str, Any]] = []
     errors: list[str] = []
-    warnings: list[str] = []
     known_keys: set[str] = set()
     known_rows: dict[str, dict[str, Any]] = {}
     for set_index, raw_set in enumerate(decision.get("fixture_sets", []), start=1):
@@ -273,14 +233,14 @@ def _compile_decision(
             entity_key = str(raw_row.get("entity_key", ""))
             entity = entities.get(entity_key)
             if entity is None:
-                warnings.append(
-                    f"ARC2401 FIXTURE_ENTITY_DROPPED: {requirement_id}: {entity_key!r} is not in the local schema; row skipped."
+                errors.append(
+                    f"ARC2402 FIXTURE_INVALID: {requirement_id}: {entity_key!r} is not in the local schema."
                 )
                 continue
             fixture_key = str(raw_row.get("fixture_key", "")).strip() or f"row_{set_index}_{row_index}"
             if fixture_key in known_keys:
-                warnings.append(
-                    f"ARC2401 FIXTURE_KEY_DROPPED: {requirement_id}: duplicate {fixture_key!r}; row skipped."
+                errors.append(
+                    f"ARC2402 FIXTURE_INVALID: {requirement_id}: duplicate fixture key {fixture_key!r}."
                 )
                 continue
             fields = {
@@ -290,8 +250,8 @@ def _compile_decision(
             }
             values = _row_values(raw_row.get("values"))
             for unknown in sorted(set(values) - set(fields)):
-                warnings.append(
-                    f"ARC2401 FIXTURE_FIELD_DROPPED: {requirement_id}: {entity_key}.{unknown}."
+                errors.append(
+                    f"ARC2402 FIXTURE_INVALID: {requirement_id}: unknown field {entity_key}.{unknown}."
                 )
                 values.pop(unknown, None)
             for field_name, value in list(values.items()):
@@ -301,60 +261,49 @@ def _compile_decision(
                     target_field = str(value["field"])
                     target_values = known_rows.get(target_key)
                     if target_values is None or target_field not in target_values:
-                        warnings.append(
-                            f"ARC2401 FIXTURE_REFERENCE_DROPPED: {requirement_id}: "
+                        errors.append(
+                            f"ARC2402 FIXTURE_INVALID: {requirement_id}: unknown fixture reference "
                             f"{fixture_key}.{field_name} -> {target_key}.{target_field}."
                         )
                         values.pop(field_name, None)
                     else:
                         values[field_name] = copy.deepcopy(target_values[target_field])
                 elif not _value_matches(value, str(field.get("type", "")), bool(field.get("nullable"))):
-                    warnings.append(
-                        f"ARC2401 FIXTURE_VALUE_REPLACED: {requirement_id}: "
-                        f"{entity_key}.{field_name} expects {field.get('type')}; deterministic fallback used."
-                    )
-                    values[field_name] = _fallback_fixture_value(
-                        requirement_id, fixture_key, field_name, field
+                    errors.append(
+                        f"ARC2402 FIXTURE_INVALID: {requirement_id}: "
+                        f"{entity_key}.{field_name} expects {field.get('type')}."
                     )
             for field_name, field in fields.items():
                 if field_name in values or bool(field.get("nullable")) or _has_default(field):
                     continue
                 if _is_primary_key(field):
                     values[field_name] = _stable_primary_key(
-                        requirement_id, fixture_key, field_name, str(field.get("type", "")), row_index
+                        requirement_id, fixture_key, field_name, str(field.get("type", ""))
                     )
                     continue
-                values[field_name] = _fallback_fixture_value(
-                    requirement_id, fixture_key, field_name, field
-                )
-                warnings.append(
-                    f"ARC2401 FIXTURE_REQUIRED_FIELD_AUTOFILLED: {requirement_id}: "
-                    f"{entity_key}.{field_name}; deterministic fallback used."
+                errors.append(
+                    f"ARC2402 FIXTURE_INVALID: {requirement_id}: "
+                    f"missing required field {entity_key}.{field_name}."
                 )
             known_keys.add(fixture_key)
             known_rows[fixture_key] = copy.deepcopy(values)
-            row_id = str(raw_row.get("id", "")) if preserve_compiler_rows else ""
-            row_id = row_id or _stable_id("ROW", requirement_id, fixture_key)
             rows.append(
                 {
-                    "id": row_id,
                     "entity_key": entity_key,
                     "fixture_key": fixture_key,
-                    "insert_order": len(rows) + 1,
                     "values": values,
                 }
             )
         name = str(raw_set.get("name", "seed")).strip() or "seed"
-        set_id = str(raw_set.get("id", "")) if preserve_compiler_rows else ""
         compiled.append(
             {
-                "id": set_id or _stable_id("FIXTURE_SET", requirement_id, f"{set_index}:{name}"),
+                "id": _stable_id("FIXTURE_SET", requirement_id, f"{set_index}:{name}"),
                 "requirement_id": requirement_id,
                 "name": name,
                 "rows": rows,
             }
         )
-    return compiled, errors, warnings
+    return compiled, errors
 
 
 def _explicit_decision(declarations: list[dict[str, Any]]) -> dict[str, Any] | None:
@@ -367,24 +316,40 @@ def _explicit_decision(declarations: list[dict[str, Any]]) -> dict[str, Any] | N
     ]
     if not records:
         return None
+    rows = []
+    for index, record in enumerate(records, start=1):
+        raw_values = record.get("values", {})
+        values = (
+            [
+                {"field": str(key), "value": value}
+                for key, value in raw_values.items()
+            ]
+            if isinstance(raw_values, dict)
+            else [{"field": "", "value": raw_values}]
+        )
+        rows.append({
+            "entity_key": str(record.get("entity", "")),
+            "fixture_key": f"record_{index}",
+            "values": values,
+        })
     return {
         "fixture_sets": [
             {
                 "name": "seed",
-                "rows": [
-                    {
-                        "entity_key": str(record.get("entity", "")),
-                        "fixture_key": f"record_{index}",
-                        "values": [
-                            {"field": str(key), "value": value}
-                            for key, value in record.get("values", {}).items()
-                        ],
-                    }
-                    for index, record in enumerate(records, start=1)
-                ],
+                "rows": rows,
             }
         ]
     }
+
+
+def _is_empty_seed(declaration: dict[str, Any]) -> bool:
+    description = str(declaration.get("description", "")).strip()
+    return not declaration.get("records") and bool(re.fullmatch(
+        r"(?:empty|empty (?:database|db|dataset|state)|no (?:seed|initial) data|"
+        r"空数据库|无(?:初始|种子)?数据|初始数据为空)[\s.!。！]*",
+        description,
+        re.IGNORECASE,
+    ))
 
 
 def _row_values(value: Any) -> dict[str, Any]:
@@ -410,6 +375,8 @@ def _value_matches(value: Any, field_type: str, nullable: bool) -> bool:
         return isinstance(value, (int, float)) and not isinstance(value, bool)
     if field_type == "boolean":
         return isinstance(value, bool)
+    if field_type == "foreign_key":
+        return isinstance(value, str) or (isinstance(value, int) and not isinstance(value, bool))
     if field_type == "json":
         return isinstance(value, (dict, list, str, int, float, bool, type(None)))
     return False
@@ -434,11 +401,10 @@ def _stable_primary_key(
     fixture_key: str,
     field_name: str,
     field_type: str,
-    ordinal: int,
 ) -> Any:
     seed = f"arc:{requirement_id}:{fixture_key}:{field_name}"
     if field_type == "integer":
-        return ordinal
+        return int(hashlib.sha256(seed.encode("utf-8")).hexdigest()[:12], 16) or 1
     if field_type == "uuid":
         return str(uuid.uuid5(uuid.NAMESPACE_URL, seed))
     return hashlib.sha256(seed.encode("utf-8")).hexdigest()[:24]
@@ -447,33 +413,6 @@ def _stable_primary_key(
 def _stable_id(prefix: str, requirement_id: str, value: str) -> str:
     digest = hashlib.sha256(f"{requirement_id}\0{value}".encode("utf-8")).hexdigest()[:12]
     return f"{prefix}.{digest}"
-
-
-def _fallback_fixture_value(
-    requirement_id: str,
-    fixture_key: str,
-    field_name: str,
-    field: dict[str, Any],
-) -> Any:
-    """Keep a malformed seed usable without inventing a random value."""
-
-    field_type = str(field.get("type", "string"))
-    seed = f"arc-fixture:{requirement_id}:{fixture_key}:{field_name}"
-    if field_type == "integer":
-        return 1
-    if field_type == "number":
-        return 1
-    if field_type == "boolean":
-        return False
-    if field_type == "datetime":
-        return "1970-01-01T00:00:00.000Z"
-    if field_type == "date":
-        return "1970-01-01"
-    if field_type == "uuid":
-        return str(uuid.uuid5(uuid.NAMESPACE_URL, seed))
-    if field_type == "json":
-        return {}
-    return f"fixture_{hashlib.sha256(seed.encode('utf-8')).hexdigest()[:10]}"
 
 
 def _bounded_int(name: str, default: int, minimum: int, maximum: int) -> int:

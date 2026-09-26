@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import hashlib
+import posixpath
+import re
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import Any, Callable
@@ -17,7 +19,6 @@ IMPLEMENTATION_OUTPUT_SCHEMA: dict[str, Any] = {
         "edits": {
             "type": "array",
             "minItems": 1,
-            "maxItems": 16,
             "items": {
                 "type": "object",
                 "additionalProperties": False,
@@ -41,12 +42,6 @@ Use the supplied test source only to understand the expected behavior; do not ed
 Do not invent paths, change tests or edit read-only files. Preserve existing public
 interfaces, routes and generated glue. Return only JSON with exact file/search/replacement
 edits. Copy search verbatim from a unique fragment of the current editable file.
-When no test output exists, implement the requirement rather than waiting for a failure.
-"""
-
-FRONTEND_IMPLEMENTATION_INSTRUCTIONS = IMPLEMENTATION_INSTRUCTIONS + """
-For frontend files, implement usable accessible controls, responsive layout, loading,
-error and success states using the existing components, API clients and stores.
 """
 
 
@@ -58,7 +53,6 @@ class ImplementationRequest:
     target_module_ids: tuple[str, ...] = ()
     test_output: str = ""
     test_files: tuple[str, ...] = ()
-    retry_feedback: tuple[str, ...] = ()
 
 
 @dataclass(slots=True)
@@ -86,7 +80,7 @@ class ImplementationAgent:
     ) -> None:
         self.output_root = output_root.expanduser().resolve()
         self._max_context_characters = max_context_characters
-        self._allowed_kinds: set[str] | None = None
+        self._allowed_kinds: set[str] | None = {"DB", "FUNC", "API"}
         self._agent = BaseStructuredAgent(
             model,
             schema_name="arc_implementation_patch",
@@ -106,7 +100,6 @@ class ImplementationAgent:
         invocation = self._agent.invoke(
             context,
             validate=lambda output: self._validate(output, hashes),
-            initial_feedback=list(request.retry_feedback),
         )
         if not invocation.ok or invocation.output is None:
             return ImplementationResult(
@@ -147,21 +140,61 @@ class ImplementationAgent:
         paths = sorted(editable_paths | {
             str(row.get("file", "")) for row in dependencies if row.get("file")
         })
-        files: list[dict[str, Any]] = []
+        related = set(paths)
+        entrypoints = {
+            "API": "backend/src/app.ts",
+            "PAGE": "frontend/src/app/router.tsx",
+            "LAYOUT": "frontend/src/app/router.tsx",
+        }
+        for row in owned:
+            entrypoint = entrypoints.get(str(row.get("kind", "")))
+            if entrypoint and (self.output_root / entrypoint).is_file():
+                related.add(entrypoint)
+        for relative in sorted(editable_paths):
+            source = self._read_file(relative)
+            for specifier in re.findall(r'(?:from\s+|import\s+)["\']([^"\']+)["\']', source):
+                if specifier == "@arc/shared":
+                    candidate = "shared/src/index.ts"
+                elif specifier.startswith("."):
+                    candidate = posixpath.normpath(posixpath.join(posixpath.dirname(relative), specifier))
+                    if candidate.endswith(".js"):
+                        candidate = candidate[:-3] + ".ts"
+                    if not (self.output_root / candidate).is_file() and candidate.endswith(".ts"):
+                        candidate = candidate[:-3] + ".tsx"
+                    if not PurePosixPath(candidate).suffix:
+                        candidate = next(
+                            (path for path in (candidate + ".ts", candidate + ".tsx", candidate + "/index.ts", candidate + "/index.tsx")
+                             if (self.output_root / path).is_file()),
+                            candidate,
+                        )
+                else:
+                    continue
+                if candidate.startswith(("backend/src/", "frontend/src/", "shared/src/")) and (self.output_root / candidate).is_file():
+                    related.add(candidate)
+        for workspace in ("backend", "frontend"):
+            if any(relative.startswith(workspace + "/") for relative in editable_paths):
+                related.add(workspace + "/package.json")
+        paths = sorted(related)
+        editable_files: dict[str, str] = {}
+        related_files: dict[str, str] = {}
         hashes: dict[str, str] = {}
         for relative in paths:
             source = self._read_file(relative)
-            files.append({"path": relative, "source": source, "editable": relative in editable_paths})
             if relative in editable_paths:
+                editable_files[relative] = source
                 hashes[relative] = hashlib.sha256(source.encode("utf-8")).hexdigest()
+            else:
+                related_files[relative] = source
         for relative in request.test_files:
             if relative not in paths:
-                files.append({"path": relative, "source": self._read_file(relative), "editable": False})
+                related_files[relative] = self._read_file(relative)
         context = {
             "requirement": request.requirement,
-            "files": files,
-            "test_output": request.test_output,
+            "editable_files": editable_files,
+            "related_files": related_files,
         }
+        if request.test_output:
+            context["test_output"] = request.test_output
         if len(str(context)) > self._max_context_characters:
             raise ValueError("Implementation context exceeds its size limit.")
         return context, hashes
@@ -173,15 +206,16 @@ class ImplementationAgent:
         absolute = (self.output_root / Path(*path.parts)).resolve()
         if self.output_root not in absolute.parents or not absolute.is_file():
             raise ValueError("Source file missing or outside the workspace: " + relative)
-        return absolute.read_text(encoding="utf-8")
+        with absolute.open("r", encoding="utf-8", newline="") as handle:
+            return handle.read()
 
     @staticmethod
     def _validate(output: dict[str, Any], hashes: dict[str, str]) -> list[str]:
         if not isinstance(output, dict) or set(output) != {"edits"}:
             return ["Return only an edits array."]
         edits = output["edits"]
-        if not isinstance(edits, list) or not 1 <= len(edits) <= 16:
-            return ["Return 1 to 16 exact edits."]
+        if not isinstance(edits, list) or not edits:
+            return ["Return at least one exact edit."]
         errors: list[str] = []
         for row in edits:
             if not isinstance(row, dict) or set(row) != {"file", "search", "replacement"}:
@@ -209,11 +243,11 @@ class FrontendImplementationAgent(ImplementationAgent):
             model, output_root, retries=retries,
             max_context_characters=max_context_characters, trace=trace,
         )
-        self._allowed_kinds = {"STORE", "COMPONENT", "PAGE", "LAYOUT"}
+        self._allowed_kinds = None
         self._agent = BaseStructuredAgent(
             model,
             schema_name="arc_frontend_implementation_patch",
-            instructions=FRONTEND_IMPLEMENTATION_INSTRUCTIONS,
+            instructions=IMPLEMENTATION_INSTRUCTIONS,
             output_schema=IMPLEMENTATION_OUTPUT_SCHEMA,
             retries=retries,
             trace=trace,

@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Mapping
 
+from arcbench_agent_runtime.jsonio import write_json_atomic
 from core.logging import SynchronousLog
 
 from .artifacts import CompilerArtifactStore
@@ -26,7 +27,6 @@ from .trace_payload import format_payload_trace
 TEST_ENVIRONMENT_READY = "TEST_ENVIRONMENT_READY"
 TESTS_FROZEN = "TESTS_FROZEN"
 TEST_LAYERS = ("UNIT", "INTEGRATION", "E2E")
-TEST_GENERATION_SCHEMA_VERSION = 1
 
 
 TEST_GENERATION_SCHEMA: dict[str, Any] = {
@@ -54,10 +54,13 @@ TEST_GENERATION_INSTRUCTIONS = """Write executable requirement tests using the o
 and the supplied source files. Assertions must come from the requirement and its
 scenarios, never from skeleton placeholders or current implementation behavior.
 Use the exact exports, helper signatures, database fields and routes in the supplied
-code. Generate exactly one complete TypeScript file for each supplied layer, with
+code. E2E controls may not exist in the unimplemented skeleton yet: choose accessible
+locators from the requirement, not from placeholder text. For integration tests,
+pass seedRequirement an apply callback that posts to /__arc/seed via Supertest(app)
+so fixtures reach the in-process database; E2E can use its default HTTP seeding.
+Generate exactly one complete TypeScript file for each supplied layer, with
 real assertions over inputs, outputs and persisted data. Keep each test independent;
-use fresh unique values and seed fixtures in beforeEach when required. E2E locators
-must match real accessible UI controls; do not treat descriptions as literal labels.
+use fresh unique values and seed fixtures in beforeEach when required.
 Do not edit application code, invent paths, skip tests or weaken assertions to pass.
 Return only JSON: {"files":[{"layer":"UNIT|INTEGRATION|E2E","code":"..."}]}.
 """
@@ -72,7 +75,6 @@ class TestEnvironmentResult:
 class TestStaticValidationResult:
     ok: bool
     errors: list[str] = field(default_factory=list)
-    source_diagnostics: list[str] = field(default_factory=list)
 
 
 @dataclass(slots=True)
@@ -81,7 +83,6 @@ class TestGenerationResult:
     node_states: dict[str, str]
     artifacts: dict[str, str] = field(default_factory=dict)
     errors: list[str] = field(default_factory=list)
-    source_diagnostics: list[str] = field(default_factory=list)
 
     @property
     def ok(self) -> bool:
@@ -109,7 +110,6 @@ class TestEnvironmentInitializer:
         errors: list[str] = []
         spec = test_workspace_spec(self.catalog, backend_port=self.backend_port)
         browser_installed = False
-        environment_source = "PROJECT_MANIFEST"
         try:
             root_package = _read_json_object(self.output_root / "package.json")
             test_package = _read_json_object(self.tests_root / "package.json")
@@ -197,26 +197,11 @@ class TestEnvironmentInitializer:
                 )
 
         project_test_environment = project_manifest.get("testEnvironment")
-        if not isinstance(project_test_environment, dict):
-            legacy_manifest_path = (
-                self.output_root / ".arc" / "tests" / "environment_manifest.json"
-            )
-            try:
-                legacy_manifest = _read_json_object(legacy_manifest_path)
-            except (OSError, ValueError, json.JSONDecodeError):
-                legacy_manifest = {}
-            if legacy_manifest.get("status") == TEST_ENVIRONMENT_READY:
-                project_test_environment = {
-                    "status": legacy_manifest.get("status"),
-                    "browserInstalled": legacy_manifest.get("browser_installed", False),
-                    "versions": legacy_manifest.get("versions"),
-                }
-                environment_source = "LEGACY_TEST_ENVIRONMENT_MANIFEST"
         if not isinstance(project_test_environment, dict) or project_test_environment.get(
             "status"
-        ) != TEST_ENVIRONMENT_READY:
+        ) not in {"TEST_ENVIRONMENT_PENDING", TEST_ENVIRONMENT_READY}:
             errors.append(
-                "ARC4401 TEST_ENVIRONMENT_INVALID: Project Manifest has no ready test environment."
+                "ARC4401 TEST_ENVIRONMENT_INVALID: Project Manifest has no test environment."
             )
         else:
             browser_installed = bool(project_test_environment.get("browserInstalled"))
@@ -232,52 +217,43 @@ class TestEnvironmentInitializer:
                     "from the compiler dependency catalog."
                 )
 
+        should_install_browser = self.environment.get("ARC_TEST_INSTALL_BROWSER", "1").strip().lower() not in {
+            "0", "false", "no", "off", "",
+        }
+        if not errors and should_install_browser and not browser_installed:
+            executable = resolve_executable("npm", self.environment)
+            if executable is None:
+                errors.append("ARC4401 TEST_ENVIRONMENT_INVALID: npm is unavailable.")
+            else:
+                try:
+                    installed = run_command(
+                        [executable, "exec", "-w", "@arc/tests", "--", "playwright", "install", "chromium"],
+                        cwd=self.output_root, environment=self.environment, timeout=900,
+                    )
+                except (OSError, subprocess.TimeoutExpired) as exc:
+                    errors.append(f"ARC4401 TEST_ENVIRONMENT_INVALID: browser installation failed: {exc}")
+                else:
+                    if installed.returncode != 0:
+                        errors.append(
+                            "ARC4401 TEST_ENVIRONMENT_INVALID: browser installation failed: "
+                            + (installed.stderr or installed.stdout)
+                        )
+                    else:
+                        browser_installed = True
+
+        if not errors:
+            project_manifest["testEnvironment"]["status"] = TEST_ENVIRONMENT_READY
+            project_manifest["testEnvironment"]["browserInstalled"] = browser_installed
+            try:
+                write_json_atomic(
+                    self.output_root / ".arc" / "project" / "project-manifest.json",
+                    project_manifest,
+                )
+            except OSError as exc:
+                errors.append(f"ARC4401 TEST_ENVIRONMENT_INVALID: cannot save test environment: {exc}")
+
         manifest = {
-            "schema_version": 1,
             "status": TEST_ENVIRONMENT_READY if not errors else "TEST_ENVIRONMENT_FAILED",
-            "workspace": "tests",
-            "package": "@arc/tests",
-            "frameworks": {
-                "unit": "vitest",
-                "integration": "vitest+supertest",
-                "e2e": "playwright",
-            },
-            "roots": {
-                "unit": "tests/unit",
-                "integration": "tests/integration",
-                "e2e": "tests/e2e",
-                "support": "tests/support",
-            },
-            "validation_commands": [
-                "npm run typecheck",
-                "npm run list:vitest -w @arc/tests",
-                "npm run list:e2e -w @arc/tests",
-            ],
-            "execution_commands": {
-                "unit": "npm run test:unit -w @arc/tests",
-                "integration": "npm run test:integration -w @arc/tests",
-                "e2e": "npm run test:e2e -w @arc/tests",
-            },
-            "browser_installed": browser_installed,
-            "provisioned_by": (
-                "PROJECT_INITIALIZATION"
-                if environment_source == "PROJECT_MANIFEST"
-                else "LEGACY_TEST_GENERATION"
-            ),
-            "reused_without_install": True,
-            "validated_from": environment_source,
-            "workspace_occurrences": (
-                workspaces.count("tests") if isinstance(workspaces, list) else 0
-            ),
-            "backend_port": self.backend_port,
-            "frontend_port": self.backend_port,
-            "versions": {
-                "typescript": self.catalog.typescript,
-                "vitest": self.catalog.vitest,
-                "@playwright/test": self.catalog.playwright,
-                "supertest": self.catalog.supertest,
-                "@types/supertest": self.catalog.types_supertest,
-            },
         }
         return TestEnvironmentResult(ok=not errors, manifest=manifest, errors=errors)
 
@@ -308,8 +284,6 @@ class TestStaticValidator:
         has_e2e: bool,
         test_files: list[str] | None = None,
     ) -> TestStaticValidationResult:
-        # Validate generated test types, not the whole application. The TDD
-        # implementation has already changed application sources at this point.
         commands: list[list[str]] = [
             ["npm", "run", "typecheck", "-w", "@arc/tests"],
         ]
@@ -334,7 +308,6 @@ class TestStaticValidator:
                 command.extend(["--", *e2e_files])
             commands.append(command)
         errors: list[str] = []
-        source_diagnostics: list[str] = []
         for command in commands:
             executable = resolve_executable(command[0], self.environment)
             if executable is None:
@@ -353,15 +326,6 @@ class TestStaticValidator:
                 errors.append(f"ARC4431 TEST_STATIC_VALIDATION_FAILED: {exc}")
                 break
             if completed.returncode != 0:
-                output = "\n".join(
-                    part for part in (completed.stdout or "", completed.stderr or "")
-                    if part
-                )
-                if command == commands[0]:
-                    application_errors = _application_only_type_errors(output)
-                    if application_errors:
-                        source_diagnostics.extend(application_errors)
-                        continue
                 errors.append(
                     "ARC4431 TEST_STATIC_VALIDATION_FAILED: "
                     f"{command!r} exited with {completed.returncode}: "
@@ -371,7 +335,6 @@ class TestStaticValidator:
         return TestStaticValidationResult(
             ok=not errors,
             errors=errors,
-            source_diagnostics=source_diagnostics,
         )
 
 
@@ -454,14 +417,7 @@ class RequirementTestGenerationPass:
                 "ARC4411 TEST_ENVIRONMENT_NOT_READY: Test environment is unavailable."
             )
         if global_errors:
-            manifest = _finalize_manifest(
-                _empty_test_manifest("TEST_GENERATION_FAILED"),
-                status="TEST_GENERATION_FAILED",
-                requirement_order=[],
-                node_states={},
-                environment_manifest=environment_manifest,
-                code_binding_registry=code_binding_registry,
-            )
+            manifest = _empty_test_manifest("TEST_GENERATION_FAILED")
             artifact = self._artifact_store.write_test_manifest(manifest)
             return TestGenerationResult(
                 manifest=manifest,
@@ -497,10 +453,6 @@ class RequirementTestGenerationPass:
         manifest = _finalize_manifest(
             manifest,
             status=TESTS_FROZEN if not errors else "TEST_GENERATION_FAILED",
-            requirement_order=order,
-            node_states=states,
-            environment_manifest=environment_manifest,
-            code_binding_registry=code_binding_registry,
         )
         artifacts["test_manifest"] = self._artifact_store.write_test_manifest(manifest)
         return TestGenerationResult(
@@ -548,10 +500,6 @@ class RequirementTestGenerationPass:
             manifest = _finalize_manifest(
                 base_manifest,
                 status="TEST_GENERATION_FAILED",
-                requirement_order=[requirement_id] if requirement_id else [],
-                node_states=state,
-                environment_manifest=environment_manifest,
-                code_binding_registry=code_binding_registry,
             )
             artifact = self._artifact_store.write_test_manifest(manifest)
             return TestGenerationResult(
@@ -573,10 +521,6 @@ class RequirementTestGenerationPass:
             manifest = _finalize_manifest(
                 base_manifest,
                 status="TEST_GENERATION_FAILED",
-                requirement_order=[requirement_id],
-                node_states=state,
-                environment_manifest=environment_manifest,
-                code_binding_registry=code_binding_registry,
             )
             artifact = self._artifact_store.write_test_manifest(manifest)
             return TestGenerationResult(
@@ -586,12 +530,7 @@ class RequirementTestGenerationPass:
                 errors=errors,
             )
 
-        test_obligations = _plan_test_obligations(
-            requirement_id,
-            resolved_targets,
-            design_ir,
-        )
-        required_layers = [layer for layer in TEST_LAYERS if layer in test_obligations]
+        required_layers = _plan_test_layers(resolved_targets, design_ir)
         if not required_layers:
             state[requirement_id] = "FAILED"
             errors = [
@@ -600,10 +539,6 @@ class RequirementTestGenerationPass:
             manifest = _finalize_manifest(
                 base_manifest,
                 status="TEST_GENERATION_FAILED",
-                requirement_order=[requirement_id],
-                node_states=state,
-                environment_manifest=environment_manifest,
-                code_binding_registry=code_binding_registry,
             )
             artifact = self._artifact_store.write_test_manifest(manifest)
             return TestGenerationResult(
@@ -622,10 +557,9 @@ class RequirementTestGenerationPass:
             frontend_ir=frontend_ir,
             resolved_targets=resolved_targets,
             required_layers=required_layers,
-            test_obligations=test_obligations,
         )
         artifacts: dict[str, str] = {}
-        decision, sources, errors, source_diagnostics = self._generate_and_validate(
+        decision, sources, errors = self._generate_and_validate(
             requirement_id,
             context_pack,
             validation_context,
@@ -635,10 +569,6 @@ class RequirementTestGenerationPass:
             manifest = _finalize_manifest(
                 base_manifest,
                 status="TEST_GENERATION_FAILED",
-                requirement_order=[requirement_id],
-                node_states=state,
-                environment_manifest=environment_manifest,
-                code_binding_registry=code_binding_registry,
             )
             artifacts["test_manifest"] = self._artifact_store.write_test_manifest(manifest)
             return TestGenerationResult(
@@ -657,9 +587,8 @@ class RequirementTestGenerationPass:
         }
         self._remove_requirement_files(previous_paths - set(sources))
         artifacts.update(self._artifact_store.write_generated_tests(sources))
-        test_rows, file_rows = _manifest_rows(
+        file_rows = _manifest_rows(
             requirement_id,
-            node,
             decision,
             validation_context,
         )
@@ -667,16 +596,7 @@ class RequirementTestGenerationPass:
             base_manifest,
             requirement_id=requirement_id,
             state=TESTS_FROZEN,
-            test_rows=test_rows,
             file_rows=file_rows,
-        )
-        manifest = _finalize_manifest(
-            manifest,
-            status=TESTS_FROZEN,
-            requirement_order=_manifest_requirement_order(manifest),
-            node_states={requirement_id: TESTS_FROZEN},
-            environment_manifest=environment_manifest,
-            code_binding_registry=code_binding_registry,
         )
         state[requirement_id] = TESTS_FROZEN
         artifacts["test_manifest"] = self._artifact_store.write_test_manifest(manifest)
@@ -684,7 +604,6 @@ class RequirementTestGenerationPass:
             manifest=manifest,
             node_states=state,
             artifacts=artifacts,
-            source_diagnostics=source_diagnostics,
         )
 
     def _generate_and_validate(
@@ -692,17 +611,14 @@ class RequirementTestGenerationPass:
         requirement_id: str,
         context_pack: dict[str, Any],
         validation_context: dict[str, Any],
-    ) -> tuple[dict[str, Any] | None, dict[str, str], list[str], list[str]]:
+    ) -> tuple[dict[str, Any] | None, dict[str, str], list[str]]:
         feedback: list[str] = []
         last_errors: list[str] = []
-        last_decision: dict[str, Any] | None = None
         planned_paths = set(validation_context["output_files"].values())
         for attempt in range(self._retries + 1):
             payload = copy.deepcopy(context_pack)
             if feedback:
-                payload["materialization_feedback"] = feedback
-            if last_decision is not None:
-                payload["previous_decision"] = copy.deepcopy(last_decision)
+                payload["feedback"] = feedback
             self._trace(
                 f"MODEL_REQUEST requirement={requirement_id} "
                 f"attempt={attempt + 1}/{self._retries + 1}"
@@ -760,8 +676,6 @@ class RequirementTestGenerationPass:
                 decision,
                 duration_ms=round((time.perf_counter() - started) * 1000),
             )
-            if isinstance(decision, dict):
-                last_decision = copy.deepcopy(decision)
             local_errors = _validate_test_decision(decision, validation_context)
             if local_errors:
                 last_errors = local_errors
@@ -781,16 +695,11 @@ class RequirementTestGenerationPass:
                 has_e2e=has_e2e,
                 test_files=sorted(sources),
             )
-            if static_result.source_diagnostics:
-                self._trace(
-                    "APPLICATION_TYPE_DIAGNOSTICS_DEFERRED_TO_TDD "
-                    + "; ".join(static_result.source_diagnostics)
-                )
             if static_result.ok:
                 self._trace(
                     f"TESTS_ACCEPTED requirement={requirement_id} attempt={attempt + 1}"
                 )
-                return decision, sources, [], static_result.source_diagnostics
+                return decision, sources, []
             last_errors = static_result.errors
             feedback = [
                 "Only repair TypeScript syntax, imports, symbols, or test collection. "
@@ -799,7 +708,7 @@ class RequirementTestGenerationPass:
             ]
             self._trace("STATIC_VALIDATION_REJECTED " + "; ".join(static_result.errors))
         self._remove_requirement_files(planned_paths)
-        return None, {}, last_errors, []
+        return None, {}, last_errors
 
     def _remove_requirement_files(self, paths: set[str]) -> None:
         for relative in paths:
@@ -835,7 +744,6 @@ def _build_context_pack(
     frontend_ir: dict[str, Any],
     resolved_targets: dict[str, Any],
     required_layers: list[str],
-    test_obligations: dict[str, dict[str, Any]],
 ) -> tuple[dict[str, Any], dict[str, Any]]:
 
     all_target_rows = [
@@ -889,20 +797,13 @@ def _build_context_pack(
             {
                 "specifier": runtime_import,
                 "symbols": ["uniqueValue"],
-                "signatures": {"uniqueValue": "uniqueValue(prefix: string): string"},
             },
         ]
         if requirement.get("seed_fixtures") and layer in {"INTEGRATION", "E2E"}:
             imports.append(
                 {
                     "specifier": _relative_import(test_file, "tests/support/seed.ts"),
-                    "symbols": ["seedRequirement"],
-                    "signatures": {
-                        "seedRequirement": (
-                            "seedRequirement(requirementId: string, "
-                            "apply?: (requirementId: string) => Promise<void>): Promise<void>"
-                        )
-                    },
+                    "symbols": ["seedRequirement", "seedFixturesForRequirement"],
                 }
             )
             if layer == "INTEGRATION":
@@ -914,6 +815,10 @@ def _build_context_pack(
                     {
                         "specifier": _relative_import(test_file, "backend/src/app.ts"),
                         "symbols": ["app"],
+                    },
+                    {
+                        "specifier": _relative_import(test_file, "backend/src/db/client.ts"),
+                        "symbols": ["sqliteDatabase"],
                     },
                 ]
             )
@@ -946,6 +851,7 @@ def _build_context_pack(
             "description",
             "scenarios",
             "examples",
+            "visual_references",
             "dependencies",
             "seed_fixtures",
         )
@@ -957,7 +863,7 @@ def _build_context_pack(
         requirement_id=requirement_id,
         resolved_targets=resolved_targets,
     )
-    model_layers = _build_model_layers(
+    model_layers, source_files = _build_model_layers(
         output_root=output_root,
         requirement_id=requirement_id,
         required_layers=required_layers,
@@ -966,22 +872,18 @@ def _build_context_pack(
         allowed_imports=allowed_imports,
         relevant_types=relevant_types,
         frontend_subgraph=relevant_frontend_subgraph,
-        test_obligations=test_obligations,
     )
+    source_files.update((row["path"], row["source"]) for row in database_tables)
     model_context = {
         "requirement": model_requirement,
-        "database_tables": database_tables,
+        "source_files": source_files,
         "layers": model_layers,
     }
     validation_context = {
         "requirement_id": requirement_id,
-        "requirement": {
-            key: copy.deepcopy(requirement.get(key))
-            for key in ("id", "name", "description", "scenarios", "dependencies", "seed_fixtures")
-        },
+        "has_seed_fixtures": bool(requirement.get("seed_fixtures")),
         "relevant_frontend_subgraph": relevant_frontend_subgraph,
         "e2e_entry_routes": _e2e_entry_routes(requirement_id, relevant_frontend_subgraph),
-        "public_seams": public_seams,
         "required_layers": required_layers,
         "output_files": output_files,
         "allowed_imports": allowed_imports,
@@ -1006,36 +908,46 @@ def _database_source_cards(
         if path.is_file():
             cards.append({"path": relative, "source": path.read_text(encoding="utf-8")})
     return cards
+
+
 def _build_model_layers(
     *, output_root: Path, requirement_id: str, required_layers: list[str],
     output_files: dict[str, str], public_seams: dict[str, Any],
     allowed_imports: dict[str, list[dict[str, Any]]],
     relevant_types: list[dict[str, Any]],
     frontend_subgraph: dict[str, list[dict[str, Any]]],
-    test_obligations: dict[str, dict[str, Any]],
-) -> dict[str, dict[str, Any]]:
+) -> tuple[dict[str, dict[str, Any]], dict[str, str]]:
     layers: dict[str, dict[str, Any]] = {}
+    source_files: dict[str, str] = {}
     for layer in required_layers:
-        sources = []
-        seen: set[str] = set()
         for row in public_seams.get(layer, []):
-            path = str(row.get("source_file", ""))
-            if path and path not in seen:
-                sources.append({"path": path, "source": row.get("source", "")})
-                seen.add(path)
-        for relative in ("tests/support/runtime.ts", "tests/support/seed.ts", "tests/support/e2e.ts"):
+            relative = str(row.get("source_file", ""))
+            if relative:
+                source_files[relative] = str(row.get("source", ""))
+        for row in relevant_types:
+            relative = str(row.get("file", ""))
             path = output_root / relative
-            if path.is_file() and relative not in seen:
-                sources.append({"path": relative, "source": path.read_text(encoding="utf-8")})
-        current: dict[str, Any] = {
+            if relative and relative not in source_files and path.is_file():
+                source_files[relative] = path.read_text(encoding="utf-8")
+        for relative in (
+            "tests/support/runtime.ts", "tests/support/seed.ts", "tests/support/e2e.ts",
+            "backend/src/app.ts", "backend/src/db/client.ts",
+        ):
+            specifier = _relative_import(output_files[layer], relative)
+            if not any(row.get("specifier") == specifier for row in allowed_imports[layer]):
+                continue
+            path = output_root / relative
+            if relative not in source_files and path.is_file():
+                source_files[relative] = path.read_text(encoding="utf-8")
+        layers[layer] = {
             "output_file": output_files[layer],
-            "imports": allowed_imports.get(layer, []),
-            "sources": sources,
+            "imports": allowed_imports[layer],
         }
         if layer == "E2E":
-            current["entry_routes"] = _e2e_entry_routes(requirement_id, frontend_subgraph)
-        layers[layer] = current
-    return layers
+            layers[layer]["entry_routes"] = _e2e_entry_routes(requirement_id, frontend_subgraph)
+    return layers, source_files
+
+
 def _target_relevant_to_layers(
     target: dict[str, Any], required_layers: list[str]
 ) -> bool:
@@ -1059,7 +971,6 @@ def _project_test_target(row: dict[str, Any]) -> dict[str, Any]:
             "kind",
             "file",
             "symbol",
-            "public_signature",
             "input_type",
             "output_type",
             "props_type",
@@ -1271,11 +1182,8 @@ def _context_audit(
         "input_payload_chars": size(payload),
         "output_schema_chars": size(TEST_GENERATION_SCHEMA),
         "requirement_chars": size(payload.get("requirement", {})),
-        "requirement_contract_chars": size(payload.get("requirement_contract", {})),
-        "database_tables_chars": size(payload.get("database_tables", [])),
+        "source_files_chars": size(payload.get("source_files", {})),
         "layers_chars": size(payload.get("layers", {})),
-        "target_modules_chars": size(payload.get("target_modules", {})),
-        "seed_chars": size(payload.get("seed", {})),
     }
     return (
         f"CONTEXT_AUDIT phase=test_generation requirement={requirement_id} "
@@ -1284,76 +1192,32 @@ def _context_audit(
     )
 
 
-def _plan_test_obligations(
-    requirement_id: str,
+def _plan_test_layers(
     resolved_targets: dict[str, Any],
     design_ir: dict[str, Any],
-) -> dict[str, dict[str, Any]]:
-    targets = [
-        row
-        for row in [
-            *resolved_targets.get("owned_targets", []),
-            *resolved_targets.get("dependency_targets", []),
-        ]
+) -> list[str]:
+    owned = [
+        row for row in resolved_targets.get("owned_targets", [])
         if isinstance(row, dict)
     ]
-    owned = [
-        row for row in resolved_targets.get("owned_targets", []) if isinstance(row, dict)
-    ]
-    kinds = {str(row.get("kind", "")) for row in owned}
-    module_index = {
+    layers: set[str] = set()
+    if any(row.get("kind") in {"PAGE", "COMPONENT", "LAYOUT"} for row in owned):
+        layers.add("E2E")
+    if any(row.get("kind") == "API" for row in owned):
+        layers.add("INTEGRATION")
+
+    modules = {
         str(row.get("id", "")): row
         for row in design_ir.get("modules", [])
         if isinstance(row, dict)
     }
-    obligations: dict[str, dict[str, Any]] = {}
-    ui_modules = sorted(
-        str(row.get("module_id", ""))
-        for row in owned
-        if row.get("kind") in {"PAGE", "COMPONENT", "LAYOUT"}
-        and str(row.get("module_id", ""))
-    )
-    if ui_modules:
-        obligations["E2E"] = {
-            "reason": "requirement owns a browser-observable Page/Component/Layout path",
-            "target_modules": ui_modules,
-        }
-
-    api_ids = [str(row.get("source_ir_id", "")) for row in owned if row.get("kind") == "API"]
-    db_ids = [str(row.get("source_ir_id", "")) for row in targets if row.get("kind") == "DB"]
-    write_operation = any(
-        str(effect.get("operation", "")).upper() in {"CREATE", "UPDATE", "DELETE", "WRITE"}
-        for module_id in {*api_ids, *db_ids}
-        for effect in module_index.get(module_id, {}).get("effects", [])
-        if isinstance(effect, dict)
-    )
-    if api_ids and (db_ids or write_operation):
-        obligations["INTEGRATION"] = {
-            "reason": "requirement owns an HTTP API connected to database or persistent effects",
-            "target_modules": sorted(
-                str(row.get("module_id", ""))
-                for row in owned
-                if row.get("kind") == "API" and str(row.get("module_id", ""))
-            ),
-        }
-
-    func_modules = [
-        module_index.get(str(row.get("source_ir_id", "")), {})
-        for row in owned
-        if row.get("kind") == "FUNC"
-    ]
     pure_cache: dict[str, bool] = {}
 
-    def is_unit_seam(module_id: str, visiting: set[str] | None = None) -> bool:
-        """Accept callable FUNC closures with no declared or delegated side effects."""
-
+    def is_pure_func(module_id: str, visiting: set[str] | None = None) -> bool:
         if module_id in pure_cache:
             return pure_cache[module_id]
-        module = module_index.get(module_id, {})
-        if str(module.get("kind", "")).upper() != "FUNC":
-            pure_cache[module_id] = False
-            return False
-        if any(isinstance(effect, dict) for effect in module.get("effects", [])):
+        module = modules.get(module_id, {})
+        if module.get("kind") != "FUNC" or module.get("effects"):
             pure_cache[module_id] = False
             return False
         active = set(visiting or ())
@@ -1361,49 +1225,18 @@ def _plan_test_obligations(
             pure_cache[module_id] = False
             return False
         active.add(module_id)
-        for callee_id in module.get("callees", []):
-            callee = str(callee_id)
-            if not callee or not is_unit_seam(callee, active):
-                pure_cache[module_id] = False
-                return False
-        pure_cache[module_id] = True
-        return True
+        pure_cache[module_id] = all(
+            is_pure_func(str(callee_id), active)
+            for callee_id in module.get("callees", [])
+        )
+        return pure_cache[module_id]
 
-    unit_func_ids = sorted(
-        str(module.get("id", ""))
-        for module in func_modules
-        if str(module.get("id", ""))
-        and is_unit_seam(str(module.get("id", "")))
-    )
-    if unit_func_ids:
-        obligations["UNIT"] = {
-            "reason": (
-                "requirement owns independently callable FUNC modules whose transitive "
-                "dependency closure has no declared side effects"
-            ),
-            "target_modules": unit_func_ids,
-        }
-
-    if not obligations:
-        if "API" in kinds:
-            obligations["INTEGRATION"] = {
-                "reason": "API is the narrowest available public seam",
-                "target_modules": sorted(
-                    str(row.get("module_id", ""))
-                    for row in owned
-                    if row.get("kind") == "API" and str(row.get("module_id", ""))
-                ),
-            }
-        elif kinds & {"PAGE", "COMPONENT", "LAYOUT"}:
-            obligations["E2E"] = {
-                "reason": "browser UI is the available public seam",
-                "target_modules": ui_modules,
-            }
-    return {
-        layer: obligations[layer]
-        for layer in TEST_LAYERS
-        if layer in obligations
-    }
+    if any(
+        is_pure_func(str(row.get("module_id", "")))
+        for row in owned if row.get("kind") == "FUNC"
+    ):
+        layers.add("UNIT")
+    return [layer for layer in TEST_LAYERS if layer in layers]
 
 
 def _validate_test_decision(
@@ -1585,49 +1418,6 @@ def _validate_test_code(
                 "ARC4429 E2E_ROUTE_INVALID: E2E uses routes not present in the "
                 f"frontend screen graph: {invalid_routes}; allowed={sorted(allowed_routes)}."
             )
-        source_corpus = "\n".join(
-            str(row.get("source", ""))
-            for row in context_pack.get("public_seams", {}).get("E2E", [])
-            if isinstance(row, dict) and str(row.get("source", ""))
-        )
-        if source_corpus:
-            # Lowering keeps semantic obligations in scaffolding attributes.
-            # Those descriptions must not authorize literal UI-copy assertions.
-            visible_source = re.sub(
-                r"<span\b[^>]*\bdata-arc-obligation=\{[^}]*\}[^>]*>.*?</span>",
-                "",
-                source_corpus,
-                flags=re.DOTALL,
-            )
-            visible_source = re.sub(r"/\*.*?\*/|^[ \t]*//[^\n]*", "", visible_source, flags=re.DOTALL | re.MULTILINE)
-            normalized_source = _normalize_ui_text(visible_source)
-            locator_literals = re.findall(
-                r"\bgetBy(?:Text|Label|Placeholder)\s*\(\s*[\"']([^\"']+)[\"']",
-                code,
-            )
-            locator_literals.extend(
-                re.findall(
-                    r"\bgetByRole\s*\(\s*[\"'][^\"']+[\"']\s*,\s*"
-                    r"\{[^{}]*\bname\s*:\s*[\"']([^\"']+)[\"']",
-                    code,
-                    flags=re.DOTALL,
-                )
-            )
-            invented_locators = sorted(
-                {
-                    value
-                    for value in locator_literals
-                    if _normalize_ui_text(value) != "implementation pending"
-                    if _normalize_ui_text(value) not in normalized_source
-                }
-            )
-            if any(_normalize_ui_text(value) == "implementation pending" for value in locator_literals):
-                invented_locators.append("Implementation pending")
-            if invented_locators:
-                errors.append(
-                    "ARC4432 E2E_LOCATOR_INVALID: literal locator text must exist in "
-                    f"the supplied frontend source: {invented_locators}."
-                )
     if layer == "INTEGRATION" and (
         "supertest" not in imports
         or _relative_import(context_pack["output_files"][layer], "backend/src/app.ts")
@@ -1636,8 +1426,7 @@ def _validate_test_code(
         errors.append(
             "ARC4427 TEST_IMPORT_INVALID: INTEGRATION must use Supertest and the exported app."
         )
-    seed_fixtures = context_pack.get("requirement", {}).get("seed_fixtures", [])
-    if seed_fixtures and layer in {"INTEGRATION", "E2E"}:
+    if context_pack["has_seed_fixtures"] and layer in {"INTEGRATION", "E2E"}:
         seed_import = _relative_import(
             context_pack["output_files"][layer], "tests/support/seed.ts"
         )
@@ -1645,17 +1434,17 @@ def _validate_test_code(
             errors.append(
                 f"ARC4428 TEST_SEED_INVALID: {layer} must use the compiler-owned seedRequirement helper."
             )
+        if layer == "INTEGRATION" and not re.search(
+            r"\bseedRequirement\s*\([^,)]*,\s*(?!\))\S", code
+        ):
+            errors.append(
+                "ARC4428 TEST_SEED_INVALID: integration seeding must supply an in-process apply callback."
+            )
         if not re.search(r"\b(?:beforeEach|test\.beforeEach)\s*\(", code):
             errors.append(
                 f"ARC4428 TEST_SEED_INVALID: {layer} must apply fixtures in beforeEach."
             )
     return errors
-
-
-def _normalize_ui_text(value: str) -> str:
-    """Normalize source and locator literals for deterministic copy validation."""
-
-    return " ".join(str(value).casefold().split())
 
 
 def _route_is_allowed(route: str, allowed_routes: set[str]) -> bool:
@@ -1683,10 +1472,9 @@ def _decision_sources(
 
 def _manifest_rows(
     requirement_id: str,
-    requirement: dict[str, Any],
     decision: dict[str, Any],
     context_pack: dict[str, Any],
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+) -> list[dict[str, Any]]:
     files = []
     for row in decision["files"]:
         layer = str(row["layer"]).upper()
@@ -1696,7 +1484,7 @@ def _manifest_rows(
             "test_file": str(context_pack["output_files"][layer]),
             "content_sha256": hashlib.sha256((row["code"].rstrip() + "\n").encode("utf-8")).hexdigest(),
         })
-    return [], files
+    return files
 def _layer_source_cards(
     layer: str,
     targets: list[dict[str, Any]],
@@ -1720,7 +1508,6 @@ def _layer_source_cards(
                 "kind",
                 "file",
                 "symbol",
-                "public_signature",
                 "input_type",
                 "output_type",
                 "props_type",
@@ -1808,7 +1595,7 @@ def _test_generation_precondition_errors(
 
 def _replace_requirement_slice(
     manifest: dict[str, Any], *, requirement_id: str, state: str,
-    test_rows: list[dict[str, Any]], file_rows: list[dict[str, Any]],
+    file_rows: list[dict[str, Any]],
 ) -> dict[str, Any]:
     return {
         "status": state,
@@ -1820,14 +1607,8 @@ def _replace_requirement_slice(
     }
 
 
-def _manifest_requirement_order(manifest: dict[str, Any]) -> list[str]:
-    return sorted({str(row["requirement_id"]) for row in manifest.get("files", [])})
-
-
 def _finalize_manifest(
-    manifest: dict[str, Any], *, status: str, requirement_order: list[str],
-    node_states: dict[str, str], environment_manifest: dict[str, Any],
-    code_binding_registry: dict[str, Any],
+    manifest: dict[str, Any], *, status: str,
 ) -> dict[str, Any]:
     return {"status": status, "files": manifest.get("files", [])}
 def _test_workspace_path(test_file: str) -> str:
@@ -1836,34 +1617,8 @@ def _test_workspace_path(test_file: str) -> str:
 
 
 def _command_output(stdout: str | None, stderr: str | None) -> str:
-    value = "\n".join(part.strip() for part in (stdout or "", stderr or "") if part.strip())
-    return value[-6000:] if value else "no command output"
-
-
-def _application_only_type_errors(output: str) -> list[str]:
-    """Return source-only TS errors; never hide test or unlocated diagnostics."""
-
-    error_lines = [
-        line.strip() for line in output.splitlines()
-        if re.search(r"\berror TS\d+:", line)
-    ]
-    if not error_lines:
-        return []
-    paths = [
-        re.match(r"^(.+?\.tsx?)\(\d+,\d+\): error TS\d+:", line)
-        for line in error_lines
-    ]
-    if any(match is None for match in paths):
-        return []
-    for match in paths:
-        assert match is not None
-        path = match.group(1).replace("\\", "/").lstrip("./")
-        if not any(
-            path.startswith(f"{root}/src/") or f"/{root}/src/" in path
-            for root in ("backend", "frontend", "shared")
-        ):
-            return []
-    return error_lines
+    value = "\n".join(part for part in (stdout or "", stderr or "") if part)
+    return value if value else "no command output"
 
 
 def _read_json_object(path: Path) -> dict[str, Any]:
