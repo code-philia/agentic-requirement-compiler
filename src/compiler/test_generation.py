@@ -87,7 +87,7 @@ TEST_GENERATION_SCHEMA: dict[str, Any] = {
 
 TEST_GENERATION_INSTRUCTIONS = """You are a senior test engineer specializing in executable,
 requirement-driven unit, integration, and end-to-end tests.
-Generate a small set of executable RED tests from the supplied requirement context.
+Generate a small set of executable tests from the supplied requirement context.
 
 Ownership boundary:
 - Expected behavior and assertions come only from requirement and requirement_contract.
@@ -118,11 +118,21 @@ Testing rules:
 - Every Supertest status assertion must include the serialized response body as Vitest's assertion message, for
   example `expect(response.status, JSON.stringify(response.body)).toBeLessThan(400)`, so implementation failures retain
   the server diagnostic in the fixed feedback loop.
+- Fixture rows are present at the start of each Integration/E2E test. A successful first CREATE request must use
+  values distinct from seeded unique fields. For a duplicate-create scenario, make the first request with fresh
+  values, then repeat exactly that payload for the conflict assertion. Reuse a seeded value only when the scenario
+  explicitly expects a conflict on the first request.
 - E2E uses @playwright/test and the supplied frontend route/observable labels.
+- E2E flow.entry_routes lists valid starting screens from this requirement's journey or owned screens.
+  Use flow.entry_route when it is set; do not start at a navigation destination merely because its route exists.
 - Observable states describe behavior, not literal UI copy. Literal locators must come from supplied frontend source.
-- Every E2E file must import resetE2EState and call it from beforeEach before browser actions.
-- Pass Playwright's page fixture to resetE2EState(page); it resets server data, cookies, localStorage, and sessionStorage.
+- data-arc-obligation and Implementation pending are compiler skeleton placeholders, not UI copy or test targets.
+- Every E2E file must import test and expect from the supplied support/e2e module.
+- The compiler-owned automatic test fixture resets server data, cookies, localStorage, and sessionStorage
+  before each test and before its seed beforeEach hook. Do not call resetE2EState yourself.
 - Never use test.concurrent, it.concurrent, or describe.concurrent; isolation hooks are sequential by contract.
+- INTEGRATION and E2E must not use beforeAll/afterAll or parallel describe modes to create shared
+  mutable state. Seed fixtures in beforeEach only, after the compiler-owned per-test reset.
 - Tests may fail because implementation regions still throw or are incomplete. Do not weaken assertions.
 - Code must be complete TypeScript with imports and test declarations, without markdown fences.
 - Do not use `.only`, skipped tests, snapshots, dynamic source discovery, filesystem searches, or line numbers.
@@ -130,7 +140,7 @@ Testing rules:
 - seed.required is compiler-owned setup data, not application behavior. When it is true, every generated
   INTEGRATION or E2E file must import seedRequirement from the supplied support module and call it from beforeEach
   (or test.beforeEach). E2E may call seedRequirement(requirement_id) directly. INTEGRATION must pass an applier that
-  POSTs {requirement_id} to /__arc/seed through Supertest(app). Never expect a read repository to manufacture fixtures.
+  POSTs its requirementId argument to /__arc/seed through Supertest(app), once per test. Never expect a read repository to manufacture fixtures.
 - Return exactly one JSON object and no prose.
 - If materialization_feedback or previous_decision is supplied, repair that decision while preserving
   the behavior, scenario coverage, layer set, and assertion strength unless the feedback identifies
@@ -152,6 +162,7 @@ class TestEnvironmentResult:
 class TestStaticValidationResult:
     ok: bool
     errors: list[str] = field(default_factory=list)
+    source_diagnostics: list[str] = field(default_factory=list)
 
 
 @dataclass(slots=True)
@@ -160,6 +171,7 @@ class TestGenerationResult:
     node_states: dict[str, str]
     artifacts: dict[str, str] = field(default_factory=dict)
     errors: list[str] = field(default_factory=list)
+    source_diagnostics: list[str] = field(default_factory=list)
 
     @property
     def ok(self) -> bool:
@@ -386,8 +398,10 @@ class TestStaticValidator:
         has_e2e: bool,
         test_files: list[str] | None = None,
     ) -> TestStaticValidationResult:
+        # Validate generated test types, not the whole application. The TDD
+        # implementation has already changed application sources at this point.
         commands: list[list[str]] = [
-            ["npm", "run", "typecheck"],
+            ["npm", "run", "typecheck", "-w", "@arc/tests"],
         ]
         selected_files = [
             _test_workspace_path(value)
@@ -410,6 +424,7 @@ class TestStaticValidator:
                 command.extend(["--", *e2e_files])
             commands.append(command)
         errors: list[str] = []
+        source_diagnostics: list[str] = []
         for command in commands:
             executable = resolve_executable(command[0], self.environment)
             if executable is None:
@@ -428,13 +443,26 @@ class TestStaticValidator:
                 errors.append(f"ARC4431 TEST_STATIC_VALIDATION_FAILED: {exc}")
                 break
             if completed.returncode != 0:
+                output = "\n".join(
+                    part for part in (completed.stdout or "", completed.stderr or "")
+                    if part
+                )
+                if command == commands[0]:
+                    application_errors = _application_only_type_errors(output)
+                    if application_errors:
+                        source_diagnostics.extend(application_errors)
+                        continue
                 errors.append(
                     "ARC4431 TEST_STATIC_VALIDATION_FAILED: "
                     f"{command!r} exited with {completed.returncode}: "
                     f"{_command_output(completed.stdout, completed.stderr)}"
                 )
                 break
-        return TestStaticValidationResult(ok=not errors, errors=errors)
+        return TestStaticValidationResult(
+            ok=not errors,
+            errors=errors,
+            source_diagnostics=source_diagnostics,
+        )
 
 
 def _format_model_log(payload: dict[str, Any]) -> str:
@@ -687,7 +715,7 @@ class RequirementTestGenerationPass:
             test_obligations=test_obligations,
         )
         artifacts: dict[str, str] = {}
-        decision, sources, errors = self._generate_and_validate(
+        decision, sources, errors, source_diagnostics = self._generate_and_validate(
             requirement_id,
             context_pack,
             validation_context,
@@ -746,6 +774,7 @@ class RequirementTestGenerationPass:
             manifest=manifest,
             node_states=state,
             artifacts=artifacts,
+            source_diagnostics=source_diagnostics,
         )
 
     def _generate_and_validate(
@@ -753,7 +782,7 @@ class RequirementTestGenerationPass:
         requirement_id: str,
         context_pack: dict[str, Any],
         validation_context: dict[str, Any],
-    ) -> tuple[dict[str, Any] | None, dict[str, str], list[str]]:
+    ) -> tuple[dict[str, Any] | None, dict[str, str], list[str], list[str]]:
         feedback: list[str] = []
         last_errors: list[str] = []
         last_decision: dict[str, Any] | None = None
@@ -842,11 +871,16 @@ class RequirementTestGenerationPass:
                 has_e2e=has_e2e,
                 test_files=sorted(sources),
             )
+            if static_result.source_diagnostics:
+                self._trace(
+                    "APPLICATION_TYPE_DIAGNOSTICS_DEFERRED_TO_TDD "
+                    + "; ".join(static_result.source_diagnostics)
+                )
             if static_result.ok:
                 self._trace(
                     f"TESTS_ACCEPTED requirement={requirement_id} attempt={attempt + 1}"
                 )
-                return decision, sources, []
+                return decision, sources, [], static_result.source_diagnostics
             last_errors = static_result.errors
             feedback = [
                 "Only repair TypeScript syntax, imports, symbols, or test collection. "
@@ -855,7 +889,7 @@ class RequirementTestGenerationPass:
             ]
             self._trace("STATIC_VALIDATION_REJECTED " + "; ".join(static_result.errors))
         self._remove_requirement_files(planned_paths)
-        return None, {}, last_errors
+        return None, {}, last_errors, []
 
     def _remove_requirement_files(self, paths: set[str]) -> None:
         for relative in paths:
@@ -942,30 +976,18 @@ def _build_context_pack(
         test_file = output_files[layer]
         cards = _layer_source_cards(layer, target_rows, test_file, output_root)
         public_seams[layer] = cards
+        runtime_import = _relative_import(test_file, "tests/support/runtime.ts")
         imports = [
             {
-                "specifier": "vitest" if layer != "E2E" else "@playwright/test",
-                "symbols": ["describe", "expect", "test"]
-                if layer != "E2E"
-                else ["beforeEach", "expect", "test"],
-            }
-        ]
-        imports.append(
+                "specifier": "vitest" if layer != "E2E" else _relative_import(test_file, "tests/support/e2e.ts"),
+                "symbols": ["describe", "expect", "test"] if layer != "E2E" else ["expect", "test"],
+            },
             {
-                "specifier": _relative_import(test_file, "tests/support/runtime.ts"),
-                "symbols": ["uniqueValue", "resetE2EState"]
-                if layer == "E2E"
-                else ["uniqueValue"],
-                "signatures": (
-                    {
-                        "uniqueValue": "uniqueValue(prefix: string): string",
-                        "resetE2EState": "resetE2EState(page: Page): Promise<void>",
-                    }
-                    if layer == "E2E"
-                    else {"uniqueValue": "uniqueValue(prefix: string): string"}
-                ),
-            }
-        )
+                "specifier": runtime_import,
+                "symbols": ["uniqueValue"],
+                "signatures": {"uniqueValue": "uniqueValue(prefix: string): string"},
+            },
+        ]
         if requirement.get("seed_fixtures") and layer in {"INTEGRATION", "E2E"}:
             imports.append(
                 {
@@ -974,7 +996,7 @@ def _build_context_pack(
                     "signatures": {
                         "seedRequirement": (
                             "seedRequirement(requirementId: string, "
-                            "apply?: (fixture: SeedFixtureSet) => Promise<void>): Promise<void>"
+                            "apply?: (requirementId: string) => Promise<void>): Promise<void>"
                         )
                     },
                 }
@@ -1033,6 +1055,7 @@ def _build_context_pack(
         resolved_targets=resolved_targets,
     )
     model_layers = _build_model_layers(
+        requirement_id=requirement_id,
         required_layers=required_layers,
         output_files=output_files,
         public_seams=public_seams,
@@ -1064,6 +1087,7 @@ def _build_context_pack(
         "one_hop_dependencies": one_hop_dependencies,
         "relevant_types": relevant_types,
         "relevant_frontend_subgraph": relevant_frontend_subgraph,
+        "e2e_entry_routes": _e2e_entry_routes(requirement_id, relevant_frontend_subgraph),
         "public_seams": public_seams,
         "required_layers": required_layers,
         "allowed_layers": required_layers,
@@ -1202,6 +1226,7 @@ def _expand_test_type(
 
 def _build_model_layers(
     *,
+    requirement_id: str,
     required_layers: list[str],
     output_files: dict[str, str],
     public_seams: dict[str, Any],
@@ -1256,13 +1281,11 @@ def _build_model_layers(
             "seams": seams,
         }
         if layer == "E2E":
-            screens = frontend_subgraph.get("screens", [])
             journeys = frontend_subgraph.get("journeys", [])
+            entry_routes = _e2e_entry_routes(requirement_id, frontend_subgraph)
             flow = {
-                "entry_route": next(
-                    (str(row.get("route", "")) for row in screens if isinstance(row, dict) and row.get("route")),
-                    None,
-                ),
+                "entry_route": entry_routes[0] if len(entry_routes) == 1 else None,
+                "entry_routes": entry_routes,
                 "actions": [
                     copy.deepcopy(step)
                     for journey in journeys
@@ -1410,7 +1433,7 @@ def _project_frontend_subgraph(
         for row in owned_targets
     }
     screens = [
-        _project_frontend_row(row, "screen")
+        {**_project_frontend_row(row, "screen"), "entry_candidate": True}
         for row in frontend_ir.get("screens", [])
         if isinstance(row, dict)
         and (
@@ -1488,6 +1511,29 @@ def _project_frontend_subgraph(
         "api_usages": api_usages,
         "shared_state_policies": shared_state_policies,
     }
+
+
+def _e2e_entry_routes(
+    requirement_id: str,
+    frontend_subgraph: dict[str, list[dict[str, Any]]],
+) -> list[str]:
+    screens = {
+        str(row.get("id", "")): row
+        for row in frontend_subgraph.get("screens", [])
+        if isinstance(row, dict) and row.get("id")
+    }
+    journey_routes = {
+        str(screens.get(str(row.get("source_screen_id", "")), {}).get("route", ""))
+        for row in frontend_subgraph.get("journeys", [])
+        if isinstance(row, dict) and str(row.get("requirement_id", "")) == requirement_id
+    }
+    if any(journey_routes):
+        return sorted(route for route in journey_routes if route)
+    return sorted({
+        str(row.get("route", ""))
+        for row in screens.values()
+        if row.get("entry_candidate") and row.get("route")
+    })
 
 
 def _project_frontend_row(row: dict[str, Any], kind: str) -> dict[str, Any]:
@@ -1810,6 +1856,15 @@ def _validate_test_code(
         errors.append(
             f"ARC4428 TEST_ISOLATION_INVALID: {layer} must not run generated tests concurrently."
         )
+    if layer in {"INTEGRATION", "E2E"}:
+        if re.search(r"\b(?:beforeAll|afterAll|test\.beforeAll|test\.afterAll)\s*\(", code):
+            errors.append(
+                f"ARC4428 TEST_ISOLATION_INVALID: {layer} must not share setup or teardown across tests."
+            )
+        if re.search(r"\b(?:test\.)?describe\.configure\s*\(\s*\{[^}]*\bmode\s*:\s*['\"]parallel['\"]", code, re.DOTALL):
+            errors.append(
+                f"ARC4428 TEST_ISOLATION_INVALID: {layer} must not override sequential execution."
+            )
     if not re.search(r"\b(?:test|it)\s*\(", code):
         errors.append(f"ARC4426 TEST_CODE_INVALID: {layer} contains no executable test declaration.")
     allowed = {
@@ -1836,20 +1891,35 @@ def _validate_test_code(
         errors.append(
             f"ARC4427 TEST_IMPORT_INVALID: {layer} imports unavailable specifiers {invalid}."
         )
-    required_package = "@playwright/test" if layer == "E2E" else "vitest"
+    required_package = (
+        _relative_import(context_pack["output_files"][layer], "tests/support/e2e.ts")
+        if layer == "E2E" else "vitest"
+    )
     if required_package not in imports:
         errors.append(
             f"ARC4427 TEST_IMPORT_INVALID: {layer} must import {required_package}."
         )
-    if layer == "E2E" and (
-        "resetE2EState" not in imports
-        or not re.search(r"\bresetE2EState\s*\(\s*page\s*\)", code)
-        or not re.search(r"\bbeforeEach\s*\(", code)
-    ):
-        errors.append(
-            "ARC4428 TEST_ISOLATION_INVALID: E2E must call resetE2EState(page) "
-            "from beforeEach to reset server and browser state."
+    if layer == "E2E":
+        runtime_import = required_package
+        named_imports = re.findall(
+            r"\bimport\s*\{([^}]*)\}\s*from\s*['\"]([^'\"]+)['\"]",
+            code,
+            flags=re.DOTALL,
         )
+        if not any(
+            specifier == runtime_import
+            and re.search(r"(?:^|,)\s*test\s*(?:,|$)", symbols)
+            for symbols, specifier in named_imports
+        ):
+            errors.append(
+                "ARC4428 TEST_ISOLATION_INVALID: E2E must import test from the "
+                "compiler-owned support/e2e module."
+            )
+        if re.search(r"\bresetE2EState\s*\(", code):
+            errors.append(
+                "ARC4428 TEST_ISOLATION_INVALID: E2E reset is automatic; "
+                "do not reset again from generated test source."
+            )
     if re.search(r"\buniqueValue\s*\(\s*\)", code):
         errors.append(
             f"ARC4430 TEST_HELPER_SIGNATURE_INVALID: {layer} must pass a prefix to uniqueValue."
@@ -1864,10 +1934,36 @@ def _validate_test_code(
             for row in context_pack.get("relevant_frontend_subgraph", {}).get("screens", [])
             if isinstance(row, dict) and str(row.get("route", "")).strip()
         }
+        entry_routes = {
+            str(value)
+            for value in context_pack.get("e2e_entry_routes", [])
+            if str(value)
+        }
+        declared_entries = re.findall(
+            r"\b(?:entryRoute|baseRoute|startRoute)\s*=\s*[\"']([^\"']+)[\"']",
+            code,
+        )
+        invalid_entries = sorted({
+            route
+            for route in declared_entries
+            if entry_routes and not _route_is_allowed(route, entry_routes)
+        })
+        if invalid_entries:
+            errors.append(
+                "ARC4429 E2E_ENTRY_ROUTE_INVALID: starting routes must come from "
+                f"this requirement's source screens: {invalid_entries}; entries={sorted(entry_routes)}."
+            )
         literal_routes = re.findall(
             r"\bpage\.goto\s*\(\s*[\"']([^\"']+)[\"']\s*\)",
             code,
         )
+        if entry_routes and not declared_entries and literal_routes:
+            first_route = literal_routes[0]
+            if first_route.startswith("/") and not _route_is_allowed(first_route, entry_routes):
+                errors.append(
+                    "ARC4429 E2E_ENTRY_ROUTE_INVALID: the first direct navigation "
+                    f"must start at a requirement source screen: {first_route}; entries={sorted(entry_routes)}."
+                )
         literal_routes.extend(
             re.findall(
                 r"\b(?:entryRoute|baseRoute|startRoute)\s*=\s*[\"']([^\"']+)[\"']",
@@ -1905,7 +2001,16 @@ def _validate_test_code(
             if isinstance(row, dict) and str(row.get("source", ""))
         )
         if source_corpus:
-            normalized_source = _normalize_ui_text(source_corpus)
+            # Lowering keeps semantic obligations in scaffolding attributes.
+            # Those descriptions must not authorize literal UI-copy assertions.
+            visible_source = re.sub(
+                r"<span\b[^>]*\bdata-arc-obligation=\{[^}]*\}[^>]*>.*?</span>",
+                "",
+                source_corpus,
+                flags=re.DOTALL,
+            )
+            visible_source = re.sub(r"/\*.*?\*/|^[ \t]*//[^\n]*", "", visible_source, flags=re.DOTALL | re.MULTILINE)
+            normalized_source = _normalize_ui_text(visible_source)
             locator_literals = re.findall(
                 r"\bgetBy(?:Text|Label|Placeholder)\s*\(\s*[\"']([^\"']+)[\"']",
                 code,
@@ -1922,9 +2027,12 @@ def _validate_test_code(
                 {
                     value
                     for value in locator_literals
+                    if _normalize_ui_text(value) != "implementation pending"
                     if _normalize_ui_text(value) not in normalized_source
                 }
             )
+            if any(_normalize_ui_text(value) == "implementation pending" for value in locator_literals):
+                invented_locators.append("Implementation pending")
             if invented_locators:
                 errors.append(
                     "ARC4432 E2E_LOCATOR_INVALID: literal locator text must exist in "
@@ -1951,13 +2059,6 @@ def _validate_test_code(
             errors.append(
                 f"ARC4428 TEST_SEED_INVALID: {layer} must apply fixtures in beforeEach."
             )
-        if layer == "E2E":
-            reset_call = re.search(r"\bresetE2EState\s*\(", code)
-            seed_call = re.search(r"\bseedRequirement\s*\(", code)
-            if reset_call and seed_call and reset_call.start() > seed_call.start():
-                errors.append(
-                    "ARC4428 TEST_ISOLATION_INVALID: E2E must reset state before applying fixtures."
-                )
     return errors
 
 
@@ -2310,6 +2411,32 @@ def _test_workspace_path(test_file: str) -> str:
 def _command_output(stdout: str | None, stderr: str | None) -> str:
     value = "\n".join(part.strip() for part in (stdout or "", stderr or "") if part.strip())
     return value[-6000:] if value else "no command output"
+
+
+def _application_only_type_errors(output: str) -> list[str]:
+    """Return source-only TS errors; never hide test or unlocated diagnostics."""
+
+    error_lines = [
+        line.strip() for line in output.splitlines()
+        if re.search(r"\berror TS\d+:", line)
+    ]
+    if not error_lines:
+        return []
+    paths = [
+        re.match(r"^(.+?\.tsx?)\(\d+,\d+\): error TS\d+:", line)
+        for line in error_lines
+    ]
+    if any(match is None for match in paths):
+        return []
+    for match in paths:
+        assert match is not None
+        path = match.group(1).replace("\\", "/").lstrip("./")
+        if not any(
+            path.startswith(f"{root}/src/") or f"/{root}/src/" in path
+            for root in ("backend", "frontend", "shared")
+        ):
+            return []
+    return error_lines
 
 
 def _read_json_object(path: Path) -> dict[str, Any]:

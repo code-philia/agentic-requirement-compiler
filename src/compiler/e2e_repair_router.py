@@ -78,14 +78,20 @@ def classify_e2e_route(
             server_evidence = True
         if any(token in text for token in ("locator", "visible", "page.", "browser", "console", "navigation", "route")):
             browser_evidence = True
+        for event in report.e2e_progress:
+            kind = event.get("event")
+            if kind == "api_response" and str(event.get("status", "")).startswith("5"):
+                server_evidence = True
+            if kind in {"page_error", "console_error"}:
+                browser_evidence = True
         if report.stack_frames:
             browser_evidence = browser_evidence or any(
                 str(frame.file).replace("\\", "/").startswith("frontend/")
                 for frame in report.stack_frames
             )
 
-    if backend and frontend:
-        reasons.append("failure evidence names both backend and frontend targets")
+    if (backend and frontend) or (server_evidence and frontend):
+        reasons.append("server-side evidence and frontend targets both occur in this failure")
         route = "CROSS_LAYER"
     elif backend or server_evidence:
         if server_evidence and not backend:

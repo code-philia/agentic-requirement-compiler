@@ -448,7 +448,8 @@ class ImplementationAgent:
             errors.append(
                 "ARC4530 IMPLEMENTATION_CONTEXT_INVALID: unsupported implementation mode."
             )
-        if mode in {
+        first_tdd_call = mode == "TDD" and not request.failure_reports
+        if not first_tdd_call and mode in {
             "TDD",
             "UNIT_REPAIR",
             "INTEGRATION_REPAIR",
@@ -471,7 +472,6 @@ class ImplementationAgent:
             errors.append(
                 "ARC4530 IMPLEMENTATION_CONTEXT_INVALID: every failure report must be serializable."
             )
-        first_tdd_call = mode == "TDD" and not reports
         if not reports and not first_tdd_call:
             errors.append(
                 "ARC4530 IMPLEMENTATION_CONTEXT_INVALID: one failure cluster is required."
@@ -573,13 +573,19 @@ class ImplementationAgent:
             for target in report.get("writable_targets", [])
             if isinstance(target, dict)
         )
-        if self._allowed_kinds is None and not reported_frontend:
+        if self._allowed_kinds is None and (mode == "E2E_BACKEND_REPAIR" or not reported_frontend):
             writable_ids = {
                 module_id
                 for module_id in writable_ids
                 if str(bindings.get(module_id, {}).get("kind", "")).upper()
                 not in frontend_kinds
             }
+            focus_files = {
+                _safe_workspace_file(str(bindings[module_id].get("file", "")), source=True)
+                for module_id in (reported_writable_ids & writable_ids)
+                if module_id in bindings
+            }
+            focus_files = {value for value in focus_files if value}
         relevant_writable = set(writable_ids)
         localized_ids: set[str] = set()
         if not requested_target_ids:
@@ -715,7 +721,7 @@ class ImplementationAgent:
             "implementation_mode": mode,
             "policy": {
                 "one_failure_cluster": bool(reports),
-                "tests_are_frozen": mode == "TDD",
+                "tests_are_frozen": mode == "TDD" and not first_tdd_call,
                 "target_module_ids": sorted(requested_target_ids),
                 "tests_limited_to_failed_layers": False,
                 "writable_context_scope": layer_scope,

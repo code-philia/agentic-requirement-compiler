@@ -109,6 +109,7 @@ class NodeTDDResult:
     impacted_requirements: list[str] = field(default_factory=list)
     layer_outcomes: dict[str, str] = field(default_factory=dict)
     checkpoint_files: list[str] = field(default_factory=list)
+    compile_accepted_targets: list[str] = field(default_factory=list)
     incomplete_targets: list[str] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
     artifacts: dict[str, str] = field(default_factory=dict)
@@ -339,7 +340,7 @@ class NodeTDDOrchestrator:
         return "TDD"
 
     def run_node(self, requirement_id: str) -> NodeTDDResult:
-        """Generate this node's tests and drive only this node to acceptance."""
+        """Implement, freeze requirement tests, and use their feedback to reach acceptance."""
 
         requirement_id = str(requirement_id).strip()
         result = NodeTDDResult(requirement_id=requirement_id, status="INTERNAL_ERROR")
@@ -356,6 +357,11 @@ class NodeTDDOrchestrator:
                 return self._finish(result, state, [error])
 
             self._transition(requirement_id, "NODE_DISCOVERED")
+            # The first TDD call has only the requirement, module cards and source.
+            # It is part of the same feedback loop, with no preliminary check.
+            changed_files = self._implement_before_first_test(requirement_id)
+            result.changed_files = sorted(changed_files)
+            patch_iteration = 1 if changed_files else 0
             generation = self.test_generation.generate_requirement(
                 requirement_id=requirement_id,
                 requirement_ir=self.requirement_ir,
@@ -376,13 +382,6 @@ class NodeTDDOrchestrator:
             self.test_manifest = generation.manifest
             self._transition(requirement_id, "TESTS_GENERATED")
             self._transition(requirement_id, "TESTS_FROZEN")
-            # The skeleton is the initial known-compilable checkpoint. Later
-            # implementation rounds replace it after workspace typecheck passes.
-            self._node_checkpoints[requirement_id] = _CompilableCheckpoint(
-                sources=self.file_patcher.snapshot(self._checkpoint_files(requirement_id))
-            )
-
-            changed_files: set[str] = set()
             previous_patch_metadata: dict[str, Any] | None = None
             available_layers = [
                 layer
@@ -410,25 +409,20 @@ class NodeTDDOrchestrator:
             failure_analysis_text = ""
             functional_iterations = 0
             visual_iterations = 0
-            patch_iteration = 0
-            initial_changed: set[str] = set()
             retry_feedback: tuple[str, ...] = ()
             any_red_observed = False
             layer_outcomes = self._layer_gate_outcomes.setdefault(requirement_id, {})
 
             for layer_index, active_layer in enumerate(available_layers):
-                if layer_index == 0:
-                    initial_changed = self._implement_before_first_test(requirement_id)
-                    changed_files.update(initial_changed)
-                    result.changed_files = sorted(changed_files)
-                    patch_iteration = 1 if initial_changed else 0
                 self._log.info(
                     f"LAYER_GATE_STARTED requirement={requirement_id} layer={active_layer}"
                 )
                 baseline = self._run_and_analyze(
                     requirement_id,
                     iteration=patch_iteration,
-                    include_typecheck=bool(initial_changed) and layer_index == 0,
+                    # Imported implementation errors observed during test
+                    # materialization belong to TDD feedback, not test retries.
+                    include_typecheck=bool(generation.source_diagnostics) and layer_index == 0,
                     layers=(active_layer,),
                     changed_files=sorted(changed_files),
                 )
@@ -439,7 +433,7 @@ class NodeTDDOrchestrator:
                 if baseline.analysis.errors:
                     return self._finish(result, "INTERNAL_ERROR", baseline.analysis.errors)
                 if baseline.test_run.ok:
-                    if not initial_changed and layer_index == 0:
+                    if not changed_files and layer_index == 0:
                         self._log.info(
                             f"LAYER_GREEN_ALREADY requirement={requirement_id} "
                             f"layer={active_layer}; continuing layered gate"
@@ -473,6 +467,9 @@ class NodeTDDOrchestrator:
 
                 while not layer_done:
                     cluster = _selected_cluster(reports)
+                    feedback_layer = str(cluster[0].layer or active_layer).upper()
+                    if feedback_layer not in TEST_LAYERS:
+                        feedback_layer = active_layer
                     if functional_iterations - layer_start_iterations >= self.policy.max_iterations_per_node:
                         self._log.info(
                             f"LAYER_GATE_BUDGET_EXHAUSTED requirement={requirement_id} "
@@ -493,7 +490,7 @@ class NodeTDDOrchestrator:
                     )
 
                     agents = self._implementation_agents_for_reports(
-                        cluster, layer=active_layer
+                        cluster, layer=feedback_layer
                     )
                     implementation_agent = agents[agent_attempt_index % len(agents)]
                     agent_attempt_index += 1
@@ -507,7 +504,7 @@ class NodeTDDOrchestrator:
                             failure_reports=tuple(cluster),
                             failure_analysis_text=failure_analysis_text,
                             iteration=patch_iteration,
-                            mode=self._repair_mode(active_layer, implementation_agent),
+                            mode=self._repair_mode(feedback_layer, implementation_agent),
                             design_context=self._design_context(requirement_id),
                             previous_patch_metadata=previous_patch_metadata,
                             retry_feedback=retry_feedback,
@@ -567,14 +564,41 @@ class NodeTDDOrchestrator:
                             changed_files=sorted(changed_files),
                         )
                         result.infrastructure_retries += unit_regression.infrastructure_retries
-                        if not unit_regression.test_run.ok and not unit_regression.analysis.errors:
+                        if unit_regression.analysis.errors:
+                            return self._finish(
+                                result,
+                                "INTERNAL_ERROR",
+                                unit_regression.analysis.errors,
+                                iterations=functional_iterations,
+                                visual_iterations=visual_iterations,
+                                changed_files=changed_files,
+                            )
+                        if not unit_regression.test_run.ok:
                             self._log.info(
                                 f"INTEGRATION_UNIT_REGRESSION_FAILED requirement={requirement_id}"
                             )
+                            if not unit_regression.analysis.reports:
+                                return self._finish(
+                                    result,
+                                    "INTERNAL_ERROR",
+                                    ["ARC4540 UNIT_REGRESSION_ANALYSIS_EMPTY: failed Unit regression produced no report."],
+                                    iterations=functional_iterations,
+                                    visual_iterations=visual_iterations,
+                                    changed_files=changed_files,
+                                )
+                            blocked = _blocked_state(unit_regression.analysis.reports)
+                            if blocked:
+                                return self._finish(
+                                    result,
+                                    blocked,
+                                    _report_messages(unit_regression.analysis.reports),
+                                    iterations=functional_iterations,
+                                    visual_iterations=visual_iterations,
+                                    changed_files=changed_files,
+                                )
                             reports = unit_regression.analysis.reports
                             failure_analysis_text = unit_regression.analysis.agent_context
-                            if reports:
-                                continue
+                            continue
                     if active_layer == "E2E" and implementation_agent is self.implementation_agent:
                         backend_layers = tuple(
                             layer for layer in ("UNIT", "INTEGRATION")
@@ -589,15 +613,42 @@ class NodeTDDOrchestrator:
                                 changed_files=sorted(changed_files),
                             )
                             result.infrastructure_retries += backend_regression.infrastructure_retries
-                            if not backend_regression.test_run.ok and not backend_regression.analysis.errors:
+                            if backend_regression.analysis.errors:
+                                return self._finish(
+                                    result,
+                                    "INTERNAL_ERROR",
+                                    backend_regression.analysis.errors,
+                                    iterations=functional_iterations,
+                                    visual_iterations=visual_iterations,
+                                    changed_files=changed_files,
+                                )
+                            if not backend_regression.test_run.ok:
                                 self._log.info(
                                     f"E2E_BACKEND_REGRESSION_FAILED requirement={requirement_id} "
                                     f"layers={backend_layers}"
                                 )
+                                if not backend_regression.analysis.reports:
+                                    return self._finish(
+                                        result,
+                                        "INTERNAL_ERROR",
+                                        ["ARC4540 BACKEND_REGRESSION_ANALYSIS_EMPTY: failed backend regression produced no report."],
+                                        iterations=functional_iterations,
+                                        visual_iterations=visual_iterations,
+                                        changed_files=changed_files,
+                                    )
+                                blocked = _blocked_state(backend_regression.analysis.reports)
+                                if blocked:
+                                    return self._finish(
+                                        result,
+                                        blocked,
+                                        _report_messages(backend_regression.analysis.reports),
+                                        iterations=functional_iterations,
+                                        visual_iterations=visual_iterations,
+                                        changed_files=changed_files,
+                                    )
                                 reports = backend_regression.analysis.reports
                                 failure_analysis_text = backend_regression.analysis.agent_context
-                                if reports:
-                                    continue
+                                continue
 
                     verification = self._run_and_analyze(
                         requirement_id,
@@ -663,7 +714,7 @@ class NodeTDDOrchestrator:
                     result.layer_outcomes = dict(layer_outcomes)
                     break
 
-            if not any_red_observed and not initial_changed:
+            if not any_red_observed and not changed_files:
                 self._log.info(
                     f"LAYER_GREEN_ALREADY requirement={requirement_id} "
                     "all available layers passed without a repair patch"
@@ -760,6 +811,12 @@ class NodeTDDOrchestrator:
                 requirement,
             )
             result.incomplete_targets = list(remaining_targets)
+            result.compile_accepted_targets = sorted(
+                str(row.get("module_id", ""))
+                for row in frontend_targets
+                if str(row.get("module_id", ""))
+                and str(row.get("module_id", "")) not in remaining_targets
+            )
             if errors:
                 return self._finish(
                     result,
@@ -823,14 +880,12 @@ class NodeTDDOrchestrator:
         batch = 0
         model_attempts = 0
         errors: list[str] = []
-        while remaining:
-            if model_attempts >= self.policy.max_iterations_per_node:
-                errors.append(
-                    "ARC4547 AGGREGATE_ITERATION_BUDGET_EXHAUSTED: aggregate frontend "
-                    f"implementation budget was exhausted after {model_attempts} model "
-                    f"attempt(s); remaining={sorted(remaining)}."
-                )
-                break
+        exhausted_targets: set[str] = set()
+        per_target_budget = min(
+            self.policy.max_iterations_per_node,
+            self.policy.initial_target_retry_count + 1,
+        )
+        while remaining - exhausted_targets:
             batch += 1
             resolved = CodeTargetResolver(
                 self.code_binding_registry
@@ -841,7 +896,7 @@ class NodeTDDOrchestrator:
                 if isinstance(row, dict)
                 and str(row.get("kind", "")).upper()
                 in {"PAGE", "COMPONENT", "LAYOUT", "STORE"}
-                and str(row.get("module_id", "")) in remaining
+                and str(row.get("module_id", "")) in remaining - exhausted_targets
             ]
             if not targets:
                 errors.append(
@@ -849,18 +904,16 @@ class NodeTDDOrchestrator:
                     "target could be resolved."
                 )
                 break
-            target = targets[0]
+            # Stores establish shared state consumed by the UI modules.
+            target = next(
+                (row for row in targets if str(row.get("kind", "")).upper() == "STORE"),
+                targets[0],
+            )
             module_id = str(target["module_id"])
             target_attempt = 0
             retry_feedback: list[str] = []
             target_completed = False
-            while target_attempt <= self.policy.initial_target_retry_count:
-                if model_attempts >= self.policy.max_iterations_per_node:
-                    retry_feedback = [
-                        "ARC4547 AGGREGATE_ITERATION_BUDGET_EXHAUSTED: no further "
-                        "aggregate model attempt is available for this target."
-                    ]
-                    break
+            while target_attempt < per_target_budget:
                 target_attempt += 1
                 model_attempts += 1
                 self._log.info(
@@ -975,8 +1028,13 @@ class NodeTDDOrchestrator:
                 target_completed = True
                 break
             if not target_completed:
-                errors.extend(retry_feedback)
-                break
+                if not retry_feedback:
+                    retry_feedback = [
+                        "ARC4547 AGGREGATE_TARGET_BUDGET_EXHAUSTED: "
+                        f"{module_id} failed after {target_attempt} attempt(s)."
+                    ]
+                errors.extend(f"{module_id}: {value}" for value in retry_feedback)
+                exhausted_targets.add(module_id)
         return changed_files, errors, model_attempts, sorted(remaining)
 
     def _verify_aggregate_patch(
@@ -1135,7 +1193,7 @@ class NodeTDDOrchestrator:
                     requirement_id=requirement_id,
                     requirement=requirement,
                     requirement_contract=self._requirement_contract(requirement_id),
-                    test_manifest=self.test_manifest or {},
+                    test_manifest={},
                     code_binding_registry=self.code_binding_registry,
                     failure_reports=(),
                     failure_analysis_text="",

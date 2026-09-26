@@ -245,22 +245,25 @@ def test_workspace_spec(
             ),
             "playwright.config.ts": (
                 'import { defineConfig, devices } from "@playwright/test";\n\n'
+                f'const e2ePort = process.env.ARC_E2E_PORT ?? "{port}";\n'
+                'const baseURL = process.env.ARC_TEST_BASE_URL ?? "http://127.0.0.1:" + e2ePort;\n\n'
                 "export default defineConfig({\n"
+                '  reporter: [["line"], ["json"], ["./support/progress-reporter.ts"]],\n'
                 '  testDir: "./e2e",\n'
                 "  fullyParallel: false,\n"
                 "  workers: 1,\n"
                 "  timeout: 10_000,\n"
                 "  expect: { timeout: 10_000 },\n"
                 "  use: {\n"
-                f'    baseURL: process.env.ARC_TEST_BASE_URL ?? "http://127.0.0.1:{port}",\n'
+                '    baseURL,\n'
                 '    trace: "retain-on-failure",\n'
                 '    screenshot: "only-on-failure",\n'
                 "  },\n"
                 '  projects: [{ name: "chromium", use: { ...devices["Desktop Chrome"] } }],\n'
                 "  webServer: {\n"
                 '      command: "npm run build -w @arc/frontend && npm run start -w @arc/backend",\n'
-                f'      url: "http://127.0.0.1:{port}/__arc/health",\n'
-                f'      env: {{ DATABASE_URL: ":memory:", NODE_ENV: "test", PORT: "{port}" }},\n'
+                '      url: "http://127.0.0.1:" + e2ePort + "/__arc/health",\n'
+                '      env: { DATABASE_URL: ":memory:", NODE_ENV: "test", PORT: e2ePort, ARC_STUB_LOG: process.env.ARC_STUB_LOG ?? "" },\n'
                 "      reuseExistingServer: false,\n"
                 "      timeout: 60_000,\n"
                 '      stdout: "pipe",\n'
@@ -278,7 +281,68 @@ def test_workspace_spec(
                 '  const response = await fetch(`${baseUrl}/__arc/reset`, { method: "POST" });\n'
                 '  if (!response.ok) throw new Error(`Reset request failed: ${response.status} ${await response.text()}`);\n'
                 '  await page.context().clearCookies();\n'
-                '  await page.addInitScript(() => { localStorage.clear(); sessionStorage.clear(); });\n'
+                '  await page.goto(`${baseUrl}/__arc/health`);\n'
+                '  await page.evaluate(() => { localStorage.clear(); sessionStorage.clear(); });\n'
+                '}\n'
+            ),
+            "support/e2e.ts": (
+                'import { test as base, expect } from "@playwright/test";\n'
+                'import { resetE2EState } from "./runtime.js";\n'
+                'import { recordE2EProgress } from "./progress.js";\n\n'
+                'export const test = base.extend<{ arcIsolation: void }>({\n'
+                '  arcIsolation: [async ({ page }, use) => {\n'
+                '    page.on("console", message => {\n'
+                '      if (message.type() === "error") recordE2EProgress({ event: "console_error", error: message.text() });\n'
+                '    });\n'
+                '    page.on("pageerror", error => recordE2EProgress({ event: "page_error", error: error.message }));\n'
+                '    page.on("request", request => {\n'
+                '      if (new URL(request.url()).pathname.startsWith("/api/")) recordE2EProgress({ event: "api_request", url: request.url(), method: request.method() });\n'
+                '    });\n'
+                '    page.on("response", response => {\n'
+                '      if (new URL(response.url()).pathname.startsWith("/api/")) recordE2EProgress({ event: "api_response", url: response.url(), status: String(response.status()) });\n'
+                '    });\n'
+                '    page.on("requestfailed", request => recordE2EProgress({ event: "request_failed", url: request.url(), error: request.failure()?.errorText }));\n'
+                '    await resetE2EState(page);\n'
+                '    await use();\n'
+                '  }, { auto: true }],\n'
+                '});\n'
+                'export { expect };\n'
+            ),
+            "support/progress-reporter.ts": (
+                'import type { Reporter, TestCase, TestResult, TestStep, FullResult, TestError } from "@playwright/test/reporter";\n'
+                'import { recordE2EProgress } from "./progress.js";\n\n'
+                'class ProgressReporter implements Reporter {\n'
+                '  printsToStdio(): boolean { return false; }\n'
+                '  onBegin(): void { recordE2EProgress({ event: "run_begin" }); }\n'
+                '  onTestBegin(test: TestCase): void {\n'
+                '    recordE2EProgress({ event: "test_begin", test: test.title, file: test.location.file });\n'
+                '  }\n'
+                '  onStepBegin(test: TestCase, _result: TestResult, step: TestStep): void {\n'
+                '    recordE2EProgress({ event: "step_begin", test: test.title, category: step.category, step: step.title });\n'
+                '  }\n'
+                '  onStepEnd(test: TestCase, _result: TestResult, step: TestStep): void {\n'
+                '    recordE2EProgress({ event: "step_end", test: test.title, category: step.category, step: step.title, error: step.error?.message });\n'
+                '  }\n'
+                '  onTestEnd(test: TestCase, result: TestResult): void {\n'
+                '    recordE2EProgress({ event: "test_end", test: test.title, status: result.status, error: result.error?.message });\n'
+                '  }\n'
+                '  onError(error: TestError): void {\n'
+                '    recordE2EProgress({ event: "run_error", error: error.message });\n'
+                '  }\n'
+                '  onEnd(result: FullResult): void {\n'
+                '    recordE2EProgress({ event: "run_end", status: result.status });\n'
+                '  }\n'
+                '}\n\n'
+                'export default ProgressReporter;\n'
+            ),
+            "support/progress.ts": (
+                'import { appendFileSync } from "node:fs";\n\n'
+                'export function recordE2EProgress(event: Record<string, string | undefined>): void {\n'
+                '  const path = process.env.ARC_E2E_PROGRESS_LOG;\n'
+                '  if (!path) return;\n'
+                '  try {\n'
+                '    appendFileSync(path, JSON.stringify({ time: new Date().toISOString(), ...event }) + "\\n", "utf8");\n'
+                '  } catch { /* Diagnostic recording must not change test behavior. */ }\n'
                 '}\n'
             ),
             "support/seed.ts": (
@@ -315,11 +379,13 @@ def test_workspace_spec(
                 "}\n\n"
                 "export async function seedRequirement(\n"
                 "  requirementId: string,\n"
-                "  apply?: (fixture: SeedFixtureSet) => Promise<void>,\n"
+                "  apply?: (requirementId: string) => Promise<void>,\n"
                 "): Promise<void> {\n"
                 "  const fixtures = await seedFixturesForRequirement(requirementId);\n"
+                "  if (!fixtures.length) return;\n"
                 "  if (apply) {\n"
-                "    for (const fixture of fixtures) await apply(fixture);\n"
+                "    // The endpoint seeds every fixture set for this requirement in one call.\n"
+                "    await apply(requirementId);\n"
                 "    return;\n"
                 "  }\n"
                 f'  const baseUrl = process.env.ARC_TEST_BASE_URL ?? "http://127.0.0.1:{port}";\n'
@@ -332,8 +398,8 @@ def test_workspace_spec(
                 "}\n"
             ),
             "support/setup.ts": (
-                'process.env.DATABASE_URL ??= ":memory:";\n'
-                'process.env.NODE_ENV ??= "test";\n\n'
+                'process.env.DATABASE_URL = ":memory:";\n'
+                'process.env.NODE_ENV = "test";\n\n'
                 'import { beforeEach } from "vitest";\n\n'
                 'beforeEach(async () => {\n'
                 '  const { resetDatabase } = await import("../../backend/src/db/client.js");\n'
@@ -652,6 +718,9 @@ class ProjectInitializer:
             "tests/vitest.config.ts",
             "tests/playwright.config.ts",
             "tests/support/runtime.ts",
+            "tests/support/e2e.ts",
+            "tests/support/progress-reporter.ts",
+            "tests/support/progress.ts",
             "tests/support/seed.ts",
             "tests/support/setup.ts",
         )

@@ -53,6 +53,7 @@ class TestFailureReport:
     command: list[str] = field(default_factory=list)
     diagnostic_output: str = ""
     deferred_dependency_modules: list[str] = field(default_factory=list)
+    e2e_progress: list[dict[str, str]] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -137,6 +138,9 @@ class FailureAnalyzer:
             for value in resolved.get(key, [])
             if str(value)
         }
+        read_only_module_ids = {
+            str(value) for value in resolved.get("read_only", []) if str(value)
+        }
         reports: list[TestFailureReport] = []
         failed_commands = [row for row in test_run.commands if row.status != "PASSED"]
         for command_result in failed_commands:
@@ -151,6 +155,7 @@ class FailureAnalyzer:
                     modules_by_file=modules_by_file,
                     changed_files=changed_files or [],
                     owned_module_ids=owned_module_ids,
+                    read_only_module_ids=read_only_module_ids,
                 )
             )
 
@@ -249,7 +254,9 @@ class FailureAnalyzer:
                 for line in (raw_stderr + "\n" + raw_stdout).splitlines()
                 if line.strip() and "pw:api" not in line
             ]
-            last_url = _last_observed_url([*pw_api_lines, *process_lines])
+            progress_events = command.e2e_progress
+            progress_lines = [_format_e2e_event(row) for row in progress_events[-100:]]
+            last_url = _last_observed_url([*pw_api_lines, *progress_lines, *process_lines])
             exact_errors = _e2e_exact_errors(
                 command=command,
                 failed_tests=failed_tests,
@@ -260,10 +267,11 @@ class FailureAnalyzer:
             parts: list[str] = [
                 "E2E EXECUTION FEEDBACK",
                 f"status: {'TIMEOUT' if command.timed_out else command.status}",
-                f"reporter_complete: {'true' if bool(all_tests) else 'false'}",
+                f"reporter_complete: {'true' if bool(all_tests) or any(row.get('event') == 'run_end' for row in progress_events) else 'false'}",
                 "CAPTURE FILES",
                 f"stdout: {command.capture_stdout_path or '(unavailable)'}",
                 f"stderr: {command.capture_stderr_path or '(unavailable)'}",
+                f"progress: {command.capture_progress_path or '(unavailable)'}",
             ]
             if exact_errors:
                 parts.extend(["EXACT ERROR", exact_errors])
@@ -289,19 +297,29 @@ class FailureAnalyzer:
                     ])
 
             parts.extend([
+                "STREAMED TEST / STEP PROGRESS",
+                "\n".join(progress_lines) if progress_lines else "(no reporter events captured)",
                 "BROWSER STEPS (pw:api, ordered)",
                 "\n".join(pw_api_lines) if pw_api_lines else "(no pw:api lines captured)",
             ])
-            if pw_api_lines:
-                parts.extend(["LAST OBSERVED STEP", pw_api_lines[-1]])
+            step_events = [row for row in progress_events if row.get("event") == "step_begin"]
+            if step_events or pw_api_lines:
+                parts.extend([
+                    "LAST OBSERVED STEP",
+                    _format_e2e_event(step_events[-1]) if step_events else pw_api_lines[-1],
+                ])
             if last_url:
                 parts.extend(["LAST OBSERVED URL", last_url])
             if command.timed_out:
                 timeout_stage = (
                     "browser_action"
-                    if pw_api_lines
+                    if pw_api_lines or any(
+                        (row.get("event") == "step_begin" and row.get("category") in {"pw:api", "test.step"})
+                        or row.get("event") in {"api_request", "api_response", "page_error", "console_error", "request_failed"}
+                        for row in progress_events
+                    )
                     else "test_execution"
-                    if all_tests
+                    if all_tests or any(row.get("event") == "test_begin" for row in progress_events)
                     else "web_server_or_browser_bootstrap"
                 )
                 parts.extend(["TIMEOUT STAGE", timeout_stage])
@@ -363,6 +381,7 @@ class FailureAnalyzer:
         modules_by_file: dict[str, list[str]],
         changed_files: list[str],
         owned_module_ids: set[str],
+        read_only_module_ids: set[str],
     ) -> TestFailureReport:
         output = _clean_output(
             "\n".join(
@@ -380,7 +399,7 @@ class FailureAnalyzer:
             {
                 str(value)
                 for value in command_result.stub_hits
-                if str(value) and str(value) not in owned_module_ids
+                if str(value) in read_only_module_ids
             }
         )
         owned_stub_hits = {
@@ -388,12 +407,26 @@ class FailureAnalyzer:
             for value in command_result.stub_hits
             if str(value) in owned_module_ids
         }
+        invalid_stub_hits = sorted(
+            str(value)
+            for value in command_result.stub_hits
+            if str(value)
+            and (
+                str(value) not in binding_by_id
+                or str(value) not in owned_module_ids | read_only_module_ids
+            )
+        )
         failure_class = _failure_class(
             command_result,
             phase,
             output,
             deferred_modules=deferred if not owned_stub_hits else [],
         )
+        if invalid_stub_hits:
+            # A generated runtime and its frozen Code Binding Registry must
+            # agree on module identity. Expanding this to every writable module
+            # would hide a compiler artifact mismatch as a business-code bug.
+            failure_class = "TEST_OR_CONTRACT_INCONSISTENT"
         matching_tests = _matching_tests(command_result, output, test_rows)
         test_ids = sorted(
             {
@@ -410,7 +443,7 @@ class FailureAnalyzer:
         stub_modules = {
             str(value)
             for value in command_result.stub_hits
-            if str(value)
+            if str(value) in binding_by_id
         }
         target_modules = (
             set()
@@ -442,12 +475,34 @@ class FailureAnalyzer:
             target_modules.update(
                 _module_ids_for_files(changed_files, modules_by_file)
             )
-        writable_targets, read_only_targets = _relevant_targets(
-            resolved_targets,
-            binding_by_id,
-            target_modules,
+        writable_targets, read_only_targets = (
+            ([], [])
+            if phase == "TYPECHECK" and not target_modules
+            else _relevant_targets(resolved_targets, binding_by_id, target_modules)
         )
+        if phase == "TYPECHECK" and not writable_targets:
+            # A workspace diagnostic outside this node's writable files is
+            # not permission to edit every requirement-owned module.
+            if read_only_targets:
+                deferred = sorted(
+                    str(row["module_id"])
+                    for row in read_only_targets
+                    if row.get("module_id")
+                )
+                failure_class = "DEFERRED_DEPENDENCY"
+            else:
+                failure_class = "TEST_OR_CONTRACT_INCONSISTENT"
         message = _failure_message(output, command_result)
+        if invalid_stub_hits:
+            message = "\n".join(
+                value
+                for value in (
+                    message,
+                    "ARC4514 STUB_BINDING_MISMATCH: runtime reported unknown or "
+                    f"out-of-scope module ids {invalid_stub_hits}.",
+                )
+                if value
+            )
         fingerprint = _fingerprint(
             failure_class=failure_class,
             phase=phase,
@@ -473,6 +528,7 @@ class FailureAnalyzer:
             failure_fingerprint=fingerprint,
             command=list(command_result.command),
             diagnostic_output=output,
+            e2e_progress=command_result.e2e_progress[-80:],
             deferred_dependency_modules=deferred,
         )
 
@@ -696,6 +752,15 @@ def _format_playwright_progress(test: dict[str, Any]) -> str:
     return f"{status}: {title}{suffix}"
 
 
+def _format_e2e_event(event: dict[str, str]) -> str:
+    fields = ("time", "event", "test", "file", "category", "step", "method", "url", "status", "error")
+    return " ".join(
+        f"{field}={event[field]}"
+        for field in fields
+        if event.get(field)
+    )
+
+
 def _last_observed_url(lines: list[str]) -> str | None:
     """Return the last concrete browser/server URL visible in runner evidence."""
 
@@ -881,6 +946,12 @@ def _failure_class(
             and not command.stub_hits
             and "pw:api" not in raw_evidence
             and '"suites"' not in raw_evidence
+            and not any(
+                (row.get("event") == "step_begin" and row.get("category") in {"pw:api", "test.step"})
+                or row.get("event") in {"api_request", "api_response", "page_error", "console_error", "request_failed"}
+                or (row.get("event") == "test_end" and row.get("status") in {"failed", "timedOut"})
+                for row in command.e2e_progress
+            )
         ):
             # No browser action or reporter record means the command timed out
             # during build/server/browser bootstrap. Retrying infrastructure is
@@ -960,21 +1031,26 @@ def _diagnostic_module_ids(
 
     normalized_output = str(output or "").replace("\\", "/").lower()
     matched: set[str] = set()
+    suffix_owners: dict[str, list[str]] = {}
     for raw_file, module_ids in modules_by_file.items():
-        relative = _normalize_relative(raw_file).replace("\\", "/")
+        relative = _normalize_relative(raw_file).lower()
         if not relative:
             continue
-        candidates = {relative.lower()}
+        ids = [str(value) for value in module_ids if str(value)]
+        if re.search(re.escape(relative) + r"(?:[:(,\s]|$)", normalized_output):
+            matched.update(ids)
         if relative.startswith(("backend/", "frontend/")):
-            candidates.add(relative.lower().split("/", 1)[1])
-        if any(
-            re.search(
-                re.escape(candidate) + r"(?:[:(,\s]|$)",
-                normalized_output,
-            )
-            for candidate in candidates
+            suffix_owners.setdefault(relative.split("/", 1)[1], []).append(raw_file)
+    # A package-local path is evidence only when it identifies one file and
+    # does not occur inside a fully qualified backend/frontend path.
+    for suffix, owners in suffix_owners.items():
+        if len(owners) != 1:
+            continue
+        if re.search(
+            r"(?<!backend/)(?<!frontend/)" + re.escape(suffix) + r"(?:[:(,\s]|$)",
+            normalized_output,
         ):
-            matched.update(str(value) for value in module_ids if str(value))
+            matched.update(str(value) for value in modules_by_file[owners[0]] if str(value))
     return matched
 
 
@@ -986,11 +1062,19 @@ def _module_ids_for_files(
 
     wanted = {_normalize_relative(value).lower() for value in files if str(value)}
     matched: set[str] = set()
+    suffix_counts: dict[str, int] = {}
+    for raw_file in modules_by_file:
+        normalized = _normalize_relative(raw_file).lower()
+        if normalized.startswith(("backend/", "frontend/")):
+            suffix = normalized.split("/", 1)[1]
+            suffix_counts[suffix] = suffix_counts.get(suffix, 0) + 1
     for raw_file, module_ids in modules_by_file.items():
         normalized = _normalize_relative(raw_file).lower()
         candidates = {normalized}
         if normalized.startswith(("backend/", "frontend/")):
-            candidates.add(normalized.split("/", 1)[1])
+            suffix = normalized.split("/", 1)[1]
+            if suffix_counts[suffix] == 1:
+                candidates.add(suffix)
         if wanted.intersection(candidates):
             matched.update(str(value) for value in module_ids if str(value))
     return matched

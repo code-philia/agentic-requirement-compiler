@@ -313,16 +313,16 @@ class CodeBindingLowerer:
         _validate_coverage(backend_modules, frontend_items, store_rows, binding_by_id, errors)
         _validate_sources(root, bindings, type_bindings, errors)
 
-        requirement_ids = [
-            str(value)
-            for value in requirement_ir.get("node_order", [])
-            if str(value).strip()
-        ]
         requirement_targets = _requirement_targets(
-            requirement_ids,
+            requirement_ir,
             bindings,
             frontend_ir,
             dependency_graph,
+        )
+        _validate_requirement_permissions(
+            requirement_targets,
+            binding_by_id,
+            errors,
         )
         file_index = _file_index(bindings, type_bindings)
         registry = {
@@ -484,16 +484,11 @@ def validate_code_binding_registry(
             f"extra={sorted(set(requirement_by_id) - expected_requirement_ids)}."
         )
 
-    for requirement_id, row in requirement_by_id.items():
-        referenced = set(_strings(row.get("owned"))) | set(
-            _strings(row.get("dependencies"))
-        )
-        unknown = sorted(referenced - set(binding_by_id))
-        if unknown:
-            errors.append(
-                "ARC4308 CODE_BINDING_REUSE_INVALID: "
-                f"{requirement_id} references unknown modules {unknown}."
-            )
+    _validate_requirement_permissions(
+        list(requirement_by_id.values()),
+        binding_by_id,
+        errors,
+    )
 
     _validate_sources(
         output_root.expanduser().resolve(),
@@ -722,11 +717,18 @@ def _frontend_relationships(item: dict[str, Any]) -> list[str]:
 
 
 def _requirement_targets(
-    requirement_ids: list[str],
+    requirement_ir: dict[str, Any],
     bindings: list[dict[str, Any]],
     frontend_ir: dict[str, Any],
     dependency_graph: dict[str, Any],
 ) -> list[dict[str, Any]]:
+    requirement_ids = [
+        str(value)
+        for value in requirement_ir.get("node_order", [])
+        if str(value).strip()
+    ]
+    nodes = requirement_ir.get("nodes", {})
+    nodes = nodes if isinstance(nodes, dict) else {}
     by_id = {str(row["module_id"]): row for row in bindings}
     graph: dict[str, set[str]] = {
         module_id: {value for value in _strings(row.get("callees")) if value in by_id}
@@ -750,11 +752,25 @@ def _requirement_targets(
     for consumer, api_ids in consumer_api_ids.items():
         graph.setdefault(consumer, set()).update(value for value in api_ids if value in by_id)
 
-    owned_by_requirement = {
+    semantic_owners_by_requirement = {
         requirement_id: {
             str(row["module_id"])
             for row in bindings
             if requirement_id in _strings(row.get("owner_requirements"))
+        }
+        for requirement_id in requirement_ids
+    }
+    write_owner_by_module = _module_write_owners(
+        requirement_ids=requirement_ids,
+        nodes=nodes,
+        bindings=bindings,
+        dependency_graph=dependency_graph,
+    )
+    owned_by_requirement = {
+        requirement_id: {
+            module_id
+            for module_id, owner_id in write_owner_by_module.items()
+            if owner_id == requirement_id
         }
         for requirement_id in requirement_ids
     }
@@ -785,12 +801,18 @@ def _requirement_targets(
     rows: list[dict[str, Any]] = []
     for requirement_id in requirement_ids:
         owned = owned_by_requirement.get(requirement_id, set())
-        reachable: set[str] = {
+        # A module may be semantically relevant to several requirements, but
+        # only its selected write owner may edit it. Other semantic owners see
+        # the same module as a read-only dependency.
+        reachable: set[str] = set(
+            semantic_owners_by_requirement.get(requirement_id, set()) - owned
+        )
+        reachable.update({
             module_id
             for dependency_id in dependency_closure(requirement_id)
             for module_id in owned_by_requirement.get(dependency_id, set())
             if module_id not in owned
-        }
+        })
         pending = [*owned, *reachable]
         while pending:
             current = pending.pop()
@@ -808,6 +830,159 @@ def _requirement_targets(
             }
         )
     return rows
+
+
+def _module_write_owners(
+    *,
+    requirement_ids: list[str],
+    nodes: dict[str, Any],
+    bindings: list[dict[str, Any]],
+    dependency_graph: dict[str, Any],
+) -> dict[str, str]:
+    """Choose one deterministic writer for every semantically shared module."""
+
+    order_index = {
+        requirement_id: index for index, requirement_id in enumerate(requirement_ids)
+    }
+    atomic_order = [
+        str(requirement_id)
+        for wave in dependency_graph.get("atomic_implementation_waves", [])
+        if isinstance(wave, list)
+        for requirement_id in wave
+        if str(requirement_id)
+    ]
+    atomic_rank = {
+        requirement_id: index for index, requirement_id in enumerate(atomic_order)
+    }
+
+    def depth(requirement_id: str) -> int:
+        result = 0
+        current = requirement_id
+        visited: set[str] = set()
+        while current and current not in visited:
+            visited.add(current)
+            node = nodes.get(current, {})
+            if not isinstance(node, dict):
+                break
+            parent = str(node.get("parent_id", "")).strip()
+            if not parent:
+                break
+            result += 1
+            current = parent
+        return result
+
+    result: dict[str, str] = {}
+    valid_requirements = set(requirement_ids)
+    for binding in bindings:
+        module_id = str(binding.get("module_id", "")).strip()
+        owners = sorted(
+            {
+                value
+                for value in _strings(binding.get("owner_requirements"))
+                if value in valid_requirements
+            }
+        )
+        if not module_id or not owners:
+            continue
+        atomic_owners = [
+            value
+            for value in owners
+            if isinstance(nodes.get(value), dict)
+            and str(nodes[value].get("type", "")).upper() == "ATOMIC"
+        ]
+        if atomic_owners:
+            result[module_id] = min(
+                atomic_owners,
+                key=lambda value: (
+                    atomic_rank.get(value, len(atomic_rank) + order_index.get(value, 0)),
+                    order_index.get(value, len(order_index)),
+                    value,
+                ),
+            )
+            continue
+        result[module_id] = min(
+            owners,
+            key=lambda value: (
+                -depth(value),
+                order_index.get(value, len(order_index)),
+                value,
+            ),
+        )
+    return result
+
+
+def _validate_requirement_permissions(
+    requirement_targets: list[dict[str, Any]],
+    binding_by_id: dict[str, dict[str, Any]],
+    errors: list[str],
+) -> None:
+    """Enforce a single writer and internally consistent target permissions."""
+
+    writable_owners: dict[str, list[str]] = {}
+    permissions_by_requirement: dict[str, tuple[set[str], set[str]]] = {}
+    known_modules = set(binding_by_id)
+    for row in requirement_targets:
+        requirement_id = str(row.get("requirement_id", "")).strip()
+        owned = set(_strings(row.get("owned")))
+        writable = set(_strings(row.get("writable")))
+        dependencies = set(_strings(row.get("dependencies")))
+        read_only = set(_strings(row.get("read_only")))
+
+        if owned != writable or dependencies != read_only:
+            errors.append(
+                "ARC4306 CODE_BINDING_OWNERSHIP_INVALID: "
+                f"{requirement_id} has inconsistent owned/writable or "
+                "dependencies/read_only targets."
+            )
+        overlap = sorted(writable & read_only)
+        if overlap:
+            errors.append(
+                "ARC4306 CODE_BINDING_OWNERSHIP_INVALID: "
+                f"{requirement_id} marks modules as both writable and read-only "
+                f"{overlap}."
+            )
+        referenced = owned | writable | dependencies | read_only
+        unknown = sorted(referenced - known_modules)
+        if unknown:
+            errors.append(
+                "ARC4306 CODE_BINDING_OWNERSHIP_INVALID: "
+                f"{requirement_id} references unknown modules {unknown}."
+            )
+        for module_id in writable:
+            writable_owners.setdefault(module_id, []).append(requirement_id)
+        permissions_by_requirement[requirement_id] = (writable, read_only)
+
+    known_requirements = set(permissions_by_requirement)
+    for module_id, binding in sorted(binding_by_id.items()):
+        semantic_owners = {
+            value
+            for value in _strings(binding.get("owner_requirements"))
+            if value in known_requirements
+        }
+        if not semantic_owners:
+            fallback_owner = str(binding.get("owner_requirement", "")).strip()
+            if fallback_owner in known_requirements:
+                semantic_owners.add(fallback_owner)
+
+        owners = sorted(set(writable_owners.get(module_id, [])))
+        if semantic_owners and len(owners) != 1:
+            errors.append(
+                "ARC4306 CODE_BINDING_OWNERSHIP_INVALID: "
+                f"{module_id} must have exactly one writable requirement; found {owners}."
+            )
+        invalid_owners = sorted(set(owners) - semantic_owners)
+        if invalid_owners:
+            errors.append(
+                "ARC4306 CODE_BINDING_OWNERSHIP_INVALID: "
+                f"{module_id} is writable by non-semantic owners {invalid_owners}."
+            )
+        for requirement_id in sorted(semantic_owners):
+            writable, read_only = permissions_by_requirement[requirement_id]
+            if module_id not in writable and module_id not in read_only:
+                errors.append(
+                    "ARC4306 CODE_BINDING_OWNERSHIP_INVALID: "
+                    f"{module_id} is missing from semantic owner {requirement_id}."
+                )
 
 
 def _file_index(

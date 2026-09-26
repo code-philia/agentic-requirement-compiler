@@ -1284,7 +1284,8 @@ class Compiler:
         for requirement_id in order:
             await self._log(
                 "NodeTDDOrchestrator",
-                f"NODE_TDD_STARTED: generating frozen tests for {requirement_id}.",
+                f"NODE_TDD_STARTED: implementing {requirement_id} without feedback, "
+                "then freezing requirement tests and applying their feedback.",
                 node_id=requirement_id,
             )
             node_result = orchestrator.run_node(requirement_id)
@@ -1323,8 +1324,8 @@ class Compiler:
                     "Compiler",
                     f"NODE_TDD_INCOMPLETE: {requirement_id} finished with "
                     f"{node_result.status};{layer_summary} the latest compilable "
-                    "checkpoint was retained and compilation will continue with the "
-                    "next atomic requirement.",
+                    "checkpoint was retained when available; compilation will "
+                    "continue with the next atomic requirement.",
                     "warning",
                     requirement_id,
                 )
@@ -1364,6 +1365,7 @@ class Compiler:
 
         aggregate_failed_nodes: list[str] = []
         aggregate_incomplete_targets: dict[str, list[str]] = {}
+        aggregate_compile_accepted_targets: dict[str, list[str]] = {}
         aggregate_checkpoints: dict[str, list[str]] = {}
         aggregate_accepted_nodes: list[str] = []
         aggregate_noop_nodes: list[str] = []
@@ -1376,6 +1378,9 @@ class Compiler:
             node_result = orchestrator.run_aggregate_node(requirement_id)
             states[requirement_id] = node_result.status
             aggregate_checkpoints[requirement_id] = list(node_result.checkpoint_files)
+            aggregate_compile_accepted_targets[requirement_id] = list(
+                node_result.compile_accepted_targets
+            )
             if node_result.status == "AGGREGATE_IMPLEMENTATION_INCOMPLETE":
                 aggregate_incomplete_targets[requirement_id] = list(node_result.incomplete_targets)
             for name, path in node_result.artifacts.items():
@@ -1414,6 +1419,7 @@ class Compiler:
                 f"atomic_blocked={atomic_blocked_nodes}; "
                 f"atomic_checkpoints={atomic_checkpoints}; "
                 f"aggregate_incomplete_targets={aggregate_incomplete_targets}; "
+                f"aggregate_compile_accepted_targets={aggregate_compile_accepted_targets}; "
                 f"aggregate_checkpoints={aggregate_checkpoints}.",
                 "warning",
             )
@@ -1425,6 +1431,7 @@ class Compiler:
                 f"aggregate_noop={aggregate_noop_nodes}; "
                 f"atomic_layer_outcomes={atomic_layer_outcomes}; "
                 f"atomic_checkpoints={atomic_checkpoints}; "
+                f"aggregate_compile_accepted_targets={aggregate_compile_accepted_targets}; "
                 f"aggregate_checkpoints={aggregate_checkpoints}.",
             )
         await self._log(

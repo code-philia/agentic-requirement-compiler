@@ -1276,8 +1276,8 @@ class FrontendSkeletonLowerer:
             obligation_lines = [
                 "      <span "
                 f"className=\"rounded-lg border border-slate-200 bg-white/80 px-4 py-3 text-sm "
-                f"font-medium text-slate-700 shadow-sm\" data-arc-obligation={{{json.dumps(label)}}}>"
-                f"{{{json.dumps(label)}}}</span>"
+                f"font-medium text-slate-700 shadow-sm\" data-arc-obligation={{{json.dumps(label)}}} "
+                'aria-hidden="true">Implementation pending</span>'
                 for label in obligations
             ]
             body_lines = [*obligation_lines, *child_lines]

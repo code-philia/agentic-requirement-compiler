@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import socket
 import subprocess
 import time
 from dataclasses import asdict, dataclass, field
@@ -14,7 +15,6 @@ from core.logging import SynchronousLog
 from .process_utils import (
     process_group_kwargs,
     resolve_executable,
-    terminate_tcp_listeners,
     terminate_process_tree,
 )
 from .test_generation import TEST_ENVIRONMENT_READY, TEST_LAYERS, TESTS_FROZEN
@@ -53,6 +53,8 @@ class TestCommandResult:
     raw_stderr: str = ""
     capture_stdout_path: str | None = None
     capture_stderr_path: str | None = None
+    e2e_progress: list[dict[str, str]] = field(default_factory=list)
+    capture_progress_path: str | None = None
 
 
 @dataclass(slots=True)
@@ -197,12 +199,6 @@ class TestRunner:
             if any(str(row.get("layer", "")).upper() == layer for row in file_rows)
         ]
         selected_layers = layers or available_layers
-        backend_port = _environment_backend_port(environment)
-        if "E2E" in selected_layers and backend_port is None:
-            errors.append(
-                "ARC4502 TEST_ENVIRONMENT_INVALID: backend_port must be an integer "
-                "between 1 and 65535 before E2E execution."
-            )
         missing_layers = [layer for layer in selected_layers if layer not in available_layers]
         if missing_layers:
             errors.append(
@@ -318,7 +314,6 @@ class TestRunner:
                 command=command,
                 test_files=layer_files,
                 timeout=self._timeouts[layer],
-                e2e_port=backend_port if layer == "E2E" else None,
             )
             result.commands.append(command_result)
             if command_result.status != "PASSED" and selection.stop_on_failure:
@@ -369,7 +364,6 @@ class TestRunner:
         command: list[str],
         test_files: list[str],
         timeout: float,
-        e2e_port: int | None = None,
     ) -> TestCommandResult:
         started = time.perf_counter()
         command_text = " ".join(command)
@@ -377,33 +371,6 @@ class TestRunner:
             f"STARTED phase={phase} layer={layer or '-'} timeout_s={timeout:g} "
             f"command={command_text}"
         )
-        if str(layer or "").upper() == "E2E" and e2e_port is not None:
-            terminated_pids, cleanup_errors = terminate_tcp_listeners(e2e_port)
-            if terminated_pids:
-                self._log.info(
-                    "STALE_E2E_SERVER_TERMINATED "
-                    f"port={e2e_port} pids={terminated_pids}"
-                )
-            if cleanup_errors:
-                duration_ms = round((time.perf_counter() - started) * 1000)
-                detail = "; ".join(cleanup_errors)
-                self._log.info(
-                    "E2E_PORT_CLEANUP_FAILED "
-                    f"port={e2e_port} duration_ms={duration_ms} errors={detail}"
-                )
-                return TestCommandResult(
-                    phase=phase,
-                    layer=layer,
-                    command=command,
-                    test_files=test_files,
-                    status="ERROR",
-                    returncode=None,
-                    duration_ms=duration_ms,
-                    error=(
-                        "ARC4509 E2E_PORT_CLEANUP_FAILED: cannot release TCP port "
-                        f"{e2e_port}: {detail}"
-                    ),
-                )
         executable = resolve_executable(command[0], self.environment)
         if executable is None:
             self._log.info(
@@ -425,9 +392,29 @@ class TestRunner:
         capture_root.mkdir(parents=True, exist_ok=True)
         capture_id = f"{phase.lower()}-{str(layer or 'none').lower()}-{os.getpid()}-{time.time_ns()}"
         stub_log_path = capture_root / f"{capture_id}.stub-hits.log"
+        progress_path = capture_root / f"{capture_id}.progress.jsonl"
         process_environment = dict(self.environment)
         process_environment["ARC_STUB_LOG"] = str(stub_log_path)
-        if str(layer or "").upper() == "E2E":
+        is_e2e = str(layer or "").upper() == "E2E"
+        if is_e2e:
+            process_environment["ARC_E2E_PROGRESS_LOG"] = str(progress_path)
+            try:
+                with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
+                    listener.bind(("127.0.0.1", 0))
+                    runtime_port = listener.getsockname()[1]
+            except OSError as exc:
+                return TestCommandResult(
+                    phase=phase,
+                    layer=layer,
+                    command=command,
+                    test_files=test_files,
+                    status="ERROR",
+                    returncode=None,
+                    duration_ms=round((time.perf_counter() - started) * 1000),
+                    error=f"ARC4509 E2E_PORT_ALLOCATION_FAILED: {exc}",
+                )
+            process_environment["ARC_E2E_PORT"] = str(runtime_port)
+            process_environment["ARC_TEST_BASE_URL"] = f"http://127.0.0.1:{runtime_port}"
             debug_channels = [
                 value.strip()
                 for value in str(process_environment.get("DEBUG", "")).split(",")
@@ -490,6 +477,7 @@ class TestRunner:
                     pass
             stdout = _read_capture_file(stdout_path)
             stderr = _read_capture_file(stderr_path)
+            stub_hits = self._collect_stub_hits(stub_log_path)
             duration_ms = round((time.perf_counter() - started) * 1000)
             is_test_timeout = phase == "EXECUTION"
             status = "FAILED" if is_test_timeout else "ERROR"
@@ -500,6 +488,7 @@ class TestRunner:
             stderr = "\n".join(
                 value for value in (stderr, timeout_message) if value
             )
+            stderr = _append_stub_evidence(stderr, stub_hits)
             self._log.info(
                 f"TIMED_OUT phase={phase} layer={layer or '-'} "
                 f"status={status} duration_ms={duration_ms} timeout_s={timeout:g} "
@@ -521,16 +510,20 @@ class TestRunner:
                     else f"ARC4507 TEST_COMMAND_TIMEOUT: exceeded {timeout:g}s."
                 ),
                 timed_out=True,
-                stub_hits=self._collect_stub_hits(stub_log_path),
+                stub_hits=stub_hits,
                 raw_stdout=stdout,
                 raw_stderr=stderr,
                 capture_stdout_path=str(stdout_path),
                 capture_stderr_path=str(stderr_path),
+                e2e_progress=_read_e2e_progress(progress_path) if is_e2e else [],
+                capture_progress_path=str(progress_path) if is_e2e else None,
             )
         except OSError as exc:
             terminate_process_tree(process)
             stdout = _read_capture_file(stdout_path)
             stderr = _read_capture_file(stderr_path)
+            stub_hits = self._collect_stub_hits(stub_log_path)
+            stderr = _append_stub_evidence(stderr, stub_hits)
             duration_ms = round((time.perf_counter() - started) * 1000)
             self._log.info(
                 f"FINISHED phase={phase} layer={layer or '-'} status=ERROR "
@@ -547,22 +540,20 @@ class TestRunner:
                 stdout=_bounded_output(stdout),
                 stderr=_bounded_output(stderr),
                 error=f"ARC4508 TEST_COMMAND_FAILED: {exc}",
+                stub_hits=stub_hits,
                 raw_stdout=stdout,
                 raw_stderr=stderr,
                 capture_stdout_path=str(stdout_path),
                 capture_stderr_path=str(stderr_path),
+                e2e_progress=_read_e2e_progress(progress_path) if is_e2e else [],
+                capture_progress_path=str(progress_path) if is_e2e else None,
             )
         stdout = _read_capture_file(stdout_path)
         stderr = _read_capture_file(stderr_path)
         duration_ms = round((time.perf_counter() - started) * 1000)
         stub_hits = self._collect_stub_hits(stub_log_path)
         status = "PASSED" if process.returncode == 0 and not stub_hits else "FAILED"
-        if process.returncode == 0 and stub_hits:
-            stub_message = (
-                "ARC4513 UNIMPLEMENTED_MODULE_EXECUTED: test assertions passed but "
-                f"runtime skeletons were executed: {stub_hits}."
-            )
-            stderr = "\n".join(value for value in (stderr, stub_message) if value)
+        stderr = _append_stub_evidence(stderr, stub_hits)
         self._log.info(
             f"FINISHED phase={phase} layer={layer or '-'} status={status} "
             f"returncode={process.returncode} duration_ms={duration_ms} "
@@ -583,6 +574,8 @@ class TestRunner:
             raw_stderr=stderr or "",
             capture_stdout_path=str(stdout_path),
             capture_stderr_path=str(stderr_path),
+            e2e_progress=_read_e2e_progress(progress_path) if is_e2e else [],
+            capture_progress_path=str(progress_path) if is_e2e else None,
         )
 
     def _collect_stub_hits(self, stub_log_path: Path) -> list[str]:
@@ -666,7 +659,6 @@ def _execution_command(layer: str, test_files: list[str]) -> list[str]:
         "--config",
         "playwright.config.ts",
         "--project=chromium",
-        "--reporter=line,json",
         *workspace_files,
     ]
 
@@ -681,6 +673,32 @@ def _read_capture_file(path: Path) -> str:
         return path.read_text(encoding="utf-8", errors="replace")
     except OSError:
         return ""
+
+
+def _append_stub_evidence(stderr: str, stub_hits: list[str]) -> str:
+    if not stub_hits:
+        return stderr
+    message = (
+        "ARC4513 UNIMPLEMENTED_MODULE_EXECUTED: runtime skeletons were "
+        f"executed: {stub_hits}."
+    )
+    return "\n".join(value for value in (stderr, message) if value)
+
+
+def _read_e2e_progress(path: Path) -> list[dict[str, str]]:
+    records: list[dict[str, str]] = []
+    for line in _read_capture_file(path).splitlines()[-500:]:
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(event, dict):
+            records.append({
+                str(key): str(value)[:2000]
+                for key, value in event.items()
+                if isinstance(key, str) and isinstance(value, str)
+            })
+    return records
 
 
 def _bounded_output(value: str | bytes | None, limit: int = 100_000) -> str:
@@ -702,11 +720,3 @@ def _bounded_float(
         return max(minimum, min(float(environment.get(name, str(default))), maximum))
     except ValueError:
         return default
-
-
-def _environment_backend_port(environment: Mapping[str, Any]) -> int | None:
-    try:
-        port = int(environment.get("backend_port", 0))
-    except (TypeError, ValueError):
-        return None
-    return port if 1 <= port <= 65535 else None
