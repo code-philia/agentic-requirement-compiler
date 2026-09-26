@@ -94,6 +94,7 @@ Ownership boundary:
 - requirement contains the original requirement name, description, scenarios, examples, and setup flags.
 - requirement_contract contains the contract spec, inputs, outputs, effects, and obligations.
 - Invocation mechanisms, imports, symbols, routes, and types come only from the layer entry in layers.
+- Treat layers[].imports[].signatures as exact helper APIs; never omit required arguments or invent overloads.
 - Database shape comes from database_tables.source; semantic business rules still come from requirement_contract.
 - Source text is supplied for each relevant seam because this is a single LLM call with no filesystem access.
   Use it to verify exports, imports, and callable shapes, but do not copy implementation behavior into assertions.
@@ -118,7 +119,10 @@ Testing rules:
   example `expect(response.status, JSON.stringify(response.body)).toBeLessThan(400)`, so implementation failures retain
   the server diagnostic in the fixed feedback loop.
 - E2E uses @playwright/test and the supplied frontend route/observable labels.
+- Observable states describe behavior, not literal UI copy. Literal locators must come from supplied frontend source.
 - Every E2E file must import resetE2EState and call it from beforeEach before browser actions.
+- Pass Playwright's page fixture to resetE2EState(page); it resets server data, cookies, localStorage, and sessionStorage.
+- Never use test.concurrent, it.concurrent, or describe.concurrent; isolation hooks are sequential by contract.
 - Tests may fail because implementation regions still throw or are incomplete. Do not weaken assertions.
 - Code must be complete TypeScript with imports and test declarations, without markdown fences.
 - Do not use `.only`, skipped tests, snapshots, dynamic source discovery, filesystem searches, or line numbers.
@@ -952,6 +956,14 @@ def _build_context_pack(
                 "symbols": ["uniqueValue", "resetE2EState"]
                 if layer == "E2E"
                 else ["uniqueValue"],
+                "signatures": (
+                    {
+                        "uniqueValue": "uniqueValue(prefix: string): string",
+                        "resetE2EState": "resetE2EState(page: Page): Promise<void>",
+                    }
+                    if layer == "E2E"
+                    else {"uniqueValue": "uniqueValue(prefix: string): string"}
+                ),
             }
         )
         if requirement.get("seed_fixtures") and layer in {"INTEGRATION", "E2E"}:
@@ -959,6 +971,12 @@ def _build_context_pack(
                 {
                     "specifier": _relative_import(test_file, "tests/support/seed.ts"),
                     "symbols": ["seedRequirement"],
+                    "signatures": {
+                        "seedRequirement": (
+                            "seedRequirement(requirementId: string, "
+                            "apply?: (fixture: SeedFixtureSet) => Promise<void>): Promise<void>"
+                        )
+                    },
                 }
             )
             if layer == "INTEGRATION":
@@ -1788,6 +1806,10 @@ def _validate_test_code(
         errors.append(f"ARC4426 TEST_CODE_INVALID: {layer} contains markdown fences.")
     if re.search(r"\b(?:test|it|describe)\.(?:only|skip)\b", code):
         errors.append(f"ARC4426 TEST_CODE_INVALID: {layer} contains focused or skipped tests.")
+    if re.search(r"\b(?:test|it|describe)\.concurrent\b", code):
+        errors.append(
+            f"ARC4428 TEST_ISOLATION_INVALID: {layer} must not run generated tests concurrently."
+        )
     if not re.search(r"\b(?:test|it)\s*\(", code):
         errors.append(f"ARC4426 TEST_CODE_INVALID: {layer} contains no executable test declaration.")
     allowed = {
@@ -1821,12 +1843,93 @@ def _validate_test_code(
         )
     if layer == "E2E" and (
         "resetE2EState" not in imports
-        or not re.search(r"\bresetE2EState\s*\(", code)
+        or not re.search(r"\bresetE2EState\s*\(\s*page\s*\)", code)
         or not re.search(r"\bbeforeEach\s*\(", code)
     ):
         errors.append(
-            "ARC4428 TEST_ISOLATION_INVALID: E2E must reset the test database in beforeEach."
+            "ARC4428 TEST_ISOLATION_INVALID: E2E must call resetE2EState(page) "
+            "from beforeEach to reset server and browser state."
         )
+    if re.search(r"\buniqueValue\s*\(\s*\)", code):
+        errors.append(
+            f"ARC4430 TEST_HELPER_SIGNATURE_INVALID: {layer} must pass a prefix to uniqueValue."
+        )
+    if re.search(r"\bseedRequirement\s*\(\s*\)", code):
+        errors.append(
+            f"ARC4430 TEST_HELPER_SIGNATURE_INVALID: {layer} must pass requirement_id to seedRequirement."
+        )
+    if layer == "E2E":
+        allowed_routes = {
+            str(row.get("route", "")).strip()
+            for row in context_pack.get("relevant_frontend_subgraph", {}).get("screens", [])
+            if isinstance(row, dict) and str(row.get("route", "")).strip()
+        }
+        literal_routes = re.findall(
+            r"\bpage\.goto\s*\(\s*[\"']([^\"']+)[\"']\s*\)",
+            code,
+        )
+        literal_routes.extend(
+            re.findall(
+                r"\b(?:entryRoute|baseRoute|startRoute)\s*=\s*[\"']([^\"']+)[\"']",
+                code,
+            )
+        )
+        route_constants = {
+            name: route
+            for name, route in re.findall(
+                r"\b(?:const|let)\s+(\w+)\s*=\s*[\"'](/[^\"']*)[\"']",
+                code,
+            )
+        }
+        literal_routes.extend(
+            route_constants[name]
+            for name in re.findall(r"\bpage\.goto\s*\(\s*(\w+)\s*\)", code)
+            if name in route_constants
+        )
+        invalid_routes = sorted(
+            {
+                route
+                for route in literal_routes
+                if route.startswith("/")
+                and not _route_is_allowed(route, allowed_routes)
+            }
+        )
+        if invalid_routes:
+            errors.append(
+                "ARC4429 E2E_ROUTE_INVALID: E2E uses routes not present in the "
+                f"frontend screen graph: {invalid_routes}; allowed={sorted(allowed_routes)}."
+            )
+        source_corpus = "\n".join(
+            str(row.get("source", ""))
+            for row in context_pack.get("public_seams", {}).get("E2E", [])
+            if isinstance(row, dict) and str(row.get("source", ""))
+        )
+        if source_corpus:
+            normalized_source = _normalize_ui_text(source_corpus)
+            locator_literals = re.findall(
+                r"\bgetBy(?:Text|Label|Placeholder)\s*\(\s*[\"']([^\"']+)[\"']",
+                code,
+            )
+            locator_literals.extend(
+                re.findall(
+                    r"\bgetByRole\s*\(\s*[\"'][^\"']+[\"']\s*,\s*"
+                    r"\{[^{}]*\bname\s*:\s*[\"']([^\"']+)[\"']",
+                    code,
+                    flags=re.DOTALL,
+                )
+            )
+            invented_locators = sorted(
+                {
+                    value
+                    for value in locator_literals
+                    if _normalize_ui_text(value) not in normalized_source
+                }
+            )
+            if invented_locators:
+                errors.append(
+                    "ARC4432 E2E_LOCATOR_INVALID: literal locator text must exist in "
+                    f"the supplied frontend source: {invented_locators}."
+                )
     if layer == "INTEGRATION" and (
         "supertest" not in imports
         or _relative_import(context_pack["output_files"][layer], "backend/src/app.ts")
@@ -1848,7 +1951,32 @@ def _validate_test_code(
             errors.append(
                 f"ARC4428 TEST_SEED_INVALID: {layer} must apply fixtures in beforeEach."
             )
+        if layer == "E2E":
+            reset_call = re.search(r"\bresetE2EState\s*\(", code)
+            seed_call = re.search(r"\bseedRequirement\s*\(", code)
+            if reset_call and seed_call and reset_call.start() > seed_call.start():
+                errors.append(
+                    "ARC4428 TEST_ISOLATION_INVALID: E2E must reset state before applying fixtures."
+                )
     return errors
+
+
+def _normalize_ui_text(value: str) -> str:
+    """Normalize source and locator literals for deterministic copy validation."""
+
+    return " ".join(str(value).casefold().split())
+
+
+def _route_is_allowed(route: str, allowed_routes: set[str]) -> bool:
+    """Match a concrete E2E URL path against static and `:parameter` routes."""
+
+    path = str(route).split("?", 1)[0].split("#", 1)[0]
+    for allowed in allowed_routes:
+        pattern = re.sub(r":\w+", r"[^/]+", re.escape(allowed))
+        pattern = pattern.replace(r"\*", ".*")
+        if re.fullmatch(pattern, path):
+            return True
+    return False
 
 
 def _decision_sources(

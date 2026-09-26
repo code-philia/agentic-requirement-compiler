@@ -51,6 +51,8 @@ class TestCommandResult:
     # bounded stdout/stderr fields remain suitable for ordinary diagnostics.
     raw_stdout: str = ""
     raw_stderr: str = ""
+    capture_stdout_path: str | None = None
+    capture_stderr_path: str | None = None
 
 
 @dataclass(slots=True)
@@ -90,12 +92,9 @@ class TestRunner:
         self.output_root = output_root.expanduser().resolve()
         self.environment = dict(os.environ if environment is None else environment)
         self.environment.setdefault("CI", "1")
-        # Unimplemented modules append their id here while a command runs, so a
-        # failure can be attributed to a deferred dependency instead of to the
-        # requirement under test. The path is absolute because the backend process
-        # is started by Playwright with its own working directory.
-        self._stub_log = self.output_root / ".arc" / "runtime" / "stub-hits.log"
-        self.environment.setdefault("ARC_STUB_LOG", str(self._stub_log))
+        # Each command gets its own absolute stub ledger in _execute. Reusing a
+        # workspace-wide log lets another runner or a lingering server write
+        # into the current command's evidence.
         self._log = SynchronousLog("TestRunner", workspace_root=self.output_root)
         self._timeouts = {
             "TYPECHECK": _bounded_float(
@@ -122,8 +121,8 @@ class TestRunner:
             "E2E": _bounded_float(
                 self.environment,
                 "ARC_TDD_E2E_TIMEOUT_SECONDS",
-                30.0,
-                30.0,
+                180.0,
+                60.0,
                 1800.0,
             ),
         }
@@ -422,8 +421,12 @@ class TestRunner:
                 error=f"ARC4506 TEST_COMMAND_UNAVAILABLE: {command[0]}",
             )
         actual_command = [executable, *command[1:]]
-        self._reset_stub_log()
+        capture_root = self.output_root / ".arc" / "runtime" / "test-output"
+        capture_root.mkdir(parents=True, exist_ok=True)
+        capture_id = f"{phase.lower()}-{str(layer or 'none').lower()}-{os.getpid()}-{time.time_ns()}"
+        stub_log_path = capture_root / f"{capture_id}.stub-hits.log"
         process_environment = dict(self.environment)
+        process_environment["ARC_STUB_LOG"] = str(stub_log_path)
         if str(layer or "").upper() == "E2E":
             debug_channels = [
                 value.strip()
@@ -433,19 +436,29 @@ class TestRunner:
             if "pw:api" not in debug_channels:
                 debug_channels.append("pw:api")
             process_environment["DEBUG"] = ",".join(debug_channels)
+        stdout_path = capture_root / f"{capture_id}.stdout.log"
+        stderr_path = capture_root / f"{capture_id}.stderr.log"
+        stdout_file = None
+        stderr_file = None
         try:
+            stdout_file = stdout_path.open("w", encoding="utf-8", errors="replace")
+            stderr_file = stderr_path.open("w", encoding="utf-8", errors="replace")
             process = subprocess.Popen(
                 actual_command,
                 cwd=str(self.output_root),
                 env=process_environment,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
+                stdout=stdout_file,
+                stderr=stderr_file,
                 **process_group_kwargs(),
             )
+            stdout_file.close()
+            stderr_file.close()
+            stdout_file = None
+            stderr_file = None
         except OSError as exc:
+            for capture_handle in (stdout_file, stderr_file):
+                if capture_handle is not None:
+                    capture_handle.close()
             duration_ms = round((time.perf_counter() - started) * 1000)
             self._log.info(
                 f"FINISHED phase={phase} layer={layer or '-'} status=ERROR "
@@ -460,17 +473,23 @@ class TestRunner:
                 returncode=None,
                 duration_ms=duration_ms,
                 error=f"ARC4508 TEST_COMMAND_FAILED: {exc}",
+                capture_stdout_path=str(stdout_path),
+                capture_stderr_path=str(stderr_path),
             )
         try:
-            stdout, stderr = process.communicate(timeout=timeout)
-        except subprocess.TimeoutExpired as exc:
+            process.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
             terminate_process_tree(process)
             try:
-                stdout, stderr = process.communicate(timeout=5.0)
+                process.communicate(timeout=5.0)
             except subprocess.TimeoutExpired:
                 process.kill()
-                stdout = exc.stdout or ""
-                stderr = exc.stderr or ""
+                try:
+                    process.wait(timeout=5.0)
+                except subprocess.TimeoutExpired:
+                    pass
+            stdout = _read_capture_file(stdout_path)
+            stderr = _read_capture_file(stderr_path)
             duration_ms = round((time.perf_counter() - started) * 1000)
             is_test_timeout = phase == "EXECUTION"
             status = "FAILED" if is_test_timeout else "ERROR"
@@ -478,13 +497,8 @@ class TestRunner:
                 f"TEST_COMMAND_TIMEOUT: {layer or phase} test command exceeded "
                 f"{timeout:g}s and was terminated."
             )
-            stderr_text = (
-                stderr.decode("utf-8", errors="replace")
-                if isinstance(stderr, bytes)
-                else stderr
-            )
             stderr = "\n".join(
-                value for value in (stderr_text, timeout_message) if value
+                value for value in (stderr, timeout_message) if value
             )
             self._log.info(
                 f"TIMED_OUT phase={phase} layer={layer or '-'} "
@@ -507,12 +521,16 @@ class TestRunner:
                     else f"ARC4507 TEST_COMMAND_TIMEOUT: exceeded {timeout:g}s."
                 ),
                 timed_out=True,
-                stub_hits=self._collect_stub_hits(),
-                raw_stdout=(stdout.decode("utf-8", errors="replace") if isinstance(stdout, bytes) else stdout or ""),
-                raw_stderr=(stderr.decode("utf-8", errors="replace") if isinstance(stderr, bytes) else stderr or ""),
+                stub_hits=self._collect_stub_hits(stub_log_path),
+                raw_stdout=stdout,
+                raw_stderr=stderr,
+                capture_stdout_path=str(stdout_path),
+                capture_stderr_path=str(stderr_path),
             )
         except OSError as exc:
             terminate_process_tree(process)
+            stdout = _read_capture_file(stdout_path)
+            stderr = _read_capture_file(stderr_path)
             duration_ms = round((time.perf_counter() - started) * 1000)
             self._log.info(
                 f"FINISHED phase={phase} layer={layer or '-'} status=ERROR "
@@ -526,11 +544,25 @@ class TestRunner:
                 status="ERROR",
                 returncode=None,
                 duration_ms=duration_ms,
+                stdout=_bounded_output(stdout),
+                stderr=_bounded_output(stderr),
                 error=f"ARC4508 TEST_COMMAND_FAILED: {exc}",
+                raw_stdout=stdout,
+                raw_stderr=stderr,
+                capture_stdout_path=str(stdout_path),
+                capture_stderr_path=str(stderr_path),
             )
+        stdout = _read_capture_file(stdout_path)
+        stderr = _read_capture_file(stderr_path)
         duration_ms = round((time.perf_counter() - started) * 1000)
-        status = "PASSED" if process.returncode == 0 else "FAILED"
-        stub_hits = self._collect_stub_hits()
+        stub_hits = self._collect_stub_hits(stub_log_path)
+        status = "PASSED" if process.returncode == 0 and not stub_hits else "FAILED"
+        if process.returncode == 0 and stub_hits:
+            stub_message = (
+                "ARC4513 UNIMPLEMENTED_MODULE_EXECUTED: test assertions passed but "
+                f"runtime skeletons were executed: {stub_hits}."
+            )
+            stderr = "\n".join(value for value in (stderr, stub_message) if value)
         self._log.info(
             f"FINISHED phase={phase} layer={layer or '-'} status={status} "
             f"returncode={process.returncode} duration_ms={duration_ms} "
@@ -549,23 +581,15 @@ class TestRunner:
             stub_hits=stub_hits,
             raw_stdout=stdout or "",
             raw_stderr=stderr or "",
+            capture_stdout_path=str(stdout_path),
+            capture_stderr_path=str(stderr_path),
         )
 
-    def _reset_stub_log(self) -> None:
-        """Start every command with an empty stub ledger."""
-
-        try:
-            self._stub_log.parent.mkdir(parents=True, exist_ok=True)
-            self._stub_log.write_text("", encoding="utf-8")
-        except OSError:
-            # The ledger is diagnostic; losing it must not abort a test run.
-            pass
-
-    def _collect_stub_hits(self) -> list[str]:
+    def _collect_stub_hits(self, stub_log_path: Path) -> list[str]:
         """Read the module ids that answered from a skeleton during this command."""
 
         try:
-            raw = self._stub_log.read_text(encoding="utf-8", errors="replace")
+            raw = stub_log_path.read_text(encoding="utf-8", errors="replace")
         except OSError:
             return []
         return sorted({line.strip() for line in raw.splitlines() if line.strip()})
@@ -642,7 +666,7 @@ def _execution_command(layer: str, test_files: list[str]) -> list[str]:
         "--config",
         "playwright.config.ts",
         "--project=chromium",
-        "--reporter=json",
+        "--reporter=line,json",
         *workspace_files,
     ]
 
@@ -650,6 +674,13 @@ def _execution_command(layer: str, test_files: list[str]) -> list[str]:
 def _test_workspace_path(test_file: str) -> str:
     normalized = str(test_file).replace("\\", "/").strip().strip("/")
     return normalized.removeprefix("tests/")
+
+
+def _read_capture_file(path: Path) -> str:
+    try:
+        return path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
 
 
 def _bounded_output(value: str | bytes | None, limit: int = 100_000) -> str:

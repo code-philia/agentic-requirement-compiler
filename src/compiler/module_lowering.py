@@ -60,6 +60,7 @@ RUNTIME_IMPORTS: tuple[tuple[str, str], ...] = (
     ("newId", RUNTIME_IDS_PATH),
     ("now", RUNTIME_CLOCK_PATH),
     ("nowIso", RUNTIME_CLOCK_PATH),
+    ("recordStubHit", RUNTIME_STUBS_PATH),
 )
 
 # Drizzle predicate/ordering helpers a repository realistically needs. Importing
@@ -547,14 +548,6 @@ def _render_module(
                 "type_only": False,
             }
         )
-        imports.append(
-            {
-                "symbol": "recordStubHit",
-                "from": RUNTIME_STUBS_PATH,
-                "specifier": _relative_specifier(current_path, RUNTIME_STUBS_PATH),
-                "type_only": False,
-            }
-        )
     runtime_symbols = [
         {
             "symbol": symbol,
@@ -660,7 +653,7 @@ def _render_module(
                 "  void req;",
                 "  void res;",
                 "  try {",
-                f'    recordStubHit(res, "{module_id}");',
+                f'    recordStubHit("{module_id}", res);',
                 *_stub_response_lines(output_contract, output_name),
                 "  } catch (error) {",
                 "    sendError(res, error);",
@@ -680,6 +673,7 @@ def _render_module(
         lines.append("  void input;")
     lines.extend(
         [
+            f'  recordStubHit("{module_id}");',
             f'  throw new NotImplementedError("{module_id}");',
             "}",
             "",

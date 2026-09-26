@@ -240,8 +240,16 @@ class FailureAnalyzer:
             all_tests = _playwright_test_results(raw_report)
             failed_tests = [row for row in all_tests if row.get("status") not in {"passed", "skipped", "pending"}]
             pw_api_lines = [
-                line for line in raw_stderr.splitlines() if "pw:api" in line
+                line
+                for line in (raw_stderr + "\n" + raw_stdout).splitlines()
+                if "pw:api" in line
             ]
+            process_lines = [
+                line.rstrip()
+                for line in (raw_stderr + "\n" + raw_stdout).splitlines()
+                if line.strip() and "pw:api" not in line
+            ]
+            last_url = _last_observed_url([*pw_api_lines, *process_lines])
             exact_errors = _e2e_exact_errors(
                 command=command,
                 failed_tests=failed_tests,
@@ -253,6 +261,9 @@ class FailureAnalyzer:
                 "E2E EXECUTION FEEDBACK",
                 f"status: {'TIMEOUT' if command.timed_out else command.status}",
                 f"reporter_complete: {'true' if bool(all_tests) else 'false'}",
+                "CAPTURE FILES",
+                f"stdout: {command.capture_stdout_path or '(unavailable)'}",
+                f"stderr: {command.capture_stderr_path or '(unavailable)'}",
             ]
             if exact_errors:
                 parts.extend(["EXACT ERROR", exact_errors])
@@ -283,6 +294,22 @@ class FailureAnalyzer:
             ])
             if pw_api_lines:
                 parts.extend(["LAST OBSERVED STEP", pw_api_lines[-1]])
+            if last_url:
+                parts.extend(["LAST OBSERVED URL", last_url])
+            if command.timed_out:
+                timeout_stage = (
+                    "browser_action"
+                    if pw_api_lines
+                    else "test_execution"
+                    if all_tests
+                    else "web_server_or_browser_bootstrap"
+                )
+                parts.extend(["TIMEOUT STAGE", timeout_stage])
+            if process_lines:
+                parts.extend([
+                    "SERVER / PROCESS OUTPUT TAIL",
+                    "\n".join(process_lines[-200:])[-20_000:],
+                ])
 
             if failed_tests:
                 for failed in failed_tests:
@@ -356,11 +383,16 @@ class FailureAnalyzer:
                 if str(value) and str(value) not in owned_module_ids
             }
         )
+        owned_stub_hits = {
+            str(value)
+            for value in command_result.stub_hits
+            if str(value) in owned_module_ids
+        }
         failure_class = _failure_class(
             command_result,
             phase,
             output,
-            deferred_modules=deferred,
+            deferred_modules=deferred if not owned_stub_hits else [],
         )
         matching_tests = _matching_tests(command_result, output, test_rows)
         test_ids = sorted(
@@ -371,20 +403,31 @@ class FailureAnalyzer:
             }
         )
         stack_frames = self._stack_frames(output)
-        target_modules = {
-            str(value)
-            for row in matching_tests
-            for value in row.get("target_modules", [])
-            if str(value)
-        }
-        # Generated backend skeletons deliberately remain typecheckable. Their
-        # runtime stub ledger is deterministic evidence that a DB/FUNC/API
-        # module was reached but still has no implementation.
-        target_modules.update(
+        # Runtime assertions begin with the modules exercised by the matching
+        # test. A workspace typecheck is different: its source locations are
+        # authoritative, and seeding it with every test target recreates the
+        # cross-module pollution this analyzer is meant to remove.
+        stub_modules = {
             str(value)
             for value in command_result.stub_hits
             if str(value)
+        }
+        target_modules = (
+            set()
+            if phase == "TYPECHECK"
+            else set(stub_modules)
+            if stub_modules
+            else {
+                str(value)
+                for row in matching_tests
+                for value in row.get("target_modules", [])
+                if str(value)
+            }
         )
+        # Generated backend skeletons deliberately remain typecheckable. Their
+        # runtime stub ledger is deterministic evidence that a DB/FUNC/API
+        # module was reached but still has no implementation.
+        target_modules.update(stub_modules)
         for frame in stack_frames:
             target_modules.update(modules_by_file.get(frame.file, []))
         # TypeScript often reports files as ``src/...`` while the binding
@@ -395,6 +438,10 @@ class FailureAnalyzer:
         target_modules.update(
             _diagnostic_module_ids(output, modules_by_file)
         )
+        if phase == "TYPECHECK" and not target_modules:
+            target_modules.update(
+                _module_ids_for_files(changed_files, modules_by_file)
+            )
         writable_targets, read_only_targets = _relevant_targets(
             resolved_targets,
             binding_by_id,
@@ -649,6 +696,16 @@ def _format_playwright_progress(test: dict[str, Any]) -> str:
     return f"{status}: {title}{suffix}"
 
 
+def _last_observed_url(lines: list[str]) -> str | None:
+    """Return the last concrete browser/server URL visible in runner evidence."""
+
+    matches: list[str] = []
+    pattern = re.compile(r"https?://[^\s\]\[)'\"<>]+")
+    for line in lines:
+        matches.extend(pattern.findall(line))
+    return matches[-1].rstrip(".,;:") if matches else None
+
+
 def _e2e_exact_errors(
     *,
     command: TestCommandResult,
@@ -814,8 +871,23 @@ def _failure_class(
     if phase == "BOOTSTRAP":
         return "INFRASTRUCTURE"
     if phase == "RUN_TIMEOUT":
-        # Keep a timeout actionable so the next implementation iteration can
-        # inspect the last browser step. It is distinct from an assertion.
+        raw_evidence = "\n".join(
+            value
+            for value in (command.raw_stderr, command.raw_stdout, output)
+            if value
+        )
+        if (
+            str(command.layer or "").upper() == "E2E"
+            and not command.stub_hits
+            and "pw:api" not in raw_evidence
+            and '"suites"' not in raw_evidence
+        ):
+            # No browser action or reporter record means the command timed out
+            # during build/server/browser bootstrap. Retrying infrastructure is
+            # safer than forcing an implementation patch without business evidence.
+            return "INFRASTRUCTURE"
+        # Once browser/reporter evidence exists, keep the timeout actionable so
+        # the implementation agent can inspect the last observed step.
         return "TEST_RUN_TIMEOUT"
     if phase == "COLLECTION":
         return "TEST_MATERIALIZATION"
@@ -902,6 +974,24 @@ def _diagnostic_module_ids(
             )
             for candidate in candidates
         ):
+            matched.update(str(value) for value in module_ids if str(value))
+    return matched
+
+
+def _module_ids_for_files(
+    files: list[str],
+    modules_by_file: dict[str, list[str]],
+) -> set[str]:
+    """Map exact changed files to modules without requirement-wide expansion."""
+
+    wanted = {_normalize_relative(value).lower() for value in files if str(value)}
+    matched: set[str] = set()
+    for raw_file, module_ids in modules_by_file.items():
+        normalized = _normalize_relative(raw_file).lower()
+        candidates = {normalized}
+        if normalized.startswith(("backend/", "frontend/")):
+            candidates.add(normalized.split("/", 1)[1])
+        if wanted.intersection(candidates):
             matched.update(str(value) for value in module_ids if str(value))
     return matched
 

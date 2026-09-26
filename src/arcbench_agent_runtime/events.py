@@ -11,21 +11,36 @@ def utc_timestamp() -> str:
 
 
 class EventClient:
-    def __init__(self, paths: RuntimePaths) -> None:
+    def __init__(self, paths: RuntimePaths, *, run_id: str | None = None) -> None:
         self.paths = paths
+        self.run_id = str(run_id or "").strip() or None
+        self.phase = "INITIALIZING"
+        self.entered_tdd = False
 
     def _emit_runner_state(self, state: str, message: str) -> None:
         append_jsonl(
             self.paths.runner_events_path,
             {
                 "type": "runner_state",
+                "run_id": self.run_id,
+                "phase": self.phase,
                 "state": state,
+                "fatal": state == "failed",
+                "recoverable": state != "failed",
+                "entered_tdd": self.entered_tdd,
                 "timestamp": utc_timestamp(),
                 "message": message,
             },
         )
 
-    def mark_run_started(self, message: str) -> None:
+    def mark_run_started(self, message: str, *, phase: str = "PREPROCESSING") -> None:
+        self.phase = str(phase or "PREPROCESSING").strip().upper()
+        self._emit_runner_state("running", message)
+
+    def mark_phase_started(self, phase: str, message: str) -> None:
+        self.phase = str(phase).strip().upper() or self.phase
+        if self.phase == "TDD":
+            self.entered_tdd = True
         self._emit_runner_state("running", message)
 
     def mark_run_completed(self, message: str) -> None:
@@ -39,6 +54,11 @@ class EventClient:
             self.paths.runner_events_path,
             {
                 "type": "signal",
+                "run_id": self.run_id,
+                "phase": self.phase,
+                "fatal": False,
+                "recoverable": True,
+                "entered_tdd": self.entered_tdd,
                 "reason": reason,
                 "timestamp": utc_timestamp(),
                 "refresh": {

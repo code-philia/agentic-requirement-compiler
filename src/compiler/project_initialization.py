@@ -235,6 +235,8 @@ def test_workspace_spec(
                 "  test: {\n"
                 '    include: ["unit/**/*.spec.ts", "integration/**/*.spec.ts"],\n'
                 '    environment: "node",\n'
+                "    fileParallelism: false,\n"
+                "    maxWorkers: 1,\n"
                 "    testTimeout: 15_000,\n"
                 "    hookTimeout: 15_000,\n"
                 '    setupFiles: ["./support/setup.ts"],\n'
@@ -251,6 +253,8 @@ def test_workspace_spec(
                 "  expect: { timeout: 10_000 },\n"
                 "  use: {\n"
                 f'    baseURL: process.env.ARC_TEST_BASE_URL ?? "http://127.0.0.1:{port}",\n'
+                '    trace: "retain-on-failure",\n'
+                '    screenshot: "only-on-failure",\n'
                 "  },\n"
                 '  projects: [{ name: "chromium", use: { ...devices["Desktop Chrome"] } }],\n'
                 "  webServer: {\n"
@@ -259,17 +263,22 @@ def test_workspace_spec(
                 f'      env: {{ DATABASE_URL: ":memory:", NODE_ENV: "test", PORT: "{port}" }},\n'
                 "      reuseExistingServer: false,\n"
                 "      timeout: 60_000,\n"
+                '      stdout: "pipe",\n'
+                '      stderr: "pipe",\n'
                 "    },\n"
                 "});\n"
             ),
             "support/runtime.ts": (
+                'import type { Page } from "@playwright/test";\n\n'
                 "export function uniqueValue(prefix: string): string {\n"
                 "  return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;\n"
                 "}\n\n"
-                f'export async function resetE2EState(): Promise<void> {{\n'
+                f'export async function resetE2EState(page: Page): Promise<void> {{\n'
                 f'  const baseUrl = process.env.ARC_TEST_BASE_URL ?? "http://127.0.0.1:{port}";\n'
                 '  const response = await fetch(`${baseUrl}/__arc/reset`, { method: "POST" });\n'
                 '  if (!response.ok) throw new Error(`Reset request failed: ${response.status} ${await response.text()}`);\n'
+                '  await page.context().clearCookies();\n'
+                '  await page.addInitScript(() => { localStorage.clear(); sessionStorage.clear(); });\n'
                 '}\n'
             ),
             "support/seed.ts": (

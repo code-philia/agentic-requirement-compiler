@@ -15,10 +15,15 @@ class AgentRuntime:
     traceability: TraceabilityStore
 
     @classmethod
-    def for_project(cls, project_dir: str | Path) -> "AgentRuntime":
+    def for_project(
+        cls,
+        project_dir: str | Path,
+        *,
+        run_id: str | None = None,
+    ) -> "AgentRuntime":
         paths = RuntimePaths.for_project(project_dir)
         paths.ensure_parent_dirs()
-        events = EventClient(paths)
+        events = EventClient(paths, run_id=run_id)
         return cls(
             paths=paths,
             events=events,

@@ -2,9 +2,19 @@ from __future__ import annotations
 
 import os
 import sys
+from contextvars import ContextVar
 from datetime import datetime, timezone, tzinfo
 from pathlib import Path
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+
+_current_run_id: ContextVar[str | None] = ContextVar("arc_run_id", default=None)
+
+
+def set_run_id(run_id: str | None) -> None:
+    """Attach one compiler-run identifier to all logs in the current context."""
+
+    _current_run_id.set(str(run_id).strip() if run_id else None)
 
 
 def append_debug_log(
@@ -21,6 +31,9 @@ def append_debug_log(
     log_path.parent.mkdir(parents=True, exist_ok=True)
     timestamp = local_timestamp()
     prefix = f"[{timestamp}] [{agent_name}]"
+    run_id = _current_run_id.get()
+    if run_id:
+        prefix += f"[run_id={run_id}]"
     if node_id:
         prefix += f"[{node_id}]"
     if status:
@@ -40,6 +53,9 @@ def format_terminal_log(
 ) -> str:
     timestamp = local_timestamp()
     prefix = f"[{timestamp}] [{agent_name}]"
+    run_id = _current_run_id.get()
+    if run_id:
+        prefix += f"[run_id={run_id}]"
     if node_id:
         prefix += f"[{node_id}]"
     if status:

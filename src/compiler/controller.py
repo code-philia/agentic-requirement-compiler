@@ -148,6 +148,10 @@ class Compiler:
         #                    Compiler Database Stage
         # ===================================================================
 
+        self._runtime.events.mark_phase_started(
+            "DATABASE", "ARC database stage started."
+        )
+
         model: StructuredModel | None = self._model
         if database_reused:
             await self._log(
@@ -304,6 +308,10 @@ class Compiler:
         #                    Compiler Design Stage
         # ===================================================================
 
+        self._runtime.events.mark_phase_started(
+            "DESIGN", "ARC backend design stage started."
+        )
+
         if design_reused:
             await self._log(
                 "Compiler",
@@ -394,6 +402,10 @@ class Compiler:
         # ===================================================================
         #                 Compiler Frontend Design Stage
         # ===================================================================
+
+        self._runtime.events.mark_phase_started(
+            "FRONTEND", "ARC frontend design stage started."
+        )
 
         backend_api_ids = {
             str(module.get("id"))
@@ -550,6 +562,10 @@ class Compiler:
         #                    Project Initialization Stage
         # ===================================================================
 
+        self._runtime.events.mark_phase_started(
+            "PROJECT", "ARC project initialization stage started."
+        )
+
         project_ok = True
         project_errors: list[str] = []
         project_manifest = None
@@ -683,6 +699,10 @@ class Compiler:
         # ===================================================================
         #                  Skeleton Stage 3.1: Symbol Planning
         # ===================================================================
+
+        self._runtime.events.mark_phase_started(
+            "SKELETON", "ARC skeleton lowering stage started."
+        )
 
         await self._log(
             "Compiler",
@@ -1152,6 +1172,10 @@ class Compiler:
         #               Stage 4.1: Global Test Environment
         # ===================================================================
 
+        self._runtime.events.mark_phase_started(
+            "TEST_ENVIRONMENT", "ARC test environment stage started."
+        )
+
         await self._log(
             "Compiler",
             "Validating the compiler-owned Vitest, Supertest, and Playwright environment from Project Initialization.",
@@ -1235,6 +1259,10 @@ class Compiler:
                     artifacts=artifacts,
                 )
 
+        self._runtime.events.mark_phase_started(
+            "TDD",
+            "ARC requirement-local TDD started.",
+        )
         orchestrator = NodeTDDOrchestrator(
             model,
             request.output_dir,

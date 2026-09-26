@@ -384,15 +384,6 @@ class NodeTDDOrchestrator:
 
             changed_files: set[str] = set()
             previous_patch_metadata: dict[str, Any] | None = None
-            initial_changed = self._run_tdd_bootstrap_implementation(requirement_id)
-            if initial_changed:
-                changed_files.update(initial_changed)
-                result.changed_files = sorted(changed_files)
-                previous_patch_metadata = {
-                    "phase": "TDD_BOOTSTRAP",
-                    "changed_files": sorted(initial_changed),
-                }
-
             available_layers = [
                 layer
                 for layer in TEST_LAYERS
@@ -419,12 +410,18 @@ class NodeTDDOrchestrator:
             failure_analysis_text = ""
             functional_iterations = 0
             visual_iterations = 0
-            patch_iteration = 1 if initial_changed else 0
+            patch_iteration = 0
+            initial_changed: set[str] = set()
             retry_feedback: tuple[str, ...] = ()
             any_red_observed = False
             layer_outcomes = self._layer_gate_outcomes.setdefault(requirement_id, {})
 
             for layer_index, active_layer in enumerate(available_layers):
+                if layer_index == 0:
+                    initial_changed = self._implement_before_first_test(requirement_id)
+                    changed_files.update(initial_changed)
+                    result.changed_files = sorted(changed_files)
+                    patch_iteration = 1 if initial_changed else 0
                 self._log.info(
                     f"LAYER_GATE_STARTED requirement={requirement_id} layer={active_layer}"
                 )
@@ -479,7 +476,8 @@ class NodeTDDOrchestrator:
                     if functional_iterations - layer_start_iterations >= self.policy.max_iterations_per_node:
                         self._log.info(
                             f"LAYER_GATE_BUDGET_EXHAUSTED requirement={requirement_id} "
-                            f"layer={active_layer} budget={self.policy.max_iterations_per_node}; continuing"
+                            f"layer={active_layer} budget={self.policy.max_iterations_per_node}; "
+                            "dependent layers will be skipped"
                         )
                         layer_outcomes[active_layer] = "BUDGET_EXHAUSTED"
                         result.layer_outcomes = dict(layer_outcomes)
@@ -518,7 +516,7 @@ class NodeTDDOrchestrator:
                     if not implementation.ok or implementation.patch is None:
                         self._log.info(
                             f"LAYER_GATE_AGENT_FAILED requirement={requirement_id} "
-                            f"layer={active_layer}; continuing to next layer"
+                            f"layer={active_layer}; dependent layers will be skipped"
                         )
                         layer_outcomes[active_layer] = "AGENT_FAILED"
                         result.layer_outcomes = dict(layer_outcomes)
@@ -646,9 +644,24 @@ class NodeTDDOrchestrator:
                             self._log.info(
                                 f"LAYER_GATE_NO_PROGRESS requirement={requirement_id} "
                                 f"layer={active_layer} unchanged={unchanged_failures}; "
-                                "continuing until the layer iteration budget is exhausted"
+                                "stopping this layer and skipping dependent layers"
                             )
                             no_progress_warning_emitted = True
+                        layer_outcomes[active_layer] = "NO_PROGRESS"
+                        result.layer_outcomes = dict(layer_outcomes)
+                        break
+
+                if layer_outcomes.get(active_layer) != "PASSED":
+                    for skipped_layer in available_layers[layer_index + 1 :]:
+                        layer_outcomes[skipped_layer] = (
+                            f"SKIPPED_BLOCKED_BY_{active_layer}"
+                        )
+                        self._log.info(
+                            f"LAYER_GATE_SKIPPED requirement={requirement_id} "
+                            f"layer={skipped_layer} reason=PREREQUISITE_{active_layer}_FAILED"
+                        )
+                    result.layer_outcomes = dict(layer_outcomes)
+                    break
 
             if not any_red_observed and not initial_changed:
                 self._log.info(
@@ -665,7 +678,7 @@ class NodeTDDOrchestrator:
                 warnings = [
                     "LAYER_GATE_INCOMPLETE: "
                     f"{layer} ended with {outcome}; the latest compilable checkpoint "
-                    "was preserved and later layers were still processed."
+                    "was preserved and dependent later layers were not executed."
                     for layer, outcome in incomplete_layers.items()
                 ]
                 return self._finish(
@@ -894,6 +907,7 @@ class NodeTDDOrchestrator:
                         mode="AGGREGATE",
                         design_context=self._design_context(requirement_id),
                         retry_feedback=tuple(retry_feedback),
+                        target_module_ids=(module_id,),
                     )
                 )
                 if not implementation.ok or implementation.patch is None:
@@ -909,8 +923,12 @@ class NodeTDDOrchestrator:
                 if not applied.ok:
                     retry_feedback = list(applied.rejected_changes)
                     continue
-                applied_ids = set(applied.changed_modules).intersection(remaining)
-                if not applied_ids:
+                if module_id not in set(applied.changed_modules):
+                    checkpoint = self._node_checkpoints.get(requirement_id)
+                    if checkpoint is not None:
+                        self.file_patcher.restore(checkpoint.sources)
+                        changed_files.clear()
+                        changed_files.update(checkpoint.changed_files)
                     retry_feedback = [
                         "ARC4544 FRONTEND_AGGREGATE_STALLED: the patch did not change the "
                         "current frontend module."
@@ -941,7 +959,10 @@ class NodeTDDOrchestrator:
                     ]
                     continue
 
-                remaining.difference_update(applied_ids)
+                # A source file may bind several frontend modules. Completing
+                # one target must not silently mark every sibling in that file
+                # complete merely because the file hash changed.
+                remaining.discard(module_id)
                 changed_files.update(_normalize_path(value) for value in applied.changed_files)
                 self._node_checkpoints[requirement_id] = _CompilableCheckpoint(
                     sources=self.file_patcher.snapshot(self._checkpoint_files(requirement_id)),
@@ -1060,13 +1081,8 @@ class NodeTDDOrchestrator:
             self._state_history[str(requirement_id)] = list(result.state_history) or ["NODE_ACCEPTED"]
             self._accepted_results[str(requirement_id)] = result
 
-    def _run_tdd_bootstrap_implementation(self, requirement_id: str) -> set[str]:
-        """Give each owned business target one ordinary TDD-style implementation call.
-
-        Bootstrap has no failure report yet. It uses only the requirement, contract,
-        related module cards, writable files, and their current source. Tests run
-        immediately afterwards and all later edits are driven by their evidence.
-        """
+    def _implement_before_first_test(self, requirement_id: str) -> set[str]:
+        """Make the TDD loop's first implementation calls without test feedback."""
 
         try:
             resolved = CodeTargetResolver(
@@ -1074,7 +1090,7 @@ class NodeTDDOrchestrator:
             ).resolve_requirement_targets(requirement_id)
         except (KeyError, ValueError) as exc:
             self._log.info(
-                f"TDD_BOOTSTRAP_TARGETS_UNAVAILABLE requirement={requirement_id} error={exc}"
+                f"TDD_TARGETS_UNAVAILABLE requirement={requirement_id} error={exc}"
             )
             return set()
 
@@ -1087,12 +1103,25 @@ class NodeTDDOrchestrator:
             and str(row.get("kind", "")).upper() in backend_kinds | frontend_kinds
             and str(row.get("module_id", "")).strip()
         ]
+        kind_priority = {
+            "DB": 0,
+            "FUNC": 1,
+            "API": 2,
+            "STORE": 3,
+            "COMPONENT": 4,
+            "PAGE": 5,
+            "LAYOUT": 6,
+        }
+        targets.sort(
+            key=lambda row: (
+                kind_priority.get(str(row.get("kind", "")).upper(), 99),
+                str(row.get("module_id", "")),
+            )
+        )
         changed_files: set[str] = set()
         requirement = self.requirement_ir.get("nodes", {}).get(requirement_id, {})
         if not isinstance(requirement, dict):
             requirement = {}
-        max_attempts = max(1, self.policy.initial_target_retry_count + 1)
-
         for target in targets:
             module_id = str(target.get("module_id", "")).strip()
             kind = str(target.get("kind", "")).upper()
@@ -1101,71 +1130,40 @@ class NodeTDDOrchestrator:
                 if kind in frontend_kinds
                 else self.implementation_agent
             )
-            retry_feedback: tuple[str, ...] = ()
-            for attempt in range(1, max_attempts + 1):
-                checkpoint_sources = self.file_patcher.snapshot(
-                    self._checkpoint_files(requirement_id)
-                )
-                implementation = agent.implement(
-                    ImplementationRequest(
-                        requirement_id=requirement_id,
-                        requirement=requirement,
-                        requirement_contract=self._requirement_contract(requirement_id),
-                        test_manifest=self.test_manifest or {},
-                        code_binding_registry=self.code_binding_registry,
-                        failure_reports=(),
-                        failure_analysis_text="",
-                        iteration=attempt,
-                        mode="TDD",
-                        bootstrap=True,
-                        design_context=self._design_context(requirement_id),
-                        previous_patch_metadata={
-                            "phase": "TDD_BOOTSTRAP",
-                            "target_module_id": module_id,
-                            "target_kind": kind,
-                            "attempt": attempt,
-                        },
-                        retry_feedback=retry_feedback,
-                        target_module_ids=(module_id,),
-                    )
-                )
-                if not implementation.ok or implementation.patch is None:
-                    retry_feedback = tuple(implementation.errors)
-                    continue
-                applied = self.file_patcher.apply(
-                    implementation.patch,
+            implementation = agent.implement(
+                ImplementationRequest(
+                    requirement_id=requirement_id,
+                    requirement=requirement,
+                    requirement_contract=self._requirement_contract(requirement_id),
+                    test_manifest=self.test_manifest or {},
                     code_binding_registry=self.code_binding_registry,
+                    failure_reports=(),
+                    failure_analysis_text="",
+                    iteration=1,
+                    mode="TDD",
+                    design_context=self._design_context(requirement_id),
+                    target_module_ids=(module_id,),
                 )
-                if not applied.ok:
-                    self.file_patcher.restore(checkpoint_sources)
-                    retry_feedback = tuple(applied.rejected_changes)
-                    continue
-                typecheck = self.test_runner.run_workspace_typecheck()
-                if typecheck.status != "PASSED":
-                    self.file_patcher.restore(checkpoint_sources)
-                    retry_feedback = tuple(
-                        value
-                        for value in (
-                            "Bootstrap patch must pass workspace typecheck.",
-                            typecheck.stderr or typecheck.stdout or typecheck.error,
-                        )
-                        if value
-                    )
-                    continue
-                changed_files.update(
-                    _normalize_path(value) for value in applied.changed_files
-                )
-                self._node_checkpoints[requirement_id] = _CompilableCheckpoint(
-                    sources=self.file_patcher.snapshot(
-                        self._checkpoint_files(requirement_id)
-                    ),
-                    changed_files=sorted(changed_files),
-                )
+            )
+            if not implementation.ok or implementation.patch is None:
                 self._log.info(
-                    f"TDD_BOOTSTRAP_ACCEPTED requirement={requirement_id} "
-                    f"target={module_id} changed_files={applied.changed_files}"
+                    f"TDD_FIRST_IMPLEMENTATION_FAILED requirement={requirement_id} "
+                    f"target={module_id} errors={implementation.errors}"
                 )
-                break
+                continue
+            applied = self.file_patcher.apply(
+                implementation.patch,
+                code_binding_registry=self.code_binding_registry,
+            )
+            if not applied.ok:
+                self._log.info(
+                    f"TDD_FIRST_PATCH_REJECTED requirement={requirement_id} "
+                    f"target={module_id} errors={applied.rejected_changes}"
+                )
+                continue
+            changed_files.update(
+                _normalize_path(value) for value in applied.changed_files
+            )
 
         return changed_files
 

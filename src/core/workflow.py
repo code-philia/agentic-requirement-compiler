@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import inspect
+import uuid
 from pathlib import Path
 from typing import Awaitable, Callable
 
 from arcbench_agent_runtime.runtime import AgentRuntime
 from compiler import CompilationRequest, Compiler
 from core.config import set_workspace_root
+from core.logging import set_run_id
 
 
 LogCallback = Callable[[str, str, str | None, str | None], Awaitable[None] | None]
@@ -32,12 +34,17 @@ class ARCWorkflowManager:
         *,
         start_from: str = "PREPROCESSING",
     ) -> dict[str, object]:
+        run_id = uuid.uuid4().hex
+        set_run_id(run_id)
         await self._log("Compiler", "ARC compilation started.")
         self.workspace_path.mkdir(parents=True, exist_ok=True)
         set_workspace_root(self.workspace_path)
-        runtime = AgentRuntime.for_project(self.workspace_path)
+        runtime = AgentRuntime.for_project(self.workspace_path, run_id=run_id)
         runtime.traceability.init_store()
-        runtime.events.mark_run_started("ARC deterministic compiler run started.")
+        runtime.events.mark_run_started(
+            "ARC deterministic compiler run started.",
+            phase=start_from,
+        )
 
         compiler = Compiler(runtime, self.log_cb)
         result = await compiler.compile(
@@ -65,7 +72,9 @@ class ARCWorkflowManager:
         else:
             runtime.events.mark_run_failed("ARC compiler pass failed.")
             await self._log("Compiler", "Compilation failed; inspect the compiler log.", "error")
-        return result.to_dict()
+        payload = result.to_dict()
+        payload["run_id"] = run_id
+        return payload
 
     async def _log(
         self,

@@ -97,18 +97,19 @@ Mode semantics:
 - INTEGRATION_REPAIR fixes a failing integration test using the complete backend surface.
 - E2E_BACKEND_REPAIR fixes server/API/DB evidence from an end-to-end failure.
 - E2E_FRONTEND_REPAIR fixes browser/UI evidence from an end-to-end failure.
-- TDD bootstrap implements the supplied target before tests run, without a failure report.
+- The first TDD call implements the supplied target before any test feedback exists.
 - AGGREGATE handles non-atomic frontend composition without creating new compiler glue.
 
-When bootstrap is true, implement the supplied target from its requirement, related module context,
-and writable source files. There is intentionally no failure report yet. Do not redesign unrelated
-modules. TDD repair receives test results and must use that evidence to make the smallest coherent
-fix. Every request must return at least one exact edit.
+When no failure report is supplied, implement the supplied target from its requirement, related
+module context, and writable source files. Then the TDD loop runs tests. Later calls receive test
+results and use that evidence to make the smallest coherent fix. Every request must return at least
+one exact edit.
 
 Context layout:
 - Context arrives as two user messages. The first, "stable_project_context", holds policy, project conventions,
   design evidence, and writable_targets (each with its complete source). The second, "current_task",
-  holds the requirement, contract, failure cluster, failed-test analysis/source, and the ids you may edit.
+  holds the requirement, contract, and the ids you may edit. After tests run it also holds the
+  failure cluster and failed-test analysis/source.
 - The second message is the task. Read the first for facts, then satisfy the second.
 
 Authority and evidence:
@@ -131,9 +132,9 @@ Authority and evidence:
   To construct an edit, first select a writable target module card, copy its `file` value exactly
   as the relative output path, then copy an exact old fragment from that card's `source` into
   `search`. Do not infer paths from module_id and do not look for a separate source-file section.
-- The writable surface contains every source module owned by this requirement. Failure localization never limits
-  the available source to one hop or one test layer. Diagnose across callers, callees, and sibling modules before
-  choosing the smallest coherent patch.
+- For a repair, the writable surface contains the localized failing modules plus their direct callers/callees.
+  First TDD and aggregate calls contain only their explicitly requested target. Diagnose within this supplied
+  surface and do not rewrite unrelated siblings merely because they share a requirement.
 - For TYPECHECK/TYPE_CONTRACT failures, inspect every source file and line/column
   listed in failure_analysis. Do not assume the first or test-local file is the
   whole problem; type errors commonly span several callers and callees.
@@ -168,6 +169,9 @@ Implementation rules:
 - Never create another SQLite/Drizzle connection, replace persistence with a module-level array or object, or report a
   successful database write after merely constructing an id or return value. The injected client is the sole owner of
   the connection, including when DATABASE_URL is `:memory:` during tests.
+- A backend skeleton calls recordStubHit immediately before its placeholder response/error. A real DB/FUNC/API
+  implementation must remove that call together with the placeholder; leaving it behind falsely reports the module
+  as unimplemented and will keep Integration/E2E red even when the remaining code appears functional.
 - Seed fixtures are compiler-owned test setup. Never hard-code fixture records or `Seed data:` literals in a DB/FUNC/API
   implementation, and never make a read repository insert, synthesize, or return missing fixture rows. Tests must apply
   requirement.seed_fixtures through the compiler-owned seeding support before exercising application behavior.
@@ -223,11 +227,11 @@ FRONTEND_IMPLEMENTATION_INSTRUCTIONS = """You are a senior frontend product engi
 Implement the current requirement's frontend experience as a coherent, runnable UI.
 
 Mode semantics:
-- TDD bootstrap builds the supplied frontend target before tests, without a failure report.
+- The first TDD call builds the supplied frontend target before test feedback exists.
 - E2E_FRONTEND_REPAIR fixes direct browser/UI evidence while preserving declared routes and API clients.
 - AGGREGATE completes non-atomic page, layout, navigation, and shared-state composition.
 
-When bootstrap is true, implement the supplied frontend target as a first pass from the
+When no failure report is supplied, implement the supplied frontend target from the
 requirement, placement/design context, API client contract, and complete current source. There is
 no Playwright failure yet. Do not invent additional pages or files; return exact edits.
 
@@ -261,7 +265,7 @@ Patch scope:
 - Return exact file-based edits. The same relative file may appear multiple times when it needs
   multiple non-overlapping replacements. Do not emit module_id in the output.
 - Keep each replacement concise and complete; never truncate JSX, strings, or object literals.
-- Return only one module that needs to change for the current failure or bootstrap scope. If
+- Return only one module that needs to change for the current failure or first-call scope. If
   several modules are supplied, choose the first coherent module that can make progress; the caller
   will invoke you again for the remaining modules. Never combine multiple modules into one edit.
 
@@ -285,7 +289,6 @@ class ImplementationRequest:
     failure_analysis_text: str = ""
     retry_feedback: tuple[str, ...] = ()
     target_module_ids: tuple[str, ...] = ()
-    bootstrap: bool = False
 
 
 @dataclass(slots=True)
@@ -468,7 +471,8 @@ class ImplementationAgent:
             errors.append(
                 "ARC4530 IMPLEMENTATION_CONTEXT_INVALID: every failure report must be serializable."
             )
-        if not reports and not request.bootstrap:
+        first_tdd_call = mode == "TDD" and not reports
+        if not reports and not first_tdd_call:
             errors.append(
                 "ARC4530 IMPLEMENTATION_CONTEXT_INVALID: one failure cluster is required."
             )
@@ -560,9 +564,8 @@ class ImplementationAgent:
         # failure, but it must not opportunistically rewrite frontend modules
         # unless the failure cluster itself identifies a frontend target.  The
         # frontend specialist is selected by the orchestrator for those
-        # clusters.  This keeps the full backend writable surface available
-        # without allowing an unrelated unit/integration repair to produce a
-        # large UI rewrite and new frontend type errors.
+        # clusters. This keeps a backend repair from opportunistically producing
+        # a large UI rewrite and new frontend type errors.
         frontend_kinds = {"PAGE", "COMPONENT", "LAYOUT", "STORE"}
         reported_frontend = any(
             str(target.get("kind", "")).upper() in frontend_kinds
@@ -578,17 +581,66 @@ class ImplementationAgent:
                 not in frontend_kinds
             }
         relevant_writable = set(writable_ids)
-        bootstrap_failure = bool(request.bootstrap) or any(
+        localized_ids: set[str] = set()
+        if not requested_target_ids:
+            localized_ids = reported_writable_ids & writable_ids
+            if localized_ids:
+                direct_neighbors = {
+                    module_id
+                    for module_id in writable_ids
+                    if module_id in localized_ids
+                    or localized_ids.intersection(
+                        {
+                            str(value)
+                            for value in bindings.get(module_id, {}).get("callees", [])
+                            if str(value)
+                        }
+                    )
+                    or any(
+                        module_id
+                        in {
+                            str(value)
+                            for value in bindings.get(localized_id, {}).get("callees", [])
+                            if str(value)
+                        }
+                        for localized_id in localized_ids
+                    )
+                }
+                relevant_writable = direct_neighbors
+        full_visual_context = first_tdd_call or any(
             str(report.get("phase", "")) == "FRONTEND_BOOTSTRAP" for report in reports
         )
-        # Ordinary repair deliberately exposes the complete writable surface owned
-        # by this requirement. Failure localization is routing evidence only; it
-        # must not hide a caller, callee, or sibling that is several hops away.
-        layer_scope = "ALL_REQUIREMENT_OWNED_WRITABLE_MODULES"
-        # Show every dependency owned by another requirement. They remain
-        # read-only, but hiding them makes cross-requirement failures look like
-        # missing implementation context.
-        relevant_read_only = set(read_only_ids)
+        layer_scope = (
+            "EXPLICIT_TARGETS"
+            if requested_target_ids
+            else "LOCALIZED_TARGETS_PLUS_DIRECT_NEIGHBORS"
+            if localized_ids
+            else "ALL_REQUIREMENT_OWNED_WRITABLE_MODULES"
+        )
+        reported_read_only_ids = {
+            str(target.get("module_id", ""))
+            for report in reports
+            for target in report.get("read_only_dependencies", [])
+            if isinstance(target, dict) and str(target.get("module_id", ""))
+        }
+        relevant_read_only = reported_read_only_ids & read_only_ids
+        for module_id in relevant_writable:
+            relevant_read_only.update(
+                str(value)
+                for value in bindings.get(module_id, {}).get("callees", [])
+                if str(value) in read_only_ids
+            )
+        relevant_read_only.update(
+            module_id
+            for module_id in read_only_ids
+            if relevant_writable.intersection(
+                {
+                    str(value)
+                    for value in bindings.get(module_id, {}).get("callees", [])
+                    if str(value)
+                }
+            )
+        )
 
         source_hashes: dict[str, str] = {}
         writable_cards: list[dict[str, Any]] = []
@@ -637,7 +689,7 @@ class ImplementationAgent:
             "INTEGRATION_REPAIR",
             "E2E_BACKEND_REPAIR",
             "E2E_FRONTEND_REPAIR",
-        } and not request.bootstrap:
+        } and not first_tdd_call:
             frozen_tests, test_errors = self._frozen_tests(
                 requirement_id,
                 request.test_manifest,
@@ -651,7 +703,7 @@ class ImplementationAgent:
             request.design_context,
             requirement_id=requirement_id,
             target_ids=relevant_writable | relevant_read_only,
-            full_visual_analysis=bootstrap_failure,
+            full_visual_analysis=full_visual_context,
             frontend_only=self._allowed_kinds is not None,
         )
         # Stable segment: everything that stays byte-identical across the iterations
@@ -662,14 +714,13 @@ class ImplementationAgent:
             "schema_version": IMPLEMENTATION_AGENT_SCHEMA_VERSION,
             "implementation_mode": mode,
             "policy": {
-                "one_failure_cluster": True,
-                "tests_are_frozen": mode == "TDD" and not request.bootstrap,
-                "bootstrap": bool(request.bootstrap),
+                "one_failure_cluster": bool(reports),
+                "tests_are_frozen": mode == "TDD",
                 "target_module_ids": sorted(requested_target_ids),
                 "tests_limited_to_failed_layers": False,
-                "writable_context_scope": "ALL_REQUIREMENT_OWNED_WRITABLE_MODULES",
+                "writable_context_scope": layer_scope,
                 "writable_layer_scope": layer_scope,
-                "design_context_scope": "ALL_REQUIREMENT_OWNED_TARGETS",
+                "design_context_scope": layer_scope,
                 "aggregate_mode_uses_design_and_binding_authority": mode == "AGGREGATE",
                 "output_is_region_replacement_only": True,
                 "side_effects_owned_by_orchestrator": True,
@@ -682,10 +733,9 @@ class ImplementationAgent:
         # reads it closest to its own turn and no cached prefix is invalidated by it.
         dynamic_context = {
             "requirement_id": requirement_id,
-            "iteration": request.iteration,
             "implementation_phase": (
-                "TDD_BOOTSTRAP"
-                if request.bootstrap
+                "TDD"
+                if first_tdd_call
                 else mode
                 if mode in {
                     "UNIT_REPAIR",
@@ -694,7 +744,7 @@ class ImplementationAgent:
                     "E2E_FRONTEND_REPAIR",
                     "AGGREGATE",
                 }
-                else ("FRONTEND_BOOTSTRAP" if bootstrap_failure else "TDD_REPAIR")
+                else "TDD_REPAIR"
             ),
             "requirement": request.requirement,
             "requirement_contract": (
@@ -702,31 +752,26 @@ class ImplementationAgent:
                 if self._allowed_kinds is not None
                 else request.requirement_contract
             ),
-            "failure_analysis": _project_frontend_failure_analysis(
-                _failure_analysis_with_failed_tests(
-                    request.failure_analysis_text
-                    or _fallback_failure_analysis(reports),
-                    frozen_tests,
-                    reports,
-                )
-            )
-            if self._allowed_kinds is not None
-            else _failure_analysis_with_failed_tests(
-                request.failure_analysis_text
-                or _fallback_failure_analysis(reports),
-                frozen_tests,
-                reports,
-            ),
-            "scope_warnings": _scope_warnings(
-                reports,
-                read_only_ids=read_only_ids,
-            ),
-            "previous_patch_metadata": request.previous_patch_metadata,
-            "prior_retry_feedback": list(request.retry_feedback),
-            "bootstrap": bool(request.bootstrap),
             "target_module_ids": sorted(requested_target_ids),
             "provided_source_files": sorted(source_hashes),
         }
+        if not first_tdd_call:
+            analysis = _failure_analysis_with_failed_tests(
+                request.failure_analysis_text or _fallback_failure_analysis(reports),
+                frozen_tests,
+                reports,
+            )
+            dynamic_context.update({
+                "iteration": request.iteration,
+                "failure_analysis": (
+                    _project_frontend_failure_analysis(analysis)
+                    if self._allowed_kinds is not None else analysis
+                ),
+                "scope_warnings": _scope_warnings(reports, read_only_ids=read_only_ids),
+                "prior_retry_feedback": list(request.retry_feedback),
+            })
+            if request.previous_patch_metadata is not None:
+                dynamic_context["previous_patch_metadata"] = request.previous_patch_metadata
         context = {
             CONTEXT_SEGMENTS_KEY: [
                 {"name": "stable_project_context", "payload": stable_context},
@@ -1135,7 +1180,7 @@ def _compact_visual_reference(
 ) -> dict[str, Any]:
     """Stage visual evidence by phase.
 
-    The first frontend bootstrap pass establishes the visual direction and needs
+    The first frontend TDD call establishes the visual direction and needs
     the complete analysis. Every later functional repair only needs to keep the
     established composition recognizable, so the layout and style cue lists are
     dropped and only the region/control inventory survives.
