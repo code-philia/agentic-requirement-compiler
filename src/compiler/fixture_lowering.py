@@ -59,6 +59,9 @@ class FixtureLowerer:
             imports.append((symbol, f"./{_path_token(requirement_id)}.js"))
 
         sources["backend/src/fixtures/index.ts"] = _render_index(imports)
+        sources["backend/init-db.mjs"] = _render_database_initializer(
+            database_manifest.get("initialization", {}).get("statements", []), sets
+        )
         return FixtureLoweringResult(sources=sources)
 
 
@@ -70,6 +73,49 @@ def fixture_source_paths(fixture_ir: dict[str, Any]) -> list[str]:
         if isinstance(row, dict)
     )
     return sorted(set(paths))
+
+
+def _render_database_initializer(statements: list[str], fixture_sets: list[dict[str, Any]]) -> str:
+    return "\n".join([
+        'import Database from "better-sqlite3";',
+        'import { mkdirSync } from "node:fs";',
+        'import { dirname, resolve } from "node:path";',
+        "",
+        'const databaseUrl = (process.env.DATABASE_URL ?? "./data/app.db").trim();',
+        'if (!databaseUrl) throw new Error("DATABASE_URL must not be empty.");',
+        'if (databaseUrl !== ":memory:") mkdirSync(dirname(resolve(databaseUrl)), { recursive: true });',
+        'const database = new Database(databaseUrl);',
+        f'const statements = {json.dumps(statements, ensure_ascii=False)};',
+        f'const fixtureSets = {json.dumps(fixture_sets, ensure_ascii=False)};',
+        "try {",
+        '  database.pragma("foreign_keys = OFF");',
+        "  database.transaction(() => {",
+        "    for (const statement of statements) database.exec(statement);",
+        "    for (const fixtureSet of fixtureSets) {",
+        "      for (const row of fixtureSet.rows) {",
+        "        const entries = Object.entries(row.values).map(([field, value]) => [",
+        '          field, typeof value === "boolean" ? Number(value) :',
+        '            value !== null && typeof value === "object" ? JSON.stringify(value) : value,',
+        "        ]);",
+        "        const quote = name => '\"' + name.replaceAll('\"', '\"\"') + '\"';",
+        "        const table = quote(row.entity_key);",
+        '        if (!entries.length) {',
+        '          if (!database.prepare("SELECT 1 FROM " + table + " LIMIT 1").get()) database.exec("INSERT INTO " + table + " DEFAULT VALUES");',
+        '          continue;',
+        '        }',
+        '        const columns = entries.map(([field]) => quote(field)).join(", ");',
+        '        const placeholders = entries.map(() => "?").join(", ");',
+        '        const condition = entries.map(([field]) => quote(field) + " IS ?").join(" AND ");',
+        "        const values = entries.map(([, value]) => value);",
+        '        database.prepare("INSERT INTO " + table + " (" + columns + ") SELECT " + placeholders + " WHERE NOT EXISTS (SELECT 1 FROM " + table + " WHERE " + condition + ")").run(...values, ...values);',
+        "      }",
+        "    }",
+        "  })();",
+        "} finally {",
+        "  database.close();",
+        "}",
+        "",
+    ])
 
 
 def _render_index(imports: list[tuple[str, str]]) -> str:

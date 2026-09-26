@@ -127,36 +127,22 @@ class TraceabilityStore:
 
     def merge_test_links(self, test_manifest: dict[str, Any]) -> None:
         requirements = self._read_requirements()
-        grouped: dict[str, dict[str, set[str]]] = {}
-        for test in _as_list(test_manifest.get("tests")):
-            if not isinstance(test, dict):
+        for item in _as_list(test_manifest.get("files")):
+            if not isinstance(item, dict):
                 continue
-            requirement_id = str(test.get("requirement_id", "")).strip()
-            test_id = str(test.get("test_id", "")).strip()
-            if not requirement_id or not test_id:
+            requirement_id = str(item.get("requirement_id", ""))
+            if not requirement_id:
                 continue
-            row = grouped.setdefault(
-                requirement_id,
-                {"test_ids": set(), "test_files": set(), "layers": set()},
-            )
-            row["test_ids"].add(test_id)
-            test_file = str(test.get("test_file", "")).strip()
-            layer = str(test.get("layer", "")).strip().upper()
-            if test_file:
-                row["test_files"].add(test_file)
-            if layer:
-                row["layers"].add(layer)
-        for requirement_id, links in sorted(grouped.items()):
             row = requirements.get(requirement_id)
             if not isinstance(row, dict):
                 row = {"req_id": requirement_id, "id": requirement_id}
-            row["tests"] = {
-                key: sorted(values) for key, values in sorted(links.items())
-            }
+            row.setdefault("tests", [])
+            path = str(item.get("test_file", ""))
+            if path and path not in row["tests"]:
+                row["tests"].append(path)
             requirements[requirement_id] = row
         self._write_requirements(requirements)
         self.events.notify_traceability_changed("test_links_merged")
-
     def read_frontend_design_links_from_requirements(self) -> list[dict[str, Any]]:
         result: list[dict[str, Any]] = []
         for requirement_id, row in sorted(self._read_requirements().items()):

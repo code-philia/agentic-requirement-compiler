@@ -248,7 +248,7 @@ def test_workspace_spec(
                 f'const e2ePort = process.env.ARC_E2E_PORT ?? "{port}";\n'
                 'const baseURL = process.env.ARC_TEST_BASE_URL ?? "http://127.0.0.1:" + e2ePort;\n\n'
                 "export default defineConfig({\n"
-                '  reporter: [["line"], ["json"], ["./support/progress-reporter.ts"]],\n'
+                '  reporter: [["line"], ["./support/progress-reporter.ts"]],\n'
                 '  testDir: "./e2e",\n'
                 "  fullyParallel: false,\n"
                 "  workers: 1,\n"
@@ -318,10 +318,10 @@ def test_workspace_spec(
                 '    recordE2EProgress({ event: "test_begin", test: test.title, file: test.location.file });\n'
                 '  }\n'
                 '  onStepBegin(test: TestCase, _result: TestResult, step: TestStep): void {\n'
-                '    recordE2EProgress({ event: "step_begin", test: test.title, category: step.category, step: step.title });\n'
+                '    recordE2EProgress({ event: "step_begin", test: test.title, category: step.category, step: step.title, file: step.location?.file ?? test.location.file, line: String(step.location?.line ?? test.location.line) });\n'
                 '  }\n'
                 '  onStepEnd(test: TestCase, _result: TestResult, step: TestStep): void {\n'
-                '    recordE2EProgress({ event: "step_end", test: test.title, category: step.category, step: step.title, error: step.error?.message });\n'
+                '    recordE2EProgress({ event: "step_end", test: test.title, category: step.category, step: step.title, file: step.location?.file ?? test.location.file, line: String(step.location?.line ?? test.location.line), error: step.error?.message });\n'
                 '  }\n'
                 '  onTestEnd(test: TestCase, result: TestResult): void {\n'
                 '    recordE2EProgress({ event: "test_end", test: test.title, status: result.status, error: result.error?.message });\n'
@@ -341,7 +341,7 @@ def test_workspace_spec(
                 '  const path = process.env.ARC_E2E_PROGRESS_LOG;\n'
                 '  if (!path) return;\n'
                 '  try {\n'
-                '    appendFileSync(path, JSON.stringify({ time: new Date().toISOString(), ...event }) + "\\n", "utf8");\n'
+                '    appendFileSync(path, [new Date().toISOString(), ...Object.entries(event).map(([key, value]) => key + "=" + (value ?? ""))].join(" ") + "\\n", "utf8");\n'
                 '  } catch { /* Diagnostic recording must not change test behavior. */ }\n'
                 '}\n'
             ),

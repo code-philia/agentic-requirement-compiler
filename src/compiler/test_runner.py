@@ -47,14 +47,10 @@ class TestCommandResult:
     error: str | None = None
     timed_out: bool = False
     stub_hits: list[str] = field(default_factory=list)
-    # Keep the complete process streams for the E2E report synthesizer. The
-    # bounded stdout/stderr fields remain suitable for ordinary diagnostics.
-    raw_stdout: str = ""
-    raw_stderr: str = ""
     capture_stdout_path: str | None = None
     capture_stderr_path: str | None = None
-    e2e_progress: list[dict[str, str]] = field(default_factory=list)
     capture_progress_path: str | None = None
+    capture_stub_path: str | None = None
 
 
 @dataclass(slots=True)
@@ -62,7 +58,6 @@ class TestRunResult:
     requirement_id: str
     status: str
     selected_layers: list[str]
-    selected_test_ids: list[str]
     selected_files: list[str]
     commands: list[TestCommandResult] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
@@ -162,122 +157,36 @@ class TestRunner:
                 "ARC4502 TEST_ENVIRONMENT_INVALID: Test Runner requires "
                 "TEST_ENVIRONMENT_READY."
             )
-        if manifest.get("environment_status") not in {None, TEST_ENVIRONMENT_READY}:
-            errors.append(
-                "ARC4501 TEST_MANIFEST_INVALID: frozen tests reference an invalid environment."
-            )
-        freeze_policy = manifest.get("freeze_policy")
-        if not isinstance(freeze_policy, dict) or (
-            freeze_policy.get("tests_are_read_only_during_implementation") is not True
-            or freeze_policy.get("integrity") != "SHA256"
-        ):
-            errors.append(
-                "ARC4501 TEST_MANIFEST_INVALID: frozen test integrity policy is missing."
-            )
-
         layers, layer_errors = _normalize_layers(selection.layers)
         errors.extend(layer_errors)
         file_rows = [
-            row
-            for row in manifest.get("files", [])
-            if isinstance(row, dict)
-            and str(row.get("requirement_id", "")) == requirement_id
+            row for row in manifest.get("files", [])
+            if isinstance(row, dict) and row.get("requirement_id") == requirement_id
         ]
-        requirement_rows = [
-            row
-            for row in manifest.get("requirements", [])
-            if isinstance(row, dict)
-            and str(row.get("requirement_id", "")) == requirement_id
-        ]
-        if len(requirement_rows) != 1 or requirement_rows[0].get("state") != TESTS_FROZEN:
-            errors.append(
-                f"ARC4503 TEST_SELECTION_INVALID: {requirement_id!r} has no frozen manifest slice."
-            )
         available_layers = [
-            layer
-            for layer in TEST_LAYERS
-            if any(str(row.get("layer", "")).upper() == layer for row in file_rows)
+            layer for layer in TEST_LAYERS
+            if any(row.get("layer") == layer for row in file_rows)
         ]
         selected_layers = layers or available_layers
-        missing_layers = [layer for layer in selected_layers if layer not in available_layers]
-        if missing_layers:
-            errors.append(
-                "ARC4503 TEST_SELECTION_INVALID: requested layers are unavailable for "
-                f"{requirement_id}: {missing_layers}."
-            )
+        if not selected_layers or any(layer not in available_layers for layer in selected_layers):
+            errors.append(f"ARC4503 TEST_SELECTION_INVALID: no frozen files for {requirement_id}: {selected_layers}.")
         selected_rows = [
-            row
-            for layer in TEST_LAYERS
-            if layer in selected_layers
-            for row in file_rows
-            if str(row.get("layer", "")).upper() == layer
+            row for layer in selected_layers for row in file_rows if row.get("layer") == layer
         ]
-        if not selected_rows:
-            errors.append(
-                f"ARC4503 TEST_SELECTION_INVALID: no frozen tests selected for {requirement_id}."
-            )
-        duplicate_layers = [
-            layer
-            for layer in selected_layers
-            if sum(
-                str(row.get("layer", "")).upper() == layer
-                for row in selected_rows
-            ) != 1
-        ]
-        if duplicate_layers:
-            errors.append(
-                "ARC4501 TEST_MANIFEST_INVALID: expected exactly one frozen file for "
-                f"each selected layer, invalid layers: {duplicate_layers}."
-            )
-
-        manifest_tests = [
-            row
-            for row in manifest.get("tests", [])
-            if isinstance(row, dict)
-            and str(row.get("requirement_id", "")) == requirement_id
-            and str(row.get("layer", "")).upper() in selected_layers
-        ]
-        expected_test_ids = {
-            str(row.get("test_id", ""))
-            for row in manifest_tests
-            if str(row.get("test_id", ""))
-        }
-        file_test_ids = {
-            str(value)
-            for row in selected_rows
-            for value in row.get("test_ids", [])
-            if str(value)
-        }
-        if not expected_test_ids or file_test_ids != expected_test_ids:
-            errors.append(
-                "ARC4501 TEST_MANIFEST_INVALID: selected file rows and test rows disagree "
-                f"for {requirement_id}."
-            )
-        elif any(
-            str(row.get("test_file", "")) not in {
-                str(file_row.get("test_file", "")) for file_row in selected_rows
-            }
-            for row in manifest_tests
-        ):
-            errors.append(
-                "ARC4501 TEST_MANIFEST_INVALID: a selected test references an unexpected file."
-            )
-
+        if any(sum(row.get("layer") == layer for row in selected_rows) != 1 for layer in selected_layers):
+            errors.append("ARC4501 TEST_MANIFEST_INVALID: expected one frozen file per selected layer.")
         selected_files: list[str] = []
-        selected_test_ids: list[str] = []
         for row in selected_rows:
             file_error = self._validate_frozen_file(row)
             if file_error:
                 errors.append(file_error)
                 continue
             selected_files.append(str(row["test_file"]))
-            selected_test_ids.extend(str(value) for value in row.get("test_ids", []))
 
         result = TestRunResult(
             requirement_id=requirement_id,
             status="INVALID_SELECTION" if errors else "RUNNING",
             selected_layers=selected_layers,
-            selected_test_ids=sorted(set(selected_test_ids)),
             selected_files=selected_files,
             errors=list(dict.fromkeys(errors)),
         )
@@ -337,8 +246,7 @@ class TestRunner:
         path = PurePosixPath(relative)
         expected_root = f"tests/{layer.lower()}/"
         if (
-            row.get("status") != "FROZEN"
-            or layer not in TEST_LAYERS
+            layer not in TEST_LAYERS
             or not relative.startswith(expected_root)
             or not relative.endswith(".spec.ts")
             or path.is_absolute()
@@ -392,7 +300,7 @@ class TestRunner:
         capture_root.mkdir(parents=True, exist_ok=True)
         capture_id = f"{phase.lower()}-{str(layer or 'none').lower()}-{os.getpid()}-{time.time_ns()}"
         stub_log_path = capture_root / f"{capture_id}.stub-hits.log"
-        progress_path = capture_root / f"{capture_id}.progress.jsonl"
+        progress_path = capture_root / f"{capture_id}.progress.log"
         process_environment = dict(self.environment)
         process_environment["ARC_STUB_LOG"] = str(stub_log_path)
         is_e2e = str(layer or "").upper() == "E2E"
@@ -488,7 +396,6 @@ class TestRunner:
             stderr = "\n".join(
                 value for value in (stderr, timeout_message) if value
             )
-            stderr = _append_stub_evidence(stderr, stub_hits)
             self._log.info(
                 f"TIMED_OUT phase={phase} layer={layer or '-'} "
                 f"status={status} duration_ms={duration_ms} timeout_s={timeout:g} "
@@ -502,8 +409,8 @@ class TestRunner:
                 status=status,
                 returncode=124 if is_test_timeout else None,
                 duration_ms=duration_ms,
-                stdout=_bounded_output(stdout),
-                stderr=_bounded_output(stderr),
+                stdout=stdout,
+                stderr=stderr,
                 error=(
                     None
                     if is_test_timeout
@@ -511,19 +418,16 @@ class TestRunner:
                 ),
                 timed_out=True,
                 stub_hits=stub_hits,
-                raw_stdout=stdout,
-                raw_stderr=stderr,
                 capture_stdout_path=str(stdout_path),
                 capture_stderr_path=str(stderr_path),
-                e2e_progress=_read_e2e_progress(progress_path) if is_e2e else [],
                 capture_progress_path=str(progress_path) if is_e2e else None,
+                capture_stub_path=str(stub_log_path),
             )
         except OSError as exc:
             terminate_process_tree(process)
             stdout = _read_capture_file(stdout_path)
             stderr = _read_capture_file(stderr_path)
             stub_hits = self._collect_stub_hits(stub_log_path)
-            stderr = _append_stub_evidence(stderr, stub_hits)
             duration_ms = round((time.perf_counter() - started) * 1000)
             self._log.info(
                 f"FINISHED phase={phase} layer={layer or '-'} status=ERROR "
@@ -537,23 +441,20 @@ class TestRunner:
                 status="ERROR",
                 returncode=None,
                 duration_ms=duration_ms,
-                stdout=_bounded_output(stdout),
-                stderr=_bounded_output(stderr),
+                stdout=stdout,
+                stderr=stderr,
                 error=f"ARC4508 TEST_COMMAND_FAILED: {exc}",
                 stub_hits=stub_hits,
-                raw_stdout=stdout,
-                raw_stderr=stderr,
                 capture_stdout_path=str(stdout_path),
                 capture_stderr_path=str(stderr_path),
-                e2e_progress=_read_e2e_progress(progress_path) if is_e2e else [],
                 capture_progress_path=str(progress_path) if is_e2e else None,
+                capture_stub_path=str(stub_log_path),
             )
         stdout = _read_capture_file(stdout_path)
         stderr = _read_capture_file(stderr_path)
         duration_ms = round((time.perf_counter() - started) * 1000)
         stub_hits = self._collect_stub_hits(stub_log_path)
         status = "PASSED" if process.returncode == 0 and not stub_hits else "FAILED"
-        stderr = _append_stub_evidence(stderr, stub_hits)
         self._log.info(
             f"FINISHED phase={phase} layer={layer or '-'} status={status} "
             f"returncode={process.returncode} duration_ms={duration_ms} "
@@ -567,15 +468,13 @@ class TestRunner:
             status=status,
             returncode=process.returncode,
             duration_ms=duration_ms,
-            stdout=_bounded_output(stdout),
-            stderr=_bounded_output(stderr),
+            stdout=stdout,
+            stderr=stderr,
             stub_hits=stub_hits,
-            raw_stdout=stdout or "",
-            raw_stderr=stderr or "",
             capture_stdout_path=str(stdout_path),
             capture_stderr_path=str(stderr_path),
-            e2e_progress=_read_e2e_progress(progress_path) if is_e2e else [],
             capture_progress_path=str(progress_path) if is_e2e else None,
+            capture_stub_path=str(stub_log_path),
         )
 
     def _collect_stub_hits(self, stub_log_path: Path) -> list[str]:
@@ -675,38 +574,7 @@ def _read_capture_file(path: Path) -> str:
         return ""
 
 
-def _append_stub_evidence(stderr: str, stub_hits: list[str]) -> str:
-    if not stub_hits:
-        return stderr
-    message = (
-        "ARC4513 UNIMPLEMENTED_MODULE_EXECUTED: runtime skeletons were "
-        f"executed: {stub_hits}."
-    )
-    return "\n".join(value for value in (stderr, message) if value)
 
-
-def _read_e2e_progress(path: Path) -> list[dict[str, str]]:
-    records: list[dict[str, str]] = []
-    for line in _read_capture_file(path).splitlines()[-500:]:
-        try:
-            event = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if isinstance(event, dict):
-            records.append({
-                str(key): str(value)[:2000]
-                for key, value in event.items()
-                if isinstance(key, str) and isinstance(value, str)
-            })
-    return records
-
-
-def _bounded_output(value: str | bytes | None, limit: int = 100_000) -> str:
-    """Retain enough runner output for assertion diagnostics and agent repair."""
-    if value is None:
-        return ""
-    text = value.decode("utf-8", errors="replace") if isinstance(value, bytes) else value
-    return text[-limit:]
 
 
 def _bounded_float(

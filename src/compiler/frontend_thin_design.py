@@ -448,7 +448,7 @@ def validate_thin_frontend_design(frontend_ir: dict[str, Any], *, expected_requi
             issues.append(_issue(FrontendDesignErrorCode.REFERENCE_UNKNOWN, f"Placement for {requirement_id} references unknown screen {screen_id}."))
         if placement["strategy"] == "CREATE_FEATURE_COMPONENT" and screen_id is None:
             issues.append(_issue(FrontendDesignErrorCode.COMPONENT_DECISION_INVALID, f"Placement for {requirement_id} must identify a screen and component."))
-        if placement["strategy"] == "NO_FRONTEND_IMPLEMENTATION" and (screen_id is not None or component_id is not None):
+        if placement["strategy"] == "NO_FRONTEND_IMPLEMENTATION" and (screen_id is not None or placement.get("component_id") is not None):
             issues.append(_issue(FrontendDesignErrorCode.COMPONENT_DECISION_INVALID, f"NO_FRONTEND_IMPLEMENTATION placement for {requirement_id} cannot identify a screen or component."))
     if len(placement_keys) != len(set(placement_keys)):
         issues.append(_issue(FrontendDesignErrorCode.SYMBOL_DUPLICATE, "placements contains duplicate requirement/screen pairs."))

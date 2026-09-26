@@ -41,116 +41,26 @@ TEST_GENERATION_SCHEMA: dict[str, Any] = {
             "items": {
                 "type": "object",
                 "additionalProperties": False,
-                "required": ["layer", "cases", "code"],
+                "required": ["layer", "code"],
                 "properties": {
                     "layer": {"type": "string", "enum": list(TEST_LAYERS)},
-                    "cases": {
-                        "type": "array",
-                        "minItems": 1,
-                        "items": {
-                            "type": "object",
-                            "additionalProperties": False,
-                            "required": [
-                                "title",
-                                "source_scenario_ids",
-                                "target_modules",
-                            ],
-                            "properties": {
-                                "title": {
-                                    "type": "string",
-                                    "minLength": 1,
-                                },
-                                "source_scenario_ids": {
-                                    "type": "array",
-                                    "items": {"type": "string"},
-                                    "maxItems": 3,
-                                },
-                                "target_modules": {
-                                    "type": "array",
-                                    "items": {"type": "string"},
-                                    "minItems": 1,
-                                    "maxItems": 12,
-                                },
-                            },
-                        },
-                    },
-                    "code": {
-                        "type": "string",
-                        "minLength": 1,
-                    },
+                    "code": {"type": "string", "minLength": 1},
                 },
             },
-        }
+        },
     },
 }
-
-
-TEST_GENERATION_INSTRUCTIONS = """You are a senior test engineer specializing in executable,
-requirement-driven unit, integration, and end-to-end tests.
-Generate a small set of executable tests from the supplied requirement context.
-
-Ownership boundary:
-- Expected behavior and assertions come only from requirement and requirement_contract.
-- requirement contains the original requirement name, description, scenarios, examples, and setup flags.
-- requirement_contract contains the contract spec, inputs, outputs, effects, and obligations.
-- Invocation mechanisms, imports, symbols, routes, and types come only from the layer entry in layers.
-- Treat layers[].imports[].signatures as exact helper APIs; never omit required arguments or invent overloads.
-- Database shape comes from database_tables.source; semantic business rules still come from requirement_contract.
-- Source text is supplied for each relevant seam because this is a single LLM call with no filesystem access.
-  Use it to verify exports, imports, and callable shapes, but do not copy implementation behavior into assertions.
-- Do not invent source paths, routes, symbols, module ids, scenario ids, or test layers.
-- Generate exactly one file for every key in layers.
-- Use only the output_file, imports, seams, target_modules, and flow supplied by each layer.
-- `target_modules` is the authoritative module list for a layer. Each entry in the top-level
-  `target_modules` catalog explains how to import and invoke that module; use the exact module_id.
-- For each layer, target at least one exact module listed in that layer's target_modules.
-
-Testing rules:
-- Test observable behavior through the public seam. Do not assert internal call counts or mock requirement-owned modules.
-- Mock only external system boundaries when the requirement makes that unavoidable.
-- Expected values must be requirement examples or independent literals, never recomputed by the implementation algorithm.
-- Cover every supplied scenario id at least once across the suite and include at least one focused case per required layer.
-- The same scenario may be referenced by cases at different seams when one vertical requirement requires multiple layers.
-- Generate as many cases as needed to cover the requirement's observable rules and supplied scenarios; there is no
-  compiler-imposed maximum case count. Avoid redundant cases that exercise exactly the same behavior at the same seam.
-- UNIT uses Vitest and directly invokes an exported FUNC symbol.
-- INTEGRATION uses Vitest + Supertest against the exported Express `app` and the supplied HTTP route.
-- Every Supertest status assertion must include the serialized response body as Vitest's assertion message, for
-  example `expect(response.status, JSON.stringify(response.body)).toBeLessThan(400)`, so implementation failures retain
-  the server diagnostic in the fixed feedback loop.
-- Fixture rows are present at the start of each Integration/E2E test. A successful first CREATE request must use
-  values distinct from seeded unique fields. For a duplicate-create scenario, make the first request with fresh
-  values, then repeat exactly that payload for the conflict assertion. Reuse a seeded value only when the scenario
-  explicitly expects a conflict on the first request.
-- E2E uses @playwright/test and the supplied frontend route/observable labels.
-- E2E flow.entry_routes lists valid starting screens from this requirement's journey or owned screens.
-  Use flow.entry_route when it is set; do not start at a navigation destination merely because its route exists.
-- Observable states describe behavior, not literal UI copy. Literal locators must come from supplied frontend source.
-- data-arc-obligation and Implementation pending are compiler skeleton placeholders, not UI copy or test targets.
-- Every E2E file must import test and expect from the supplied support/e2e module.
-- The compiler-owned automatic test fixture resets server data, cookies, localStorage, and sessionStorage
-  before each test and before its seed beforeEach hook. Do not call resetE2EState yourself.
-- Never use test.concurrent, it.concurrent, or describe.concurrent; isolation hooks are sequential by contract.
-- INTEGRATION and E2E must not use beforeAll/afterAll or parallel describe modes to create shared
-  mutable state. Seed fixtures in beforeEach only, after the compiler-owned per-test reset.
-- Tests may fail because implementation regions still throw or are incomplete. Do not weaken assertions.
-- Code must be complete TypeScript with imports and test declarations, without markdown fences.
-- Do not use `.only`, skipped tests, snapshots, dynamic source discovery, filesystem searches, or line numbers.
-- Import only specifiers listed for that output layer. Use the exact import specifiers and exported symbols.
-- seed.required is compiler-owned setup data, not application behavior. When it is true, every generated
-  INTEGRATION or E2E file must import seedRequirement from the supplied support module and call it from beforeEach
-  (or test.beforeEach). E2E may call seedRequirement(requirement_id) directly. INTEGRATION must pass an applier that
-  POSTs its requirementId argument to /__arc/seed through Supertest(app), once per test. Never expect a read repository to manufacture fixtures.
-- Return exactly one JSON object and no prose.
-- If materialization_feedback or previous_decision is supplied, repair that decision while preserving
-  the behavior, scenario coverage, layer set, and assertion strength unless the feedback identifies
-  a purely syntactic or import/collection problem.
-
-Output shape:
-{"files":[{"layer":"UNIT|INTEGRATION|E2E","cases":[{"title":"...","source_scenario_ids":["exact id"],"target_modules":["exact id"]}],"code":"complete TypeScript source"}]}
+TEST_GENERATION_INSTRUCTIONS = """Write executable requirement tests using the original requirement
+and the supplied source files. Assertions must come from the requirement and its
+scenarios, never from skeleton placeholders or current implementation behavior.
+Use the exact exports, helper signatures, database fields and routes in the supplied
+code. Generate exactly one complete TypeScript file for each supplied layer, with
+real assertions over inputs, outputs and persisted data. Keep each test independent;
+use fresh unique values and seed fixtures in beforeEach when required. E2E locators
+must match real accessible UI controls; do not treat descriptions as literal labels.
+Do not edit application code, invent paths, skip tests or weaken assertions to pass.
+Return only JSON: {"files":[{"layer":"UNIT|INTEGRATION|E2E","code":"..."}]}.
 """
-
-
 @dataclass(slots=True)
 class TestEnvironmentResult:
     ok: bool
@@ -927,13 +837,7 @@ def _build_context_pack(
     required_layers: list[str],
     test_obligations: dict[str, dict[str, Any]],
 ) -> tuple[dict[str, Any], dict[str, Any]]:
-    contracts = {
-        str(item.get("id", item.get("requirement_id", ""))): copy.deepcopy(
-            item.get("contract", item)
-        )
-        for item in design_ir.get("requirements", [])
-        if isinstance(item, dict)
-    }
+
     all_target_rows = [
         _project_test_target(row)
         for row in [
@@ -1034,7 +938,6 @@ def _build_context_pack(
                 imports.append({"specifier": "@arc/shared", "symbols": shared_types})
         allowed_imports[layer] = imports
 
-    requirement_contract = contracts.get(requirement_id, {})
     model_requirement = {
         key: copy.deepcopy(requirement.get(key))
         for key in (
@@ -1055,6 +958,7 @@ def _build_context_pack(
         resolved_targets=resolved_targets,
     )
     model_layers = _build_model_layers(
+        output_root=output_root,
         requirement_id=requirement_id,
         required_layers=required_layers,
         output_files=output_files,
@@ -1064,284 +968,74 @@ def _build_context_pack(
         frontend_subgraph=relevant_frontend_subgraph,
         test_obligations=test_obligations,
     )
-    target_module_catalog = _build_target_module_catalog(model_layers)
-    seed = {"required": bool(requirement.get("seed_fixtures")), "requirement_id": requirement_id}
     model_context = {
-        "requirement_id": requirement_id,
         "requirement": model_requirement,
-        "requirement_contract": copy.deepcopy(requirement_contract),
         "database_tables": database_tables,
         "layers": model_layers,
-        "target_modules": target_module_catalog,
-        "seed": seed,
     }
     validation_context = {
-        "schema_version": 1,
         "requirement_id": requirement_id,
         "requirement": {
             key: copy.deepcopy(requirement.get(key))
             for key in ("id", "name", "description", "scenarios", "dependencies", "seed_fixtures")
         },
-        "requirement_contract": requirement_contract,
-        "owned_targets": owned_targets,
-        "one_hop_dependencies": one_hop_dependencies,
-        "relevant_types": relevant_types,
         "relevant_frontend_subgraph": relevant_frontend_subgraph,
         "e2e_entry_routes": _e2e_entry_routes(requirement_id, relevant_frontend_subgraph),
         "public_seams": public_seams,
         "required_layers": required_layers,
-        "allowed_layers": required_layers,
-        "test_obligations": copy.deepcopy(test_obligations),
         "output_files": output_files,
         "allowed_imports": allowed_imports,
-        "target_modules": sorted({str(row.get("module_id", "")) for row in target_rows if str(row.get("module_id", ""))}),
     }
     return model_context, validation_context
 
 
-def _compact_schema_fields(entity: dict[str, Any]) -> list[dict[str, Any]]:
-    fields = entity.get("fields", entity.get("columns", []))
-    if not isinstance(fields, list):
-        return []
-    result: list[dict[str, Any]] = []
-    for field in fields:
-        if not isinstance(field, dict):
-            continue
-        item = {
-            key: copy.deepcopy(field[key])
-            for key in ("name", "type", "nullable", "description", "properties", "references")
-            if key in field and field[key] not in (None, [], {})
-        }
-        if item:
-            result.append(item)
-    return result
-
-
 def _database_source_cards(
-    *,
-    output_root: Path,
-    database_schema: dict[str, Any],
-    requirement_id: str,
-    resolved_targets: dict[str, Any],
+    *, output_root: Path, database_schema: dict[str, Any],
+    requirement_id: str, resolved_targets: dict[str, Any],
 ) -> list[dict[str, Any]]:
     schema_slice = schema_for_requirement(database_schema, requirement_id)
-    entities = schema_slice.get("entities", []) if isinstance(schema_slice, dict) else []
-    related_rows = schema_slice.get("relationships", []) if isinstance(schema_slice, dict) else []
-    constraint_rows = schema_slice.get("constraints", []) if isinstance(schema_slice, dict) else []
-    type_targets = [row for row in resolved_targets.get("type_targets", []) if isinstance(row, dict)]
-    cards: list[dict[str, Any]] = []
-    for entity in entities:
-        if not isinstance(entity, dict):
-            continue
-        table = str(entity.get("key", entity.get("name", "")))
-        if not table:
-            continue
-        target = next(
-            (
-                row
-                for row in type_targets
-                if str(row.get("type_id", "")) == f"ENTITY.{table}"
-            ),
-            None,
-        )
-        source_file = str((target or {}).get("file", ""))
-        if not source_file:
-            source_file = f"backend/src/db/schema/{table}.ts"
-        source_path = output_root / source_file
-        try:
-            source = source_path.read_text(encoding="utf-8")
-        except OSError:
-            source = ""
-        card: dict[str, Any] = {
-            "table": table,
-            "source_file": source_file,
-            "source": source,
-            "fields": _compact_schema_fields(entity),
-        }
-        for key in ("relationships", "constraints"):
-            value = entity.get(key)
-            if value:
-                card[key] = copy.deepcopy(value)
-        entity_refs = {table}
-        for relationship in related_rows:
-            if not isinstance(relationship, dict):
-                continue
-            if entity_refs.intersection(
-                {
-                    str(relationship.get("parent", "")),
-                    str(relationship.get("child", "")),
-                    str(relationship.get("fk_entity", "")),
-                    str(relationship.get("association_entity", "")),
-                }
-            ):
-                card.setdefault("relationships", []).append(copy.deepcopy(relationship))
-        for constraint in constraint_rows:
-            if not isinstance(constraint, dict):
-                continue
-            fields = constraint.get("fields", [])
-            if any(str(field).split(".", 1)[0] == table for field in fields if str(field)):
-                card.setdefault("constraints", []).append(copy.deepcopy(constraint))
-        cards.append(card)
-    return cards
-
-
-def _compact_test_type(value: Any) -> dict[str, Any] | None:
-    if not isinstance(value, dict):
-        return None
-    result = {
-        key: copy.deepcopy(value[key])
-        for key in ("type_id", "symbol", "actions", "events")
-        if key in value and value[key] not in (None, [], {})
+    paths = {
+        str(row.get("type_id", "")): str(row.get("file", ""))
+        for row in resolved_targets.get("type_targets", []) if isinstance(row, dict)
     }
-    fields = value.get("fields", [])
-    if isinstance(fields, list):
-        result["fields"] = [
-            {
-                key: copy.deepcopy(field[key])
-                for key in ("name", "type", "required", "description", "properties")
-                if key in field and field[key] not in (None, [], {})
-            }
-            for field in fields
-            if isinstance(field, dict)
-        ]
-    return result or None
-
-
-def _expand_test_type(
-    reference: Any, type_index: dict[str, dict[str, Any]]
-) -> dict[str, Any] | None:
-    """Resolve a binding's type reference to the compact field shape the model needs."""
-
-    if not isinstance(reference, dict):
-        return None
-    type_id = str(reference.get("type_id", ""))
-    resolved = type_index.get(type_id, reference)
-    compact = _compact_test_type(resolved)
-    if compact is None:
-        compact = _compact_test_type(reference)
-    if compact is not None and reference.get("symbol") and not compact.get("symbol"):
-        compact["symbol"] = copy.deepcopy(reference["symbol"])
-    return compact
-
-
+    cards: list[dict[str, Any]] = []
+    for entity in schema_slice.get("entities", []):
+        table = str(entity.get("key", entity.get("name", "")))
+        relative = paths.get(f"ENTITY.{table}", f"backend/src/db/schema/{table}.ts")
+        path = output_root / relative
+        if path.is_file():
+            cards.append({"path": relative, "source": path.read_text(encoding="utf-8")})
+    return cards
 def _build_model_layers(
-    *,
-    requirement_id: str,
-    required_layers: list[str],
-    output_files: dict[str, str],
-    public_seams: dict[str, Any],
+    *, output_root: Path, requirement_id: str, required_layers: list[str],
+    output_files: dict[str, str], public_seams: dict[str, Any],
     allowed_imports: dict[str, list[dict[str, Any]]],
     relevant_types: list[dict[str, Any]],
     frontend_subgraph: dict[str, list[dict[str, Any]]],
     test_obligations: dict[str, dict[str, Any]],
 ) -> dict[str, dict[str, Any]]:
-    type_index = {
-        str(row.get("type_id", "")): row
-        for row in relevant_types
-        if isinstance(row, dict) and str(row.get("type_id", ""))
-    }
     layers: dict[str, dict[str, Any]] = {}
     for layer in required_layers:
-        seams: list[dict[str, Any]] = []
-        target_modules = list(test_obligations.get(layer, {}).get("target_modules", []))
-        for seam in public_seams.get(layer, []):
-            if not isinstance(seam, dict):
-                continue
-            item = {
-                key: copy.deepcopy(seam[key])
-                for key in (
-                    "module_id",
-                    "kind",
-                    "symbol",
-                    "public_signature",
-                    "route",
-                    "import_specifier",
-                    "source_file",
-                    "source",
-                )
-                if key in seam and seam[key] not in (None, "")
-            }
-            types: dict[str, dict[str, Any]] = {}
-            for role, key in (
-                ("input", "input_type"),
-                ("output", "output_type"),
-                ("props", "props_type"),
-            ):
-                compact = _expand_test_type(seam.get(key), type_index)
-                if compact:
-                    types[role] = compact
-            if types:
-                item["types"] = types
-            if item:
-                seams.append(item)
-        layer_context: dict[str, Any] = {
+        sources = []
+        seen: set[str] = set()
+        for row in public_seams.get(layer, []):
+            path = str(row.get("source_file", ""))
+            if path and path not in seen:
+                sources.append({"path": path, "source": row.get("source", "")})
+                seen.add(path)
+        for relative in ("tests/support/runtime.ts", "tests/support/seed.ts", "tests/support/e2e.ts"):
+            path = output_root / relative
+            if path.is_file() and relative not in seen:
+                sources.append({"path": relative, "source": path.read_text(encoding="utf-8")})
+        current: dict[str, Any] = {
             "output_file": output_files[layer],
-            "target_modules": sorted({str(value) for value in target_modules if str(value)}),
-            "imports": copy.deepcopy(allowed_imports.get(layer, [])),
-            "seams": seams,
+            "imports": allowed_imports.get(layer, []),
+            "sources": sources,
         }
         if layer == "E2E":
-            journeys = frontend_subgraph.get("journeys", [])
-            entry_routes = _e2e_entry_routes(requirement_id, frontend_subgraph)
-            flow = {
-                "entry_route": entry_routes[0] if len(entry_routes) == 1 else None,
-                "entry_routes": entry_routes,
-                "actions": [
-                    copy.deepcopy(step)
-                    for journey in journeys
-                    if isinstance(journey, dict)
-                    for step in journey.get("steps", [])
-                ],
-                "assertions": [
-                    copy.deepcopy(state)
-                    for row in frontend_subgraph.get("screen_components", [])
-                    if isinstance(row, dict)
-                    for state in row.get("observable_states", [])
-                ],
-            }
-            layer_context["flow"] = flow
-        layers[layer] = layer_context
+            current["entry_routes"] = _e2e_entry_routes(requirement_id, frontend_subgraph)
+        layers[layer] = current
     return layers
-
-
-def _build_target_module_catalog(
-    layers: dict[str, dict[str, Any]],
-) -> dict[str, list[dict[str, Any]]]:
-    """Expose an explicit invocation catalog for the single-call test generator."""
-
-    catalog: dict[str, list[dict[str, Any]]] = {}
-    for layer, layer_context in layers.items():
-        entries: list[dict[str, Any]] = []
-        required_ids = {
-            str(value)
-            for value in layer_context.get("target_modules", [])
-            if str(value)
-        }
-        for seam in layer_context.get("seams", []):
-            if not isinstance(seam, dict):
-                continue
-            entry = {
-                key: copy.deepcopy(seam[key])
-                for key in (
-                    "module_id",
-                    "kind",
-                    "source_file",
-                    "source",
-                    "import_specifier",
-                    "symbol",
-                    "public_signature",
-                    "route",
-                    "types",
-                )
-                if key in seam and seam[key] not in (None, "", {}, [])
-            }
-            if entry.get("module_id"):
-                entry["required"] = entry["module_id"] in required_ids
-                entries.append(entry)
-        catalog[layer] = entries
-    return catalog
-
-
 def _target_relevant_to_layers(
     target: dict[str, Any], required_layers: list[str]
 ) -> bool:
@@ -1719,129 +1413,25 @@ def _validate_test_decision(
     requirement_id = str(context_pack["requirement_id"])
     if not isinstance(decision, dict) or set(decision) != {"files"}:
         return [f"ARC4422 TEST_OUTPUT_INVALID: {requirement_id} must return only files."]
-    files = decision.get("files")
+    files = decision["files"]
     if not isinstance(files, list):
         return [f"ARC4422 TEST_OUTPUT_INVALID: {requirement_id} files must be a list."]
-    allowed_layers = set(context_pack["allowed_layers"])
-    required_layers = set(context_pack["required_layers"])
-    actual_layers: list[str] = []
-    scenario_rows = context_pack["requirement"].get("scenarios", [])
-    scenario_ids = {
-        str(row.get("id") or row.get("scenario_id"))
-        for row in scenario_rows
-        if isinstance(row, dict)
-    }
-    covered_scenarios: set[str] = set()
-    target_modules = set(context_pack["target_modules"])
-    owned_modules = {
-        str(row.get("module_id", ""))
-        for row in context_pack.get("owned_targets", [])
-        if isinstance(row, dict)
-    }
-    target_kinds = {
-        str(row.get("module_id", "")): str(row.get("kind", ""))
-        for rows in (
-            context_pack.get("owned_targets", []),
-            context_pack.get("one_hop_dependencies", []),
-        )
-        for row in rows
-        if isinstance(row, dict)
-    }
-    seam_kinds = {
-        "UNIT": {"FUNC"},
-        "INTEGRATION": {"API"},
-        "E2E": {"PAGE", "COMPONENT", "LAYOUT"},
-    }
-    obligation_targets = {
-        layer: {
-            str(value)
-            for value in obligation.get("target_modules", [])
-            if str(value)
-        }
-        for layer, obligation in context_pack.get("test_obligations", {}).items()
-        if isinstance(obligation, dict)
-    }
+    expected = set(context_pack["required_layers"])
+    actual: list[str] = []
     errors: list[str] = []
-    for file_row in files:
-        if not isinstance(file_row, dict) or set(file_row) != {"layer", "cases", "code"}:
-            errors.append(
-                f"ARC4422 TEST_OUTPUT_INVALID: {requirement_id} has a malformed file row."
-            )
+    for row in files:
+        if not isinstance(row, dict) or set(row) != {"layer", "code"}:
+            errors.append("ARC4422 TEST_OUTPUT_INVALID: each file needs layer and code.")
             continue
-        layer = str(file_row.get("layer", "")).upper()
-        actual_layers.append(layer)
-        if layer not in allowed_layers:
-            errors.append(
-                f"ARC4423 TEST_LAYER_INVALID: {requirement_id} cannot generate {layer}."
-            )
+        layer, code = str(row["layer"]).upper(), row["code"]
+        actual.append(layer)
+        if layer not in expected or not isinstance(code, str) or not code.strip():
+            errors.append(f"ARC4423 TEST_LAYER_INVALID: {layer} is unavailable or empty.")
             continue
-        cases = file_row.get("cases")
-        code = file_row.get("code")
-        if not isinstance(cases, list) or not cases or not isinstance(code, str) or not code.strip():
-            errors.append(
-                f"ARC4422 TEST_OUTPUT_INVALID: {requirement_id} {layer} needs cases and code."
-            )
-            continue
-        for case in cases:
-            if not isinstance(case, dict):
-                errors.append(
-                    f"ARC4422 TEST_OUTPUT_INVALID: {requirement_id} {layer} case must be an object."
-                )
-                continue
-            title = str(case.get("title", "")).strip()
-            sources = {str(value) for value in case.get("source_scenario_ids", [])}
-            targets = {str(value) for value in case.get("target_modules", [])}
-            if not title:
-                errors.append(
-                    f"ARC4422 TEST_OUTPUT_INVALID: {requirement_id} {layer} case title is empty."
-                )
-            if sources - scenario_ids:
-                errors.append(
-                    f"ARC4424 TEST_SCENARIO_INVALID: unknown scenarios {sorted(sources - scenario_ids)}."
-                )
-            if scenario_ids and not sources:
-                errors.append(
-                    f"ARC4424 TEST_SCENARIO_INVALID: {title!r} has no source scenario."
-                )
-            covered_scenarios.update(sources)
-            if not targets or targets - target_modules:
-                errors.append(
-                    f"ARC4425 TEST_TARGET_INVALID: {title!r} targets unavailable modules "
-                    f"{sorted(targets - target_modules)}."
-                )
-            elif not (targets & owned_modules):
-                errors.append(
-                    f"ARC4425 TEST_TARGET_INVALID: {title!r} has no requirement-owned target."
-                )
-            elif not any(target_kinds.get(target) in seam_kinds[layer] for target in targets):
-                errors.append(
-                    f"ARC4425 TEST_TARGET_INVALID: {title!r} does not target a {layer} public seam."
-                )
-            elif not (targets & obligation_targets.get(layer, set())):
-                errors.append(
-                    f"ARC4425 TEST_TARGET_INVALID: {title!r} does not target the required "
-                    f"{layer} obligation {sorted(obligation_targets.get(layer, set()))}."
-                )
         errors.extend(_validate_test_code(layer, code, context_pack))
-
-    if len(actual_layers) != len(set(actual_layers)):
-        errors.append(
-            f"ARC4423 TEST_LAYER_INVALID: {requirement_id} generated duplicate layers "
-            f"{actual_layers}."
-        )
-    if set(actual_layers) != required_layers:
-        errors.append(
-            f"ARC4423 TEST_LAYER_INVALID: {requirement_id} requires one file for "
-            f"{sorted(required_layers)}, received {actual_layers}."
-        )
-    if scenario_ids - covered_scenarios:
-        errors.append(
-            f"ARC4424 TEST_SCENARIO_INVALID: uncovered scenarios "
-            f"{sorted(scenario_ids - covered_scenarios)}."
-        )
+    if len(actual) != len(set(actual)) or set(actual) != expected:
+        errors.append(f"ARC4423 TEST_LAYER_INVALID: expected {sorted(expected)}, received {actual}.")
     return list(dict.fromkeys(errors))
-
-
 def _validate_test_code(
     layer: str,
     code: str,
@@ -2097,70 +1687,16 @@ def _manifest_rows(
     decision: dict[str, Any],
     context_pack: dict[str, Any],
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    scenarios = {
-        str(row.get("id") or row.get("scenario_id")): row
-        for row in requirement.get("scenarios", [])
-        if isinstance(row, dict)
-    }
-    binding_by_id = {
-        str(row.get("module_id", "")): row
-        for rows in (
-            context_pack.get("owned_targets", []),
-            context_pack.get("one_hop_dependencies", []),
-        )
-        for row in rows
-        if isinstance(row, dict)
-    }
-    test_rows: list[dict[str, Any]] = []
-    file_rows: list[dict[str, Any]] = []
-    counters = {layer: 0 for layer in TEST_LAYERS}
-    prefixes = {"UNIT": "U", "INTEGRATION": "I", "E2E": "E"}
-    for file_row in decision.get("files", []):
-        layer = str(file_row["layer"]).upper()
-        test_file = str(context_pack["output_files"][layer])
-        file_test_ids: list[str] = []
-        for case in file_row.get("cases", []):
-            counters[layer] += 1
-            test_id = f"{requirement_id}-{prefixes[layer]}{counters[layer]:02d}"
-            file_test_ids.append(test_id)
-            source_ids = [str(value) for value in case.get("source_scenario_ids", [])]
-            targets = [str(value) for value in case.get("target_modules", [])]
-            test_rows.append(
-                {
-                    "test_id": test_id,
-                    "requirement_id": requirement_id,
-                    "title": str(case.get("title", "")),
-                    "source_scenario_ids": source_ids,
-                    "source_scenarios": [
-                        str(scenarios.get(value, {}).get("name", value)) for value in source_ids
-                    ],
-                    "layer": layer,
-                    "target_modules": targets,
-                    "target_files": sorted(
-                        {
-                            str(binding_by_id[target].get("file", ""))
-                            for target in targets
-                            if target in binding_by_id
-                        }
-                    ),
-                    "test_file": test_file,
-                }
-            )
-        file_rows.append(
-            {
-                "test_file": test_file,
-                "requirement_id": requirement_id,
-                "layer": layer,
-                "test_ids": file_test_ids,
-                "content_sha256": hashlib.sha256(
-                    (str(file_row.get("code", "")).rstrip() + "\n").encode("utf-8")
-                ).hexdigest(),
-                "status": "FROZEN",
-            }
-        )
-    return test_rows, file_rows
-
-
+    files = []
+    for row in decision["files"]:
+        layer = str(row["layer"]).upper()
+        files.append({
+            "requirement_id": requirement_id,
+            "layer": layer,
+            "test_file": str(context_pack["output_files"][layer]),
+            "content_sha256": hashlib.sha256((row["code"].rstrip() + "\n").encode("utf-8")).hexdigest(),
+        })
+    return [], files
 def _layer_source_cards(
     layer: str,
     targets: list[dict[str, Any]],
@@ -2236,19 +1772,7 @@ def _atomic_order(
 
 
 def _empty_test_manifest(status: str) -> dict[str, Any]:
-    return {
-        "schema_version": TEST_GENERATION_SCHEMA_VERSION,
-        "status": status,
-        "requirements": [],
-        "tests": [],
-        "files": [],
-        "freeze_policy": {
-            "tests_are_read_only_during_implementation": True,
-            "integrity": "SHA256",
-        },
-    }
-
-
+    return {"status": status, "files": []}
 def _test_generation_precondition_errors(
     *,
     requirement_id: str,
@@ -2283,126 +1807,29 @@ def _test_generation_precondition_errors(
 
 
 def _replace_requirement_slice(
-    manifest: dict[str, Any],
-    *,
-    requirement_id: str,
-    state: str,
-    test_rows: list[dict[str, Any]],
-    file_rows: list[dict[str, Any]],
+    manifest: dict[str, Any], *, requirement_id: str, state: str,
+    test_rows: list[dict[str, Any]], file_rows: list[dict[str, Any]],
 ) -> dict[str, Any]:
-    result = copy.deepcopy(manifest)
-    retained_tests = [
-        copy.deepcopy(row)
-        for row in result.get("tests", [])
-        if isinstance(row, dict) and str(row.get("requirement_id", "")) != requirement_id
-    ]
-    retained_files = [
-        copy.deepcopy(row)
-        for row in result.get("files", [])
-        if isinstance(row, dict) and str(row.get("requirement_id", "")) != requirement_id
-    ]
-    result["tests"] = sorted(
-        [*retained_tests, *copy.deepcopy(test_rows)],
-        key=lambda row: str(row.get("test_id", "")),
-    )
-    result["files"] = sorted(
-        [*retained_files, *copy.deepcopy(file_rows)],
-        key=lambda row: str(row.get("test_file", "")),
-    )
-    requirements = [
-        copy.deepcopy(row)
-        for row in result.get("requirements", [])
-        if isinstance(row, dict) and str(row.get("requirement_id", "")) != requirement_id
-    ]
-    requirements.append(
-        {
-            "requirement_id": requirement_id,
-            "state": state,
-            "test_ids": sorted(str(row["test_id"]) for row in test_rows),
-        }
-    )
-    result["requirements"] = requirements
-    return result
+    return {
+        "status": state,
+        "files": sorted(
+            [row for row in manifest.get("files", []) if row.get("requirement_id") != requirement_id]
+            + file_rows,
+            key=lambda row: row["test_file"],
+        ),
+    }
 
 
 def _manifest_requirement_order(manifest: dict[str, Any]) -> list[str]:
-    return [
-        str(row.get("requirement_id", ""))
-        for row in manifest.get("requirements", [])
-        if isinstance(row, dict) and str(row.get("requirement_id", ""))
-    ]
+    return sorted({str(row["requirement_id"]) for row in manifest.get("files", [])})
 
 
 def _finalize_manifest(
-    manifest: dict[str, Any],
-    *,
-    status: str,
-    requirement_order: list[str],
-    node_states: dict[str, str],
-    environment_manifest: dict[str, Any],
+    manifest: dict[str, Any], *, status: str, requirement_order: list[str],
+    node_states: dict[str, str], environment_manifest: dict[str, Any],
     code_binding_registry: dict[str, Any],
 ) -> dict[str, Any]:
-    result = copy.deepcopy(manifest)
-    tests = [copy.deepcopy(row) for row in result.get("tests", []) if isinstance(row, dict)]
-    files = [copy.deepcopy(row) for row in result.get("files", []) if isinstance(row, dict)]
-    previous_requirements = {
-        str(row.get("requirement_id", "")): copy.deepcopy(row)
-        for row in result.get("requirements", [])
-        if isinstance(row, dict) and str(row.get("requirement_id", ""))
-    }
-    ordered_ids = list(dict.fromkeys([
-        *[str(value) for value in requirement_order if str(value)],
-        *previous_requirements,
-    ]))
-    requirements: list[dict[str, Any]] = []
-    for requirement_id in ordered_ids:
-        previous = previous_requirements.get(requirement_id, {})
-        requirements.append(
-            {
-                "requirement_id": requirement_id,
-                "state": node_states.get(
-                    requirement_id,
-                    str(previous.get("state", "NOT_GENERATED")),
-                ),
-                "test_ids": sorted(
-                    str(row.get("test_id", ""))
-                    for row in tests
-                    if str(row.get("requirement_id", "")) == requirement_id
-                    and str(row.get("test_id", ""))
-                ),
-            }
-        )
-    has_vitest = any(row.get("layer") in {"UNIT", "INTEGRATION"} for row in files)
-    has_e2e = any(row.get("layer") == "E2E" for row in files)
-    validation_passed = status == TESTS_FROZEN
-    result.update(
-        {
-            "schema_version": TEST_GENERATION_SCHEMA_VERSION,
-            "status": status,
-            "environment_status": environment_manifest.get("status"),
-            "code_binding_status": code_binding_registry.get("status"),
-            "requirements": requirements,
-            "tests": sorted(tests, key=lambda row: str(row.get("test_id", ""))),
-            "files": sorted(files, key=lambda row: str(row.get("test_file", ""))),
-            "freeze_policy": {
-                "tests_are_read_only_during_implementation": True,
-                "integrity": "SHA256",
-            },
-            "validation": {
-                "typecheck": "PASSED" if validation_passed else "FAILED",
-                "vitest_collection": (
-                    "PASSED" if validation_passed else "FAILED"
-                ) if has_vitest else "NOT_REQUIRED",
-                "playwright_collection": (
-                    "PASSED" if validation_passed else "FAILED"
-                ) if has_e2e else "NOT_REQUIRED",
-                "behavior_executed": False,
-            },
-        }
-    )
-    return result
-
-
+    return {"status": status, "files": manifest.get("files", [])}
 def _test_workspace_path(test_file: str) -> str:
     normalized = str(test_file).replace("\\", "/").strip().strip("/")
     return normalized.removeprefix("tests/")

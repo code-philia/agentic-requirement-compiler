@@ -3,7 +3,6 @@
 from .controller import Compiler
 from .code_binding import CodeTargetResolver, resolve_requirement_targets
 from .exact_file_patcher import AppliedFileEdit, ExactFilePatcher, FilePatchResult
-from .failure_analysis import FailureAnalysisResult, FailureAnalyzer, TestFailureReport
 from .models import CompilationRequest
 from .test_runner import TestRunResult, TestRunner, TestSelection
 from .tdd_orchestrator import NodeTDDOrchestrator, NodeTDDPolicy, NodeTDDResult
@@ -14,8 +13,6 @@ __all__ = [
     "CodeTargetResolver",
     "CompilationRequest",
     "Compiler",
-    "FailureAnalysisResult",
-    "FailureAnalyzer",
     "ExactFilePatcher",
     "FilePatchResult",
     "NodeTDDOrchestrator",
@@ -23,7 +20,6 @@ __all__ = [
     "NodeTDDResult",
     "ProposedEdit",
     "ProposedPatch",
-    "TestFailureReport",
     "TestRunResult",
     "TestRunner",
     "TestSelection",

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import inspect
+import subprocess
 from typing import Any, Awaitable, Callable
 
 from arcbench_agent_runtime.runtime import AgentRuntime
@@ -187,8 +188,7 @@ class Compiler:
                 node_states={node_id: "SCHEMA_REUSED" for node_id in atomic_ids},
             )
             states.update(database.node_states)
-            artifacts["database_schema"] = str(artifact_store.database_root / "database_schema.json")
-            artifacts["database_relationships"] = str(artifact_store.database_root / "relationships.json")
+            artifacts["database"] = str(artifact_store.database_root / "database.json")
             await self._log(
                 "Compiler",
                 f"START_PROBE stage={start_from} upstream=DATABASE source=.arc/database status=VALIDATED",
@@ -334,20 +334,7 @@ class Compiler:
                 node_states={node_id: "DESIGN_REUSED" for node_id in atomic_ids},
             )
             states.update(design.node_states)
-            for name, filename in (
-                ("design_requirement_contracts", "requirement_contracts.json"),
-                ("design_api_contracts", "api_contracts.json"),
-            ):
-                artifacts[name] = str(artifact_store.design_root / filename)
-            artifacts["design_api_modules"] = str(
-                artifact_store.backend_design_root / "api_modules.json"
-            )
-            artifacts["design_function_modules"] = str(
-                artifact_store.backend_design_root / "function_modules.json"
-            )
-            artifacts["design_db_modules"] = str(
-                artifact_store.backend_design_root / "db_modules.json"
-            )
+            artifacts["design_ir"] = str(artifact_store.design_root / "design.json")
             await self._log(
                 "Compiler",
                 f"START_PROBE stage={start_from} upstream=DESIGN source=.arc/design status=VALIDATED",
@@ -434,18 +421,7 @@ class Compiler:
                 frontend_errors.append(f"ARC4150: Cannot reuse Frontend Design IR: {read_error}")
             else:
                 frontend_design_ir = reusable_frontend or {}
-                for table_name in (
-                    "visual_references",
-                    "screens",
-                    "placements",
-                    "screen_components",
-                    "journeys",
-                    "api_usages",
-                    "shared_state_policies",
-                ):
-                    artifacts[f"frontend_design_{table_name}"] = str(
-                        artifact_store.frontend_design_root / f"{table_name}.json"
-                    )
+                artifacts["frontend_design_ir"] = str(artifact_store.frontend_design_root / "frontend.json")
                 await self._log(
                     "Compiler",
                     f"START_PROBE stage={start_from} upstream=FRONTEND_DESIGN "
@@ -811,8 +787,11 @@ class Compiler:
         database_lowering.errors.extend(fixture_lowering.errors)
         database_lowering.sources.update(fixture_lowering.sources)
         if not database_lowering.errors:
-            database_lowering.manifest["planned_files"] = sorted(database_lowering.sources)
-            database_lowering.manifest["generated_files"] = sorted(database_lowering.sources)
+            schema_sources = sorted(
+                path for path in database_lowering.sources if path.startswith("backend/src/")
+            )
+            database_lowering.manifest["planned_files"] = schema_sources
+            database_lowering.manifest["generated_files"] = schema_sources
         artifacts["backend_database_schema_manifest"] = (
             artifact_store.write_database_schema_manifest(database_lowering.manifest)
         )
@@ -829,6 +808,27 @@ class Compiler:
                 artifacts=artifacts,
             )
         artifacts.update(artifact_store.write_generated_sources(database_lowering.sources))
+        try:
+            seeded = subprocess.run(
+                ["node", "init-db.mjs"],
+                cwd=request.output_dir / "backend",
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=120,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            await self._log("Compiler", f"DATABASE_LOWERING_FAILED: {exc}", "error")
+            return CompilationResult(ok=False, root_id=root_id, states=states, artifacts=artifacts)
+        if seeded.returncode != 0:
+            await self._log(
+                "Compiler",
+                f"DATABASE_LOWERING_FAILED: {seeded.stderr or seeded.stdout}",
+                "error",
+            )
+            return CompilationResult(ok=False, root_id=root_id, states=states, artifacts=artifacts)
         await self._log(
             "Compiler",
             "SQLite/Drizzle schema lowered; DB Module Skeleton generation is next.",
@@ -954,8 +954,6 @@ class Compiler:
         )
         artifacts.update(
             artifact_store.write_backend_lowering(
-                route_registry=backend_glue.route_registry,
-                import_plan=backend_glue.import_plan,
                 manifest=backend_glue.manifest,
             )
         )
@@ -1049,8 +1047,6 @@ class Compiler:
         )
         artifacts.update(
             artifact_store.write_frontend_lowering(
-                route_registry=frontend_lowering.route_registry,
-                import_plan=frontend_lowering.import_plan,
                 manifest=frontend_lowering.manifest,
             )
         )
