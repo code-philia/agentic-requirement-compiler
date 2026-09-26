@@ -377,6 +377,14 @@ class FailureAnalyzer:
             for value in row.get("target_modules", [])
             if str(value)
         }
+        # Generated backend skeletons deliberately remain typecheckable. Their
+        # runtime stub ledger is deterministic evidence that a DB/FUNC/API
+        # module was reached but still has no implementation.
+        target_modules.update(
+            str(value)
+            for value in command_result.stub_hits
+            if str(value)
+        )
         for frame in stack_frames:
             target_modules.update(modules_by_file.get(frame.file, []))
         # TypeScript often reports files as ``src/...`` while the binding

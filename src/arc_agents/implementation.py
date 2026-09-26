@@ -97,15 +97,13 @@ Mode semantics:
 - INTEGRATION_REPAIR fixes a failing integration test using the complete backend surface.
 - E2E_BACKEND_REPAIR fixes server/API/DB evidence from an end-to-end failure.
 - E2E_FRONTEND_REPAIR fixes browser/UI evidence from an end-to-end failure.
-- INITIAL_IMPLEMENTATION performs the first coverage pass before business tests run.
+- TDD bootstrap implements the supplied target before tests run, without a failure report.
 - AGGREGATE handles non-atomic frontend composition without creating new compiler glue.
 
-When implementation_mode is INITIAL_IMPLEMENTATION, this is the first coverage pass before
-business tests run. Implement the one supplied target module from its requirement and contract;
-do not wait for a failure report and do not redesign unrelated modules. The compiler will typecheck
-the result before moving to the next target. If and only if the supplied target already completely
-satisfies the requirement, return {"edits":[]} to mark it ALREADY_SATISFIED. TDD and AGGREGATE
-requests must always return at least one exact edit.
+When bootstrap is true, implement the supplied target from its requirement, related module context,
+and writable source files. There is intentionally no failure report yet. Do not redesign unrelated
+modules. TDD repair receives test results and must use that evidence to make the smallest coherent
+fix. Every request must return at least one exact edit.
 
 Context layout:
 - Context arrives as two user messages. The first, "stable_project_context", holds policy, project conventions,
@@ -225,15 +223,13 @@ FRONTEND_IMPLEMENTATION_INSTRUCTIONS = """You are a senior frontend product engi
 Implement the current requirement's frontend experience as a coherent, runnable UI.
 
 Mode semantics:
-- INITIAL_IMPLEMENTATION builds the first complete frontend target before E2E tests.
+- TDD bootstrap builds the supplied frontend target before tests, without a failure report.
 - E2E_FRONTEND_REPAIR fixes direct browser/UI evidence while preserving declared routes and API clients.
 - AGGREGATE completes non-atomic page, layout, navigation, and shared-state composition.
 
-When implementation_phase is INITIAL_IMPLEMENTATION, implement the supplied frontend target as
-the requirement's first coverage pass before E2E tests run. Complete the target from the supplied
-requirement, placement/design context, and API client contract; do not wait for a Playwright failure
-and do not invent additional pages or files. If and only if the target is already a complete,
-runnable implementation of that placement, return {"edits":[]}; otherwise return exact edits.
+When bootstrap is true, implement the supplied frontend target as a first pass from the
+requirement, placement/design context, API client contract, and complete current source. There is
+no Playwright failure yet. Do not invent additional pages or files; return exact edits.
 
 Use the supplied requirement and requirement_contract for behavior, and use design_context
 and its visual references for layout, hierarchy, styling, responsive composition, and content
@@ -289,6 +285,7 @@ class ImplementationRequest:
     failure_analysis_text: str = ""
     retry_feedback: tuple[str, ...] = ()
     target_module_ids: tuple[str, ...] = ()
+    bootstrap: bool = False
 
 
 @dataclass(slots=True)
@@ -379,19 +376,13 @@ class ImplementationAgent:
 
         output_rows = invocation.output["edits"]
         if not output_rows:
-            if str(request.mode).strip().upper() == "INITIAL_IMPLEMENTATION":
-                return ImplementationResult(
-                    requirement_id=requirement_id,
-                    status="ALREADY_SATISFIED",
-                    attempts=invocation.attempts,
-                )
             return ImplementationResult(
                 requirement_id=requirement_id,
                 status="MODEL_REJECTED",
                 attempts=invocation.attempts,
                 errors=[
-                    "ARC4534 IMPLEMENTATION_OUTPUT_INVALID: empty edits are only "
-                    "valid for an already-satisfied INITIAL_IMPLEMENTATION target."
+                    "ARC4534 IMPLEMENTATION_OUTPUT_INVALID: implementation requests "
+                    "must return at least one exact edit."
                 ],
             )
 
@@ -450,7 +441,6 @@ class ImplementationAgent:
             "E2E_BACKEND_REPAIR",
             "E2E_FRONTEND_REPAIR",
             "AGGREGATE",
-            "INITIAL_IMPLEMENTATION",
         }:
             errors.append(
                 "ARC4530 IMPLEMENTATION_CONTEXT_INVALID: unsupported implementation mode."
@@ -478,7 +468,7 @@ class ImplementationAgent:
             errors.append(
                 "ARC4530 IMPLEMENTATION_CONTEXT_INVALID: every failure report must be serializable."
             )
-        if not reports:
+        if not reports and not request.bootstrap:
             errors.append(
                 "ARC4530 IMPLEMENTATION_CONTEXT_INVALID: one failure cluster is required."
             )
@@ -492,11 +482,11 @@ class ImplementationAgent:
         failure_classes = {
             str(row.get("failure_class", "")) for row in reports if row
         }
-        if len(failure_classes) != 1:
+        if reports and len(failure_classes) != 1:
             errors.append(
                 "ARC4530 IMPLEMENTATION_CONTEXT_INVALID: reports must share one failure class."
             )
-        non_actionable = sorted(failure_classes - ACTIONABLE_FAILURE_CLASSES)
+        non_actionable = sorted(failure_classes - ACTIONABLE_FAILURE_CLASSES) if reports else []
         if non_actionable:
             errors.append(
                 "ARC4531 IMPLEMENTATION_FAILURE_NOT_ACTIONABLE: fixed workflow must handle "
@@ -507,7 +497,7 @@ class ImplementationAgent:
             for row in reports
             if str(row.get("failure_fingerprint", ""))
         }
-        if len(fingerprints) != 1:
+        if reports and len(fingerprints) != 1:
             errors.append(
                 "ARC4530 IMPLEMENTATION_CONTEXT_INVALID: reports must form one failure cluster."
             )
@@ -588,7 +578,7 @@ class ImplementationAgent:
                 not in frontend_kinds
             }
         relevant_writable = set(writable_ids)
-        bootstrap_failure = any(
+        bootstrap_failure = bool(request.bootstrap) or any(
             str(report.get("phase", "")) == "FRONTEND_BOOTSTRAP" for report in reports
         )
         # Ordinary repair deliberately exposes the complete writable surface owned
@@ -647,7 +637,7 @@ class ImplementationAgent:
             "INTEGRATION_REPAIR",
             "E2E_BACKEND_REPAIR",
             "E2E_FRONTEND_REPAIR",
-        }:
+        } and not request.bootstrap:
             frozen_tests, test_errors = self._frozen_tests(
                 requirement_id,
                 request.test_manifest,
@@ -673,8 +663,9 @@ class ImplementationAgent:
             "implementation_mode": mode,
             "policy": {
                 "one_failure_cluster": True,
-                "tests_are_frozen": mode == "TDD",
-                "initial_implementation_target_ids": sorted(requested_target_ids),
+                "tests_are_frozen": mode == "TDD" and not request.bootstrap,
+                "bootstrap": bool(request.bootstrap),
+                "target_module_ids": sorted(requested_target_ids),
                 "tests_limited_to_failed_layers": False,
                 "writable_context_scope": "ALL_REQUIREMENT_OWNED_WRITABLE_MODULES",
                 "writable_layer_scope": layer_scope,
@@ -693,9 +684,10 @@ class ImplementationAgent:
             "requirement_id": requirement_id,
             "iteration": request.iteration,
             "implementation_phase": (
-                mode
+                "TDD_BOOTSTRAP"
+                if request.bootstrap
+                else mode
                 if mode in {
-                    "INITIAL_IMPLEMENTATION",
                     "UNIT_REPAIR",
                     "INTEGRATION_REPAIR",
                     "E2E_BACKEND_REPAIR",
@@ -731,7 +723,8 @@ class ImplementationAgent:
             ),
             "previous_patch_metadata": request.previous_patch_metadata,
             "prior_retry_feedback": list(request.retry_feedback),
-            "initial_target_module_ids": sorted(requested_target_ids),
+            "bootstrap": bool(request.bootstrap),
+            "target_module_ids": sorted(requested_target_ids),
             "provided_source_files": sorted(source_hashes),
         }
         context = {

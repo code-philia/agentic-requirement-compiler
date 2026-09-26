@@ -23,14 +23,6 @@ from .code_binding import CodeTargetResolver
 from .exact_file_patcher import ExactFilePatcher
 from .failure_analysis import FailureAnalysisResult, FailureAnalyzer, TestFailureReport
 from .e2e_repair_router import classify_e2e_route
-from .initial_implementation import (
-    BACKEND_INITIAL_KINDS,
-    FRONTEND_INITIAL_KINDS,
-    InitialImplementationLedger,
-    classify_initial_targets,
-    finalize_ledger,
-    ledger_entries_for_targets,
-)
 from .test_generation import RequirementTestGenerationPass, TEST_LAYERS
 from .test_runner import TestRunResult, TestRunner, TestSelection
 
@@ -392,24 +384,14 @@ class NodeTDDOrchestrator:
 
             changed_files: set[str] = set()
             previous_patch_metadata: dict[str, Any] | None = None
-            initial_changed, initial_ledger_path, initial_warnings = (
-                self._run_initial_implementation(requirement_id)
-            )
-            if initial_ledger_path:
-                result.artifacts["initial_implementation_ledger"] = initial_ledger_path
-            for warning in initial_warnings:
-                self._log.info(
-                    f"INITIAL_IMPLEMENTATION_WARNING requirement={requirement_id} "
-                    f"{warning}"
-                )
+            initial_changed = self._run_tdd_bootstrap_implementation(requirement_id)
             if initial_changed:
                 changed_files.update(initial_changed)
                 result.changed_files = sorted(changed_files)
                 previous_patch_metadata = {
-                    "phase": "INITIAL_IMPLEMENTATION",
+                    "phase": "TDD_BOOTSTRAP",
                     "changed_files": sorted(initial_changed),
                 }
-                self._transition(requirement_id, "INITIAL_IMPLEMENTED")
 
             available_layers = [
                 layer
@@ -1078,17 +1060,12 @@ class NodeTDDOrchestrator:
             self._state_history[str(requirement_id)] = list(result.state_history) or ["NODE_ACCEPTED"]
             self._accepted_results[str(requirement_id)] = result
 
-    def _run_initial_implementation(
-        self,
-        requirement_id: str,
-    ) -> tuple[set[str], str | None, list[str]]:
-        """Give every owned business target one compile-gated first pass.
+    def _run_tdd_bootstrap_implementation(self, requirement_id: str) -> set[str]:
+        """Give each owned business target one ordinary TDD-style implementation call.
 
-        This pass is deliberately independent from failure localization.  A
-        module that is not directly exercised by a generated test still gets a
-        bounded implementation opportunity before the first business-test run.
-        Targets that cannot be completed remain in the workspace's latest
-        compilable state and are recorded in a requirement-local ledger.
+        Bootstrap has no failure report yet. It uses only the requirement, contract,
+        related module cards, writable files, and their current source. Tests run
+        immediately afterwards and all later edits are driven by their evidence.
         """
 
         try:
@@ -1096,272 +1073,101 @@ class NodeTDDOrchestrator:
                 self.code_binding_registry
             ).resolve_requirement_targets(requirement_id)
         except (KeyError, ValueError) as exc:
-            warning = (
-                "INITIAL_IMPLEMENTATION_TARGETS_UNAVAILABLE: "
-                f"{type(exc).__name__}: {exc}"
+            self._log.info(
+                f"TDD_BOOTSTRAP_TARGETS_UNAVAILABLE requirement={requirement_id} error={exc}"
             )
-            return set(), None, [warning]
+            return set()
 
-        targets, ignored_ids = classify_initial_targets(resolved)
-        ledger = InitialImplementationLedger(
-            requirement_id=requirement_id,
-            entries=ledger_entries_for_targets(targets),
-        )
-        if ignored_ids:
-            ledger.warnings.append(
-                "INITIAL_IMPLEMENTATION_COMPILER_OWNED_SKIPPED: excluded non-business "
-                f"target(s) {ignored_ids}."
-            )
-
+        backend_kinds = {"DB", "FUNC", "API"}
+        frontend_kinds = {"STORE", "COMPONENT", "PAGE", "LAYOUT"}
+        targets = [
+            copy.deepcopy(row)
+            for row in resolved.get("owned_targets", [])
+            if isinstance(row, dict)
+            and str(row.get("kind", "")).upper() in backend_kinds | frontend_kinds
+            and str(row.get("module_id", "")).strip()
+        ]
         changed_files: set[str] = set()
         requirement = self.requirement_ir.get("nodes", {}).get(requirement_id, {})
         if not isinstance(requirement, dict):
             requirement = {}
-        target_by_id = {
-            str(row.get("module_id", "")): row
-            for row in targets
-            if str(row.get("module_id", "")).strip()
-        }
-        frontend_kinds = {value.upper() for value in FRONTEND_INITIAL_KINDS}
-        backend_kinds = {value.upper() for value in BACKEND_INITIAL_KINDS}
         max_attempts = max(1, self.policy.initial_target_retry_count + 1)
-        backend_target_ids = [
-            entry.module_id for entry in ledger.entries if entry.kind.upper() in backend_kinds
-        ]
-        frontend_target_ids = [
-            entry.module_id for entry in ledger.entries if entry.kind.upper() in frontend_kinds
-        ]
-        self._log.info(
-            f"BACKEND_INITIAL_IMPLEMENTATION_STARTED requirement={requirement_id} "
-            f"targets={backend_target_ids}"
-        )
-        frontend_phase_started = False
 
-        for entry in ledger.entries:
-            target = target_by_id.get(entry.module_id)
-            if target is None:
-                entry.status = "INCOMPLETE"
-                entry.errors.append("target binding disappeared before implementation")
-                continue
-            kind = entry.kind.upper()
-            if kind not in frontend_kinds | backend_kinds:
-                entry.status = "ALREADY_SATISFIED"
-                continue
-
-            if kind in frontend_kinds and not frontend_phase_started:
-                self._log.info(
-                    f"BACKEND_INITIAL_IMPLEMENTATION_COMPLETED requirement={requirement_id} "
-                    f"targets={backend_target_ids}"
-                )
-                self._log.info(
-                    f"FRONTEND_INITIAL_IMPLEMENTATION_STARTED requirement={requirement_id} "
-                    f"targets={frontend_target_ids}"
-                )
-                frontend_phase_started = True
-
+        for target in targets:
+            module_id = str(target.get("module_id", "")).strip()
+            kind = str(target.get("kind", "")).upper()
             agent = (
                 self.frontend_implementation_agent
                 if kind in frontend_kinds
                 else self.implementation_agent
             )
-            agent_name = (
-                "FrontendImplementationAgent"
-                if kind in frontend_kinds
-                else "ImplementationAgent"
-            )
             retry_feedback: tuple[str, ...] = ()
-            target_metadata: dict[str, Any] | None = None
-            target_succeeded = False
             for attempt in range(1, max_attempts + 1):
-                entry.attempts = attempt
                 checkpoint_sources = self.file_patcher.snapshot(
                     self._checkpoint_files(requirement_id)
                 )
-                target_metadata = {
-                    "phase": "INITIAL_IMPLEMENTATION",
-                    "target_module_id": entry.module_id,
-                    "target_kind": entry.kind,
-                    "attempt": attempt,
-                }
-                fingerprint = hashlib.sha256(
-                    f"{requirement_id}:initial:{entry.module_id}".encode("utf-8")
-                ).hexdigest()
-                report = TestFailureReport(
-                    requirement_id=requirement_id,
-                    iteration=attempt,
-                    test_id=None,
-                    test_ids=[],
-                    layer=None,
-                    phase="INITIAL_IMPLEMENTATION",
-                    failure_class="IMPLEMENTATION_BEHAVIOR",
-                    message=(
-                        "Initial implementation coverage pass for the supplied "
-                        f"{entry.kind} target {entry.module_id}."
-                    ),
-                    stack_frames=[],
-                    target_modules=[entry.module_id],
-                    writable_targets=[copy.deepcopy(target)],
-                    read_only_dependencies=[],
-                    changed_files=sorted(changed_files),
-                    failure_fingerprint=fingerprint,
-                    diagnostic_output=(
-                        "No business test has run yet. Implement this one owned target "
-                        "from the requirement, contract, design context, and supplied "
-                        "source, then keep the result typecheckable."
-                    ),
+                implementation = agent.implement(
+                    ImplementationRequest(
+                        requirement_id=requirement_id,
+                        requirement=requirement,
+                        requirement_contract=self._requirement_contract(requirement_id),
+                        test_manifest=self.test_manifest or {},
+                        code_binding_registry=self.code_binding_registry,
+                        failure_reports=(),
+                        failure_analysis_text="",
+                        iteration=attempt,
+                        mode="TDD",
+                        bootstrap=True,
+                        design_context=self._design_context(requirement_id),
+                        previous_patch_metadata={
+                            "phase": "TDD_BOOTSTRAP",
+                            "target_module_id": module_id,
+                            "target_kind": kind,
+                            "attempt": attempt,
+                        },
+                        retry_feedback=retry_feedback,
+                        target_module_ids=(module_id,),
+                    )
                 )
-                self._log.info(
-                    f"{agent_name} INITIAL_IMPLEMENTATION_REQUEST "
-                    f"requirement={requirement_id} target={entry.module_id} "
-                    f"kind={entry.kind} attempt={attempt}/{max_attempts}"
-                )
-                try:
-                    implementation = agent.implement(
-                        ImplementationRequest(
-                            requirement_id=requirement_id,
-                            requirement=requirement,
-                            requirement_contract=self._requirement_contract(requirement_id),
-                            test_manifest={},
-                            code_binding_registry=self.code_binding_registry,
-                            failure_reports=(report,),
-                            failure_analysis_text=report.diagnostic_output,
-                            iteration=attempt,
-                            mode="INITIAL_IMPLEMENTATION",
-                            design_context=self._design_context(requirement_id),
-                            previous_patch_metadata=target_metadata,
-                            retry_feedback=retry_feedback,
-                            target_module_ids=(entry.module_id,),
-                        )
-                    )
-                except Exception as exc:
-                    detail = f"{type(exc).__name__}: {exc}"
-                    implementation = None
-                    retry_feedback = (
-                        "The initial implementation call raised an exception; retry "
-                        "using only the supplied target source.",
-                        detail,
-                    )
-                    entry.errors.append(detail)
-                    self._log.info(
-                        f"{agent_name} INITIAL_IMPLEMENTATION_EXCEPTION "
-                        f"requirement={requirement_id} target={entry.module_id} "
-                        f"error={detail}"
-                    )
-                if implementation is None:
-                    continue
-                if implementation.status == "ALREADY_SATISFIED":
-                    entry.status = "ALREADY_SATISFIED"
-                    target_succeeded = True
-                    self._log.info(
-                        f"{agent_name} INITIAL_IMPLEMENTATION_ALREADY_SATISFIED "
-                        f"requirement={requirement_id} target={entry.module_id}"
-                    )
-                    break
                 if not implementation.ok or implementation.patch is None:
-                    retry_feedback = tuple(
-                        [
-                            "The initial implementation model call did not produce an "
-                            "applicable patch for the requested target.",
-                            *implementation.errors,
-                        ]
-                    )
-                    entry.errors.extend(implementation.errors)
-                    self._log.info(
-                        f"{agent_name} INITIAL_IMPLEMENTATION_REJECTED "
-                        f"requirement={requirement_id} target={entry.module_id} "
-                        f"errors={implementation.errors}"
-                    )
+                    retry_feedback = tuple(implementation.errors)
                     continue
-
                 applied = self.file_patcher.apply(
                     implementation.patch,
                     code_binding_registry=self.code_binding_registry,
                 )
                 if not applied.ok:
                     self.file_patcher.restore(checkpoint_sources)
-                    retry_feedback = tuple(
-                        [
-                            "The previous initial patch was rejected by exact file "
-                            "application; use the current source and a unique search fragment.",
-                            *applied.rejected_changes,
-                        ]
-                    )
-                    entry.errors.extend(applied.rejected_changes)
-                    self._log.info(
-                        f"{agent_name} INITIAL_IMPLEMENTATION_PATCH_REJECTED "
-                        f"requirement={requirement_id} target={entry.module_id} "
-                        f"errors={applied.rejected_changes}"
-                    )
+                    retry_feedback = tuple(applied.rejected_changes)
                     continue
-
                 typecheck = self.test_runner.run_workspace_typecheck()
                 if typecheck.status != "PASSED":
                     self.file_patcher.restore(checkpoint_sources)
-                    detail = (
-                        typecheck.stderr
-                        or typecheck.stdout
-                        or typecheck.error
-                        or "workspace typecheck failed"
-                    )
                     retry_feedback = tuple(
-                        [
-                            "The initial patch was applied but did not pass workspace "
-                            "typecheck. Fix the target without changing its public contract.",
-                            detail,
-                        ]
-                    )
-                    entry.errors.append(detail)
-                    self._log.info(
-                        f"{agent_name} INITIAL_IMPLEMENTATION_TYPECHECK_FAILED "
-                        f"requirement={requirement_id} target={entry.module_id} "
-                        f"detail={detail}"
+                        value
+                        for value in (
+                            "Bootstrap patch must pass workspace typecheck.",
+                            typecheck.stderr or typecheck.stdout or typecheck.error,
+                        )
+                        if value
                     )
                     continue
-
-                changed_files.update(_normalize_path(value) for value in applied.changed_files)
-                entry.changed_files = sorted(
-                    set(entry.changed_files)
-                    | {_normalize_path(value) for value in applied.changed_files}
+                changed_files.update(
+                    _normalize_path(value) for value in applied.changed_files
                 )
-                entry.status = "COMPILE_ACCEPTED"
-                target_succeeded = True
                 self._node_checkpoints[requirement_id] = _CompilableCheckpoint(
-                    sources=self.file_patcher.snapshot(self._checkpoint_files(requirement_id)),
+                    sources=self.file_patcher.snapshot(
+                        self._checkpoint_files(requirement_id)
+                    ),
                     changed_files=sorted(changed_files),
                 )
                 self._log.info(
-                    f"{agent_name} INITIAL_IMPLEMENTATION_ACCEPTED "
-                    f"requirement={requirement_id} target={entry.module_id} "
-                    f"changed_files={entry.changed_files}"
+                    f"TDD_BOOTSTRAP_ACCEPTED requirement={requirement_id} "
+                    f"target={module_id} changed_files={applied.changed_files}"
                 )
                 break
 
-            if not target_succeeded:
-                entry.status = "INCOMPLETE"
-                ledger.warnings.append(
-                    "INITIAL_IMPLEMENTATION_TARGET_INCOMPLETE: "
-                    f"{entry.module_id} remained at its latest compilable source."
-                )
-
-        if not frontend_phase_started:
-            self._log.info(
-                f"BACKEND_INITIAL_IMPLEMENTATION_COMPLETED requirement={requirement_id} "
-                f"targets={backend_target_ids}"
-            )
-            self._log.info(
-                f"FRONTEND_INITIAL_IMPLEMENTATION_SKIPPED requirement={requirement_id} "
-                "reason=NO_FRONTEND_TARGETS"
-            )
-        else:
-            self._log.info(
-                f"FRONTEND_INITIAL_IMPLEMENTATION_COMPLETED requirement={requirement_id} "
-                f"targets={frontend_target_ids}"
-            )
-
-        finalize_ledger(ledger)
-        ledger_path = self._node_root(requirement_id) / "initial_implementation_ledger.json"
-        write_json_atomic(ledger_path, ledger.to_dict())
-        return changed_files, str(ledger_path), list(ledger.warnings)
+        return changed_files
 
     def _run_and_analyze(
         self,

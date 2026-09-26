@@ -265,7 +265,12 @@ def test_workspace_spec(
             "support/runtime.ts": (
                 "export function uniqueValue(prefix: string): string {\n"
                 "  return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;\n"
-                "}\n"
+                "}\n\n"
+                f'export async function resetE2EState(): Promise<void> {{\n'
+                f'  const baseUrl = process.env.ARC_TEST_BASE_URL ?? "http://127.0.0.1:{port}";\n'
+                '  const response = await fetch(`${baseUrl}/__arc/reset`, { method: "POST" });\n'
+                '  if (!response.ok) throw new Error(`Reset request failed: ${response.status} ${await response.text()}`);\n'
+                '}\n'
             ),
             "support/seed.ts": (
                 'import { readFile } from "node:fs/promises";\n\n'
@@ -319,7 +324,12 @@ def test_workspace_spec(
             ),
             "support/setup.ts": (
                 'process.env.DATABASE_URL ??= ":memory:";\n'
-                'process.env.NODE_ENV ??= "test";\n'
+                'process.env.NODE_ENV ??= "test";\n\n'
+                'import { beforeEach } from "vitest";\n\n'
+                'beforeEach(async () => {\n'
+                '  const { resetDatabase } = await import("../../backend/src/db/client.js");\n'
+                '  resetDatabase();\n'
+                '});\n'
             ),
         },
     }

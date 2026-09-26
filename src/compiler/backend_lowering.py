@@ -459,7 +459,7 @@ def _render_glue(
         initialization_statements,
     )
     imports[database_path] = database_imports
-    exports[database_path] = ["database", "sqliteDatabase"]
+    exports[database_path] = ["database", "sqliteDatabase", "resetDatabase"]
 
     router_path = "backend/src/generated/router.ts"
     router_imports = [_import("Router", "express")]
@@ -531,6 +531,7 @@ def _render_glue(
         _import("ErrorRequestHandler", "express", type_only=True),
         _import("fileURLToPath", "node:url"),
         _import("sqliteDatabase", "./db/client.js", source=database_path),
+        _import("resetDatabase", "./db/client.js", source=database_path),
         _import("seedFor", "./fixtures/index.js", source="backend/src/fixtures/index.ts"),
         _import("router", "./generated/router.js", source=router_path),
         _import("toErrorBody", "./runtime/errors.js", source="backend/src/runtime/errors.ts"),
@@ -686,6 +687,19 @@ def _render_database_client(
             "",
             "export const database = drizzle(sqliteDatabase, { schema });",
             "",
+            "export function resetDatabase(): void {",
+            "  sqliteDatabase.pragma(\"foreign_keys = OFF\");",
+            "  const tables = sqliteDatabase.prepare(\"SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'\").all() as Array<{ name: string }>;",
+            "  const reset = sqliteDatabase.transaction(() => {",
+            "    for (const table of tables) {",
+            '      const escaped = table.name.replaceAll(\'"\', \'""\');',
+            "      sqliteDatabase.prepare('DELETE FROM \"' + escaped + '\"').run();",
+            "    }",
+            "  });",
+            "  reset();",
+            "  sqliteDatabase.pragma(\"foreign_keys = ON\");",
+            "}",
+            "",
         ]
     )
     return "\n".join(lines)
@@ -736,6 +750,14 @@ def _render_app(imports: list[dict[str, Any]]) -> str:
             "app.use(express.json());",
             'app.get("/__arc/health", (_request, response) => {',
             '  response.status(200).json({ status: "ok", service: "arc-backend" });',
+            "});",
+            'app.post("/__arc/reset", (_request, response) => {',
+            '  if (process.env.NODE_ENV !== "test") {',
+            '    response.status(404).json({ error: { code: "NOT_FOUND", message: "Not found" } });',
+            "    return;",
+            "  }",
+            "  resetDatabase();",
+            "  response.status(204).end();",
             "});",
             'app.post("/__arc/seed", (request, response) => {',
             '  if (process.env.NODE_ENV !== "test") {',
@@ -799,7 +821,7 @@ def _render_backend_barrel() -> str:
         'export * as functionModules from "./functions/index.js";\n'
         'export * as dbRepositories from "./db/repositories/index.js";\n'
         'export * as dbSchema from "./db/schema/index.js";\n'
-        'export { database, sqliteDatabase } from "./db/client.js";\n'
+        'export { database, resetDatabase, sqliteDatabase } from "./db/client.js";\n'
         'export { router } from "./generated/router.js";\n'
         'export { moduleRegistry } from "./generated/module-registry.js";\n'
         'export { dependencyRegistry } from "./generated/dependency-registry.js";\n'

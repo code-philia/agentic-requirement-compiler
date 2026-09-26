@@ -118,6 +118,7 @@ Testing rules:
   example `expect(response.status, JSON.stringify(response.body)).toBeLessThan(400)`, so implementation failures retain
   the server diagnostic in the fixed feedback loop.
 - E2E uses @playwright/test and the supplied frontend route/observable labels.
+- Every E2E file must import resetE2EState and call it from beforeEach before browser actions.
 - Tests may fail because implementation regions still throw or are incomplete. Do not weaken assertions.
 - Code must be complete TypeScript with imports and test declarations, without markdown fences.
 - Do not use `.only`, skipped tests, snapshots, dynamic source discovery, filesystem searches, or line numbers.
@@ -942,13 +943,15 @@ def _build_context_pack(
                 "specifier": "vitest" if layer != "E2E" else "@playwright/test",
                 "symbols": ["describe", "expect", "test"]
                 if layer != "E2E"
-                else ["expect", "test"],
+                else ["beforeEach", "expect", "test"],
             }
         ]
         imports.append(
             {
                 "specifier": _relative_import(test_file, "tests/support/runtime.ts"),
-                "symbols": ["uniqueValue"],
+                "symbols": ["uniqueValue", "resetE2EState"]
+                if layer == "E2E"
+                else ["uniqueValue"],
             }
         )
         if requirement.get("seed_fixtures") and layer in {"INTEGRATION", "E2E"}:
@@ -1815,6 +1818,14 @@ def _validate_test_code(
     if required_package not in imports:
         errors.append(
             f"ARC4427 TEST_IMPORT_INVALID: {layer} must import {required_package}."
+        )
+    if layer == "E2E" and (
+        "resetE2EState" not in imports
+        or not re.search(r"\bresetE2EState\s*\(", code)
+        or not re.search(r"\bbeforeEach\s*\(", code)
+    ):
+        errors.append(
+            "ARC4428 TEST_ISOLATION_INVALID: E2E must reset the test database in beforeEach."
         )
     if layer == "INTEGRATION" and (
         "supertest" not in imports
