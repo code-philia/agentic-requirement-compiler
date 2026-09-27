@@ -12,6 +12,7 @@ from typing import Any, Mapping, Sequence
 from arcbench_agent_runtime.jsonio import write_json_atomic
 from core.logging import SynchronousLog
 
+from .integration_runner import integration_runner_source
 from .process_utils import process_group_kwargs, resolve_executable, terminate_process_tree
 
 
@@ -199,7 +200,7 @@ def test_workspace_spec(
                     "--config playwright.config.ts"
                 ),
                 "test:unit": "vitest run --config vitest.config.ts unit",
-                "test:integration": "vitest run --config vitest.config.ts integration",
+                "test:integration": "node ./support/run-integration.mjs",
                 "test:e2e": "playwright test --config playwright.config.ts",
             },
             "devDependencies": {
@@ -239,7 +240,7 @@ def test_workspace_spec(
                 "    maxWorkers: 1,\n"
                 "    testTimeout: 15_000,\n"
                 "    hookTimeout: 15_000,\n"
-                '    setupFiles: process.env.ARC_TEST_LAYER === "INTEGRATION" ? [] : ["./support/setup.ts"],\n'
+                '    setupFiles: process.env.ARC_TEST_LAYER === "INTEGRATION" ? ["./support/integration-setup.ts"] : ["./support/setup.ts"],\n'
                 "  },\n"
                 "});\n"
             ),
@@ -316,49 +317,15 @@ def test_workspace_spec(
                 "\n"
                 "export default ProgressReporter;\n"
             ),
-            "support/seed.ts": (
-                'import { readFile } from "node:fs/promises";\n\n'
-                "export interface SeedRow {\n"
-                "  entity_key: string;\n"
-                "  fixture_key: string;\n"
-                "  values: Record<string, unknown>;\n"
-                "}\n\n"
-                "export interface SeedFixtureSet {\n"
-                "  id: string;\n"
-                "  requirement_id: string;\n"
-                "  name: string;\n"
-                "  rows: SeedRow[];\n"
-                "}\n\n"
-                "export async function seedFixturesForRequirement(\n"
-                "  requirementId: string,\n"
-                "): Promise<SeedFixtureSet[]> {\n"
-                "  const payload = JSON.parse(\n"
-                "    await readFile(\n"
-                '      new URL("../../.arc/fixtures/fixture_ir.json", import.meta.url),\n'
-                '      "utf8",\n'
-                "    ),\n"
-                "  ) as { fixture_sets?: SeedFixtureSet[] };\n"
-                "  return (payload.fixture_sets ?? []).filter((fixture) => fixture.requirement_id === requirementId);\n"
-                "}\n\n"
-                "export async function seedRequirement(\n"
-                "  requirementId: string,\n"
-                "  apply?: (requirementId: string) => Promise<void>,\n"
-                "): Promise<void> {\n"
-                "  const fixtures = await seedFixturesForRequirement(requirementId);\n"
-                "  if (!fixtures.length) return;\n"
-                "  if (apply) {\n"
-                "    // The endpoint seeds every fixture set for this requirement in one call.\n"
-                "    await apply(requirementId);\n"
-                "    return;\n"
-                "  }\n"
-                f'  const baseUrl = process.env.ARC_TEST_BASE_URL ?? "http://127.0.0.1:{port}";\n'
-                '  const response = await fetch(`${baseUrl}/__arc/seed`, {\n'
-                '    method: "POST",\n'
-                '    headers: { "content-type": "application/json" },\n'
-                "    body: JSON.stringify({ requirement_id: requirementId }),\n"
-                "  });\n"
-                '  if (!response.ok) throw new Error(`Seed request failed: ${response.status} ${await response.text()}`);\n'
-                "}\n"
+            "support/run-integration.mjs": integration_runner_source(),
+            "support/integration-setup.ts": (
+                'import { beforeEach } from "vitest";\n\n'
+                "const baseUrl = process.env.ARC_TEST_BASE_URL;\n"
+                'if (!baseUrl) throw new Error("Integration tests require npm run test:integration.");\n\n'
+                "beforeEach(async () => {\n"
+                '  const response = await fetch(`${baseUrl}/__arc/reset`, { method: "POST" });\n'
+                '  if (!response.ok) throw new Error(`Reset request failed: ${response.status} ${await response.text()}`);\n'
+                "});\n"
             ),
             "support/setup.ts": (
                 'process.env.DATABASE_URL = ":memory:";\n'
@@ -690,7 +657,8 @@ class ProjectInitializer:
             "tests/support/runtime.ts",
             "tests/support/e2e.ts",
             "tests/support/progress-reporter.ts",
-            "tests/support/seed.ts",
+            "tests/support/run-integration.mjs",
+            "tests/support/integration-setup.ts",
             "tests/support/setup.ts",
         )
         missing = [relative for relative in expected if not (self.staged_project / relative).exists()]

@@ -6,8 +6,6 @@ import os
 import socket
 import subprocess
 import time
-import urllib.error
-import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import Any, Mapping
@@ -184,100 +182,20 @@ class TestRunner:
                 if str(row.get("layer", "")).upper() == layer
             ]
             command = _execution_command(layer, layer_files)
-            if layer == "INTEGRATION":
-                command_result = self._run_integration(command, layer_files)
-            else:
-                command_result = self._execute(
-                    phase="EXECUTION",
-                    layer=layer,
-                    command=command,
-                    test_files=layer_files,
-                    timeout=self._timeouts[layer],
-                )
+            command_result = self._execute(
+                phase="EXECUTION",
+                layer=layer,
+                command=command,
+                test_files=layer_files,
+                timeout=(
+                    self._timeouts["TYPECHECK"] + self._timeouts[layer] + 20
+                    if layer == "INTEGRATION" else self._timeouts[layer]
+                ),
+            )
             result.commands.append(command_result)
             if command_result.status != "PASSED" and selection.stop_on_failure:
                 break
         return self._finish(result, started)
-
-    def _run_integration(self, command: list[str], test_files: list[str]) -> TestCommandResult:
-        build = self._execute(
-            phase="INTEGRATION_BUILD", layer="INTEGRATION",
-            command=["npm", "run", "build", "-w", "@arc/backend"],
-            test_files=test_files, timeout=self._timeouts["TYPECHECK"],
-        )
-        if build.status != "PASSED":
-            return build
-        node = resolve_executable("node", self.environment)
-        if node is None:
-            return TestCommandResult(
-                phase="EXECUTION", layer="INTEGRATION", command=command,
-                test_files=test_files, status="ERROR", returncode=None,
-                duration_ms=0, error="ARC4506 TEST_COMMAND_UNAVAILABLE: node",
-            )
-        try:
-            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
-                listener.bind(("127.0.0.1", 0))
-                port = listener.getsockname()[1]
-        except OSError as exc:
-            return TestCommandResult(
-                phase="EXECUTION", layer="INTEGRATION", command=command,
-                test_files=test_files, status="ERROR", returncode=None,
-                duration_ms=0, error=f"ARC4510 INTEGRATION_PORT_ALLOCATION_FAILED: {exc}",
-            )
-        base_url = f"http://127.0.0.1:{port}"
-        server_environment = {
-            **self.environment, "NODE_ENV": "test", "DATABASE_URL": ":memory:",
-            "PORT": str(port),
-        }
-        capture_root = self.output_root / ".arc" / "runtime" / "test-output"
-        capture_root.mkdir(parents=True, exist_ok=True)
-        log_path = capture_root / f"integration-server-{os.getpid()}-{time.time_ns()}.output.log"
-        started = time.perf_counter()
-        try:
-            with log_path.open("w", encoding="utf-8", errors="replace") as log_file:
-                server = subprocess.Popen(
-                    [node, str(self.output_root / "backend" / "dist" / "server.js")],
-                    cwd=str(self.output_root), env=server_environment,
-                    stdout=log_file, stderr=subprocess.STDOUT, **process_group_kwargs(),
-                )
-        except OSError as exc:
-            return TestCommandResult(
-                phase="EXECUTION", layer="INTEGRATION", command=command,
-                test_files=test_files, status="ERROR", returncode=None,
-                duration_ms=round((time.perf_counter() - started) * 1000),
-                error=f"ARC4511 INTEGRATION_SERVER_FAILED: {exc}",
-            )
-        try:
-            deadline = time.monotonic() + 20.0
-            while time.monotonic() < deadline and server.poll() is None:
-                try:
-                    with urllib.request.urlopen(f"{base_url}/__arc/health", timeout=1) as response:
-                        if response.status == 200:
-                            break
-                except (OSError, urllib.error.URLError):
-                    time.sleep(0.2)
-            else:
-                return TestCommandResult(
-                    phase="EXECUTION", layer="INTEGRATION", command=command,
-                    test_files=test_files, status="ERROR", returncode=server.poll(),
-                    duration_ms=round((time.perf_counter() - started) * 1000),
-                    stdout=_read_capture_file(log_path),
-                    error="ARC4511 INTEGRATION_SERVER_FAILED: backend health check did not become ready.",
-                )
-            return self._execute(
-                phase="EXECUTION", layer="INTEGRATION", command=command,
-                test_files=test_files, timeout=self._timeouts["INTEGRATION"],
-                environment_overrides={
-                    "ARC_TEST_BASE_URL": base_url, "ARC_TEST_LAYER": "INTEGRATION",
-                },
-            )
-        finally:
-            terminate_process_tree(server)
-            try:
-                server.wait(timeout=5.0)
-            except subprocess.TimeoutExpired:
-                server.kill()
-                server.wait()
 
     def run_workspace_typecheck(self) -> TestCommandResult:
         """Type-check every generated workspace after any implementation patch."""
@@ -322,7 +240,6 @@ class TestRunner:
         command: list[str],
         test_files: list[str],
         timeout: float,
-        environment_overrides: dict[str, str] | None = None,
     ) -> TestCommandResult:
         started = time.perf_counter()
         command_text = " ".join(command)
@@ -350,7 +267,7 @@ class TestRunner:
         capture_root = self.output_root / ".arc" / "runtime" / "test-output"
         capture_root.mkdir(parents=True, exist_ok=True)
         capture_id = f"{phase.lower()}-{str(layer or 'none').lower()}-{os.getpid()}-{time.time_ns()}"
-        process_environment = {**self.environment, **(environment_overrides or {})}
+        process_environment = dict(self.environment)
         is_e2e = str(layer or "").upper() == "E2E"
         if is_e2e:
             try:
@@ -541,7 +458,9 @@ def _normalize_layers(values: tuple[str, ...]) -> tuple[list[str], list[str]]:
 
 def _execution_command(layer: str, test_files: list[str]) -> list[str]:
     workspace_files = [_test_workspace_path(value) for value in test_files]
-    if layer in {"UNIT", "INTEGRATION"}:
+    if layer == "INTEGRATION":
+        return ["npm", "run", "test:integration", "-w", "@arc/tests", "--", *workspace_files]
+    if layer == "UNIT":
         return [
             "npm",
             "exec",
