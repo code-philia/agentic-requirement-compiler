@@ -19,7 +19,6 @@ from .file_planning import GlobalFilePlanner
 from .frontend_thin_design import (
     ThinFrontendDesignPass,
     frontend_design_traceability,
-    materialize_screen_components,
     project_frontend_runtime_ir,
 )
 from .frontend_lowering import (
@@ -539,16 +538,6 @@ class Compiler:
             states.update(ui_scope.node_states)
         else:
             frontend_design_ir = ui_scope.frontend_ir
-
-        if not frontend_errors and not frontend_design_ir.get("screen_components"):
-            await self._log(
-                "Compiler",
-                "Deriving frontend implementation components deterministically from requirement placements.",
-            )
-            frontend_design_ir = materialize_screen_components(
-                frontend_design_ir,
-                preprocessing.requirement_ir,
-            )
 
         if not frontend_errors:
             try:

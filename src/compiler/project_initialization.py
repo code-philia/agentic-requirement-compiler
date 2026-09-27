@@ -239,7 +239,7 @@ def test_workspace_spec(
                 "    maxWorkers: 1,\n"
                 "    testTimeout: 15_000,\n"
                 "    hookTimeout: 15_000,\n"
-                '    setupFiles: ["./support/setup.ts"],\n'
+                '    setupFiles: process.env.ARC_TEST_LAYER === "INTEGRATION" ? [] : ["./support/setup.ts"],\n'
                 "  },\n"
                 "});\n"
             ),

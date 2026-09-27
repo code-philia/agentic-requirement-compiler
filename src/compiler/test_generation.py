@@ -56,8 +56,11 @@ scenarios, never from skeleton placeholders or current implementation behavior.
 Use the exact exports, helper signatures, database fields and routes in the supplied
 code. E2E controls may not exist in the unimplemented skeleton yet: choose accessible
 locators from the requirement, not from placeholder text. For integration tests,
-pass seedRequirement an apply callback that posts to /__arc/seed via Supertest(app)
-so fixtures reach the in-process database; E2E can use its default HTTP seeding.
+use Supertest(process.env.ARC_TEST_BASE_URL!) to send real GET/POST/etc requests to
+the separately started backend. Reset state in beforeEach by POST /__arc/reset;
+seedRequirement uses its default HTTP seeding. Never import the Express app or
+backend modules directly in an integration test. Assert status, body, cookies,
+and observable persistence via API requests where the requirement calls for them.
 Generate exactly one complete TypeScript file for each supplied layer, with
 real assertions over inputs, outputs and persisted data. Keep each test independent;
 use fresh unique values and seed fixtures in beforeEach when required.
@@ -809,19 +812,7 @@ def _build_context_pack(
             if layer == "INTEGRATION":
                 imports[0]["symbols"] = ["beforeEach", "describe", "expect", "test"]
         if layer == "INTEGRATION":
-            imports.extend(
-                [
-                    {"specifier": "supertest", "symbols": ["default"]},
-                    {
-                        "specifier": _relative_import(test_file, "backend/src/app.ts"),
-                        "symbols": ["app"],
-                    },
-                    {
-                        "specifier": _relative_import(test_file, "backend/src/db/client.ts"),
-                        "symbols": ["sqliteDatabase"],
-                    },
-                ]
-            )
+            imports.append({"specifier": "supertest", "symbols": ["default"]})
         if layer == "UNIT":
             imports.extend(
                 {
@@ -1420,11 +1411,17 @@ def _validate_test_code(
             )
     if layer == "INTEGRATION" and (
         "supertest" not in imports
-        or _relative_import(context_pack["output_files"][layer], "backend/src/app.ts")
-        not in imports
+        or not re.search(r"\b(?:supertest|request)\s*\(\s*process\.env\.ARC_TEST_BASE_URL", code)
     ):
         errors.append(
-            "ARC4427 TEST_IMPORT_INVALID: INTEGRATION must use Supertest and the exported app."
+            "ARC4427 TEST_IMPORT_INVALID: INTEGRATION must send Supertest requests to ARC_TEST_BASE_URL."
+        )
+    if layer == "INTEGRATION" and (
+        "/__arc/reset" not in code
+        or not re.search(r"\bbeforeEach\s*\(", code)
+    ):
+        errors.append(
+            "ARC4428 TEST_ISOLATION_INVALID: integration tests must reset the backend over HTTP in beforeEach."
         )
     if context_pack["has_seed_fixtures"] and layer in {"INTEGRATION", "E2E"}:
         seed_import = _relative_import(
@@ -1434,11 +1431,11 @@ def _validate_test_code(
             errors.append(
                 f"ARC4428 TEST_SEED_INVALID: {layer} must use the compiler-owned seedRequirement helper."
             )
-        if layer == "INTEGRATION" and not re.search(
+        if layer == "INTEGRATION" and re.search(
             r"\bseedRequirement\s*\([^,)]*,\s*(?!\))\S", code
         ):
             errors.append(
-                "ARC4428 TEST_SEED_INVALID: integration seeding must supply an in-process apply callback."
+                "ARC4428 TEST_SEED_INVALID: integration seeding must use the deployed backend over HTTP."
             )
         if not re.search(r"\b(?:beforeEach|test\.beforeEach)\s*\(", code):
             errors.append(

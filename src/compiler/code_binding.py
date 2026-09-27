@@ -537,6 +537,20 @@ def _requirement_targets(
         }
         for requirement_id in requirement_ids
     }
+    for binding in bindings:
+        if binding.get("kind") not in {"PAGE", "COMPONENT", "STORE", "LAYOUT"}:
+            continue
+        module_id = str(binding.get("module_id", ""))
+        atomic_owners = {
+            owner for owner in _strings(binding.get("owner_requirements"))
+            if isinstance(nodes.get(owner), dict)
+            and str(nodes[owner].get("type", "")).upper() == "ATOMIC"
+        }
+        if atomic_owners:
+            for requirement_id in requirement_ids:
+                owned_by_requirement[requirement_id].discard(module_id)
+            for owner in atomic_owners:
+                owned_by_requirement[owner].add(module_id)
     requirement_dependencies = dependency_graph.get("requirement_dependencies", {})
     atomic_dependencies = dependency_graph.get("atomic_dependencies", {})
 
@@ -677,7 +691,7 @@ def _validate_requirement_permissions(
     binding_by_id: dict[str, dict[str, Any]],
     errors: list[str],
 ) -> None:
-    """Enforce a single writer and internally consistent target permissions."""
+    """Allow shared frontend surfaces, but keep backend modules single-writer."""
 
     writable_owners: dict[str, list[str]] = {}
     permissions_by_requirement: dict[str, tuple[set[str], set[str]]] = {}
@@ -712,7 +726,13 @@ def _validate_requirement_permissions(
             if value in known_requirements
         }
         owners = sorted(set(writable_owners.get(module_id, [])))
-        if semantic_owners and len(owners) != 1:
+        if binding.get("kind") in {"PAGE", "COMPONENT", "STORE", "LAYOUT"}:
+            if semantic_owners and not owners:
+                errors.append(
+                    "ARC4306 CODE_BINDING_OWNERSHIP_INVALID: "
+                    f"{module_id} has no writable requirement."
+                )
+        elif semantic_owners and len(owners) != 1:
             errors.append(
                 "ARC4306 CODE_BINDING_OWNERSHIP_INVALID: "
                 f"{module_id} must have exactly one writable requirement; found {owners}."

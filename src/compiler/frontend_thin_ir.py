@@ -13,7 +13,7 @@ from .frontend_ir import (
     schema_shape_errors,
 )
 
-FRONTEND_IR_SCHEMA_VERSION = 4
+FRONTEND_IR_SCHEMA_VERSION = 6
 
 
 def _strings(*, maximum: int = 64) -> dict[str, Any]:
@@ -92,7 +92,7 @@ UI_PLACEMENT_SCHEMA = {
         },
         "strategy": {
             "type": "string",
-            "enum": ["CREATE_FEATURE_COMPONENT", "NO_FRONTEND_IMPLEMENTATION"],
+            "enum": ["USE_SCREEN", "NO_FRONTEND_IMPLEMENTATION"],
         },
     },
 }
@@ -127,7 +127,7 @@ API_USAGE_SCHEMA = {
 }
 SHARED_STATE_POLICY_SCHEMA = {
     "type": "object", "additionalProperties": False,
-    "required": ["id", "purpose", "state", "actions", "persistence", "requirement_ids"],
+    "required": ["id", "purpose", "state", "actions", "persistence", "requirement_ids", "consumer_screen_ids", "consumer_surface_keys"],
     "properties": {
         "id": {"type": "string", "pattern": r"^STORE\.[A-Za-z][A-Za-z0-9]*$"},
         "purpose": {"type": "string", "minLength": 1},
@@ -135,6 +135,8 @@ SHARED_STATE_POLICY_SCHEMA = {
         "actions": {"type": "array", "items": STORE_ACTION_SCHEMA},
         "persistence": STORE_PERSISTENCE_SCHEMA,
         "requirement_ids": _strings(),
+        "consumer_screen_ids": _strings(),
+        "consumer_surface_keys": _strings(maximum=32),
     },
 }
 REQUIREMENT_LINK_SCHEMA = {

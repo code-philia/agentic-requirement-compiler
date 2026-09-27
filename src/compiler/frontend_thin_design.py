@@ -28,6 +28,7 @@ Do not design layouts, components, JSX, CSS, files, props, events, component tre
 Reference images are evidence for each screen's eventual composition and visual language. Preserve their ids.
 Reuse one screen for coverage items that represent the same route and product surface. Screen ids use
 PAGE.<PascalName>; shared state ids use STORE.<PascalName>;
+Use the same lower-case dot-separated surface key on screens that share a reusable UI surface.
 Routes are absolute. Only use supplied visual ids. Return exactly one JSON object and no prose."""
 
 COVERAGE_INVENTORY_INSTRUCTIONS = """You are a senior frontend product analyst.
@@ -39,7 +40,9 @@ Never omit a requirement. If uncertain, choose UI_AFFECTING rather than NO_UI.""
 
 NAVIGATION_STATE_INSTRUCTIONS = """You are a senior frontend interaction architect.
 Connect the already-created screens into a coherent navigation graph and define only genuinely
-cross-page shared state. You may reference only supplied screen ids and state ids.
+cross-page shared state. For each state list every consuming screen in consumer_screen_ids
+and any shared UI surface keys that directly use it in consumer_surface_keys.
+You may reference only supplied screen ids and state ids.
 Do not create screens, routes, components, API ids, or files. Return one JSON object and no prose."""
 
 THIN_FRONTEND_SCREEN_DECISION_SCHEMA = copy.deepcopy(
@@ -227,6 +230,11 @@ class ThinFrontendDesignPass:
             expected_requirement_ids=requirement_ids,
             backend_api_ids=api_ids,
         )
+        if issues:
+            return ThinFrontendDesignResult(
+                {}, {rid: "FAILED" for rid in requirement_ids},
+                [issue.format() for issue in issues],
+            )
         canonical = _canonicalize(candidate)
         states = {
             rid: (
@@ -236,11 +244,6 @@ class ThinFrontendDesignPass:
             )
             for rid in requirement_ids
         }
-        if issues:
-            self._log.info(
-                "DESIGN_WARNING phase=frontend_design_validation "
-                f"issues={[issue.format() for issue in issues]} decision=canonicalized"
-            )
         return ThinFrontendDesignResult(canonical, states)
 
     def _generate_coverage_inventory(
@@ -446,8 +449,8 @@ def validate_thin_frontend_design(frontend_ir: dict[str, Any], *, expected_requi
             issues.append(_issue(FrontendDesignErrorCode.REFERENCE_UNKNOWN, f"Placement references unknown requirement {requirement_id}."))
         if screen_id is not None and str(screen_id) not in screens:
             issues.append(_issue(FrontendDesignErrorCode.REFERENCE_UNKNOWN, f"Placement for {requirement_id} references unknown screen {screen_id}."))
-        if placement["strategy"] == "CREATE_FEATURE_COMPONENT" and screen_id is None:
-            issues.append(_issue(FrontendDesignErrorCode.COMPONENT_DECISION_INVALID, f"Placement for {requirement_id} must identify a screen and component."))
+        if placement["strategy"] == "USE_SCREEN" and (screen_id is None or placement.get("component_id") is not None):
+            issues.append(_issue(FrontendDesignErrorCode.COMPONENT_DECISION_INVALID, f"Placement for {requirement_id} must identify a screen, not a requirement-specific component."))
         if placement["strategy"] == "NO_FRONTEND_IMPLEMENTATION" and (screen_id is not None or placement.get("component_id") is not None):
             issues.append(_issue(FrontendDesignErrorCode.COMPONENT_DECISION_INVALID, f"NO_FRONTEND_IMPLEMENTATION placement for {requirement_id} cannot identify a screen or component."))
     if len(placement_keys) != len(set(placement_keys)):
@@ -486,38 +489,30 @@ def _complete_requirement_api_dependencies(
             continue
         owner_by_api[api_id] = str(module.get("owner_requirement", "")).strip() or api_id.split("::", 1)[0]
 
-    usages_by_screen: dict[str, set[str]] = {}
-    for usage in frontend_ir.get("api_usages", []):
-        if not isinstance(usage, dict):
-            continue
-        screen_id = str(usage.get("screen_id", "")).strip()
-        api_id = str(usage.get("api_id", "")).strip()
-        if screen_id and api_id:
-            usages_by_screen.setdefault(screen_id, set()).add(api_id)
+    screens = [row for row in frontend_ir.get("screens", []) if isinstance(row, dict)]
+    selected_apis: dict[str, set[str]] = {str(row["id"]): set() for row in screens}
+    for api_id, owner in owner_by_api.items():
+        candidates = [
+            screen for screen in screens if owner in screen.get("requirement_ids", [])
+        ]
+        action = api_id.split("::API.", 1)[-1]
+        action_terms = {part.lower() for part in re.findall(r"[A-Z]?[a-z]+|[A-Z]+(?![a-z])", action)}
+        scores = {
+            str(screen["id"]): len(action_terms & set(re.findall(
+                r"[a-z0-9]+", " ".join([
+                    str(screen["id"]), *[str(key) for key in screen.get("surface_keys", [])],
+                ]).lower(),
+            )))
+            for screen in candidates
+        }
+        best = max(scores.values(), default=0)
+        for screen in candidates:
+            screen_id = str(screen["id"])
+            if best == 0 or scores[screen_id] == best:
+                selected_apis[screen_id].add(api_id)
 
-    for screen in frontend_ir.get("screens", []):
-        if not isinstance(screen, dict):
-            continue
-        screen_id = str(screen.get("id", "")).strip()
-        requirement_ids = {
-            str(value).strip()
-            for value in screen.get("requirement_ids", [])
-            if str(value).strip()
-        }
-        owned_api_ids = {
-            api_id for api_id, owner in owner_by_api.items() if owner in requirement_ids
-        }
-        declared_api_ids = {
-            str(value).strip()
-            for value in screen.get("required_api_ids", [])
-            if str(value).strip() in owner_by_api
-        }
-        declared_api_ids.update(
-            value for value in usages_by_screen.get(screen_id, set())
-            if value in owner_by_api
-        )
-        declared_api_ids.update(owned_api_ids)
-        screen["required_api_ids"] = sorted(declared_api_ids)
+    for screen in screens:
+        screen["required_api_ids"] = sorted(selected_apis.get(str(screen["id"]), set()))
 
 
 def _normalize_frontend_architecture(
@@ -536,6 +531,7 @@ def _normalize_frontend_architecture(
 
     by_id: dict[str, dict[str, Any]] = {}
     route_owner: dict[str, str] = {}
+    screen_aliases: dict[str, str] = {}
     for raw_screen in frontend_ir.get("screens", []):
         if not isinstance(raw_screen, dict):
             continue
@@ -546,6 +542,7 @@ def _normalize_frontend_architecture(
             continue
         canonical_id = route_owner.get(route, screen_id)
         route_owner.setdefault(route, canonical_id)
+        screen_aliases[screen_id] = canonical_id
         current = by_id.get(canonical_id)
         if current is None:
             screen["id"] = canonical_id
@@ -557,6 +554,7 @@ def _normalize_frontend_architecture(
             "observable_states",
             "required_api_ids",
             "visual_reference_ids",
+            "surface_keys",
         ):
             current[key] = list(dict.fromkeys([
                 *current.get(key, []),
@@ -611,6 +609,14 @@ def _normalize_frontend_architecture(
         store["requirement_ids"] = sorted({
             str(value) for value in store.get("requirement_ids", [])
             if str(value) in requirement_ids
+        })
+        store["consumer_screen_ids"] = sorted({
+            screen_aliases[str(value)] for value in store.get("consumer_screen_ids", [])
+            if screen_aliases.get(str(value)) in by_id
+        })
+        store["consumer_surface_keys"] = sorted({
+            str(value) for value in store.get("consumer_surface_keys", [])
+            if any(value in screen.get("surface_keys", []) for screen in by_id.values())
         })
         stores[store_id] = store
     frontend_ir["shared_state_policies"] = sorted(
@@ -684,6 +690,10 @@ def _normalize_navigation_state(
     screens: list[dict[str, Any]],
 ) -> dict[str, Any]:
     screen_ids = {str(row.get("id", "")) for row in screens if isinstance(row, dict)}
+    surface_keys = {
+        str(key) for screen in screens if isinstance(screen, dict)
+        for key in screen.get("surface_keys", [])
+    }
     navigation: list[dict[str, Any]] = []
     seen: set[tuple[str, str, str]] = set()
     for row in decision.get("navigation", []):
@@ -715,6 +725,14 @@ def _normalize_navigation_state(
         seen_states.add(state_id)
         state = copy.deepcopy(row)
         state["requirement_ids"] = []
+        state["consumer_screen_ids"] = sorted({
+            str(value) for value in row.get("consumer_screen_ids", [])
+            if str(value) in screen_ids
+        })
+        state["consumer_surface_keys"] = sorted({
+            str(value) for value in row.get("consumer_surface_keys", [])
+            if str(value) in surface_keys
+        })
         states.append(state)
     return {"navigation": navigation, "shared_state_policies": states}
 
@@ -761,18 +779,19 @@ def _derive_placements_from_coverage(
     for requirement_id in ordered_ids:
         item = coverage_by_id.get(requirement_id, {})
         scope = str(item.get("ui_scope", "UI_AFFECTING"))
-        hint_tokens = set(re.findall(
-            r"[a-z0-9]+",
-            str(item.get("surface_hint", requirement_id)).lower(),
-        ))
-        selected: list[dict[str, Any]] = []
-        for screen in screens:
-            keys = set(re.findall(
-                r"[a-z0-9]+",
-                " ".join(str(value) for value in screen.get("surface_keys", [])),
-            ))
-            if hint_tokens and hint_tokens.intersection(keys):
-                selected.append(screen)
+        hint_tokens = _surface_terms(str(item.get("surface_hint", requirement_id)))
+        scores = {
+            str(screen["id"]): len(hint_tokens & _surface_terms(" ".join(
+                str(value) for value in screen.get("surface_keys", [])
+                if not str(value).lower().startswith("site.")
+            )))
+            for screen in (screens if scope != "NO_UI" else [])
+        }
+        best_score = max(scores.values(), default=0)
+        selected = [
+            screen for screen in screens
+            if best_score > 0 and scores.get(str(screen["id"])) == best_score
+        ]
         if not selected and scope != "NO_UI" and screens:
             selected = [_best_fallback_screen_row(requirement_id, item, screens)]
         if not selected:
@@ -790,13 +809,20 @@ def _derive_placements_from_coverage(
                 "requirement_id": requirement_id,
                 "ui_scope": scope,
                 "screen_id": screen_id,
-                "component_id": f"COMPONENT.{_component_token(screen_id)}{_component_token(requirement_id)}",
-                "strategy": "CREATE_FEATURE_COMPONENT",
+                "component_id": None,
+                "strategy": "USE_SCREEN",
             })
             screen.setdefault("requirement_ids", []).append(requirement_id)
     for screen in screens:
         screen["requirement_ids"] = sorted(set(str(value) for value in screen.get("requirement_ids", []) if str(value)))
     stores = [row for row in frontend_ir.get("shared_state_policies", []) if isinstance(row, dict)]
+    placed_screens: dict[str, set[str]] = {}
+    surface_keys_by_screen = {
+        str(screen["id"]): set(screen.get("surface_keys", [])) for screen in screens
+    }
+    for placement in placements:
+        if placement["screen_id"] is not None:
+            placed_screens.setdefault(str(placement["requirement_id"]), set()).add(str(placement["screen_id"]))
     for store in stores:
         store["requirement_ids"] = []
     for requirement_id in ordered_ids:
@@ -809,11 +835,25 @@ def _derive_placements_from_coverage(
                 r"[a-z0-9]+",
                 f"{store.get('id', '')} {store.get('purpose', '')}".lower(),
             ))
-            if needs and needs.intersection(store_terms):
+            if (
+                placed_screens.get(requirement_id, set())
+                & set(store.get("consumer_screen_ids", []))
+                or any(
+                    surface_keys_by_screen.get(screen_id, set())
+                    & set(store.get("consumer_surface_keys", []))
+                    for screen_id in placed_screens.get(requirement_id, set())
+                )
+                or needs and needs.intersection(store_terms)
+            ):
                 store["requirement_ids"].append(requirement_id)
         for store in stores:
             store["requirement_ids"] = sorted(set(store["requirement_ids"]))
     frontend_ir["placements"] = placements
+
+
+def _surface_terms(value: str) -> set[str]:
+    separated = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", value)
+    return set(re.findall(r"[a-z0-9]+", separated.lower()))
 
 
 def _best_fallback_screen_row(
@@ -821,17 +861,13 @@ def _best_fallback_screen_row(
     coverage: dict[str, Any],
     screens: list[dict[str, Any]],
 ) -> dict[str, Any]:
-    terms = set(re.findall(
-        r"[a-z0-9]+",
-        f"{requirement_id} {coverage.get('surface_hint', '')}".lower(),
-    ))
+    terms = _surface_terms(f"{requirement_id} {coverage.get('surface_hint', '')}")
     return sorted(
         screens,
         key=lambda screen: (
-            -len(terms.intersection(set(re.findall(
-                r"[a-z0-9]+",
-                " ".join(str(screen.get(key, "")) for key in ("id", "route", "purpose", "surface_keys")).lower(),
-            )))),
+            -len(terms & _surface_terms(" ".join(
+                str(screen.get(key, "")) for key in ("id", "route", "purpose", "surface_keys")
+            ))),
             str(screen.get("id", "")),
         ),
     )[0]
@@ -972,11 +1008,8 @@ def _apply_ui_placement_decisions(
                 "requirement_id": requirement_id,
                 "ui_scope": scope,
                 "screen_id": screen_id,
-                "component_id": (
-                    f"COMPONENT.{_component_token(screen_id)}"
-                    f"{_component_token(requirement_id)}"
-                ),
-                "strategy": "CREATE_FEATURE_COMPONENT",
+                "component_id": None,
+                "strategy": "USE_SCREEN",
             })
     for screen in screens.values():
         screen["requirement_ids"] = sorted(screen["requirement_ids"])
@@ -1096,21 +1129,22 @@ def _canonicalize_frontend_associations(
         usages.values(), key=lambda row: (str(row["screen_id"]), str(row["api_id"]))
     )
 
-    # A journey's API is another projection of the same ownership relation.
-    # Repair an invalid/missing model choice when its requirement has exactly
-    # one owned API; otherwise leave it empty rather than inventing an id.
-    apis_by_requirement: dict[str, list[str]] = {}
-    for api_id in sorted(known_api_ids):
-        owner = api_id.split("::", 1)[0]
-        apis_by_requirement.setdefault(owner, []).append(api_id)
     for journey in frontend_ir.get("journeys", []):
         if not isinstance(journey, dict):
             continue
         current_api = str(journey.get("api_id") or "")
-        if current_api in known_api_ids:
-            continue
-        owned = apis_by_requirement.get(str(journey.get("requirement_id", "")), [])
-        journey["api_id"] = owned[0] if len(owned) == 1 else None
+        screen_apis = screen_api_ids.get(str(journey.get("source_screen_id", "")), set())
+        trigger_terms = set(re.findall(r"[a-z0-9]+", str(journey.get("trigger", "")).lower()))
+        matching_apis = [
+            api_id for api_id in screen_apis
+            if trigger_terms & {part.lower() for part in re.findall(
+                r"[A-Z]?[a-z]+|[A-Z]+(?![a-z])", api_id.split("::API.", 1)[-1]
+            )}
+        ]
+        journey["api_id"] = (
+            current_api if current_api in matching_apis
+            else matching_apis[0] if len(matching_apis) == 1 else None
+        )
 
     existing_links = {
         str(row.get("requirement_id", "")): row
@@ -1167,112 +1201,61 @@ def _canonicalize_frontend_associations(
     frontend_ir["requirement_links"] = links
 
 
-def materialize_screen_components(
-    frontend_ir: dict[str, Any],
-    requirement_ir: dict[str, Any],
-) -> dict[str, Any]:
-    """Derive component rows from screens and requirement ownership.
-
-    The model does not need to repeat the same requirement/API/state facts in a
-    second table.  One deterministic feature component is created for each
-    requirement served by a screen; API and state ownership are joined from
-    their canonical owners and observable states are assigned by stable order.
-    """
-
-    result = copy.deepcopy(frontend_ir)
-    nodes = requirement_ir.get("nodes", {})
-    stores_by_requirement: dict[str, list[str]] = {}
-    for store in result.get("shared_state_policies", []):
-        if not isinstance(store, dict):
-            continue
-        store_id = str(store.get("id", ""))
-        for requirement_id in store.get("requirement_ids", []):
-            stores_by_requirement.setdefault(str(requirement_id), []).append(store_id)
-
-    api_owner: dict[str, str] = {}
-    for screen in result.get("screens", []):
-        if not isinstance(screen, dict):
-            continue
-        for api_id in screen.get("required_api_ids", []):
-            value = str(api_id)
-            api_owner.setdefault(value, value.split("::", 1)[0])
-
-    screens = {
-        str(screen.get("id", "")): screen
-        for screen in result.get("screens", [])
-        if isinstance(screen, dict) and str(screen.get("id", ""))
-    }
-    placements_by_screen: dict[str, list[dict[str, Any]]] = {}
-    for placement in result.get("placements", []):
-        if not isinstance(placement, dict):
-            continue
-        if placement.get("strategy") != "CREATE_FEATURE_COMPONENT":
-            continue
-        screen_id = str(placement.get("screen_id", ""))
-        if screen_id in screens:
-            placements_by_screen.setdefault(screen_id, []).append(placement)
-
-    components: list[dict[str, Any]] = []
-    for screen_id, screen in sorted(screens.items()):
-        placements = sorted(
-            placements_by_screen.get(screen_id, []),
-            key=lambda row: (str(row.get("requirement_id", "")), str(row.get("component_id", ""))),
-        )
-        if not placements:
-            continue
-        route_inputs = copy.deepcopy(screen.get("route_inputs", []))
-        states = [str(value) for value in screen.get("observable_states", []) if str(value)]
-        for index, placement in enumerate(placements):
-            requirement_id = str(placement.get("requirement_id", ""))
-            node = nodes.get(requirement_id, {}) if isinstance(nodes, dict) else {}
-            name = str(node.get("name", "")).strip() if isinstance(node, dict) else ""
-            description = str(node.get("description", "")).strip() if isinstance(node, dict) else ""
-            purpose = name or description or f"Implement {requirement_id} on {screen_id}."
-            component_id = str(placement.get("component_id", ""))
-            owned_apis = sorted(
-                api_id for api_id, owner in api_owner.items() if owner == requirement_id
-            )
-            if not owned_apis and index == 0:
-                owned_apis = sorted(api_owner)
-            owned_states = [state for pos, state in enumerate(states) if pos % len(placements) == index]
-            linked_visuals = sorted(
-                set(str(value) for value in screen.get("visual_reference_ids", []) if str(value))
-                if index == 0 else set()
-            )
-            components.append({
-                "id": component_id,
-                "screen_id": screen_id,
-                "purpose": purpose,
-                "requirement_ids": [requirement_id],
-                "inputs": route_inputs if index == 0 else [],
-                "required_api_ids": owned_apis,
-                "shared_state_ids": sorted(set(stores_by_requirement.get(requirement_id, []))),
-                "observable_states": owned_states,
-                "visual_reference_ids": linked_visuals,
-            })
-    result["screen_components"] = sorted(components, key=lambda row: str(row["id"]))
-    return result
 
 
 def _component_token(value: str) -> str:
-    text = re.sub(r"[^A-Za-z0-9]+", " ", str(value)).strip()
-    return "".join(part[:1].upper() + part[1:] for part in text.split()) or "Feature"
+    text = re.sub(r'[^A-Za-z0-9]+', ' ', str(value)).strip()
+    return ''.join(part[:1].upper() + part[1:] for part in text.split()) or 'Feature'
 
 
 def project_frontend_runtime_ir(frontend_ir: dict[str, Any]) -> dict[str, Any]:
-    """Adapt thin design facts to existing runtime seams without persisting component design.
-
-    A screen that was partitioned into components keeps nothing writable of its
-    own: the components own the requirements, the APIs, the shared state, and
-    the observable states, and the page is left as pure composition.
-    """
-    state_ids = [str(row["id"]) for row in frontend_ir.get("shared_state_policies", [])]
+    """Lower one page per route and one shared component per repeated surface."""
+    state_consumers = {
+        str(row["id"]): set(row.get("consumer_screen_ids", []))
+        for row in frontend_ir.get("shared_state_policies", [])
+    }
+    screens = frontend_ir.get("screens", [])
+    surface_screens: dict[str, list[dict[str, Any]]] = {}
+    for screen in screens:
+        for surface_key in set(screen.get("surface_keys", [])):
+            surface_screens.setdefault(str(surface_key), []).append(screen)
+    shared_by_screen: dict[str, list[str]] = {}
+    shared_components: list[dict[str, Any]] = []
+    component_ids = {
+        str(row.get("id", "")) for row in frontend_ir.get("screen_components", [])
+        if isinstance(row, dict)
+    }
+    for surface_key, owners in sorted(surface_screens.items()):
+        if len(owners) < 2:
+            continue
+        base_id = f"COMPONENT.{_component_token(surface_key)}"
+        component_id = base_id
+        suffix = 2
+        while component_id in component_ids:
+            component_id = f"{base_id}{suffix}"
+            suffix += 1
+        component_ids.add(component_id)
+        requirements = sorted({rid for screen in owners for rid in screen["requirement_ids"]})
+        shared_components.append({
+            "id": component_id, "spec": f"Shared {surface_key} surface.", "inputs": [],
+            "scope": "SHARED", "owner_page_id": None, "owner_layout_id": None,
+            "events": [], "requirement_ids": requirements, "layout_id": None,
+            "component_ids": [], "api_dependencies": [], "store_dependencies": [
+                str(store["id"]) for store in frontend_ir.get("shared_state_policies", [])
+                if surface_key in store.get("consumer_surface_keys", [])
+            ],
+            "render_obligations": [], "visual_reference_ids": sorted({
+                visual_id for screen in owners for visual_id in screen["visual_reference_ids"]
+            }),
+        })
+        for screen in owners:
+            shared_by_screen.setdefault(str(screen["id"]), []).append(component_id)
     components_by_screen: dict[str, list[dict[str, Any]]] = {}
     for row in frontend_ir.get("screen_components", []):
         if isinstance(row, dict):
             components_by_screen.setdefault(str(row.get("screen_id", "")), []).append(row)
     component_owner: dict[str, str] = {}
-    components: list[dict[str, Any]] = []
+    components: list[dict[str, Any]] = shared_components[:]
     pages = []
     for screen in frontend_ir.get("screens", []):
         owned = sorted(components_by_screen.get(str(screen["id"]), []), key=lambda row: str(row["id"]))
@@ -1290,11 +1273,14 @@ def project_frontend_runtime_ir(frontend_ir: dict[str, Any]) -> dict[str, Any]:
             })
         pages.append({
             "id": screen["id"], "spec": screen["purpose"], "route": screen["route"], "route_inputs": copy.deepcopy(screen["route_inputs"]),
-            "requirement_ids": [] if owned else copy.deepcopy(screen["requirement_ids"]),
-            "layout_id": None, "component_ids": [str(row["id"]) for row in owned],
-            "api_dependencies": [] if owned else copy.deepcopy(screen["required_api_ids"]),
-            "store_dependencies": [] if owned else [sid for sid in state_ids if _state_used(frontend_ir, sid, screen["requirement_ids"])],
-            "render_obligations": [] if owned else _render_obligations(screen["observable_states"]),
+            "requirement_ids": copy.deepcopy(screen["requirement_ids"]),
+            "layout_id": None, "component_ids": [*shared_by_screen.get(str(screen["id"]), []), *[str(row["id"]) for row in owned]],
+            "api_dependencies": copy.deepcopy(screen["required_api_ids"]),
+            "store_dependencies": [
+                state_id for state_id, consumers in state_consumers.items()
+                if screen["id"] in consumers
+            ],
+            "render_obligations": _render_obligations(screen["observable_states"]),
             "navigation": [{"trigger": row["trigger"], "target": row["target_route"], "target_route": row["target_route"], "condition": row["condition"]} for row in screen["navigation_targets"]],
             "visual_reference_ids": copy.deepcopy(screen["visual_reference_ids"]),
         })
@@ -1303,7 +1289,10 @@ def project_frontend_runtime_ir(frontend_ir: dict[str, Any]) -> dict[str, Any]:
     owned_components = _components_by_requirement(frontend_ir)
     links = [{
         "requirement_id": row["requirement_id"], "ui_scope": row["ui_scope"],
-        "symbol_ids": sorted(set(owned_components.get(str(row["requirement_id"]), []) or row["screen_ids"]) | set(row["shared_state_ids"])),
+        "symbol_ids": sorted(set(owned_components.get(str(row["requirement_id"]), [])) | set(row["screen_ids"]) | set(row["shared_state_ids"]) | {
+            component_id for screen_id in row["screen_ids"]
+            for component_id in shared_by_screen.get(str(screen_id), [])
+        }),
         "visual_reference_ids": copy.deepcopy(row["visual_reference_ids"]),
     } for row in frontend_ir.get("requirement_links", [])]
     return {"schema_version": 2, "visual_references": copy.deepcopy(frontend_ir.get("visual_references", [])), "layouts": [], "pages": pages, "components": components, "stores": stores, "api_dependencies": dependencies, "requirement_links": links}
@@ -1327,7 +1316,11 @@ def _components_by_requirement(frontend_ir: dict[str, Any]) -> dict[str, list[st
 
 def frontend_design_traceability(frontend_ir: dict[str, Any]) -> dict[str, dict[str, Any]]:
     owned_components = _components_by_requirement(frontend_ir)
-    return {str(row["requirement_id"]): {"ui_scope": row["ui_scope"], "layout_ids": [], "component_ids": owned_components.get(str(row["requirement_id"]), []), "page_ids": copy.deepcopy(row["screen_ids"]), "store_ids": copy.deepcopy(row["shared_state_ids"]), "visual_reference_ids": copy.deepcopy(row["visual_reference_ids"])} for row in frontend_ir.get("requirement_links", [])}
+    shared_components = project_frontend_runtime_ir(frontend_ir)["components"]
+    return {str(row["requirement_id"]): {"ui_scope": row["ui_scope"], "layout_ids": [], "component_ids": sorted(set(owned_components.get(str(row["requirement_id"]), [])) | {
+        str(component["id"]) for component in shared_components
+        if component["scope"] == "SHARED" and row["requirement_id"] in component["requirement_ids"]
+    }), "page_ids": copy.deepcopy(row["screen_ids"]), "store_ids": copy.deepcopy(row["shared_state_ids"]), "visual_reference_ids": copy.deepcopy(row["visual_reference_ids"])} for row in frontend_ir.get("requirement_links", [])}
 
 
 def _canonicalize(value: dict[str, Any]) -> dict[str, Any]:
@@ -1349,11 +1342,6 @@ def _canonicalize(value: dict[str, Any]) -> dict[str, Any]:
 
 def _link(frontend_ir: dict[str, Any], rid: str) -> dict[str, Any]:
     return next((row for row in frontend_ir["requirement_links"] if row["requirement_id"] == rid), {})
-
-
-def _state_used(frontend_ir: dict[str, Any], state_id: str, requirement_ids: list[str]) -> bool:
-    owners = set(requirement_ids)
-    return any(state_id in row["shared_state_ids"] and row["requirement_id"] in owners for row in frontend_ir.get("requirement_links", []))
 
 
 def _unknown(owner: str, kind: str, values: list[Any], allowed: set[str], code: FrontendDesignErrorCode) -> list[FrontendDesignIssue]:

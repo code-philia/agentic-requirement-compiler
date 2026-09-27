@@ -1247,7 +1247,8 @@ class FrontendSkeletonLowerer:
                     if isinstance(row, dict)
                 }
                 forwarded = [
-                    f"{str(row.get('name', ''))}: _props.{available[str(row.get('semantic_id', ''))]}"
+                    f"{json.dumps(str(row.get('name', '')))}: "
+                    f"_props[{json.dumps(available[str(row.get('semantic_id', ''))])}]"
                     for row in components.get(child_id, {}).get("inputs", [])
                     if isinstance(row, dict) and str(row.get("semantic_id", "")) in available
                 ]
