@@ -37,7 +37,6 @@ class TDDStageResult:
     changed_files: list[str] = field(default_factory=list)
     failed_requirements: list[str] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
-    retry_layer: str | None = None
 
     @property
     def ok(self) -> bool:
@@ -106,24 +105,16 @@ class NodeTDDOrchestrator:
             return self._fail(result, "No frozen tests for: " + ", ".join(missing))
 
         budgets: dict[tuple[str, str], int] = {}
-        position = 0
-        while position < len(layers):
-            layer = layers[position]
-            layer_result = self._run_layer(
-                layer, requirement_ids, budgets, layers[:position],
-            )
+        for layer in layers:
+            layer_result = self._run_layer(layer, requirement_ids, budgets)
             result.changed_files = sorted(set(result.changed_files) | set(layer_result.changed_files))
             result.failed_requirements.extend(layer_result.failed_requirements)
             result.errors.extend(layer_result.errors)
-            if layer_result.retry_layer is not None:
-                position = layers.index(layer_result.retry_layer)
-                continue
             if not layer_result.ok:
                 result.stage = layer_result.stage
                 result.status = layer_result.status
                 result.failed_requirements = sorted(set(result.failed_requirements))
                 return result
-            position += 1
         result.failed_requirements = sorted(set(result.failed_requirements))
         result.errors.clear()
         return result
@@ -173,14 +164,13 @@ class NodeTDDOrchestrator:
         layer: str,
         requirement_ids: list[str],
         budgets: dict[tuple[str, str], int],
-        previous_layers: tuple[str, ...],
     ) -> TDDStageResult:
         result = TDDStageResult(layer, status="TESTS_PASSED")
         layer_requirements = [
             requirement_id for requirement_id in requirement_ids
             if self._has_test(requirement_id, layer)
         ]
-        for index, requirement_id in enumerate(layer_requirements):
+        for requirement_id in layer_requirements:
             run = self._run_tests(requirement_id, layer)
             if not run.commands:
                 result.failed_requirements.append(requirement_id)
@@ -188,24 +178,49 @@ class NodeTDDOrchestrator:
             if self._has_infrastructure_error(run):
                 result.failed_requirements.append(requirement_id)
                 return self._fail(result, self._raw_output(run))
+            aggregate_repairs: list[tuple[str, tuple[str, ...], bool]] = []
+            if layer == "E2E" and not self._owned_targets(requirement_id):
+                aggregate_repairs = self._aggregate_repair_targets(requirement_id)
             feedback = self._raw_output(run)
             while not run.ok:
                 budget_key = (requirement_id, layer)
+                if layer == "E2E" and not self._owned_targets(requirement_id) and not aggregate_repairs:
+                    result.failed_requirements.append(requirement_id)
+                    return self._fail(
+                        result,
+                        f"{requirement_id}: no related descendant owns a writable repair target.",
+                        feedback,
+                    )
                 if budgets.get(budget_key, 0) >= self.policy.max_iterations_per_layer:
                     result.failed_requirements.append(requirement_id)
                     result.errors.append(feedback)
                     result.status = "BUDGET_EXHAUSTED"
                     return result
-                budgets[budget_key] = budgets.get(budget_key, 0) + 1
+                repair_index = budgets.get(budget_key, 0)
+                budgets[budget_key] = repair_index + 1
                 agent = (
                     self.frontend_implementation_agent
                     if layer == "E2E" else self.implementation_agent
                 )
+                repair_id = requirement_id
+                target_ids: tuple[str, ...] = ()
+                requirement = self._requirement(requirement_id)
+                if aggregate_repairs:
+                    repair_id, target_ids, is_frontend = aggregate_repairs[repair_index % len(aggregate_repairs)]
+                    agent = (
+                        self.frontend_implementation_agent
+                        if is_frontend else self.implementation_agent
+                    )
+                    requirement = {
+                        **self._requirement(repair_id),
+                        "aggregate_requirement": requirement,
+                    }
                 changed, error = self._apply_edit(
-                    requirement_id,
-                    self._requirement(requirement_id),
+                    repair_id,
+                    requirement,
                     agent,
                     result,
+                    target_ids=target_ids,
                     test_output=feedback,
                     test_files=tuple(run.selected_files),
                     commit_stage=f"6.{TEST_LAYERS.index(layer) + 3} {layer.lower()} repair {requirement_id}",
@@ -224,30 +239,34 @@ class NodeTDDOrchestrator:
                     result.failed_requirements.append(requirement_id)
                     return self._fail(result, self._raw_output(run))
                 feedback = self._raw_output(run)
-                for earlier_requirement in layer_requirements[:index]:
-                    regression = self._run_tests(earlier_requirement, layer)
-                    if not regression.commands or self._has_infrastructure_error(regression):
-                        result.failed_requirements.append(earlier_requirement)
-                        return self._fail(result, self._raw_output(regression))
-                    if not regression.ok:
-                        result.retry_layer = layer
-                        result.status = "REGRESSION"
-                        result.errors.append(self._raw_output(regression))
-                        return result
-                for previous in reversed(previous_layers):
-                    for previous_requirement in requirement_ids:
-                        if not self._has_test(previous_requirement, previous):
-                            continue
-                        regression = self._run_tests(previous_requirement, previous)
-                        if not regression.commands or self._has_infrastructure_error(regression):
-                            result.failed_requirements.append(previous_requirement)
-                            return self._fail(result, self._raw_output(regression))
-                        if not regression.ok:
-                            result.retry_layer = previous
-                            result.status = "REGRESSION"
-                            result.errors.append(self._raw_output(regression))
-                            return result
         return result
+
+    def _aggregate_repair_targets(self, requirement_id: str) -> list[tuple[str, tuple[str, ...], bool]]:
+        resolver = CodeTargetResolver(self.code_binding_registry)
+        related_ids = {
+            str(row["module_id"])
+            for row in resolver.resolve_requirement_targets(requirement_id)["dependency_targets"]
+        }
+        nodes = self.requirement_ir.get("nodes", {})
+        candidates: list[tuple[str, tuple[str, ...], bool]] = []
+        for atomic_id in self.requirement_ir.get("atomic_units", []):
+            current = nodes.get(atomic_id, {}).get("parent_id")
+            while current and current != requirement_id:
+                current = nodes.get(current, {}).get("parent_id")
+            if current != requirement_id:
+                continue
+            targets = [
+                row for row in self._owned_targets(atomic_id)
+                if str(row.get("module_id", "")) in related_ids
+            ]
+            for is_frontend, kinds in ((True, self._FRONTEND_KINDS), (False, self._BACKEND_KINDS)):
+                target_ids = tuple(
+                    str(row["module_id"]) for row in targets if row.get("kind") in kinds
+                )
+                if target_ids:
+                    candidates.append((atomic_id, target_ids, is_frontend))
+        candidates.sort(key=lambda row: (not row[2], row[0]))
+        return candidates
 
     def _apply_edit(
         self,

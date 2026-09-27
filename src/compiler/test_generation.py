@@ -55,9 +55,20 @@ and the supplied source files. Assertions must come from the requirement and its
 scenarios, never from skeleton placeholders or current implementation behavior.
 Use the exact exports, helper signatures, database fields and routes in the supplied
 code. E2E controls may not exist in the unimplemented skeleton yet: choose accessible
-locators from the requirement, not from placeholder text. For integration tests,
-use Supertest(process.env.ARC_TEST_BASE_URL!) to send real GET/POST/etc requests to
-the separately started backend. The test runner resets the database before every
+locators from the requirement, not from placeholder text. E2E may navigate directly
+to any route in the supplied frontend screen graph; entry routes are suggestions.
+When selecting form controls by a literal label, use getByLabel("label", { exact: true })
+to avoid substring matches such as "Name" matching "Username"; anchored regular
+expressions are also acceptable. Apply the same care to accessible role names.
+For E2E helper function parameters, Playwright types can be imported from
+@playwright/test with import type or inline import("@playwright/test").Page;
+runtime test and expect must come from the compiler-owned support/e2e module.
+For integration tests, import a default client from "supertest" and call it with
+process.env.ARC_TEST_BASE_URL! (or a local variable assigned from that value).
+For example: import request from "supertest"; const api = request(process.env.ARC_TEST_BASE_URL!);
+then send requests with api.get("/...") or api.post("/..."). Do not use fetch instead of Supertest.
+Send real requests to the separately started backend.
+The test runner resets the database before every
 integration and E2E test. Prepare test-specific data through public API requests
 or test inputs, not application fixture declarations or /__arc/seed. Never import
 the Express app or backend modules directly in an integration test. Assert status, body, cookies,
@@ -65,6 +76,7 @@ and observable persistence via API requests where the requirement calls for them
 Generate exactly one complete TypeScript file for each supplied layer, with
 real assertions over inputs, outputs and persisted data. Keep each test independent;
 use fresh unique values and arrange any prerequisite records through public APIs.
+Unit tests must import only the pure functions listed for the UNIT layer.
 Do not edit application code, invent paths, skip tests or weaken assertions to pass.
 Return only JSON: {"files":[{"layer":"UNIT|INTEGRATION|E2E","code":"..."}]}.
 """
@@ -548,7 +560,12 @@ class RequirementTestGenerationPass:
 
         required_layers = _plan_test_layers(resolved_targets, design_ir)
         if requirement_id in requirement_ir.get("folder_nodes", []):
-            required_layers = [layer for layer in required_layers if layer == "E2E"]
+            related_screens = [
+                screen for screen in frontend_ir.get("screens", [])
+                if isinstance(screen, dict)
+                and requirement_id in screen.get("requirement_ids", [])
+            ]
+            required_layers = ["E2E"] if related_screens or "E2E" in required_layers else []
         if not required_layers:
             state[requirement_id] = "FAILED"
             errors = [
@@ -575,6 +592,7 @@ class RequirementTestGenerationPass:
             frontend_ir=frontend_ir,
             resolved_targets=resolved_targets,
             required_layers=required_layers,
+            include_read_only_frontend=requirement_id in requirement_ir.get("folder_nodes", []),
         )
         artifacts: dict[str, str] = {}
         decision, sources, errors = self._generate_and_validate(
@@ -762,6 +780,7 @@ def _build_context_pack(
     frontend_ir: dict[str, Any],
     resolved_targets: dict[str, Any],
     required_layers: list[str],
+    include_read_only_frontend: bool = False,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
 
     all_target_rows = [
@@ -777,6 +796,18 @@ def _build_context_pack(
         for row in resolved_targets.get("owned_targets", [])
         if isinstance(row, dict) and _target_relevant_to_layers(row, required_layers)
     ]
+    context_targets = list(owned_targets)
+    if include_read_only_frontend:
+        context_targets.extend(
+            row for row in resolved_targets.get("dependency_targets", [])
+            if isinstance(row, dict)
+            and row.get("kind") in {"PAGE", "COMPONENT", "LAYOUT", "STORE", "API_CLIENT"}
+        )
+    test_targets = [
+        _project_test_target(row)
+        for row in context_targets
+        if isinstance(row, dict) and _target_relevant_to_layers(row, required_layers)
+    ]
     relevant_frontend_subgraph = _project_frontend_subgraph(
         requirement_id=requirement_id,
         frontend_ir=frontend_ir,
@@ -784,27 +815,36 @@ def _build_context_pack(
         required_layers=required_layers,
     )
     one_hop_dependencies = _project_one_hop_dependencies(
-        owned_targets=owned_targets,
+        owned_targets=test_targets,
         all_target_rows=all_target_rows,
         frontend_subgraph=relevant_frontend_subgraph,
         required_layers=required_layers,
     )
-    target_rows = [*owned_targets, *one_hop_dependencies]
+    target_rows = [*test_targets, *one_hop_dependencies]
     referenced_type_ids = _referenced_type_ids(target_rows)
     relevant_types = [
         copy.deepcopy(row)
         for row in resolved_targets.get("type_targets", [])
         if isinstance(row, dict) and str(row.get("type_id", "")) in referenced_type_ids
     ]
+    shared_type_symbols = sorted({
+        str(row["symbol"])
+        for row in relevant_types
+        if row.get("symbol")
+    })
     output_files = {
         layer: _test_file(requirement_id, layer)
         for layer in required_layers
     }
+    pure_function_ids = _pure_function_ids(design_ir)
     public_seams: dict[str, Any] = {}
     allowed_imports: dict[str, list[dict[str, Any]]] = {}
     for layer in required_layers:
         test_file = output_files[layer]
-        cards = _layer_source_cards(layer, target_rows, test_file, output_root)
+        cards = _layer_source_cards(
+            layer, target_rows, test_file, output_root,
+            pure_function_ids=pure_function_ids,
+        )
         public_seams[layer] = cards
         runtime_import = _relative_import(test_file, "tests/support/runtime.ts")
         imports = [
@@ -820,6 +860,13 @@ def _build_context_pack(
         if layer == "INTEGRATION":
             imports[0]["symbols"] = ["beforeEach", "describe", "expect", "test"]
             imports.append({"specifier": "supertest", "symbols": ["default"]})
+        if layer in {"INTEGRATION", "E2E"}:
+            imports.append({
+                "specifier": "@arc/shared", "symbols": shared_type_symbols,
+                "type_only": True,
+            })
+        if layer == "E2E":
+            imports.append({"specifier": "@playwright/test", "symbols": ["Page"], "type_only": True})
         if layer == "UNIT":
             imports.extend(
                 {
@@ -1129,9 +1176,7 @@ def _e2e_entry_routes(
         for row in frontend_subgraph.get("journeys", [])
         if isinstance(row, dict) and str(row.get("requirement_id", "")) == requirement_id
     }
-    if any(journey_routes):
-        return sorted(route for route in journey_routes if route)
-    return sorted({
+    return sorted({route for route in journey_routes if route} | {
         str(row.get("route", ""))
         for row in screens.values()
         if row.get("entry_candidate") and row.get("route")
@@ -1203,6 +1248,16 @@ def _plan_test_layers(
     if any(row.get("kind") == "API" for row in owned):
         layers.add("INTEGRATION")
 
+    pure_function_ids = _pure_function_ids(design_ir)
+    if any(
+        str(row.get("module_id", "")) in pure_function_ids
+        for row in owned if row.get("kind") == "FUNC"
+    ):
+        layers.add("UNIT")
+    return [layer for layer in TEST_LAYERS if layer in layers]
+
+
+def _pure_function_ids(design_ir: dict[str, Any]) -> set[str]:
     modules = {
         str(row.get("id", "")): row
         for row in design_ir.get("modules", [])
@@ -1228,12 +1283,10 @@ def _plan_test_layers(
         )
         return pure_cache[module_id]
 
-    if any(
-        is_pure_func(str(row.get("module_id", "")))
-        for row in owned if row.get("kind") == "FUNC"
-    ):
-        layers.add("UNIT")
-    return [layer for layer in TEST_LAYERS if layer in layers]
+    return {
+        module_id for module_id, row in modules.items()
+        if row.get("kind") == "FUNC" and is_pure_func(module_id)
+    }
 
 
 def _validate_test_decision(
@@ -1285,21 +1338,29 @@ def _validate_test_code(
             errors.append(
                 f"ARC4428 TEST_ISOLATION_INVALID: {layer} must not override sequential execution."
             )
-    if not re.search(r"\b(?:test|it)\s*\(", code):
+    if not re.search(r"\b(?:test|it)(?:\s*\.\s*each)?\s*\(", code):
         errors.append(f"ARC4426 TEST_CODE_INVALID: {layer} contains no executable test declaration.")
-    allowed = {
-        str(row.get("specifier", ""))
-        for row in context_pack["allowed_imports"].get(layer, [])
+    import_rules = [
+        row for row in context_pack["allowed_imports"].get(layer, [])
         if isinstance(row, dict)
+    ]
+    allowed = {
+        str(row.get("specifier", "")) for row in import_rules
+        if not row.get("type_only")
     }
-    imports = re.findall(r"\bfrom\s+[\"']([^\"']+)[\"']", code)
+    type_only = {
+        str(row.get("specifier", "")) for row in import_rules
+        if row.get("type_only")
+    }
+    import_source = _without_type_only_imports(code, type_only)
+    imports = re.findall(r"\bfrom\s+[\"']([^\"']+)[\"']", import_source)
     imports.extend(
-        re.findall(r"\bimport\s+(?:type\s+)?[\"']([^\"']+)[\"']", code)
+        re.findall(r"\bimport\s+(?:type\s+)?[\"']([^\"']+)[\"']", import_source)
     )
     imports.extend(
         re.findall(
             r"\b(?:import|require)\s*\(\s*[\"']([^\"']+)[\"']\s*\)",
-            code,
+            import_source,
         )
     )
     invalid = sorted(
@@ -1349,41 +1410,20 @@ def _validate_test_code(
             f"ARC4428 TEST_SEED_INVALID: {layer} must prepare test data independently of application fixtures."
         )
     if layer == "E2E":
+        if re.search(r"\bgetByLabel\s*\(\s*(['\"])[^'\"]+\1\s*\)", code):
+            errors.append(
+                "ARC4426 TEST_CODE_INVALID: E2E literal getByLabel locators must use "
+                "{ exact: true } to avoid ambiguous substring matches."
+            )
         allowed_routes = {
             str(row.get("route", "")).strip()
             for row in context_pack.get("relevant_frontend_subgraph", {}).get("screens", [])
             if isinstance(row, dict) and str(row.get("route", "")).strip()
         }
-        entry_routes = {
-            str(value)
-            for value in context_pack.get("e2e_entry_routes", [])
-            if str(value)
-        }
-        declared_entries = re.findall(
-            r"\b(?:entryRoute|baseRoute|startRoute)\s*=\s*[\"']([^\"']+)[\"']",
-            code,
-        )
-        invalid_entries = sorted({
-            route
-            for route in declared_entries
-            if entry_routes and not _route_is_allowed(route, entry_routes)
-        })
-        if invalid_entries:
-            errors.append(
-                "ARC4429 E2E_ENTRY_ROUTE_INVALID: starting routes must come from "
-                f"this requirement's source screens: {invalid_entries}; entries={sorted(entry_routes)}."
-            )
         literal_routes = re.findall(
             r"\bpage\.goto\s*\(\s*[\"']([^\"']+)[\"']\s*\)",
             code,
         )
-        if entry_routes and not declared_entries and literal_routes:
-            first_route = literal_routes[0]
-            if first_route.startswith("/") and not _route_is_allowed(first_route, entry_routes):
-                errors.append(
-                    "ARC4429 E2E_ENTRY_ROUTE_INVALID: the first direct navigation "
-                    f"must start at a requirement source screen: {first_route}; entries={sorted(entry_routes)}."
-                )
         literal_routes.extend(
             re.findall(
                 r"\b(?:entryRoute|baseRoute|startRoute)\s*=\s*[\"']([^\"']+)[\"']",
@@ -1415,14 +1455,61 @@ def _validate_test_code(
                 "ARC4429 E2E_ROUTE_INVALID: E2E uses routes not present in the "
                 f"frontend screen graph: {invalid_routes}; allowed={sorted(allowed_routes)}."
             )
-    if layer == "INTEGRATION" and (
-        "supertest" not in imports
-        or not re.search(r"\b(?:supertest|request)\s*\(\s*process\.env\.ARC_TEST_BASE_URL", code)
-    ):
+    if layer == "INTEGRATION" and not _uses_integration_base_url(code, imports):
         errors.append(
-            "ARC4427 TEST_IMPORT_INVALID: INTEGRATION must send Supertest requests to ARC_TEST_BASE_URL."
+            "ARC4427 TEST_IMPORT_INVALID: INTEGRATION must import a default Supertest client "
+            "and call it with ARC_TEST_BASE_URL directly or via a local URL variable."
         )
     return errors
+
+
+def _without_type_only_imports(code: str, specifiers: set[str]) -> str:
+    for specifier in specifiers:
+        quoted = rf"[\"']{re.escape(specifier)}[\"']"
+        code = re.sub(
+            rf"\bimport\s+type\s+(?:\{{[^}}]*\}}|[A-Za-z_$][\w$]*)\s+from\s*{quoted}\s*;?",
+            "",
+            code,
+        )
+        code = re.sub(
+            rf"\bimport\s*\{{\s*type\s+[A-Za-z_$][\w$]*"
+            rf"(?:\s+as\s+[A-Za-z_$][\w$]*)?"
+            rf"(?:\s*,\s*type\s+[A-Za-z_$][\w$]*(?:\s+as\s+[A-Za-z_$][\w$]*)?)*"
+            rf"\s*,?\s*\}}\s*from\s*{quoted}\s*;?",
+            "",
+            code,
+        )
+        code = re.sub(
+            rf"\bimport\s*\(\s*{quoted}\s*\)\s*\.\s*[A-Z][\w]*",
+            "",
+            code,
+        )
+    return code
+
+
+def _uses_integration_base_url(code: str, imports: list[str]) -> bool:
+    if "supertest" not in imports:
+        return False
+    clients = set(re.findall(
+        r"\bimport\s+([A-Za-z_$][\w$]*)\s+from\s*[\"']supertest[\"']",
+        code,
+    ))
+    base_urls = set(re.findall(
+        r"\b(?:const|let)\s+([A-Za-z_$][\w$]*)\s*(?::\s*string)?\s*=\s*process\.env\.ARC_TEST_BASE_URL\b",
+        code,
+    ))
+    for client in clients:
+        if re.search(rf"\b{re.escape(client)}\s*\(\s*process\.env\.ARC_TEST_BASE_URL\b", code):
+            return True
+        if any(
+            re.search(
+                rf"\b{re.escape(client)}\s*\(\s*{re.escape(base_url)}\s*(?:!|\s+as\s+string)?\s*\)",
+                code,
+            )
+            for base_url in base_urls
+        ):
+            return True
+    return False
 
 
 def _route_is_allowed(route: str, allowed_routes: set[str]) -> bool:
@@ -1468,6 +1555,8 @@ def _layer_source_cards(
     targets: list[dict[str, Any]],
     test_file: str,
     output_root: Path,
+    *,
+    pure_function_ids: set[str],
 ) -> list[dict[str, Any]]:
     allowed_kinds = {
         "UNIT": {"FUNC"},
@@ -1477,6 +1566,8 @@ def _layer_source_cards(
     rows: list[dict[str, Any]] = []
     for target in targets:
         if str(target.get("kind", "")) not in allowed_kinds:
+            continue
+        if layer == "UNIT" and str(target.get("module_id", "")) not in pure_function_ids:
             continue
         row = {
             key: copy.deepcopy(target.get(key))

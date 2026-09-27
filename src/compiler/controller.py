@@ -7,7 +7,7 @@ from arcbench_agent_runtime.runtime import AgentRuntime
 
 from .artifacts import CompilerArtifactStore
 from .backend_lowering import BackendGlueLowerer
-from .code_binding import CodeBindingLowerer
+from .code_binding import CodeBindingLowerer, CodeTargetResolver
 from .database_stage import (
     DatabaseSchemaPass,
     database_traceability,
@@ -851,11 +851,28 @@ class Compiler:
             requirement_ir=requirement_ir,
             code_binding_registry=code_binding_registry,
         )
-        completed: list[str] = []
         self._runtime.events.mark_phase_started(
             "TDD", "ARC node-by-node test-driven implementation started.",
         )
         for requirement_id in [*order, *folder_order]:
+            if requirement_id in folder_ids:
+                targets = CodeTargetResolver(code_binding_registry).resolve_requirement_targets(
+                    requirement_id,
+                )
+                has_screen = any(
+                    isinstance(screen, dict)
+                    and requirement_id in screen.get("requirement_ids", [])
+                    for screen in frontend_ir.get("screens", [])
+                )
+                if not targets["owned_targets"] and not has_screen:
+                    states[requirement_id] = "AGGREGATE_NO_UI"
+                    await self._log(
+                        "Compiler",
+                        f"{requirement_id} has no owned targets or associated UI screen; "
+                        "its child requirements are verified independently.",
+                        "warning",
+                    )
+                    continue
             await self._log("Compiler", f"Generating and freezing tests for {requirement_id}.")
             generated_tests = test_generation.generate_requirement(
                 requirement_id=requirement_id,
@@ -898,7 +915,7 @@ class Compiler:
                     )
 
                 backend_tests = orchestrator.run_test_layers(
-                    [*completed, requirement_id], layers=("UNIT", "INTEGRATION"),
+                    [requirement_id], layers=("UNIT", "INTEGRATION"),
                 )
                 for error in backend_tests.errors:
                     await self._log("NodeTDDOrchestrator", error, "error")
@@ -927,7 +944,7 @@ class Compiler:
                     frontend_implementation.changed_files,
                 )
 
-            tests = orchestrator.run_test_layers([*completed, requirement_id])
+            tests = orchestrator.run_test_layers([requirement_id], layers=("E2E",))
             for error in tests.errors:
                 await self._log("NodeTDDOrchestrator", error, "error")
             if not tests.ok:
@@ -939,7 +956,6 @@ class Compiler:
                     failed_nodes=failed_nodes, artifacts=artifacts,
                 )
             states[requirement_id] = "TESTS_PASSED"
-            completed.append(requirement_id)
             await self._log("Compiler", f"TDD completed for {requirement_id}.")
 
         failed_nodes: list[str] = []

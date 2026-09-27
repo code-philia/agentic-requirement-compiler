@@ -35,6 +35,8 @@ IMPLEMENTATION_OUTPUT_SCHEMA: dict[str, Any] = {
 
 
 IMPLEMENTATION_INSTRUCTIONS = """Implement the supplied requirement in the editable source files.
+When aggregate_requirement is supplied, repair its failing user journey through
+the current child requirement's owned source files; do not edit other owners' files.
 The requirement is the source of behavior. Read the complete related source files for
 existing signatures, imports, exports, types and dependencies. If test_output is
 present, it is the unmodified output of the test/build command, not a diagnosis.

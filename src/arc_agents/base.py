@@ -77,7 +77,8 @@ class BaseStructuredAgent:
         validate: Callable[[dict[str, Any]], list[str]],
         initial_feedback: list[str] | None = None,
     ) -> AgentInvocationResult:
-        feedback: list[str] = list(initial_feedback or [])
+        base_feedback = list(initial_feedback or [])
+        feedback: list[str] = list(base_feedback)
         last_errors: list[str] = []
         for attempt in range(1, self._retries + 2):
             payload = copy.deepcopy(input_payload)
@@ -146,16 +147,15 @@ class BaseStructuredAgent:
                     except Exception as log_exc:
                         self._emit(f"MODEL_LOG_WRITE_FAILED: {type(log_exc).__name__}: {log_exc}")
                 last_errors = [f"AGENT_MODEL_FAILED: {_describe_error(exc)}"]
-                error_text = str(exc).lower()
                 feedback = (
                     [
-                        *initial_feedback,
+                        *base_feedback,
                         "The provider response was empty or invalid JSON. Return exactly one non-empty JSON object; "
                         "do not emit Markdown, a code fence, prose, or an empty response."
                     ]
-                    if "jsondecodeerror" in error_text
-                    or "empty" in error_text
-                    else [*initial_feedback, *last_errors]
+                    if isinstance(exc, json.JSONDecodeError)
+                    or "empty" in str(exc).lower()
+                    else [*base_feedback, *last_errors]
                 )
                 self._emit(last_errors[0])
                 if attempt <= self._retries:
@@ -172,7 +172,7 @@ class BaseStructuredAgent:
             last_errors = list(dict.fromkeys(validation_errors))
             feedback = [
                 "Repair only the structured output. Do not broaden scope or change the task.",
-                *initial_feedback,
+                *base_feedback,
                 *last_errors,
             ]
             self._emit("MODEL_REJECTED " + "; ".join(last_errors))
