@@ -84,13 +84,16 @@ FIXTURE_DECISION_SCHEMA: dict[str, Any] = {
     },
 }
 
-FIXTURE_INSTRUCTIONS = """You are a senior test-data and fixture designer.
-Compile the declared test starting state into a validated fixture plan for one atomic requirement.
+FIXTURE_INSTRUCTIONS = """You are an application seed-data designer.
+Compile the declared application starting data into a validated fixture plan for one atomic requirement.
 Use only the supplied seed declarations and local Database Schema slice. Return semantic entity keys and field names
 exactly as supplied. Include every non-nullable field that has no default, except primary keys: the compiler owns
 primary keys, row ids, insert order, and timestamps/defaults. Use fixture_key to name a row. A field may reference a
 previous row with {"fixture_key":"...","field":"id"}. Do not emit SQL, TypeScript, table names, column names,
 routes, implementation behavior, or undeclared example records. Return exactly one JSON object and no prose.
+For a required foreign key, create a minimal supporting parent row before the declared row
+using the supplied relationship and parent entity, then reference its generated id by fixture_key.
+Supporting rows are permitted only to satisfy declared rows' required relationships.
 If a declared record cannot be mapped to the local schema, do not invent another entity
 or alter its values. The compiler will reject unmatched declarations. Return an empty
 fixture_sets array only for a declaration explicitly requesting an empty starting database.
@@ -126,7 +129,7 @@ class FixturePass:
             declarations = node.get("seed_fixtures", []) if isinstance(node, dict) else []
             if not declarations:
                 continue
-            local_schema = schema_for_requirement(database_schema, str(requirement_id))
+            local_schema = _fixture_schema_for_requirement(database_schema, str(requirement_id))
             explicit = _explicit_decision(declarations)
             prose = [
                 declaration for declaration in declarations
@@ -194,17 +197,75 @@ class FixturePass:
                 )
             except Exception as exc:
                 feedback = [describe_model_error(exc)]
+                self._log.info(
+                    f"MODEL_REJECTED requirement={requirement_id} attempt={attempt + 1} "
+                    f"errors={'; '.join(feedback)}"
+                )
                 continue
-            if isinstance(decision.get("fixture_sets"), list):
-                return decision
-            feedback = [
-                "fixture_sets must be an array; do not omit unmatched declarations."
-            ]
-        errors.append(
-            f"ARC2402 FIXTURE_INVALID: {requirement_id}: "
-            + (feedback[-1] if feedback else "no valid fixture output")
-        )
+            if not isinstance(decision, dict) or not isinstance(decision.get("fixture_sets"), list):
+                feedback = ["fixture_sets must be an array; do not omit unmatched declarations."]
+            elif not any(
+                isinstance(fixture_set, dict) and fixture_set.get("rows")
+                for fixture_set in decision["fixture_sets"]
+            ):
+                feedback = ["Declared application seed data must produce at least one row; do not return empty fixture_sets."]
+            else:
+                _, feedback = _compile_decision(requirement_id, decision, local_schema)
+                if not feedback:
+                    return decision
+            self._log.info(
+                f"MODEL_REJECTED requirement={requirement_id} attempt={attempt + 1} "
+                f"errors={'; '.join(feedback)}"
+            )
+        detail = feedback[-1] if feedback else "no valid fixture output"
+        prefix = f"ARC2402 FIXTURE_INVALID: {requirement_id}: "
+        errors.append(detail if detail.startswith(prefix) else prefix + detail)
         return None
+
+
+def _fixture_schema_for_requirement(
+    schema: dict[str, Any], requirement_id: str,
+) -> dict[str, Any]:
+    local = schema_for_requirement(schema, requirement_id)
+    all_entities = {
+        str(entity.get("key", "")): entity
+        for entity in schema.get("entities", []) if isinstance(entity, dict)
+    }
+    included = {
+        str(entity.get("key", ""))
+        for entity in local.get("entities", []) if isinstance(entity, dict)
+    }
+    relationships = {
+        str(row.get("id", "")): row
+        for row in local.get("relationships", []) if isinstance(row, dict)
+    }
+    while True:
+        added = False
+        for relationship in schema.get("relationships", []):
+            if not isinstance(relationship, dict):
+                continue
+            child = str(relationship.get("fk_entity", ""))
+            parent = str(relationship.get("parent", ""))
+            fk_field = str(relationship.get("fk_field", ""))
+            if child not in included or parent not in all_entities:
+                continue
+            if not any(
+                field.get("name") == fk_field and not field.get("nullable")
+                for field in all_entities.get(child, {}).get("fields", [])
+                if isinstance(field, dict)
+            ):
+                continue
+            relationships[str(relationship.get("id", ""))] = relationship
+            if parent not in included:
+                included.add(parent)
+                added = True
+        if not added:
+            break
+    local["entities"] = [
+        copy.deepcopy(entity) for key, entity in all_entities.items() if key in included
+    ]
+    local["relationships"] = [copy.deepcopy(row) for row in relationships.values()]
+    return local
 
 
 def _compile_decision(
@@ -217,10 +278,16 @@ def _compile_decision(
         for entity in local_schema.get("entities", [])
         if isinstance(entity, dict)
     }
+    required_parents = {
+        (str(row.get("fk_entity", "")), str(row.get("fk_field", ""))): str(row.get("parent", ""))
+        for row in local_schema.get("relationships", [])
+        if isinstance(row, dict) and row.get("child_required") and row.get("fk_entity")
+        and row.get("fk_field") and row.get("parent")
+    }
     compiled: list[dict[str, Any]] = []
     errors: list[str] = []
     known_keys: set[str] = set()
-    known_rows: dict[str, dict[str, Any]] = {}
+    known_rows: dict[str, tuple[str, dict[str, Any]]] = {}
     for set_index, raw_set in enumerate(decision.get("fixture_sets", []), start=1):
         if not isinstance(raw_set, dict):
             errors.append(f"ARC2402 FIXTURE_INVALID: {requirement_id}: fixture set must be an object.")
@@ -259,19 +326,28 @@ def _compile_decision(
                 if isinstance(value, dict) and set(value) == {"fixture_key", "field"}:
                     target_key = str(value["fixture_key"])
                     target_field = str(value["field"])
-                    target_values = known_rows.get(target_key)
-                    if target_values is None or target_field not in target_values:
+                    target = known_rows.get(target_key)
+                    if target is None or target_field not in target[1]:
                         errors.append(
                             f"ARC2402 FIXTURE_INVALID: {requirement_id}: unknown fixture reference "
                             f"{fixture_key}.{field_name} -> {target_key}.{target_field}."
                         )
                         values.pop(field_name, None)
                     else:
-                        values[field_name] = copy.deepcopy(target_values[target_field])
+                        values[field_name] = copy.deepcopy(target[1][target_field])
                 elif not _value_matches(value, str(field.get("type", "")), bool(field.get("nullable"))):
                     errors.append(
                         f"ARC2402 FIXTURE_INVALID: {requirement_id}: "
                         f"{entity_key}.{field_name} expects {field.get('type')}."
+                    )
+                parent = required_parents.get((entity_key, field_name))
+                if parent and field_name in values and not any(
+                    row_entity == parent and row_values.get("id") == values[field_name]
+                    for row_entity, row_values in known_rows.values()
+                ):
+                    errors.append(
+                        f"ARC2402 FIXTURE_INVALID: {requirement_id}: "
+                        f"{entity_key}.{field_name} must reference a preceding {parent} fixture row."
                     )
             for field_name, field in fields.items():
                 if field_name in values or bool(field.get("nullable")) or _has_default(field):
@@ -281,12 +357,17 @@ def _compile_decision(
                         requirement_id, fixture_key, field_name, str(field.get("type", ""))
                     )
                     continue
+                if field_name in {"created_at", "updated_at"} and field.get("type") in {"date", "datetime"}:
+                    values[field_name] = (
+                        "2000-01-01" if field["type"] == "date" else "2000-01-01T00:00:00Z"
+                    )
+                    continue
                 errors.append(
                     f"ARC2402 FIXTURE_INVALID: {requirement_id}: "
                     f"missing required field {entity_key}.{field_name}."
                 )
             known_keys.add(fixture_key)
-            known_rows[fixture_key] = copy.deepcopy(values)
+            known_rows[fixture_key] = (entity_key, copy.deepcopy(values))
             rows.append(
                 {
                     "entity_key": entity_key,

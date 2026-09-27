@@ -46,6 +46,20 @@ interfaces, routes and generated glue. Return only JSON with exact file/search/r
 edits. Copy search verbatim from a unique fragment of the current editable file.
 """
 
+FRONTEND_IMPLEMENTATION_INSTRUCTIONS = IMPLEMENTATION_INSTRUCTIONS + """
+Implement every supplied editable frontend screen and component, including their layout,
+navigation, accessible controls, empty/loading/error states, and shared visual language.
+Do not leave any 'Implementation pending' skeletons, even if E2E tests do not visit them.
+Replace the compiler's default slate shell and remove data-arc-page,
+data-arc-component, data-arc-layout, and data-arc-obligation skeleton markers.
+Use frontend_design screens, editable_modules, components, and visual reference
+analyses as design requirements:
+match their composition, colors, typography, spacing, and prominent controls as closely
+as the supplied evidence allows. Reuse the reference style across related screens that
+do not have their own image. Passing E2E assertions alone is not completion.
+Only edit supplied editable files; preserve component contracts and existing behavior.
+"""
+
 
 @dataclass(frozen=True, slots=True)
 class ImplementationRequest:
@@ -55,6 +69,7 @@ class ImplementationRequest:
     target_module_ids: tuple[str, ...] = ()
     test_output: str = ""
     test_files: tuple[str, ...] = ()
+    frontend_ir: dict[str, Any] | None = None
 
 
 @dataclass(slots=True)
@@ -123,6 +138,7 @@ class ImplementationAgent:
 
     def _context(self, request: ImplementationRequest) -> tuple[dict[str, Any], dict[str, str]]:
         from compiler.code_binding import CodeTargetResolver
+        from compiler.frontend_thin_design import project_frontend_runtime_ir
 
         resolved = CodeTargetResolver(request.code_binding_registry).resolve_requirement_targets(
             request.requirement_id
@@ -195,6 +211,52 @@ class ImplementationAgent:
             "editable_files": editable_files,
             "related_files": related_files,
         }
+        if request.frontend_ir is not None:
+            frontend_ir = request.frontend_ir
+            target_ids = {str(row.get("source_ir_id", row.get("module_id", ""))) for row in owned}
+            runtime_ir = project_frontend_runtime_ir(frontend_ir)
+            frontend_modules = [
+                row for table in ("pages", "components", "layouts")
+                for row in runtime_ir.get(table, [])
+                if isinstance(row, dict) and str(row.get("id", "")) in target_ids
+            ]
+            screens = [
+                row for row in frontend_ir.get("screens", [])
+                if isinstance(row, dict) and (
+                    str(row.get("id", "")) in target_ids
+                    or requirement_id in row.get("requirement_ids", [])
+                )
+            ]
+            screen_ids = {str(row.get("id", "")) for row in screens}
+            components = [
+                row for row in frontend_ir.get("screen_components", [])
+                if isinstance(row, dict) and str(row.get("screen_id", "")) in screen_ids
+            ]
+            visual_ids = {
+                str(visual_id)
+                for row in [*screens, *components, *frontend_modules]
+                for visual_id in row.get("visual_reference_ids", [])
+            }
+            if not visual_ids:
+                visual_ids = {
+                    str(row.get("id", ""))
+                    for row in frontend_ir.get("visual_references", [])[:4]
+                    if isinstance(row, dict) and row.get("id")
+                }
+            context["frontend_design"] = {
+                "screens": copy.deepcopy(screens),
+                "screen_components": copy.deepcopy(components),
+                "editable_modules": copy.deepcopy(frontend_modules),
+                "visual_references": [
+                    {
+                        "id": row.get("id"),
+                        "source_path": row.get("source_path"),
+                        "analysis": copy.deepcopy(row.get("analysis", {})),
+                    }
+                    for row in frontend_ir.get("visual_references", [])
+                    if isinstance(row, dict) and str(row.get("id", "")) in visual_ids
+                ],
+            }
         if request.test_output:
             context["test_output"] = request.test_output
         if len(str(context)) > self._max_context_characters:
@@ -249,7 +311,7 @@ class FrontendImplementationAgent(ImplementationAgent):
         self._agent = BaseStructuredAgent(
             model,
             schema_name="arc_frontend_implementation_patch",
-            instructions=IMPLEMENTATION_INSTRUCTIONS,
+            instructions=FRONTEND_IMPLEMENTATION_INSTRUCTIONS,
             output_schema=IMPLEMENTATION_OUTPUT_SCHEMA,
             retries=retries,
             trace=trace,

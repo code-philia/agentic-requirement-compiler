@@ -222,6 +222,7 @@ class ThinFrontendDesignPass:
             ordered_ids=ordered_ids,
             coverage=coverage,
         )
+        _assign_unplaced_screens(candidate, coverage)
         _derive_frontend_journeys(candidate, backend_design_ir)
         _complete_requirement_api_dependencies(candidate, backend_design_ir)
         _canonicalize_frontend_associations(candidate, backend_design_ir, requirement_ids)
@@ -460,6 +461,8 @@ def validate_thin_frontend_design(frontend_ir: dict[str, Any], *, expected_requi
         if placed_requirements != expected_requirement_ids:
             issues.append(_issue(FrontendDesignErrorCode.REQUIREMENT_UNCOVERED, f"Placement coverage mismatch: missing={sorted(expected_requirement_ids - placed_requirements)} extra={sorted(placed_requirements - expected_requirement_ids)}."))
     for screen_id, screen in screens.items():
+        if not screen["requirement_ids"]:
+            issues.append(_issue(FrontendDesignErrorCode.REQUIREMENT_UNCOVERED, f"Screen {screen_id} has no requirement owner."))
         issues.extend(_unknown(screen_id, "visual", screen["visual_reference_ids"], visuals, FrontendDesignErrorCode.REFERENCE_UNKNOWN))
         for navigation in screen["navigation_targets"]:
             target_route = str(navigation["target_route"])
@@ -849,6 +852,59 @@ def _derive_placements_from_coverage(
         for store in stores:
             store["requirement_ids"] = sorted(set(store["requirement_ids"]))
     frontend_ir["placements"] = placements
+
+
+def _assign_unplaced_screens(frontend_ir: dict[str, Any], coverage: list[dict[str, Any]]) -> None:
+    screens = [row for row in frontend_ir.get("screens", []) if isinstance(row, dict)]
+    coverage_by_id = {
+        str(row.get("requirement_id", "")): row
+        for row in coverage if isinstance(row, dict)
+    }
+    for screen in screens:
+        if screen.get("requirement_ids"):
+            continue
+        screen_terms = _surface_terms(" ".join(
+            str(screen.get(key, "")) for key in ("id", "route", "purpose", "surface_keys")
+        )) - {"page", "screen", "site", "app"}
+        incoming = [
+            source for source in screens
+            if source is not screen and any(
+                str(link.get("target_route", "")) == str(screen.get("route", ""))
+                for link in source.get("navigation_targets", []) if isinstance(link, dict)
+            )
+        ]
+        ranked: list[tuple[int, str]] = []
+        for source in incoming:
+            source_terms = _surface_terms(" ".join(
+                str(source.get(key, "")) for key in ("id", "route", "purpose", "surface_keys")
+            )) - {"page", "screen", "site", "app"}
+            for requirement_id in source.get("requirement_ids", []):
+                if coverage_by_id.get(str(requirement_id), {}).get("ui_scope") == "NO_UI":
+                    continue
+                ranked.append((len(screen_terms & source_terms), str(requirement_id)))
+        if not ranked:
+            ranked = [
+                (len(screen_terms & _surface_terms(str(row.get("surface_hint", "")))), requirement_id)
+                for requirement_id, row in coverage_by_id.items()
+                if row.get("ui_scope") != "NO_UI"
+            ]
+        if not ranked:
+            continue
+        score, requirement_id = sorted(ranked, key=lambda item: (-item[0], item[1]))[0]
+        if score == 0:
+            continue
+        screen["requirement_ids"] = [requirement_id]
+        frontend_ir["placements"] = [
+            row for row in frontend_ir["placements"]
+            if row.get("requirement_id") != requirement_id or row.get("screen_id") is not None
+        ]
+        frontend_ir["placements"].append({
+            "requirement_id": requirement_id,
+            "ui_scope": "UI_AFFECTING",
+            "screen_id": str(screen["id"]),
+            "component_id": None,
+            "strategy": "USE_SCREEN",
+        })
 
 
 def _surface_terms(value: str) -> set[str]:

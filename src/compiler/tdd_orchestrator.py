@@ -56,6 +56,7 @@ class NodeTDDOrchestrator:
         *,
         requirement_ir: dict[str, Any],
         code_binding_registry: dict[str, Any],
+        frontend_ir: dict[str, Any] | None = None,
         test_manifest: dict[str, Any] | None = None,
         policy: NodeTDDPolicy | None = None,
         test_runner: TestRunner | None = None,
@@ -66,6 +67,7 @@ class NodeTDDOrchestrator:
         self.output_root = output_root.expanduser().resolve()
         self.requirement_ir = requirement_ir
         self.code_binding_registry = code_binding_registry
+        self.frontend_ir = frontend_ir
         self.test_manifest = test_manifest
         self.policy = policy or NodeTDDPolicy.from_environment()
         self.test_runner = test_runner or TestRunner(self.output_root)
@@ -157,7 +159,56 @@ class NodeTDDOrchestrator:
                 result.errors.append(f"{requirement_id}: {error}")
                 result.status = "IMPLEMENTATION_FAILED"
                 return result
+            if agent is self.frontend_implementation_agent:
+                for _ in range(self.policy.max_iterations_per_layer):
+                    pending = self._pending_frontend_targets(targets)
+                    if not pending:
+                        break
+                    changed, error = self._apply_edit(
+                        requirement_id,
+                        requirement,
+                        agent,
+                        result,
+                        target_ids=tuple(str(row["module_id"]) for row in pending),
+                        test_output=(
+                            "FRONTEND_INCOMPLETE: replace every 'Implementation pending' "
+                            "skeleton with complete UI matching frontend_design, including "
+                            "all states and visual references. Remaining files: "
+                            + ", ".join(sorted({str(row["file"]) for row in pending}))
+                        ),
+                    )
+                    if not changed:
+                        result.failed_requirements.append(requirement_id)
+                        result.errors.append(f"{requirement_id}: {error}")
+                        result.status = "IMPLEMENTATION_FAILED"
+                        return result
+                pending = self._pending_frontend_targets(targets)
+                if pending:
+                    result.failed_requirements.append(requirement_id)
+                    result.errors.append(
+                        f"{requirement_id}: FRONTEND_INCOMPLETE: unfinished UI in "
+                        + ", ".join(sorted({str(row["file"]) for row in pending}))
+                    )
+                    result.status = "IMPLEMENTATION_FAILED"
+                    return result
         return result
+
+    def _pending_frontend_targets(self, targets: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        pending: list[dict[str, Any]] = []
+        for row in targets:
+            if row.get("kind") not in {"PAGE", "COMPONENT", "LAYOUT"}:
+                continue
+            source = self.output_root / str(row["file"])
+            if not source.is_file():
+                pending.append(row)
+                continue
+            text = source.read_text(encoding="utf-8")
+            if any(marker in text for marker in (
+                "Implementation pending", "data-arc-obligation=",
+                f"data-arc-{str(row['kind']).lower()}=",
+            )):
+                pending.append(row)
+        return pending
 
     def _run_layer(
         self,
@@ -288,6 +339,7 @@ class NodeTDDOrchestrator:
             target_module_ids=target_ids,
             test_output=test_output,
             test_files=test_files,
+            frontend_ir=self.frontend_ir if agent is self.frontend_implementation_agent else None,
         ))
         if not implementation.ok or implementation.patch is None:
             return False, "\n".join(implementation.errors)

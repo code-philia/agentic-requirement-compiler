@@ -57,6 +57,8 @@ Use the exact exports, helper signatures, database fields and routes in the supp
 code. E2E controls may not exist in the unimplemented skeleton yet: choose accessible
 locators from the requirement, not from placeholder text. E2E may navigate directly
 to any route in the supplied frontend screen graph; entry routes are suggestions.
+Do not use compiler-only data-arc-page, data-arc-component, data-arc-layout,
+or data-arc-obligation attributes as E2E locators; the implemented UI removes them.
 When selecting form controls by a literal label, use getByLabel("label", { exact: true })
 to avoid substring matches such as "Name" matching "Username"; anchored regular
 expressions are also acceptable. Apply the same care to accessible role names.
@@ -1382,6 +1384,11 @@ def _validate_test_code(
         )
     if layer == "E2E":
         runtime_import = required_package
+        if re.search(r"data-arc-(?:page|component|layout|obligation)\b", code):
+            errors.append(
+                "ARC4426 TEST_CODE_INVALID: E2E must not rely on temporary "
+                "data-arc skeleton attributes; use user-visible locators."
+            )
         named_imports = re.findall(
             r"\bimport\s*\{([^}]*)\}\s*from\s*['\"]([^'\"]+)['\"]",
             code,
