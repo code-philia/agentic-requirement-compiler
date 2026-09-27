@@ -799,14 +799,8 @@ class Compiler:
             "TEST_ENVIRONMENT_READY: test workspace and browser prerequisites are available.",
         )
 
-        # ===================================================================
-        #             Stage 5: Freeze all requirement tests before TDD
-        # ===================================================================
-
         atomic_ids = {
-            str(value)
-            for value in requirement_ir.get("atomic_units", [])
-            if str(value)
+            str(value) for value in requirement_ir.get("atomic_units", []) if str(value)
         }
         order = [
             str(requirement_id)
@@ -822,75 +816,12 @@ class Compiler:
             )
             await self._log("Compiler", message, "error")
             return CompilationResult(
-                ok=False,
-                root_id=root_id,
-                states=states,
-                failed_nodes=sorted(atomic_ids),
-                artifacts=artifacts,
-            )
-
-        generated_tests = RequirementTestGenerationPass(
-            model, request.output_dir, artifact_store,
-        ).compile(
-            requirement_ir=requirement_ir,
-            dependency_graph=dependency_graph,
-            database_schema=database_schema,
-            design_ir=design_ir,
-            frontend_ir=frontend_ir,
-            code_binding_registry=code_binding_registry,
-            environment_manifest=test_environment.manifest,
-        )
-        artifacts.update(generated_tests.artifacts)
-        states.update(generated_tests.node_states)
-        for error in generated_tests.errors:
-            await self._log("Compiler", error, "error")
-        if not generated_tests.ok:
-            return CompilationResult(
                 ok=False, root_id=root_id, states=states,
-                failed_nodes=sorted(
-                    requirement_id for requirement_id in atomic_ids
-                    if states.get(requirement_id) == "FAILED"
-                ),
-                artifacts=artifacts,
+                failed_nodes=sorted(atomic_ids), artifacts=artifacts,
             )
-        self._runtime.traceability.merge_test_links(generated_tests.manifest)
-        ProjectGitHistory(request.output_dir).commit("5 test generation", [".arc", "tests"])
-
-        self._runtime.events.mark_phase_started(
-            "TDD",
-            "ARC staged TDD started.",
-        )
-        orchestrator = NodeTDDOrchestrator(
-            model,
-            request.output_dir,
-            requirement_ir=requirement_ir,
-            code_binding_registry=code_binding_registry,
-            test_manifest=generated_tests.manifest,
-        )
-        backend_implementation = orchestrator.implement_backend(order)
-        for error in backend_implementation.errors:
-            await self._log("NodeTDDOrchestrator", error, "error")
-        if not backend_implementation.ok:
-            for requirement_id in backend_implementation.failed_requirements:
-                states[requirement_id] = "FAILED"
-            return CompilationResult(
-                ok=False,
-                root_id=root_id,
-                states=states,
-                failed_nodes=sorted(set(backend_implementation.failed_requirements)),
-                artifacts=artifacts,
-            )
-        for requirement_id in order:
-            states[requirement_id] = "BACKEND_IMPLEMENTED"
-        history.commit(
-            "6.1 backend implementation",
-            backend_implementation.changed_files or [".arc"],
-        )
 
         folder_ids = {
-            str(value)
-            for value in requirement_ir.get("folder_nodes", [])
-            if str(value)
+            str(value) for value in requirement_ir.get("folder_nodes", []) if str(value)
         }
         folder_order = [
             str(requirement_id)
@@ -906,52 +837,112 @@ class Compiler:
             )
             await self._log("Compiler", message, "error")
             return CompilationResult(
-                ok=False,
-                root_id=root_id,
-                states=states,
-                failed_nodes=sorted(folder_ids),
-                artifacts=artifacts,
-            )
-
-        frontend_implementation = orchestrator.implement_frontend(order + folder_order)
-        for error in frontend_implementation.errors:
-            await self._log("NodeTDDOrchestrator", error, "error")
-        if not frontend_implementation.ok:
-            for requirement_id in frontend_implementation.failed_requirements:
-                states[requirement_id] = "FAILED"
-            return CompilationResult(
-                ok=False,
-                root_id=root_id,
-                states=states,
-                failed_nodes=sorted(set(frontend_implementation.failed_requirements)),
-                artifacts=artifacts,
-            )
-        for requirement_id in order + folder_order:
-            states[requirement_id] = "FRONTEND_IMPLEMENTED"
-        history.commit(
-            "6.2 frontend implementation",
-            frontend_implementation.changed_files or [".arc"],
-        )
-
-        tests = orchestrator.run_test_layers(order)
-        for error in tests.errors:
-            await self._log("NodeTDDOrchestrator", error, "error")
-        if not tests.ok:
-            await self._log("Compiler", f"{tests.stage}: {tests.status}", "error")
-            for requirement_id in tests.failed_requirements:
-                states[requirement_id] = "FAILED"
-            return CompilationResult(
                 ok=False, root_id=root_id, states=states,
-                failed_nodes=sorted(set(tests.failed_requirements)), artifacts=artifacts,
+                failed_nodes=sorted(folder_ids), artifacts=artifacts,
             )
-        for requirement_id in order:
-            states[requirement_id] = "TESTS_PASSED"
-        failed_nodes = sorted(set(tests.failed_requirements))
-        await self._log(
-            "Compiler",
-            f"TDD completed; failed requirements: {failed_nodes}.",
-            "warning" if failed_nodes else None,
+
+        history = ProjectGitHistory(request.output_dir)
+        test_generation = RequirementTestGenerationPass(
+            model, request.output_dir, artifact_store,
         )
+        orchestrator = NodeTDDOrchestrator(
+            model,
+            request.output_dir,
+            requirement_ir=requirement_ir,
+            code_binding_registry=code_binding_registry,
+        )
+        completed: list[str] = []
+        self._runtime.events.mark_phase_started(
+            "TDD", "ARC node-by-node test-driven implementation started.",
+        )
+        for requirement_id in [*order, *folder_order]:
+            await self._log("Compiler", f"Generating and freezing tests for {requirement_id}.")
+            generated_tests = test_generation.generate_requirement(
+                requirement_id=requirement_id,
+                requirement_ir=requirement_ir,
+                database_schema=database_schema,
+                design_ir=design_ir,
+                frontend_ir=frontend_ir,
+                code_binding_registry=code_binding_registry,
+                environment_manifest=test_environment.manifest,
+                existing_manifest=orchestrator.test_manifest,
+            )
+            artifacts.update(generated_tests.artifacts)
+            states.update(generated_tests.node_states)
+            for error in generated_tests.errors:
+                await self._log("Compiler", error, "error")
+            if not generated_tests.ok:
+                return CompilationResult(
+                    ok=False, root_id=root_id, states=states,
+                    failed_nodes=[requirement_id], artifacts=artifacts,
+                )
+            orchestrator.test_manifest = generated_tests.manifest
+            self._runtime.traceability.merge_test_links(generated_tests.manifest)
+            history.commit(f"5 test generation {requirement_id}", [".arc", "tests"])
+
+            if requirement_id in atomic_ids:
+                backend_implementation = orchestrator.implement_backend([requirement_id])
+                for error in backend_implementation.errors:
+                    await self._log("NodeTDDOrchestrator", error, "error")
+                if not backend_implementation.ok:
+                    states[requirement_id] = "FAILED"
+                    return CompilationResult(
+                        ok=False, root_id=root_id, states=states,
+                        failed_nodes=[requirement_id], artifacts=artifacts,
+                    )
+                states[requirement_id] = "BACKEND_IMPLEMENTED"
+                if backend_implementation.changed_files:
+                    history.commit(
+                        f"6.1 backend implementation {requirement_id}",
+                        backend_implementation.changed_files,
+                    )
+
+                backend_tests = orchestrator.run_test_layers(
+                    [*completed, requirement_id], layers=("UNIT", "INTEGRATION"),
+                )
+                for error in backend_tests.errors:
+                    await self._log("NodeTDDOrchestrator", error, "error")
+                if not backend_tests.ok:
+                    failed_nodes = sorted(set(backend_tests.failed_requirements) or {requirement_id})
+                    for failed_id in failed_nodes:
+                        states[failed_id] = "FAILED"
+                    return CompilationResult(
+                        ok=False, root_id=root_id, states=states,
+                        failed_nodes=failed_nodes, artifacts=artifacts,
+                    )
+
+            frontend_implementation = orchestrator.implement_frontend([requirement_id])
+            for error in frontend_implementation.errors:
+                await self._log("NodeTDDOrchestrator", error, "error")
+            if not frontend_implementation.ok:
+                states[requirement_id] = "FAILED"
+                return CompilationResult(
+                    ok=False, root_id=root_id, states=states,
+                    failed_nodes=[requirement_id], artifacts=artifacts,
+                )
+            states[requirement_id] = "FRONTEND_IMPLEMENTED"
+            if frontend_implementation.changed_files:
+                history.commit(
+                    f"6.2 frontend implementation {requirement_id}",
+                    frontend_implementation.changed_files,
+                )
+
+            tests = orchestrator.run_test_layers([*completed, requirement_id])
+            for error in tests.errors:
+                await self._log("NodeTDDOrchestrator", error, "error")
+            if not tests.ok:
+                failed_nodes = sorted(set(tests.failed_requirements) or {requirement_id})
+                for failed_id in failed_nodes:
+                    states[failed_id] = "FAILED"
+                return CompilationResult(
+                    ok=False, root_id=root_id, states=states,
+                    failed_nodes=failed_nodes, artifacts=artifacts,
+                )
+            states[requirement_id] = "TESTS_PASSED"
+            completed.append(requirement_id)
+            await self._log("Compiler", f"TDD completed for {requirement_id}.")
+
+        failed_nodes: list[str] = []
         final_build = ProjectBuilder(request.output_dir).build()
         for error in final_build.errors:
             await self._log("Compiler", error, "error")

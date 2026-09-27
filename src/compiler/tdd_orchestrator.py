@@ -45,7 +45,7 @@ class TDDStageResult:
 
 
 class NodeTDDOrchestrator:
-    """Run the fixed TDD stages after all tests have been frozen."""
+    """Implement and verify a node against its frozen tests."""
 
     _BACKEND_KINDS = {"DB", "FUNC", "API"}
     _FRONTEND_KINDS = {"API_CLIENT", "STORE", "COMPONENT", "PAGE", "LAYOUT"}
@@ -88,7 +88,12 @@ class NodeTDDOrchestrator:
             self.frontend_implementation_agent,
         )
 
-    def run_test_layers(self, requirement_ids: list[str]) -> TDDStageResult:
+    def run_test_layers(
+        self,
+        requirement_ids: list[str],
+        *,
+        layers: tuple[str, ...] = TEST_LAYERS,
+    ) -> TDDStageResult:
         result = TDDStageResult("6.3-6.5 test-driven repair", status="TESTS_PASSED")
         if not self.test_manifest or self.test_manifest.get("status") != "TESTS_FROZEN":
             return self._fail(result, "Tests must be frozen before TDD.")
@@ -102,16 +107,16 @@ class NodeTDDOrchestrator:
 
         budgets: dict[tuple[str, str], int] = {}
         position = 0
-        while position < len(TEST_LAYERS):
-            layer = TEST_LAYERS[position]
+        while position < len(layers):
+            layer = layers[position]
             layer_result = self._run_layer(
-                layer, requirement_ids, budgets, TEST_LAYERS[:position],
+                layer, requirement_ids, budgets, layers[:position],
             )
             result.changed_files = sorted(set(result.changed_files) | set(layer_result.changed_files))
             result.failed_requirements.extend(layer_result.failed_requirements)
             result.errors.extend(layer_result.errors)
             if layer_result.retry_layer is not None:
-                position = TEST_LAYERS.index(layer_result.retry_layer)
+                position = layers.index(layer_result.retry_layer)
                 continue
             if not layer_result.ok:
                 result.stage = layer_result.stage
@@ -131,7 +136,12 @@ class NodeTDDOrchestrator:
         agent: ImplementationAgent,
     ) -> TDDStageResult:
         result = TDDStageResult(stage, status="IMPLEMENTED")
+        if not self.test_manifest or self.test_manifest.get("status") != "TESTS_FROZEN":
+            return self._fail(result, "Tests must be frozen before implementation.")
         for requirement_id in requirement_ids:
+            if not any(self._has_test(requirement_id, layer) for layer in TEST_LAYERS):
+                result.failed_requirements.append(requirement_id)
+                return self._fail(result, f"No frozen tests for: {requirement_id}")
             targets = [
                 row for row in self._owned_targets(requirement_id)
                 if row.get("kind") in allowed_kinds
@@ -145,6 +155,11 @@ class NodeTDDOrchestrator:
                 agent,
                 result,
                 target_ids=tuple(str(target["module_id"]) for target in targets),
+                test_files=tuple(
+                    str(row["test_file"])
+                    for row in (self.test_manifest or {}).get("files", [])
+                    if row.get("requirement_id") == requirement_id
+                ),
             )
             if not changed:
                 result.failed_requirements.append(requirement_id)

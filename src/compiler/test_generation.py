@@ -373,7 +373,7 @@ def _format_model_log(payload: dict[str, Any]) -> str:
 
 
 class RequirementTestGenerationPass:
-    """Generate and freeze a bounded set of tests for each atomic requirement."""
+    """Generate and freeze tests for atomic requirements and aggregate UI nodes."""
 
     def __init__(
         self,
@@ -478,7 +478,7 @@ class RequirementTestGenerationPass:
         environment_manifest: dict[str, Any],
         existing_manifest: dict[str, Any] | None = None,
     ) -> TestGenerationResult:
-        """Generate, validate, and freeze tests for exactly one atomic requirement.
+        """Generate, validate, and freeze tests for exactly one requirement.
 
         When an existing manifest is supplied, its other requirement slices are
         retained and the selected requirement slice is replaced atomically at
@@ -515,6 +515,18 @@ class RequirementTestGenerationPass:
 
         nodes = requirement_ir.get("nodes", {})
         node = nodes[requirement_id]
+        if requirement_id in requirement_ir.get("folder_nodes", []):
+            node = {
+                **node,
+                "children": [
+                    {
+                        key: child.get(key)
+                        for key in ("id", "name", "description", "scenarios")
+                    }
+                    for child_id in node.get("children_ids", [])
+                    if isinstance(child := nodes.get(child_id), dict)
+                ],
+            }
         try:
             resolved_targets = CodeTargetResolver(
                 code_binding_registry
@@ -535,6 +547,8 @@ class RequirementTestGenerationPass:
             )
 
         required_layers = _plan_test_layers(resolved_targets, design_ir)
+        if requirement_id in requirement_ir.get("folder_nodes", []):
+            required_layers = [layer for layer in required_layers if layer == "E2E"]
         if not required_layers:
             state[requirement_id] = "FAILED"
             errors = [
@@ -837,6 +851,7 @@ def _build_context_pack(
             "examples",
             "visual_references",
             "dependencies",
+            "children",
         )
         if key in requirement
     }
@@ -1540,18 +1555,21 @@ def _test_generation_precondition_errors(
             "ARC4411 TEST_ENVIRONMENT_NOT_READY: Test environment is unavailable."
         )
     nodes = requirement_ir.get("nodes", {})
-    atomic_ids = {
-        str(value) for value in requirement_ir.get("atomic_units", []) if str(value)
+    testable_ids = {
+        str(value)
+        for kind in ("atomic_units", "folder_nodes")
+        for value in requirement_ir.get(kind, [])
+        if str(value)
     }
     if not requirement_id:
         errors.append("ARC4412 TEST_CONTEXT_INVALID: requirement_id is required.")
     elif not isinstance(nodes, dict) or not isinstance(nodes.get(requirement_id), dict):
         errors.append(
-            f"ARC4412 TEST_CONTEXT_INVALID: missing atomic requirement {requirement_id}."
+            f"ARC4412 TEST_CONTEXT_INVALID: missing requirement {requirement_id}."
         )
-    elif requirement_id not in atomic_ids:
+    elif requirement_id not in testable_ids:
         errors.append(
-            f"ARC4412 TEST_CONTEXT_INVALID: {requirement_id} is not an atomic requirement."
+            f"ARC4412 TEST_CONTEXT_INVALID: {requirement_id} is not a testable requirement."
         )
     return errors
 
