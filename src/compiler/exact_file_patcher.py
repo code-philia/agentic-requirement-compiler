@@ -189,15 +189,21 @@ class ExactFilePatcher:
 
 
 def _safe_relative_file(value: str) -> str | None:
-    normalized = str(value).replace("\\", "/").strip().strip("/")
+    normalized = str(value).replace("\\", "/").strip()
     path = PurePosixPath(normalized)
     if (
         not normalized
         or path.is_absolute()
         or "." in path.parts
         or ".." in path.parts
-        or normalized.startswith(("tests/", ".arc/"))
-        or not normalized.startswith(("backend/src/", "frontend/src/"))
+        or ":" in normalized
+        # Per-file authorization is checked by ImplementationAgent before a
+        # ProposedPatch is accepted. Support the same test roots in apply,
+        # snapshot and restore so authorized corrections can also roll back.
+        or not normalized.startswith((
+            "backend/src/", "frontend/src/",
+            "tests/unit/", "tests/integration/", "tests/e2e/",
+        ))
     ):
         return None
     return normalized

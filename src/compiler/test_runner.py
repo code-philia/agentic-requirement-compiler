@@ -292,9 +292,12 @@ class TestRunner:
                 for value in str(process_environment.get("DEBUG", "")).split(",")
                 if value.strip()
             ]
-            if "pw:api" not in debug_channels:
-                debug_channels.append("pw:api")
+            # Keep unrelated debug channels, but suppress Playwright's verbose
+            # protocol/action stream, including when DEBUG contains a wildcard.
+            debug_channels.append("-pw:*")
             process_environment["DEBUG"] = ",".join(debug_channels)
+            process_environment["PLAYWRIGHT_LIST_PRINT_STEPS"] = "0"
+            process_environment["FORCE_COLOR"] = "0"
         output_path = capture_root / f"{capture_id}.output.log"
         output_file = None
         try:
@@ -484,6 +487,10 @@ def _execution_command(layer: str, test_files: list[str]) -> list[str]:
         "--config",
         "playwright.config.ts",
         "--project=chromium",
+        # Override historical line/progress reporters without rewriting the
+        # project's pinned test configuration. The list reporter preserves
+        # failures, source locations, code frames and assertion differences.
+        "--reporter=list",
         *workspace_files,
     ]
 

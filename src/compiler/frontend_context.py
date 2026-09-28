@@ -53,23 +53,33 @@ def frontend_subgraph(ir: dict[str, Any], requirement_id: str, target_ids: set[s
 
 def visual_context(project_root: Path, requirement_id: str) -> list[dict[str, Any]]:
     root = project_root / ".arc/design/frontend"
-    cache_path = root / "visual_references.json"
-    if not cache_path.is_file():
-        cache_path = root / "visual_cache.json"
-    if not cache_path.is_file():
-        return []
-    try:
-        cached = json.loads(cache_path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError):
-        return []
-    if isinstance(cached, dict) and isinstance(cached.get("visual_references"), list):
-        cached = {
-            str(row.get("id", index)): row
-            for index, row in enumerate(cached["visual_references"])
-            if isinstance(row, dict)
-        }
-    if not isinstance(cached, dict):
-        return []
+    # The exported reference table may be empty while the path-keyed cache
+    # contains the actual analyses. Read both; an index must not mask evidence.
+    cached: dict[str, Any] = {}
+    for filename in ("visual_cache.json", "visual-references.json", "visual_references.json"):
+        path = root / filename
+        if not path.is_file():
+            continue
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            continue
+        if not isinstance(payload, dict):
+            continue
+        rows = payload.get("visual_references")
+        entries = enumerate(rows) if isinstance(rows, list) else payload.items()
+        for key, row in entries:
+            if not isinstance(row, dict):
+                continue
+            identity = str(row.get("id") or row.get("reference_id") or key)
+            previous = cached.get(identity, {})
+            merged = {**previous, **row}
+            if previous.get("analysis") and not row.get("analysis"):
+                merged["analysis"] = previous["analysis"]
+            merged["requirement_ids"] = sorted(set(previous.get("requirement_ids", []))
+                                               | set(row.get("requirement_ids", [])))
+            merged.setdefault("source_path", str(key))
+            cached[identity] = merged
 
     # Traceability is the authoritative requirement -> visual link.  Older
     # caches may only use the image path as their key, so retain both ids and

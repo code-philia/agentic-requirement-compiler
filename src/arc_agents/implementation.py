@@ -92,6 +92,26 @@ Return only the diagnosis object; no edits in this step.
 """
 
 FRONTEND_IMPLEMENTATION_INSTRUCTIONS = IMPLEMENTATION_INSTRUCTIONS + """
+Use Tailwind CSS utilities in JSX to implement the actual visual styling, not just
+semantic markup. Tailwind does not generate CSS for invented semantic class names
+such as field-row or brand-header. Use a custom class only if its definition exists
+in a supplied stylesheet; otherwise replace it with complete Tailwind utility names.
+Do not concatenate utility fragments dynamically; use complete literal alternatives.
+
+When visual_references contain analyses, follow their layout_cues, style_cues,
+regions and text_cues for composition, color, typography, spacing and controls.
+Translate that evidence into concrete responsive Tailwind classes. Reuse the same
+visual language across related components, preserving existing shared components.
+When no reference analysis is supplied, choose a beautiful, minimal style suited to
+the product: restrained colors, readable type, consistent spacing, clear hierarchy,
+and whitespace. Follow existing application styling where it is already established.
+Avoid unnecessary cards, gradients and shadows. Style forms, buttons and navigation,
+including focus-visible, hover, disabled, loading and error states as applicable.
+Keep the layout usable on mobile and desktop. The compiler's initial base stylesheet
+is not a finished design. Before returning edits, check that all visible UI has real
+styling and that every non-utility class you use has an existing CSS definition.
+Passing behavioral tests alone does not establish visual completion.
+
 Implement every supplied editable frontend screen and component, including their layout,
 navigation, accessible controls, empty/loading/error states, and shared visual language.
 Do not leave any 'Implementation pending' skeletons, even if E2E tests do not visit them.
@@ -318,6 +338,13 @@ class ImplementationAgent:
         for workspace in ("backend", "frontend"):
             if any(relative.startswith(workspace + "/") for relative in editable_paths):
                 related.add(workspace + "/package.json")
+        if any(relative.startswith("frontend/") for relative in editable_paths):
+            # Component files do not import the app's base stylesheet directly.
+            # Supply it explicitly so models can distinguish existing CSS classes
+            # from names that would otherwise render without styling.
+            for relative in ("frontend/src/index.css", "frontend/src/main.tsx", "frontend/vite.config.ts"):
+                if (self.output_root / relative).is_file():
+                    related.add(relative)
         paths = sorted(related)
         editable_files: dict[str, str] = {}
         related_files: dict[str, str] = {}

@@ -860,6 +860,21 @@ class Compiler:
         self._runtime.events.mark_phase_started(
             "TDD", "ARC node-by-node test-driven implementation started.",
         )
+        failed_requirements: set[str] = set()
+
+        async def warn_node_failure(requirement_id, stage, result):
+            failed = set(result.failed_requirements) if hasattr(result, "failed_requirements") else set()
+            failed.add(requirement_id)
+            failed_requirements.update(failed)
+            for failed_id in failed:
+                states[failed_id] = "FAILED"
+            await self._log(
+                "Compiler",
+                f"{requirement_id}: {stage} failed; continuing with remaining stages where possible. "
+                "Accepted changes are retained; rejected patches remain rolled back.",
+                "warning",
+            )
+
         for requirement_id in [*order, *folder_order]:
             if requirement_id in folder_ids:
                 targets = CodeTargetResolver(code_binding_registry).resolve_requirement_targets(
@@ -893,12 +908,10 @@ class Compiler:
             artifacts.update(generated_tests.artifacts)
             states.update(generated_tests.node_states)
             for error in generated_tests.errors:
-                await self._log("Compiler", error, "error")
+                await self._log("Compiler", error, "warning")
             if not generated_tests.ok:
-                return CompilationResult(
-                    ok=False, root_id=root_id, states=states,
-                    failed_nodes=[requirement_id], artifacts=artifacts,
-                )
+                await warn_node_failure(requirement_id, "test generation", generated_tests)
+                continue
             orchestrator.test_manifest = generated_tests.manifest
             self._runtime.traceability.merge_test_links(generated_tests.manifest)
             history.commit(f"5 test generation {requirement_id}", [".arc", "tests"])
@@ -906,14 +919,11 @@ class Compiler:
             if requirement_id in atomic_ids:
                 backend_implementation = orchestrator.implement_backend([requirement_id])
                 for error in backend_implementation.errors:
-                    await self._log("NodeTDDOrchestrator", error, "error")
+                    await self._log("NodeTDDOrchestrator", error, "warning")
                 if not backend_implementation.ok:
-                    states[requirement_id] = "FAILED"
-                    return CompilationResult(
-                        ok=False, root_id=root_id, states=states,
-                        failed_nodes=[requirement_id], artifacts=artifacts,
-                    )
-                states[requirement_id] = "BACKEND_IMPLEMENTED"
+                    await warn_node_failure(requirement_id, "backend implementation", backend_implementation)
+                else:
+                    states[requirement_id] = "BACKEND_IMPLEMENTED"
                 if backend_implementation.changed_files:
                     history.commit(
                         f"6.1 backend implementation {requirement_id}",
@@ -924,26 +934,17 @@ class Compiler:
                     [requirement_id], layers=("UNIT", "INTEGRATION"),
                 )
                 for error in backend_tests.errors:
-                    await self._log("NodeTDDOrchestrator", error, "error")
+                    await self._log("NodeTDDOrchestrator", error, "warning")
                 if not backend_tests.ok:
-                    failed_nodes = sorted(set(backend_tests.failed_requirements) or {requirement_id})
-                    for failed_id in failed_nodes:
-                        states[failed_id] = "FAILED"
-                    return CompilationResult(
-                        ok=False, root_id=root_id, states=states,
-                        failed_nodes=failed_nodes, artifacts=artifacts,
-                    )
+                    await warn_node_failure(requirement_id, "backend tests", backend_tests)
 
             frontend_implementation = orchestrator.implement_frontend([requirement_id])
             for error in frontend_implementation.errors:
-                await self._log("NodeTDDOrchestrator", error, "error")
+                await self._log("NodeTDDOrchestrator", error, "warning")
             if not frontend_implementation.ok:
-                states[requirement_id] = "FAILED"
-                return CompilationResult(
-                    ok=False, root_id=root_id, states=states,
-                    failed_nodes=[requirement_id], artifacts=artifacts,
-                )
-            states[requirement_id] = "FRONTEND_IMPLEMENTED"
+                await warn_node_failure(requirement_id, "frontend implementation", frontend_implementation)
+            else:
+                states[requirement_id] = "FRONTEND_IMPLEMENTED"
             if frontend_implementation.changed_files:
                 history.commit(
                     f"6.2 frontend implementation {requirement_id}",
@@ -952,19 +953,32 @@ class Compiler:
 
             tests = orchestrator.run_test_layers([requirement_id], layers=("E2E",))
             for error in tests.errors:
-                await self._log("NodeTDDOrchestrator", error, "error")
+                await self._log("NodeTDDOrchestrator", error, "warning")
             if not tests.ok:
-                failed_nodes = sorted(set(tests.failed_requirements) or {requirement_id})
-                for failed_id in failed_nodes:
-                    states[failed_id] = "FAILED"
-                return CompilationResult(
-                    ok=False, root_id=root_id, states=states,
-                    failed_nodes=failed_nodes, artifacts=artifacts,
-                )
+                await warn_node_failure(requirement_id, "E2E tests", tests)
+            # Later layers can repair earlier failures, but an E2E pass alone
+            # does not prove the earlier assertions now pass. Verify all layers
+            # against the final code without resetting any repair budget.
+            await self._log("Compiler", f"Verifying all test layers after repairs for {requirement_id}.")
+            verification = orchestrator.verify_test_layers([requirement_id])
+            for error in verification.errors:
+                await self._log("NodeTDDOrchestrator", error, "warning")
+            if not verification.ok:
+                await warn_node_failure(requirement_id, "final test verification", verification)
+                continue
+            failed_requirements.discard(requirement_id)
             states[requirement_id] = "TESTS_PASSED"
             await self._log("Compiler", f"TDD completed for {requirement_id}.")
 
-        failed_nodes: list[str] = []
+        failed_nodes = sorted(failed_requirements)
+        for failed_id in failed_nodes:
+            states[failed_id] = "FAILED"
+        if failed_nodes:
+            await self._log(
+                "Compiler",
+                "TDD traversal finished with failed requirements: " + ", ".join(failed_nodes),
+                "warning",
+            )
         final_build = ProjectBuilder(request.output_dir).build()
         for error in final_build.errors:
             await self._log("Compiler", error, "error")

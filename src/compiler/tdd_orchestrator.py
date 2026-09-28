@@ -178,9 +178,30 @@ class NodeTDDOrchestrator:
                 result.stage = layer_result.stage
                 result.status = layer_result.status
                 result.failed_requirements = sorted(set(result.failed_requirements))
-                return result
+                write_terminal_log(
+                    "NodeTDDOrchestrator",
+                    f"{layer} failed; continuing to subsequent test layers with their own repair budgets.",
+                    status="warning",
+                )
         result.failed_requirements = sorted(set(result.failed_requirements))
-        result.errors.clear()
+        return result
+
+    def verify_test_layers(self, requirement_ids: list[str]) -> TDDStageResult:
+        """Recheck final code after later layers' repairs, without more repair calls."""
+        result = TDDStageResult("final node verification", status="TESTS_PASSED")
+        if not self.test_manifest or self.test_manifest.get("status") != "TESTS_FROZEN":
+            return self._fail(result, "Tests must be frozen before verification.")
+        for requirement_id in requirement_ids:
+            layers = [layer for layer in TEST_LAYERS if self._has_test(requirement_id, layer)]
+            if not layers:
+                result.failed_requirements.append(requirement_id)
+                self._fail(result, f"No frozen tests for: {requirement_id}")
+            for layer in layers:
+                run = self._run_tests(requirement_id, layer)
+                if not run.ok or not run.commands:
+                    result.failed_requirements.append(requirement_id)
+                    self._fail(result, f"{requirement_id} {layer}: {self._raw_output(run)}")
+        result.failed_requirements = sorted(set(result.failed_requirements))
         return result
 
     def _implement_stage(
