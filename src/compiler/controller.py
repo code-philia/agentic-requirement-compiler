@@ -7,25 +7,15 @@ from arcbench_agent_runtime.runtime import AgentRuntime
 
 from .artifacts import CompilerArtifactStore
 from .backend_lowering import BackendGlueLowerer
-from .code_binding import CodeBindingLowerer, CodeTargetResolver
+from .code_binding import CodeTargetResolver
 from .database_stage import (
     DatabaseSchemaPass,
     database_traceability,
 )
 from .database_lowering import lower_database
 from .design_stage import DesignPass, design_traceability
-from .design_projection import project_api_contracts
 from .file_planning import GlobalFilePlanner
-from .frontend_thin_design import (
-    ThinFrontendDesignPass,
-    frontend_design_traceability,
-    project_frontend_runtime_ir,
-)
-from .frontend_lowering import (
-    FrontendFilePlanner,
-    FrontendGlobalSymbolPlanner,
-    FrontendSkeletonLowerer,
-)
+from .frontend_generation import FrontendIRGenerationPass, frontend_ir_traceability
 from .git_history import GitStageError, ProjectGitHistory
 from .fixture_stage import (
     FixturePass,
@@ -45,7 +35,7 @@ from .symbol_planning import GlobalSymbolPlanner
 from .tdd_orchestrator import NodeTDDOrchestrator
 from .test_generation import RequirementTestGenerationPass, TestEnvironmentInitializer
 from .test_runner import TestRunner
-from .visual_reference import VisualReferenceAnalyzer, VisualReferenceResolver
+from .visual_reference import VisualReferenceResolver
 
 
 LogCallback = Callable[[str, str, str | None, str | None], Awaitable[None] | None]
@@ -493,237 +483,53 @@ class Compiler:
             "FRONTEND", "ARC frontend design stage started."
         )
 
-        frontend_design_ir: dict[str, object] = {}
-        frontend_errors: list[str] = []
+        await self._log("Compiler", "Resolving visual references for regional frontend design calls.")
+        visuals = VisualReferenceResolver().resolve(
+            request.requirement_path, preprocessing.requirement_ir,
+        )
         await self._log(
             "Compiler",
-            "Running VISUAL REFERENCE RESOLUTION and multimodal ANALYSIS serially.",
+            "Generating frontend IR through bounded observation, assembly, UI/data and behavior passes.",
         )
-        visual_resolution = VisualReferenceResolver().resolve(
-            request.requirement_path,
-            preprocessing.requirement_ir,
-        )
-        for issue in visual_resolution.errors:
-            await self._log(
-                "Compiler",
-                f"{issue.format()} Skipping this optional visual reference.",
-                "warning",
-            )
-        if visual_resolution.references:
-            visual_analysis = VisualReferenceAnalyzer.from_env(artifact_store.root).analyze(
-                visual_resolution.references
-            )
-            for issue in visual_analysis.errors:
-                await self._log(
-                    "Compiler",
-                    f"{issue.format()} Skipping this optional visual analysis.",
-                    "warning",
-                )
-            analyzed_visuals: list[dict[str, object]] = visual_analysis.references
-        else:
-            analyzed_visuals = []
-
-        await self._log(
-            "Compiler",
-            "Running multi-pass THIN FRONTEND DESIGN: one product-wide screen/route/navigation architecture pass followed by requirement-ordered UI placement passes; implementation targets and API associations are compiler-derived.",
-        )
-        ui_scope = ThinFrontendDesignPass(model, artifact_store.root).compile(
+        frontend = FrontendIRGenerationPass(model, artifact_store.root).compile(
             preprocessing.requirement_ir,
             preprocessing.dependency_graph,
             design.design_ir,
-            analyzed_visuals,
+            visuals.references,
         )
-        if not ui_scope.ok:
-            frontend_errors.extend(ui_scope.errors)
-            states.update(ui_scope.node_states)
-        else:
-            frontend_design_ir = ui_scope.frontend_ir
-
-        if not frontend_errors:
-            try:
-                artifacts.update(artifact_store.write_frontend_design(
-                    frontend_ir=frontend_design_ir,
-                ))
-            except ValueError as exc:
-                frontend_errors.append(f"ARC4150 DUAL_DESIGN_INVALID: {exc}")
-
-        if frontend_errors:
-            for node_id in requirement_ids:
-                states[node_id] = "FAILED"
-            for error in frontend_errors:
-                await self._log("Compiler", error, "error")
-            await self._log("Compiler", "FRONTEND_DESIGN pass failed.", "error")
-            return CompilationResult(
-                ok=False,
-                root_id=root_id,
-                states=states,
-                failed_nodes=requirement_ids,
-                artifacts=artifacts,
-            )
-
-        dual_design_state = "DUAL_DESIGN_FROZEN"
-        for node_id in requirement_ids:
-            states[node_id] = dual_design_state
+        for issue in visuals.errors:
+            frontend.report["warnings"].append(issue.format())
+        if frontend.report["warnings"] and frontend.report["status"] == "GENERATED":
+            frontend.report["status"] = "GENERATED_WITH_WARNINGS"
+        # Always preserve partial design work; the old Thin validator does not apply.
+        artifacts.update(artifact_store.write_frontend_design(
+            frontend_ir=frontend.frontend_ir,
+            report=frontend.report,
+            observations=frontend.observations,
+            batches=frontend.batches,
+        ))
         self._runtime.traceability.merge_frontend_design_links(
-            frontend_design_traceability(frontend_design_ir)
+            frontend_ir_traceability(frontend.frontend_ir)
         )
+        failed_requirements = {
+            rid for task in frontend.report["failed_tasks"] for rid in task["requirement_ids"]
+        }
+        for rid in requirement_ids:
+            states[rid] = "FRONTEND_IR_PARTIAL" if rid in failed_requirements else "FRONTEND_IR_GENERATED"
+        for warning in frontend.report["warnings"]:
+            await self._log("Compiler", warning, "warning")
+        for failure in frontend.report["failed_tasks"]:
+            await self._log("Compiler", f"{failure['phase']}: {failure['message']}", "warning")
+        history.commit("4.1 frontend IR generation", [".arc"])
         await self._log(
             "Compiler",
-            f"{dual_design_state}: Backend Design IR and Frontend Design IR are validated and frozen.",
+            f"Frontend IR {frontend.report['status']}; saved to {artifacts['frontend_design_ir']}. "
+            "This run ends at frontend design; the legacy frontend lowering does not consume this metamodel.",
+            "success" if frontend.ok else "warning",
         )
-        history.commit("4.1 frontend design", [".arc"])
-
-        # ===================================================================
-        #              Frontend Lowering: Symbol Planning
-        # ===================================================================
-
-        await self._log(
-            "Compiler",
-            "Projecting Thin Frontend IR to compiler runtime seams for routes, API clients, and editable screen modules.",
-        )
-        frontend_runtime_ir = project_frontend_runtime_ir(frontend_design_ir)
-        frontend_symbols = FrontendGlobalSymbolPlanner().plan(
-            frontend_runtime_ir,
-            project_api_contracts(design.design_ir),
-            symbol_planning.registry,
-            project_manifest,
-        )
-        for error in frontend_symbols.errors:
-            await self._log("Compiler", error, "error")
-        if not frontend_symbols.ok:
-            await self._log("Compiler", "FRONTEND_GLOBAL_SYMBOL_PLANNING pass failed.", "error")
-            return CompilationResult(
-                ok=False,
-                root_id=root_id,
-                states=states,
-                artifacts=artifacts,
-            )
-
-        # ===================================================================
-        #                Frontend Lowering: File Planning
-        # ===================================================================
-
-        await self._log(
-            "Compiler",
-            "Running deterministic FRONTEND_FILE_PLANNING over the Frontend Symbol Registry.",
-        )
-        frontend_files = FrontendFilePlanner(request.output_dir).plan(
-            frontend_runtime_ir,
-            frontend_symbols.registry,
-            project_manifest,
-        )
-        for error in frontend_files.errors:
-            await self._log("Compiler", error, "error")
-        if not frontend_files.ok:
-            await self._log("Compiler", "FRONTEND_FILE_PLANNING pass failed.", "error")
-            return CompilationResult(
-                ok=False,
-                root_id=root_id,
-                states=states,
-                artifacts=artifacts,
-            )
-
-        # ===================================================================
-        #             Frontend Lowering: Skeleton and Glue
-        # ===================================================================
-
-        await self._log(
-            "Compiler",
-            "Running deterministic FRONTEND_SKELETON_LOWERING for Props, Events, Stores, API Clients, UI modules, Routes, Barrels, and Imports.",
-        )
-        frontend_lowering = FrontendSkeletonLowerer().lower(
-            frontend_runtime_ir,
-            project_api_contracts(design.design_ir),
-            backend_glue.route_registry,
-            frontend_symbols.registry,
-            frontend_files.registry,
-            backend_port=request.web_port,
-        )
-        for error in frontend_lowering.errors:
-            await self._log("Compiler", error, "error")
-        if not frontend_lowering.ok:
-            await self._log("Compiler", "FRONTEND_SKELETON_LOWERING pass failed.", "error")
-            return CompilationResult(
-                ok=False,
-                root_id=root_id,
-                states=states,
-                artifacts=artifacts,
-            )
-        artifacts.update(artifact_store.write_generated_sources(frontend_lowering.sources))
-        await self._log(
-            "Compiler",
-            "Frontend Props/Event/Store/API Client skeletons, UI modules, Routes, Barrels, Import Plan, and Frontend Manifest generated.",
-        )
-
-        # ===================================================================
-        #          Frontend Lowering: IR-to-Source Code Binding
-        # ===================================================================
-
-        await self._log(
-            "Compiler",
-            "Building and validating the deterministic IR-to-source Code Binding Registry.",
-        )
-        code_bindings = CodeBindingLowerer().lower(
-            output_root=request.output_dir,
-            requirement_ir=preprocessing.requirement_ir,
-            dependency_graph=preprocessing.dependency_graph,
-            design_ir=design.design_ir,
-            frontend_ir=frontend_runtime_ir,
-            backend_symbol_registry=symbol_planning.registry,
-            backend_type_manifest=type_lowering.manifest,
-            backend_module_manifests={
-                "DB": db_modules.manifest,
-                "FUNC": func_modules.manifest,
-                "API": api_modules.manifest,
-            },
-            backend_route_registry=backend_glue.route_registry,
-            frontend_symbol_registry=frontend_symbols.registry,
-            frontend_file_registry=frontend_files.registry,
-            frontend_route_registry=frontend_lowering.route_registry,
-        )
-        artifacts["code_bindings"] = artifact_store.write_code_bindings(
-            code_bindings.registry
-        )
-        for error in code_bindings.errors:
-            await self._log("Compiler", error, "error")
-        if not code_bindings.ok:
-            await self._log("Compiler", "CODE_BINDING validation failed.", "error")
-            return CompilationResult(
-                ok=False,
-                root_id=root_id,
-                states=states,
-                artifacts=artifacts,
-            )
-        await self._log(
-            "Compiler",
-            "CODE_BINDING_READY: Design IR, TypeScript types, and real source targets are linked.",
-        )
-
-        frontend_build = ProjectBuilder(request.output_dir).build()
-        if not frontend_build.ok:
-            for error in frontend_build.errors:
-                await self._log("Compiler", f"4.2 frontend lowering: {error}", "error")
-            return CompilationResult(
-                ok=False, root_id=root_id, states=states, artifacts=artifacts,
-            )
-        history.commit("4.2 frontend lowering", [".arc", "frontend/src", "frontend/vite.config.ts"])
-        failed_gate = await self._build_gate(request, "4.2 frontend lowering", root_id, states, artifacts)
-        if failed_gate is not None:
-            return failed_gate
-
-        return await self._run_tdd(
-            request=request,
-            artifact_store=artifact_store,
-            requirement_ir=preprocessing.requirement_ir,
-            dependency_graph=preprocessing.dependency_graph,
-            database_schema=database.schema,
-            design_ir=design.design_ir,
-            frontend_ir=frontend_design_ir,
-            code_binding_registry=code_bindings.registry,
-            model=model,
-            root_id=root_id,
-            states=states,
-            artifacts=artifacts,
+        return CompilationResult(
+            ok=frontend.ok, root_id=root_id, states=states,
+            failed_nodes=sorted(failed_requirements), artifacts=artifacts,
         )
 
     async def _build_gate(
