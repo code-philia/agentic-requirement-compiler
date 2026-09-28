@@ -104,6 +104,23 @@ class BaseStructuredAgent:
             )
             try:
                 started = time.perf_counter()
+                # Persist the exact request before a potentially long model call.
+                # Logging is observational and must not prevent implementation.
+                if self._model_log is not None:
+                    try:
+                        self._model_log({
+                            "event": "MODEL_INPUT",
+                            "agent_name": self._agent_name,
+                            "schema_name": self._schema_name,
+                            "instructions": self._instructions,
+                            "input_payload": copy.deepcopy(payload),
+                            "output_schema": self._output_schema,
+                            "attempt": attempt,
+                            "requirement_id": requirement_id,
+                            "iteration": iteration,
+                        })
+                    except Exception as log_exc:
+                        self._emit(f"MODEL_LOG_WRITE_FAILED: {type(log_exc).__name__}: {log_exc}")
                 output = self._model.generate_json(
                     schema_name=self._schema_name,
                     instructions=self._instructions,
@@ -113,6 +130,7 @@ class BaseStructuredAgent:
                 if self._model_log is not None:
                     try:
                         self._model_log({
+                        "event": "MODEL_OUTPUT",
                         "agent_name": self._agent_name,
                         "schema_name": self._schema_name,
                         "instructions": self._instructions,
@@ -131,6 +149,7 @@ class BaseStructuredAgent:
                 if self._model_log is not None:
                     try:
                         self._model_log({
+                        "event": "MODEL_ERROR",
                         "agent_name": self._agent_name,
                         "schema_name": self._schema_name,
                         "instructions": self._instructions,

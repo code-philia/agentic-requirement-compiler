@@ -20,7 +20,7 @@ from .exact_file_patcher import ExactFilePatcher
 from .frontend_thin_design import project_frontend_runtime_ir
 from .git_history import ProjectGitHistory
 from .project_build import ProjectBuilder
-from .test_generation import TEST_LAYERS
+from .test_generation import TEST_LAYERS, _format_model_log
 from .test_runner import TestRunResult, TestRunner, TestSelection
 
 
@@ -136,8 +136,14 @@ class NodeTDDOrchestrator:
             r"[^A-Za-z0-9_.-]+", "_", str(payload.get("requirement_id", "unknown"))
         )
         attempt = int(payload.get("attempt", 0) or 0)
-        path = log_root / f"{stamp}-{requirement_id}-attempt-{attempt}.json"
-        path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
+        event = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(payload.get("event", "MODEL_EXCHANGE")))
+        iteration = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(payload.get("iteration", 0)))
+        path = log_root / f"{stamp}-{requirement_id}-iteration-{iteration}-attempt-{attempt}-{event}.log"
+        text = (
+            f"event: {event}\nagent_name: {payload.get('agent_name', '')}\n"
+            + _format_model_log(payload)
+        )
+        path.write_text(text, encoding="utf-8")
 
     def implement_backend(self, requirement_ids: list[str]) -> TDDStageResult:
         return self._implement_stage(

@@ -55,8 +55,8 @@ and the supplied source files. Assertions must come from the requirement and its
 scenarios, never from skeleton placeholders or current implementation behavior.
 Use the exact exports, helper signatures, database fields and routes in the supplied
 code. E2E controls may not exist in the unimplemented skeleton yet: choose accessible
-locators from the requirement, not from placeholder text. E2E may navigate directly
-to any route in the supplied frontend screen graph; entry routes are suggestions.
+locators from the requirement, not from placeholder text. Start E2E at / and follow
+the requirement's user interactions; do not invent URLs from component names.
 Do not use compiler-only data-arc-page, data-arc-component, data-arc-layout,
 or data-arc-obligation attributes as E2E locators; the implemented UI removes them.
 When selecting form controls by a literal label, use getByLabel("label", { exact: true })
@@ -608,6 +608,7 @@ class RequirementTestGenerationPass:
             frontend_ir=frontend_ir,
             resolved_targets=resolved_targets,
             required_layers=required_layers,
+            api_binding_rows=code_binding_registry.get("code_bindings", []),
             include_read_only_frontend=requirement_id in requirement_ir.get("folder_nodes", []),
         )
         artifacts: dict[str, str] = {}
@@ -796,6 +797,7 @@ def _build_context_pack(
     frontend_ir: dict[str, Any],
     resolved_targets: dict[str, Any],
     required_layers: list[str],
+    api_binding_rows: list[dict[str, Any]] | None = None,
     include_read_only_frontend: bool = False,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
 
@@ -926,20 +928,24 @@ def _build_context_pack(
     )
     model_layers, source_files = _build_model_layers(
         output_root=output_root,
-        requirement_id=requirement_id,
         required_layers=required_layers,
         output_files=output_files,
         public_seams=public_seams,
         allowed_imports=allowed_imports,
         relevant_types=relevant_types,
-        frontend_subgraph=relevant_frontend_subgraph,
     )
     source_files.update((row["path"], row["source"]) for row in database_tables)
     model_context = {
         "requirement": model_requirement,
         "source_files": source_files,
         "layers": model_layers,
-        "api_contracts": [row for row in all_target_rows if row.get("kind") == "API"],
+        "api_contracts": _requirement_api_contracts(
+            requirement_id, requirement, design_ir,
+            api_binding_rows if api_binding_rows is not None else [
+                *resolved_targets.get("owned_targets", []),
+                *resolved_targets.get("dependency_targets", []),
+            ],
+        ),
     }
     validation_context = {
         "requirement_id": requirement_id,
@@ -971,12 +977,36 @@ def _database_source_cards(
     return cards
 
 
+def _requirement_api_contracts(
+    requirement_id: str, requirement: dict[str, Any],
+    design_ir: dict[str, Any], bindings: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Select direct ownership only, never the transitive dependency closure."""
+    requirement_ids = {requirement_id, *requirement.get("children_ids", [])}
+    requirement_ids.update(
+        child["id"] for child in requirement.get("children", [])
+        if isinstance(child, dict) and child.get("id")
+    )
+    api_ids = {
+        row["id"] for row in design_ir.get("modules", [])
+        if row.get("kind") == "API" and row.get("owner_requirement") in requirement_ids
+    }
+    selected = {
+        row["module_id"]: _project_test_target(row)
+        for row in bindings
+        if row.get("kind") == "API" and (
+            row.get("module_id") in api_ids
+            or requirement_ids.intersection(row.get("owner_requirements", []))
+        )
+    }
+    return [selected[key] for key in sorted(selected)]
+
+
 def _build_model_layers(
-    *, output_root: Path, requirement_id: str, required_layers: list[str],
+    *, output_root: Path, required_layers: list[str],
     output_files: dict[str, str], public_seams: dict[str, Any],
     allowed_imports: dict[str, list[dict[str, Any]]],
     relevant_types: list[dict[str, Any]],
-    frontend_subgraph: dict[str, list[dict[str, Any]]],
 ) -> tuple[dict[str, dict[str, Any]], dict[str, str]]:
     layers: dict[str, dict[str, Any]] = {}
     source_files: dict[str, str] = {}
@@ -1004,13 +1034,6 @@ def _build_model_layers(
             "output_file": output_files[layer],
             "imports": allowed_imports[layer],
         }
-        if layer == "E2E":
-            layers[layer]["entry_routes"] = _e2e_entry_routes(requirement_id, frontend_subgraph)
-            if "root_component_id" in frontend_subgraph:
-                layers[layer]["frontend_design"] = frontend_subgraph
-                layers[layer]["navigation_guidance"] = (
-                    "Start at / and use the designed UI interactions to reach conditional components. "
-                    "Components are not automatically URL routes. Test requirement behavior, not placeholder output.")
     return layers, source_files
 
 
