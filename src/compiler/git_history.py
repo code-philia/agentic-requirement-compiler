@@ -33,7 +33,7 @@ class ProjectGitHistory:
             "commit", "--allow-empty", "-m", f"ARC: {stage}",
         ])
 
-    def _run(self, args: list[str]) -> None:
+    def _run(self, args: list[str]) -> str:
         if self.executable is None:
             raise GitStageError("git is required to compile the generated project.")
         try:
@@ -47,3 +47,4 @@ class ProjectGitHistory:
             raise GitStageError(
                 f"git {args[0]} failed: {result.stderr or result.stdout}"
             )
+        return result.stdout.strip()

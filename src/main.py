@@ -6,6 +6,7 @@ import os
 import shutil
 import sys
 import time
+from pathlib import Path
 
 from core.cli import (
     cli_log,
@@ -15,6 +16,8 @@ from core.cli import (
     print_compilation_summary,
 )
 from core.workflow import ARCWorkflowManager
+from compiler.checkpoints import START_FROM, prepare_restart, install_restart_dependencies
+from compiler.git_history import GitStageError
 
 
 def _get_repo_root() -> str:
@@ -67,7 +70,7 @@ def build_compile_parser(subparsers) -> None:
     parser = subparsers.add_parser(
         "compile",
         help="Compile requirements into a working application",
-        description="Compile a requirement tree into a tested Web application through node-by-node TDD.",
+        description="Compile a requirement tree through design and lowering, optionally starting from a Git checkpoint.",
     )
     parser.add_argument(
         "requirement_path",
@@ -90,6 +93,10 @@ def build_compile_parser(subparsers) -> None:
         action="store_true",
         help="Remove existing output directory before compilation",
     )
+    parser.add_argument("--start-from", choices=START_FROM, default="zero",
+                        help="Resume after a completed stage in an isolated Git worktree")
+    parser.add_argument("--checkpoint-ref", help="Exact checkpoint commit/tag; default: latest matching checkpoint")
+    parser.add_argument("--restart-output", help="New worktree directory; default: sibling of the source project")
     parser.set_defaults(func=cmd_compile)
 
 
@@ -102,6 +109,26 @@ async def cmd_compile(args: argparse.Namespace) -> int:
     requirement_path = _locate_requirement_file(args.requirement_path)
     output_dir = os.path.abspath(args.output_dir)
     
+    if args.start_from == "zero" and (args.checkpoint_ref or args.restart_output):
+        raise ValueError("--checkpoint-ref/--restart-output require a non-zero --start-from")
+    if args.start_from != "zero" and args.clean:
+        raise ValueError("--clean cannot be combined with a restart")
+    restart_commit = None
+    if args.start_from != "zero":
+        try:
+            restarted, checkpoint_port, restart_commit = prepare_restart(
+                Path(output_dir), args.start_from, args.checkpoint_ref,
+                Path(args.restart_output) if args.restart_output else None,
+                requirement_path=Path(requirement_path), requested_port=web_port if args.port is not None else None,
+            )
+            output_dir = str(restarted)
+            if args.port is not None and web_port != checkpoint_port:
+                raise GitStageError(f"Checkpoint requires --port {checkpoint_port}; worktree retained at {output_dir}")
+            web_port = checkpoint_port
+        except GitStageError as exc:
+            print(f"Checkpoint error: {exc}", file=sys.stderr)
+            return 1
+
     # Handle --clean
     if args.clean and os.path.exists(output_dir):
         shutil.rmtree(output_dir)
@@ -120,6 +147,15 @@ async def cmd_compile(args: argparse.Namespace) -> int:
         web_port=web_port,
     )
     
+    if restart_commit:
+        print(f"Starting from {args.start_from} at {restart_commit}; worktree: {output_dir}")
+        print("Installing locked dependencies in the restart worktree (npm ci)...")
+        try:
+            await asyncio.to_thread(install_restart_dependencies, Path(output_dir))
+        except GitStageError as exc:
+            print(str(exc), file=sys.stderr)
+            return 1
+
     # Run compilation
     start_time = time.time()
     workflow_manager = ARCWorkflowManager(
@@ -127,6 +163,7 @@ async def cmd_compile(args: argparse.Namespace) -> int:
         requirement_path=requirement_path,
         web_port=web_port,
         log_cb=cli_log,
+        start_from=args.start_from,
     )
     result = await workflow_manager.start_compilation()
     

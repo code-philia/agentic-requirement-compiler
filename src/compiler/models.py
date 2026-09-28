@@ -12,6 +12,7 @@ class CompilationRequest:
     requirement_path: Path
     output_dir: Path
     web_port: int = 3000
+    start_from: str = "zero"
 
 
 @dataclass(slots=True)

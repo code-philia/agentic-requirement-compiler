@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import inspect
+from types import SimpleNamespace
 from typing import Any, Awaitable, Callable
 
 from arcbench_agent_runtime.runtime import AgentRuntime
 
 from .artifacts import CompilerArtifactStore
+from .checkpoints import CheckpointStore, START_FROM
 from .backend_lowering import BackendGlueLowerer
 from .code_binding import CodeTargetResolver
 from .database_stage import (
@@ -22,7 +24,7 @@ from .fixture_stage import (
     FixturePass,
 )
 from .fixture_lowering import fixture_source_paths
-from .preprocessing_stage import RequirementPreprocessor
+from .preprocessing_stage import RequirementPreprocessor, PreprocessingResult
 from .model_client import Model, ModelConfigurationError, StructuredModel
 from .models import CompilationRequest, CompilationResult
 from .module_lowering import ModuleSkeletonLowerer
@@ -67,14 +69,32 @@ class Compiler:
         artifact_store = CompilerArtifactStore(request.output_dir)
         artifacts: dict[str, str] = {}
         history = ProjectGitHistory(request.output_dir)
+        if request.start_from not in START_FROM:
+            raise GitStageError(f"Unknown start_from: {request.start_from}")
+        rank = START_FROM.index(request.start_from)
+        checkpoints = CheckpointStore(request.output_dir, request.requirement_path, request.web_port)
+        saved = checkpoints.load(request.start_from) if rank else {}
+        if rank:
+            artifacts["checkpoint"] = str(request.output_dir / ".arc/checkpoints/current.json")
+            for name, relative in {
+                "project_manifest": ".arc/project/project-manifest.json",
+                "database_schema": ".arc/database/schema.json", "fixture_ir": ".arc/fixtures/fixture_ir.json",
+                "design_ir": ".arc/design/design.json", "frontend_design_ir": ".arc/design/frontend/frontend.json",
+                "frontend_design_report": ".arc/design/frontend/report.json",
+                "frontend_lowering_report": ".arc/code/frontend/lowering.json",
+            }.items():
+                if (request.output_dir / relative).is_file():
+                    artifacts[name] = str(request.output_dir / relative)
+            await self._log("Compiler", f"Starting after completed checkpoint: {request.start_from}")
 
-        self._runtime.events.mark_phase_started("PROJECT", "Initializing generated project.")
-        project = ProjectInitializer(request.output_dir, web_port=request.web_port).initialize()
-        artifacts.update(project.artifacts)
-        if not project.ok:
-            for error in project.errors:
-                await self._log("Compiler", error, "error")
-            return CompilationResult(ok=False, artifacts=artifacts)
+        if rank == 0:
+            self._runtime.events.mark_phase_started("PROJECT", "Initializing generated project.")
+            project = ProjectInitializer(request.output_dir, web_port=request.web_port).initialize()
+            artifacts.update(project.artifacts)
+            if not project.ok:
+                for error in project.errors:
+                    await self._log("Compiler", error, "error")
+                return CompilationResult(ok=False, artifacts=artifacts)
         project_manifest, project_error = artifact_store.read_project_manifest()
         if project_error or project_manifest is None:
             await self._log("Compiler", project_error or "Missing project manifest.", "error")
@@ -84,15 +104,19 @@ class Compiler:
             for error in frontend_errors:
                 await self._log("Compiler", error, "error")
             return CompilationResult(ok=False, artifacts=artifacts)
-        try:
-            history.initialize()
-            history.commit("0 project initialization", [
-                ".gitignore", ".env.example", "README.md", "package.json", "package-lock.json",
-                "backend", "frontend", "shared", "tests", ".arc/project",
-            ])
-        except GitStageError as exc:
-            await self._log("Compiler", str(exc), "error")
-            return CompilationResult(ok=False, artifacts=artifacts)
+        if rank == 0:
+            try:
+                history.initialize()
+                history.commit("0 project initialization", [
+                    ".gitignore", ".env.example", "README.md", "package.json", "package-lock.json",
+                    "backend", "frontend", "shared", "tests", ".arc/project",
+                ])
+            except GitStageError as exc:
+                await self._log("Compiler", str(exc), "error")
+                return CompilationResult(ok=False, artifacts=artifacts)
+
+        if rank == 0:
+            checkpoints.save("initialized")
 
         # ===================================================================
         #                    Requirement Preprocessing Stage
@@ -100,9 +124,10 @@ class Compiler:
 
         await self._log(
             "Compiler",
-            "Running deterministic PREPROCESSING pass.",
+            "Running deterministic PREPROCESSING pass." if rank <= 1 else "Restoring checkpoint preprocessing artifacts.",
         )
-        preprocessing = self._preprocessor.compile(request.requirement_path)
+        preprocessing = (self._preprocessor.compile(request.requirement_path) if rank <= 1 else
+                         PreprocessingResult(**saved["preprocessing"]))
         root_id = preprocessing.requirement_ir.get("root_id") if preprocessing.requirement_ir else None
         atomic_ids = list(preprocessing.requirement_ir.get("atomic_units", [])) if preprocessing.requirement_ir else []
         requirement_ids = (
@@ -135,7 +160,16 @@ class Compiler:
                 failed_nodes=requirement_ids,
                 artifacts=artifacts,
             )
-        history.commit("1 preprocessing", [".arc"])
+        if rank <= 1:
+            history.commit("1 preprocessing", [".arc"])
+        if rank == 5:
+            self._runtime.traceability.merge_database_schema_links(database_traceability(saved["database"]))
+            self._runtime.traceability.merge_design_links(design_traceability(saved["design"]))
+            self._runtime.traceability.merge_frontend_design_links(frontend_ir_traceability(saved["frontend"]["frontend_ir"]))
+            for rid in requirement_ids:
+                states[rid] = "FRONTEND_LOWERED"
+            failure = await self._build_gate(request, "Restart from lowered", root_id, states, artifacts)
+            return failure or CompilationResult(ok=True, root_id=root_id, states=states, artifacts=artifacts)
 
         # ===================================================================
         #                    Compiler Database Stage
@@ -145,7 +179,7 @@ class Compiler:
             "DATABASE", "ARC database stage started."
         )
 
-        await self._log("Compiler", "Running database schema design passes.")
+        await self._log("Compiler", "Running database schema design passes." if rank < 2 else "Restoring checkpoint database schema.")
         try:
             model = self._model or Model.from_env()
         except ModelConfigurationError as exc:
@@ -157,71 +191,87 @@ class Compiler:
                 failed_nodes=atomic_ids,
                 artifacts=artifacts,
             )
-        database_stage = DatabaseSchemaPass(model, artifact_store.root)
-        database = database_stage.compile(
-            preprocessing.requirement_ir,
-            preprocessing.dependency_graph,
-        )
-        states.update(database.node_states)
-        links = database_traceability(database.schema)
-        for error in database.errors:
-            await self._log("Compiler", error, "error")
-        for warning in database.warnings:
-            await self._log("Compiler", warning, "warning")
-        if not database.ok:
-            failed_nodes = sorted(node_id for node_id, state in states.items() if state == "FAILED")
-            await self._log("Compiler", "DATABASE_SCHEMA pass failed.", "error")
-            return CompilationResult(
-                ok=False,
-                root_id=root_id,
-                states=states,
-                failed_nodes=failed_nodes,
-                artifacts=artifacts,
+        if rank < 2:
+            database_stage = DatabaseSchemaPass(model, artifact_store.root)
+            database = database_stage.compile(
+                preprocessing.requirement_ir,
+                preprocessing.dependency_graph,
             )
-        artifacts["database_schema"] = artifact_store.write_database_schema(database.schema)
-        self._runtime.traceability.merge_database_schema_links(links)
-        history.commit("2.1 database schema design", [".arc"])
+            states.update(database.node_states)
+            links = database_traceability(database.schema)
+            for error in database.errors:
+                await self._log("Compiler", error, "error")
+            for warning in database.warnings:
+                await self._log("Compiler", warning, "warning")
+            if not database.ok:
+                failed_nodes = sorted(node_id for node_id, state in states.items() if state == "FAILED")
+                await self._log("Compiler", "DATABASE_SCHEMA pass failed.", "error")
+                return CompilationResult(
+                    ok=False,
+                    root_id=root_id,
+                    states=states,
+                    failed_nodes=failed_nodes,
+                    artifacts=artifacts,
+                )
+            artifacts["database_schema"] = artifact_store.write_database_schema(database.schema)
+            self._runtime.traceability.merge_database_schema_links(links)
+            history.commit("2.1 database schema design", [".arc"])
+
+        else:
+            database = SimpleNamespace(schema=saved["database"])
+            self._runtime.traceability.merge_database_schema_links(database_traceability(database.schema))
+
+        if rank < 2:
+            checkpoints.save("database", preprocessing={
+                "requirement_ir": preprocessing.requirement_ir,
+                "dependency_graph": preprocessing.dependency_graph,
+            }, database=database.schema)
 
         # ===================================================================
         #                 Database Lowering: Seed Fixtures
         # ===================================================================
 
-        fixture_ir: dict[str, Any]
-        fixture_result = FixturePass(model, artifact_store.root).compile(
-            preprocessing.requirement_ir,
-            database.schema,
-        )
-        for error in fixture_result.errors:
-            await self._log("Compiler", error, "error")
-        if not fixture_result.ok:
-            return CompilationResult(
-                ok=False,
-                root_id=root_id,
-                states=states,
-                failed_nodes=atomic_ids,
-                artifacts=artifacts,
+        if rank < 3:
+            fixture_ir: dict[str, Any]
+            fixture_result = FixturePass(model, artifact_store.root).compile(
+                preprocessing.requirement_ir,
+                database.schema,
             )
-        fixture_ir = fixture_result.fixture_ir
-        artifacts["fixture_ir"] = artifact_store.write_fixture_ir(fixture_ir)
+            for error in fixture_result.errors:
+                await self._log("Compiler", error, "error")
+            if not fixture_result.ok:
+                return CompilationResult(
+                    ok=False,
+                    root_id=root_id,
+                    states=states,
+                    failed_nodes=atomic_ids,
+                    artifacts=artifacts,
+                )
+            fixture_ir = fixture_result.fixture_ir
+            artifacts["fixture_ir"] = artifact_store.write_fixture_ir(fixture_ir)
 
-        lowered_database = lower_database(
-            request.output_dir, artifact_store, database.schema, fixture_ir, project_manifest,
-        )
-        artifacts.update(lowered_database.artifacts)
-        for warning in lowered_database.warnings:
-            await self._log("Compiler", warning, "warning")
-        for error in lowered_database.errors:
-            await self._log("Compiler", error, "error")
-        if not lowered_database.ok:
-            return CompilationResult(
-                ok=False, root_id=root_id, states=states, artifacts=artifacts,
+            lowered_database = lower_database(
+                request.output_dir, artifact_store, database.schema, fixture_ir, project_manifest,
             )
-        history.commit("2.2 database schema lowering", [
-            ".arc", "backend/src/db", "backend/src/fixtures", "backend/init-db.mjs", "shared/src",
-        ])
-        failed_gate = await self._build_gate(request, "2.2 database schema lowering", root_id, states, artifacts)
-        if failed_gate is not None:
-            return failed_gate
+            artifacts.update(lowered_database.artifacts)
+            for warning in lowered_database.warnings:
+                await self._log("Compiler", warning, "warning")
+            for error in lowered_database.errors:
+                await self._log("Compiler", error, "error")
+            if not lowered_database.ok:
+                return CompilationResult(
+                    ok=False, root_id=root_id, states=states, artifacts=artifacts,
+                )
+            history.commit("2.2 database schema lowering", [
+                ".arc", "backend/src/db", "backend/src/fixtures", "backend/init-db.mjs", "shared/src",
+            ])
+            failed_gate = await self._build_gate(request, "2.2 database schema lowering", root_id, states, artifacts)
+            if failed_gate is not None:
+                return failed_gate
+
+        else:
+            fixture_ir = saved["fixture_ir"]
+            lowered_database = SimpleNamespace(manifest=saved["database_manifest"])
 
         # ===================================================================
         #                    Compiler Design Stage
@@ -231,250 +281,263 @@ class Compiler:
             "DESIGN", "ARC backend design stage started."
         )
 
-        design_stage = DesignPass(model, artifact_store.root)
-        await self._log(
-            "Compiler",
-            "Running REQUIREMENT CONTRACT, REQUIREMENT TO API, and full top-down MODULE DECOMPOSITION passes.",
-        )
-        design = design_stage.compile(
-            preprocessing.requirement_ir,
-            preprocessing.dependency_graph,
-            database.schema,
-        )
-        states.update(design.node_states)
-        for error in design.errors:
-            await self._log("Compiler", error, "error")
-        for warning in design.warnings:
-            await self._log("Compiler", warning, "warning")
-        artifacts.update(artifact_store.write_design(design_ir=design.design_ir))
-        if not design.ok:
-            failed_nodes = sorted(node_id for node_id, state in states.items() if state == "FAILED")
-            await self._log("Compiler", "DESIGN pass failed.", "error")
-            return CompilationResult(
-                ok=False,
-                root_id=root_id,
-                states=states,
-                failed_nodes=failed_nodes,
-                artifacts=artifacts,
+        if rank < 3:
+            design_stage = DesignPass(model, artifact_store.root)
+            await self._log(
+                "Compiler",
+                "Running REQUIREMENT CONTRACT, REQUIREMENT TO API, and full top-down MODULE DECOMPOSITION passes.",
             )
+            design = design_stage.compile(
+                preprocessing.requirement_ir,
+                preprocessing.dependency_graph,
+                database.schema,
+            )
+            states.update(design.node_states)
+            for error in design.errors:
+                await self._log("Compiler", error, "error")
+            for warning in design.warnings:
+                await self._log("Compiler", warning, "warning")
+            artifacts.update(artifact_store.write_design(design_ir=design.design_ir))
+            if not design.ok:
+                failed_nodes = sorted(node_id for node_id, state in states.items() if state == "FAILED")
+                await self._log("Compiler", "DESIGN pass failed.", "error")
+                return CompilationResult(
+                    ok=False,
+                    root_id=root_id,
+                    states=states,
+                    failed_nodes=failed_nodes,
+                    artifacts=artifacts,
+                )
 
-        self._runtime.traceability.merge_design_links(design_traceability(design.design_ir))
-        history.commit("3.1 backend design", [".arc"])
+            self._runtime.traceability.merge_design_links(design_traceability(design.design_ir))
+            history.commit("3.1 backend design", [".arc"])
+
+        else:
+            design = SimpleNamespace(design_ir=saved["design"])
+            self._runtime.traceability.merge_design_links(design_traceability(design.design_ir))
+
+        if rank < 3:
+            checkpoints.save("backend-ir", fixture_ir=fixture_ir,
+                             database_manifest=lowered_database.manifest, design=design.design_ir)
 
         # ===================================================================
         #                  Backend Lowering: Symbol Planning
         # ===================================================================
 
-        self._runtime.events.mark_phase_started(
-            "SKELETON", "ARC skeleton lowering stage started."
-        )
-
-        await self._log(
-            "Compiler",
-            "Running deterministic GLOBAL_SYMBOL_PLANNING over Design IR and Database Schema IR.",
-        )
-        symbol_planning = GlobalSymbolPlanner().plan(
-            design.design_ir,
-            database.schema,
-            project_manifest,
-        )
-        for error in symbol_planning.errors:
-            await self._log("Compiler", error, "error")
-        if not symbol_planning.ok:
-            await self._log("Compiler", "GLOBAL_SYMBOL_PLANNING pass failed.", "error")
-            return CompilationResult(
-                ok=False,
-                root_id=root_id,
-                states=states,
-                artifacts=artifacts,
+        if rank < 4:
+            self._runtime.events.mark_phase_started(
+                "SKELETON", "ARC skeleton lowering stage started."
             )
-        await self._log(
-            "Compiler",
-            "Global Symbol Registry planned.",
-        )
 
-        # ===================================================================
-        #                   Backend Lowering: File Planning
-        # ===================================================================
-
-        await self._log(
-            "Compiler",
-            "Running deterministic GLOBAL_FILE_PLANNING over Design IR and the Symbol Registry.",
-        )
-        file_planning = GlobalFilePlanner(request.output_dir).plan(
-            design.design_ir,
-            symbol_planning.registry,
-            project_manifest,
-            fixture_paths=fixture_source_paths(fixture_ir),
-        )
-        for error in file_planning.errors:
-            await self._log("Compiler", error, "error")
-        if not file_planning.ok:
-            await self._log("Compiler", "GLOBAL_FILE_PLANNING pass failed.", "error")
-            return CompilationResult(
-                ok=False,
-                root_id=root_id,
-                states=states,
-                artifacts=artifacts,
+            await self._log(
+                "Compiler",
+                "Running deterministic GLOBAL_SYMBOL_PLANNING over Design IR and Database Schema IR.",
             )
-        await self._log(
-            "Compiler",
-            "Global File Registry planned.",
-        )
-
-        # ===================================================================
-        #                    Backend Lowering: Type Lowering
-        # ===================================================================
-
-        await self._log(
-            "Compiler",
-            "Running deterministic TYPE_LOWERING for canonical TypeScript definitions.",
-        )
-        type_lowering = TypeLowerer().lower(
-            symbol_planning.registry,
-            file_planning.registry,
-        )
-        for error in type_lowering.errors:
-            await self._log("Compiler", error, "error")
-        if not type_lowering.ok:
-            await self._log("Compiler", "TYPE_LOWERING pass failed.", "error")
-            return CompilationResult(
-                ok=False,
-                root_id=root_id,
-                states=states,
-                artifacts=artifacts,
+            symbol_planning = GlobalSymbolPlanner().plan(
+                design.design_ir,
+                database.schema,
+                project_manifest,
             )
-        artifacts.update(artifact_store.write_generated_sources({
-            path: source for path, source in type_lowering.sources.items()
-            if path.startswith("shared/src/")
-        }))
-        await self._log("Compiler", "Canonical TypeScript type world generated.")
-
-        # ===================================================================
-        #                Skeleton Stage 3.1: DB Module Lowering
-        # ===================================================================
-
-        await self._log(
-            "Compiler",
-            "Running deterministic DB_MODULE_LOWERING from frozen registries.",
-        )
-        module_lowerer = ModuleSkeletonLowerer()
-        db_modules = module_lowerer.lower(
-            "DB",
-            design.design_ir,
-            symbol_planning.registry,
-            file_planning.registry,
-        )
-        for error in db_modules.errors:
-            await self._log("Compiler", error, "error")
-        if not db_modules.ok:
-            await self._log("Compiler", "DB_MODULE_LOWERING pass failed.", "error")
-            return CompilationResult(
-                ok=False,
-                root_id=root_id,
-                states=states,
-                artifacts=artifacts,
+            for error in symbol_planning.errors:
+                await self._log("Compiler", error, "error")
+            if not symbol_planning.ok:
+                await self._log("Compiler", "GLOBAL_SYMBOL_PLANNING pass failed.", "error")
+                return CompilationResult(
+                    ok=False,
+                    root_id=root_id,
+                    states=states,
+                    artifacts=artifacts,
+                )
+            await self._log(
+                "Compiler",
+                "Global Symbol Registry planned.",
             )
-        artifacts.update(artifact_store.write_generated_sources(db_modules.sources))
-        await self._log("Compiler", "DB Module Skeletons generated.")
 
-        # ===================================================================
-        #               Skeleton Stage 3.1: FUNC Module Lowering
-        # ===================================================================
+            # ===================================================================
+            #                   Backend Lowering: File Planning
+            # ===================================================================
 
-        await self._log(
-            "Compiler",
-            "Running deterministic FUNC_MODULE_LOWERING from frozen registries.",
-        )
-        func_modules = module_lowerer.lower(
-            "FUNC",
-            design.design_ir,
-            symbol_planning.registry,
-            file_planning.registry,
-        )
-        for error in func_modules.errors:
-            await self._log("Compiler", error, "error")
-        if not func_modules.ok:
-            await self._log("Compiler", "FUNC_MODULE_LOWERING pass failed.", "error")
-            return CompilationResult(
-                ok=False,
-                root_id=root_id,
-                states=states,
-                artifacts=artifacts,
+            await self._log(
+                "Compiler",
+                "Running deterministic GLOBAL_FILE_PLANNING over Design IR and the Symbol Registry.",
             )
-        artifacts.update(artifact_store.write_generated_sources(func_modules.sources))
-        await self._log("Compiler", "FUNC Module Skeletons generated.")
-
-        # ===================================================================
-        #                Skeleton Stage 3.1: API Module Lowering
-        # ===================================================================
-
-        await self._log(
-            "Compiler",
-            "Running deterministic API_MODULE_LOWERING from frozen registries.",
-        )
-        api_modules = module_lowerer.lower(
-            "API",
-            design.design_ir,
-            symbol_planning.registry,
-            file_planning.registry,
-        )
-        for error in api_modules.errors:
-            await self._log("Compiler", error, "error")
-        if not api_modules.ok:
-            await self._log("Compiler", "API_MODULE_LOWERING pass failed.", "error")
-            return CompilationResult(
-                ok=False,
-                root_id=root_id,
-                states=states,
-                artifacts=artifacts,
+            file_planning = GlobalFilePlanner(request.output_dir).plan(
+                design.design_ir,
+                symbol_planning.registry,
+                project_manifest,
+                fixture_paths=fixture_source_paths(fixture_ir),
             )
-        artifacts.update(artifact_store.write_generated_sources(api_modules.sources))
-        await self._log(
-            "Compiler",
-            "API Module Skeletons generated; global Glue Code generation is next.",
-        )
-
-        # ===================================================================
-        #          Skeleton Stage 3.1: Global Glue and Backend Manifest
-        # ===================================================================
-
-        await self._log(
-            "Compiler",
-            "Running deterministic GLOBAL_GLUE_LOWERING with Route and Import Planning.",
-        )
-        backend_glue = BackendGlueLowerer().lower(
-            design.design_ir,
-            symbol_planning.registry,
-            file_planning.registry,
-            {
-                "type": type_lowering.manifest,
-                "database": lowered_database.manifest,
-                "DB": db_modules.manifest,
-                "FUNC": func_modules.manifest,
-                "API": api_modules.manifest,
-            },
-            default_port=request.web_port,
-        )
-        for error in backend_glue.errors:
-            await self._log("Compiler", error, "error")
-        if not backend_glue.ok:
-            await self._log("Compiler", "GLOBAL_GLUE_LOWERING pass failed.", "error")
-            return CompilationResult(
-                ok=False,
-                root_id=root_id,
-                states=states,
-                artifacts=artifacts,
+            for error in file_planning.errors:
+                await self._log("Compiler", error, "error")
+            if not file_planning.ok:
+                await self._log("Compiler", "GLOBAL_FILE_PLANNING pass failed.", "error")
+                return CompilationResult(
+                    ok=False,
+                    root_id=root_id,
+                    states=states,
+                    artifacts=artifacts,
+                )
+            await self._log(
+                "Compiler",
+                "Global File Registry planned.",
             )
-        artifacts.update(artifact_store.write_generated_sources(backend_glue.sources))
-        await self._log(
-            "Compiler",
-            "Global Glue Code, Route Registration, Barrel Export, Import Plan, and Backend Manifest generated.",
-        )
-        history.commit("3.2 backend lowering", [".arc", "backend/src", "shared/src"])
-        failed_gate = await self._build_gate(request, "3.2 backend lowering", root_id, states, artifacts)
-        if failed_gate is not None:
-            return failed_gate
+
+            # ===================================================================
+            #                    Backend Lowering: Type Lowering
+            # ===================================================================
+
+            await self._log(
+                "Compiler",
+                "Running deterministic TYPE_LOWERING for canonical TypeScript definitions.",
+            )
+            type_lowering = TypeLowerer().lower(
+                symbol_planning.registry,
+                file_planning.registry,
+            )
+            for error in type_lowering.errors:
+                await self._log("Compiler", error, "error")
+            if not type_lowering.ok:
+                await self._log("Compiler", "TYPE_LOWERING pass failed.", "error")
+                return CompilationResult(
+                    ok=False,
+                    root_id=root_id,
+                    states=states,
+                    artifacts=artifacts,
+                )
+            artifacts.update(artifact_store.write_generated_sources({
+                path: source for path, source in type_lowering.sources.items()
+                if path.startswith("shared/src/")
+            }))
+            await self._log("Compiler", "Canonical TypeScript type world generated.")
+
+            # ===================================================================
+            #                Skeleton Stage 3.1: DB Module Lowering
+            # ===================================================================
+
+            await self._log(
+                "Compiler",
+                "Running deterministic DB_MODULE_LOWERING from frozen registries.",
+            )
+            module_lowerer = ModuleSkeletonLowerer()
+            db_modules = module_lowerer.lower(
+                "DB",
+                design.design_ir,
+                symbol_planning.registry,
+                file_planning.registry,
+            )
+            for error in db_modules.errors:
+                await self._log("Compiler", error, "error")
+            if not db_modules.ok:
+                await self._log("Compiler", "DB_MODULE_LOWERING pass failed.", "error")
+                return CompilationResult(
+                    ok=False,
+                    root_id=root_id,
+                    states=states,
+                    artifacts=artifacts,
+                )
+            artifacts.update(artifact_store.write_generated_sources(db_modules.sources))
+            await self._log("Compiler", "DB Module Skeletons generated.")
+
+            # ===================================================================
+            #               Skeleton Stage 3.1: FUNC Module Lowering
+            # ===================================================================
+
+            await self._log(
+                "Compiler",
+                "Running deterministic FUNC_MODULE_LOWERING from frozen registries.",
+            )
+            func_modules = module_lowerer.lower(
+                "FUNC",
+                design.design_ir,
+                symbol_planning.registry,
+                file_planning.registry,
+            )
+            for error in func_modules.errors:
+                await self._log("Compiler", error, "error")
+            if not func_modules.ok:
+                await self._log("Compiler", "FUNC_MODULE_LOWERING pass failed.", "error")
+                return CompilationResult(
+                    ok=False,
+                    root_id=root_id,
+                    states=states,
+                    artifacts=artifacts,
+                )
+            artifacts.update(artifact_store.write_generated_sources(func_modules.sources))
+            await self._log("Compiler", "FUNC Module Skeletons generated.")
+
+            # ===================================================================
+            #                Skeleton Stage 3.1: API Module Lowering
+            # ===================================================================
+
+            await self._log(
+                "Compiler",
+                "Running deterministic API_MODULE_LOWERING from frozen registries.",
+            )
+            api_modules = module_lowerer.lower(
+                "API",
+                design.design_ir,
+                symbol_planning.registry,
+                file_planning.registry,
+            )
+            for error in api_modules.errors:
+                await self._log("Compiler", error, "error")
+            if not api_modules.ok:
+                await self._log("Compiler", "API_MODULE_LOWERING pass failed.", "error")
+                return CompilationResult(
+                    ok=False,
+                    root_id=root_id,
+                    states=states,
+                    artifacts=artifacts,
+                )
+            artifacts.update(artifact_store.write_generated_sources(api_modules.sources))
+            await self._log(
+                "Compiler",
+                "API Module Skeletons generated; global Glue Code generation is next.",
+            )
+
+            # ===================================================================
+            #          Skeleton Stage 3.1: Global Glue and Backend Manifest
+            # ===================================================================
+
+            await self._log(
+                "Compiler",
+                "Running deterministic GLOBAL_GLUE_LOWERING with Route and Import Planning.",
+            )
+            backend_glue = BackendGlueLowerer().lower(
+                design.design_ir,
+                symbol_planning.registry,
+                file_planning.registry,
+                {
+                    "type": type_lowering.manifest,
+                    "database": lowered_database.manifest,
+                    "DB": db_modules.manifest,
+                    "FUNC": func_modules.manifest,
+                    "API": api_modules.manifest,
+                },
+                default_port=request.web_port,
+            )
+            for error in backend_glue.errors:
+                await self._log("Compiler", error, "error")
+            if not backend_glue.ok:
+                await self._log("Compiler", "GLOBAL_GLUE_LOWERING pass failed.", "error")
+                return CompilationResult(
+                    ok=False,
+                    root_id=root_id,
+                    states=states,
+                    artifacts=artifacts,
+                )
+            artifacts.update(artifact_store.write_generated_sources(backend_glue.sources))
+            await self._log(
+                "Compiler",
+                "Global Glue Code, Route Registration, Barrel Export, Import Plan, and Backend Manifest generated.",
+            )
+            history.commit("3.2 backend lowering", [".arc", "backend/src", "shared/src"])
+            failed_gate = await self._build_gate(request, "3.2 backend lowering", root_id, states, artifacts)
+            if failed_gate is not None:
+                return failed_gate
+
+        else:
+            backend_glue = SimpleNamespace(route_registry=saved["backend_routes"])
 
         # ===================================================================
         #                 Compiler Frontend Design Stage
@@ -484,49 +547,61 @@ class Compiler:
             "FRONTEND", "ARC frontend design stage started."
         )
 
-        await self._log("Compiler", "Resolving visual references for regional frontend design calls.")
-        visuals = VisualReferenceResolver().resolve(
-            request.requirement_path, preprocessing.requirement_ir,
-        )
-        await self._log(
-            "Compiler",
-            "Generating frontend IR in three requirement-scheduled passes: UI/data, component assembly, behavior.",
-        )
-        frontend = FrontendIRGenerationPass(model, artifact_store.root).compile(
-            preprocessing.requirement_ir,
-            preprocessing.dependency_graph,
-            design.design_ir,
-            visuals.references,
-        )
-        for issue in visuals.errors:
-            frontend.report["warnings"].append(issue.format())
-        if frontend.report["warnings"] and frontend.report["status"] == "GENERATED":
-            frontend.report["status"] = "GENERATED_WITH_WARNINGS"
-        # Always preserve partial design work; the old Thin validator does not apply.
-        artifacts.update(artifact_store.write_frontend_design(
-            frontend_ir=frontend.frontend_ir,
-            report=frontend.report,
-            batches=frontend.batches,
-        ))
-        self._runtime.traceability.merge_frontend_design_links(
-            frontend_ir_traceability(frontend.frontend_ir)
-        )
-        failed_requirements = {
-            rid for task in frontend.report["failed_tasks"] for rid in task["requirement_ids"]
-        }
-        for rid in requirement_ids:
-            states[rid] = "FRONTEND_IR_PARTIAL" if rid in failed_requirements else "FRONTEND_IR_GENERATED"
-        for warning in frontend.report["warnings"]:
-            await self._log("Compiler", warning, "warning")
-        for failure in frontend.report["failed_tasks"]:
-            await self._log("Compiler", f"{failure['phase']}: {failure['message']}", "warning")
-        history.commit("4.1 frontend IR generation", [".arc"])
+        if rank < 4:
+            await self._log("Compiler", "Resolving visual references for regional frontend design calls.")
+            visuals = VisualReferenceResolver().resolve(
+                request.requirement_path, preprocessing.requirement_ir,
+            )
+            await self._log(
+                "Compiler",
+                "Generating frontend IR in three requirement-scheduled passes: UI/data, component assembly, behavior.",
+            )
+            frontend = FrontendIRGenerationPass(model, artifact_store.root).compile(
+                preprocessing.requirement_ir,
+                preprocessing.dependency_graph,
+                design.design_ir,
+                visuals.references,
+            )
+            for issue in visuals.errors:
+                frontend.report["warnings"].append(issue.format())
+            if frontend.report["warnings"] and frontend.report["status"] == "GENERATED":
+                frontend.report["status"] = "GENERATED_WITH_WARNINGS"
+            # Always preserve partial design work; the old Thin validator does not apply.
+            artifacts.update(artifact_store.write_frontend_design(
+                frontend_ir=frontend.frontend_ir,
+                report=frontend.report,
+                batches=frontend.batches,
+            ))
+            self._runtime.traceability.merge_frontend_design_links(
+                frontend_ir_traceability(frontend.frontend_ir)
+            )
+            failed_requirements = {
+                rid for task in frontend.report["failed_tasks"] for rid in task["requirement_ids"]
+            }
+            for rid in requirement_ids:
+                states[rid] = "FRONTEND_IR_PARTIAL" if rid in failed_requirements else "FRONTEND_IR_GENERATED"
+            for warning in frontend.report["warnings"]:
+                await self._log("Compiler", warning, "warning")
+            for failure in frontend.report["failed_tasks"]:
+                await self._log("Compiler", f"{failure['phase']}: {failure['message']}", "warning")
+            history.commit("4.1 frontend IR generation", [".arc"])
+        else:
+            frontend = SimpleNamespace(frontend_ir=saved["frontend"]["frontend_ir"],
+                                       report=saved["frontend"]["report"], ok=True)
+            failed_requirements = set()
+            self._runtime.traceability.merge_frontend_design_links(frontend_ir_traceability(frontend.frontend_ir))
+            for rid in requirement_ids:
+                states[rid] = "FRONTEND_IR_GENERATED"
+
         if not frontend.ok:
             await self._log("Compiler", "Frontend IR is incomplete; React lowering skipped.", "warning")
             return CompilationResult(
                 ok=False, root_id=root_id, states=states,
                 failed_nodes=sorted(failed_requirements), artifacts=artifacts,
             )
+        if rank < 4:
+            checkpoints.save("frontend-ir", backend_routes=backend_glue.route_registry,
+                             frontend={"frontend_ir": frontend.frontend_ir, "report": frontend.report})
         self._runtime.events.mark_phase_started("FRONTEND_LOWERING", "Lowering frontend IR to React.")
         await self._log("Compiler", "Lowering React structure and implementing bounded local behavior/presentation contracts.")
         lowered_frontend = FrontendReactLowerer(model, artifact_store.root).lower(
@@ -556,6 +631,8 @@ class Compiler:
             for rid in requirement_ids:
                 states[rid] = "FRONTEND_BUILD_FAILED"
             return failed_gate
+        history.commit("4.3 frontend build accepted", [".arc/code/frontend"])
+        checkpoints.save("lowered")
         await self._log("Compiler", "Frontend React lowering completed; build and typecheck passed.", "success")
         return CompilationResult(
             ok=True, root_id=root_id, states=states, artifacts=artifacts,
