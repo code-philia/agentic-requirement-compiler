@@ -157,10 +157,14 @@ def patch_schema(stage: str) -> dict[str, Any]:
     schema = obj({
         "creates": obj({table: array(create_schema(table)) for table in allowed}),
         "updates": array({"anyOf": update_variants}),
+        "associations": REFERENCES,
     })
     schema["$defs"] = definitions
     # Arbitrary JSON literals and omitted update fields intentionally use JSON mode.
     schema["x-arc-output-mode"] = "json_object"
+    if stage == "ui":
+        schema["properties"]["requirement_mode"] = enum("DESIGN", "SUMMARY")
+        schema["required"].append("requirement_mode")
     if stage == "assemble":
         schema["properties"]["components"] = array(obj({
             "key": STRING, "existing_component_id": nullable(REFERENCE), "name": STRING, "spec": STRING,
@@ -215,6 +219,10 @@ The compiler allocates new id and requirement_ids. Include ALL entity fields, ev
 inactive scalars are null and inactive arrays are []. Data must specify owner_id
 (a Component, Event, Handler or Effect). Do not change entity identity or ownership through fields.
 You may edit multiple components in ONE response, but update only IDs provided in editable_ids.
+Return associations: references to existing or newly created entities directly relevant to this requirement.
+Reuse without modification by returning associations only; do not copy or update a record just to associate it.
+Reference validity is global; editable_ids restricts mutations, not reads or retained references.
+Preserve existing references even when the referenced full record is omitted from this local context.
 Types: {kind:string|number|integer|boolean|null|ui}, array with items, object with fields[{name,type,required}],
 or union with variants. Pure expressions: LITERAL with native JSON value (string, number, boolean, null, array or object),
 REF with ref_id/path, ITEM with repeat ui_id/path, UI_REF with ui_id, OP with operator/args. Never embed JS.
@@ -233,16 +241,46 @@ Include name/spec on every new entity. In UI variants condition/repeat may be nu
 Every new UI must be connected to its component root or used through UI_REF. Keep compiler-created roots
 as FRAGMENT; place actual layout inside them. Render conditions and repeat{source,item_name,key} live on UI.
 """
-UI_INSTRUCTIONS = PATCH_INSTRUCTIONS + """Visit the CURRENT REQUIREMENT and directly produce all of its needed
-UI nodes and data/state as a small increment. Do not output observations or schedule per-element expansion.
+UI_INSTRUCTIONS = PATCH_INSTRUCTIONS + """Visit the CURRENT REQUIREMENT and produce its UI/data as a small increment.
+Return requirement_mode DESIGN for independent UI/data/behavior requirements. Return SUMMARY only when
+the parent merely summarizes supplied child requirements, has no reference image and no additional behavior.
+For SUMMARY return empty creates/updates and associate a few core child entities; do not design another page.
+Do not output observations or schedule per-element expansion.
 Reuse existing UI by ID when requirements describe the same interface. Backend-only requirements may return
 empty entity arrays/updates. Initially UI belongs to App; component extraction happens in the assembly pass.
-Produce UI details and data contracts/state. Fill attributes/text/condition/repeat and child arguments.
+Derive data FROM each UI's displayed content, input value, repeated items and visibility needs, not from an
+independent inventory. Determine each UI's concrete data association in this pass. Express it using REF/ITEM
+inside text, attributes, condition, repeat.source and arguments; never leave the association only in prose.
+Static content uses LITERAL and needs no artificial Data entity. Internal mutable/derived values are Property;
+Data remains a boundary parameter. Reuse the same entity when multiple UI nodes consume the same value.
+Specify data type, initial/default value where applicable, and source meaning in spec. Do not invent backend APIs.
+Fill attributes/text/condition/repeat and child arguments. A stateful input's value must reference its Property;
+the event and handler that change it are completed in pass three.
 Do not create events or effects yet. Do not recreate existing input or state with another ID.
 Supply Property initial (STATE/REF) or derive (DERIVED); make nullable/array types explicit.
 """
 REQUIREMENT_ASSEMBLY_INSTRUCTIONS = PATCH_INSTRUCTIONS + """Visit the CURRENT REQUIREMENT again to organize
 its ALREADY GENERATED UI into components and layout. Do not regenerate UI or describe unimplemented regions.
+This pass ONLY establishes component boundaries, containment and reuse. Each Component will lower to a React
+component function; UI nodes remain its render tree, not automatically separate functions.
+Preserve the UI-to-data associations established in pass one (ui_data summarizes their referenced entities).
+Do not design new business data, user interactions, events, handlers or effects. Ownership moves and boundary
+parameter forwarding required by extraction are structural bookkeeping, not an opportunity to redesign data.
+Use the supplied reference image AND visual_analysis to infer grouping, nesting, layout and page boundaries.
+Group UI into one component when it represents one cohesive purpose, a repeated pattern, a shared data/state
+boundary or an independently reusable region (for example a header, form, list or detail panel).
+Do not turn every element or visually adjacent group into a component. Appearance alone is not a reuse contract.
+A complete page may itself be a component containing region components and remaining UI. App is the composition
+root, not automatically the page. Preserve existing child COMPONENT use-sites when extracting a page container.
+Before creating anything, inspect component_catalog: requirement summaries, render roots, inputs, custom events
+and existing use-sites. Reuse by responsibility and compatible contracts, not just names or visual similarity.
+Catalogs are bounded (counts show omissions), referenceable summaries, NOT grants of edit permission.
+If an existing component already covers the requirement, associate it and reuse its use-site; no extraction is needed.
+For another occurrence, create a COMPONENT UI referencing the existing component and connect its arguments;
+do not create a second component definition or move unrelated UI into an existing component merely to reuse it.
+Do not assume omitted input/event contracts are absent. Prefer existing use-sites when full contracts are unavailable.
+For nested extraction in one batch, use child key.use in the outer declaration when it is the subtree being moved.
+Later image supplements refine this same requirement's existing components; do not create one page per screenshot.
 Return components plus creates/updates. components may be empty when existing ownership is appropriate.
 Each component entry has key, existing_component_id (null for new), name, spec, ui_ids (existing subtree roots),
 property_ids and data_ids (existing component inputs). Extraction moves complete UI subtrees, only the explicitly
@@ -250,12 +288,31 @@ listed state/inputs, and preserves entity IDs. The compiler connects the extract
 When extending a component already used by the same parent, the existing use-site is reused, not duplicated.
 ui_ids must share one current owner. Do not extract App's root. Reuse components deliberately, not by name alone.
 Reference this component as {local:key}, its FRAGMENT root as {local:"key.root"}, and its parent use-site as {local:"key.use"}.
-Use creates/updates to connect layout, conditions, component arguments and boundary Data after extraction.
+All local symbols are registered before creates are materialized; extraction follows its use-site dependencies.
+data_ids/property_ids may also name same-batch creates owned by this component; these are already bound, not moved.
+The .use symbol exists only for a declaration extracting a nonempty UI subtree from another component.
+Use creates/updates only for structural wrappers/use-sites and the parameter/reference wiring required by extraction.
+Preserve existing conditions and data expressions except for necessary boundary reference rewiring.
 State shared with UI remaining in the parent stays in the parent; declare child inputs and rewire REF expressions.
 Keep all existing siblings connected. Do not display mutually exclusive pages simultaneously.
 """
 BEHAVIOR_INSTRUCTIONS = PATCH_INSTRUCTIONS + """Visit the CURRENT REQUIREMENT and complete its behaviors across
 all supplied components in one response, reusing existing entities. Also check mount/dependency/cleanup behavior.
+This pass owns component coordination and UI behavior, not component decomposition or visual redesign.
+Start from each supplied component's assembled UI and the established ui_data associations. Complete the UI's
+interactions and the component's Event/Handler/Effect entities around those values, rather than inventing another
+data model. Determine event names/payloads, handler reads/writes, effect inputs/results and UI feedback together.
+New behavior-only payloads, loading/error state or result Data may be added when scenarios require them;
+existing UI data identities and meaning must be retained.
+Use requirement scenarios as interaction sequences: trigger, payload, handler, state change or effect, observable
+UI result. Reuse existing events/handlers/effects; do not duplicate a behavior already supplied by another requirement.
+Keep local state local; coordinate siblings through their common parent. Send child intent through CUSTOM Event,
+bind the parent's Handler through COMPONENT UI.callbacks, and pass updated parent state down through Data/arguments.
+Never write another component's Property directly. Complete both sides of each required callback/input binding.
+For page switching, the parent Handler updates current-page state and COMPONENT UI.condition selects the page.
+Use NAVIGATION Effect only when URL/history/external navigation is required; specify destination, parameters,
+push/replace/back semantics and any required restoration/popstate synchronization. Do not infer interaction from pixels.
+Preserve the assembled tree and ownership. Only add small missing feedback UI/state needed by actual scenarios.
 UI Event: kind UI, ui_id, event_name, handler_id, arguments mapping event OUTPUT Data to Handler INPUT Data.
 CUSTOM Event: kind CUSTOM, event_name; notify through Handler.emits and parent UI.callbacks.
 Handler: reads, writes, invokes[{effect_id,arguments}], emits[{event_id,arguments}], spec with ordering/guards.
@@ -315,6 +372,61 @@ class ShapeError(ValueError):
             hint += " Property ownership uses component_id, not owner_id. Include initial and derive; the inactive one is null."
         return {"path": self.path, "error": self.detail,
                 "actual": json.dumps(self.actual, ensure_ascii=False, default=str)[:500], "hint": hint}
+
+
+class BatchValidationError(ShapeError):
+    """Independent diagnostics collected before spending the single repair attempt."""
+    def __init__(self, errors: list[ShapeError]) -> None:
+        self.errors = errors
+        super().__init__(errors[0].path,
+                         f"{len(errors)} validation errors: " + "; ".join(str(e) for e in errors),
+                         errors[0].actual)
+
+    def feedback(self) -> dict[str, Any]:
+        return {"error": f"{len(self.errors)} validation errors", "errors": [e.feedback() for e in self.errors],
+                "hint": "Repair all listed records in one response. Preserve unrelated records and existing references."}
+
+
+def collect_shape_errors(value: Any, schema: dict[str, Any], defs: dict[str, Any] | None = None,
+                         path: str = "$", depth: int = 0) -> list[ShapeError]:
+    """Collect sibling field/record errors; choose discriminated union branches deterministically."""
+    defs = defs if defs is not None else schema.get("$defs", {})
+    if depth > 80:
+        return [ShapeError(path, "excessive nesting", value)]
+    if "$ref" in schema:
+        return collect_shape_errors(value, defs[schema["$ref"].split("/")[-1]], defs, path, depth + 1)
+    if "anyOf" in schema:
+        options = schema["anyOf"]
+        if isinstance(value, dict):
+            for tag in ("table", "kind", "field"):
+                matches = [s for s in options if value.get(tag) in s.get("properties", {}).get(tag, {}).get("enum", [])]
+                if matches:
+                    options = matches
+                    break
+        candidates = [collect_shape_errors(value, s, defs, path, depth + 1)
+                      for s in options if _schema_type_matches(value, s)]
+        if candidates:
+            return min(candidates, key=len)
+    if schema.get("type") == "object" and isinstance(value, dict):
+        errors = []
+        missing = set(schema.get("required", [])) - value.keys()
+        extra = value.keys() - schema["properties"].keys() if schema.get("additionalProperties") is False else set()
+        if missing or extra:
+            errors.append(ShapeError(path, f"missing {sorted(missing)}, unknown {sorted(extra)}", value))
+        for key, child in value.items():
+            if key in extra:
+                continue
+            child_schema = schema["properties"].get(key, schema.get("additionalProperties", {}))
+            errors.extend(collect_shape_errors(child, child_schema, defs, f"{path}.{key}", depth + 1))
+        return errors
+    if schema.get("type") == "array" and isinstance(value, list):
+        return [error for i, child in enumerate(value)
+                for error in collect_shape_errors(child, schema["items"], defs, f"{path}[{i}]", depth + 1)]
+    try:
+        check_shape(value, schema, defs, path, depth)
+        return []
+    except ShapeError as exc:
+        return [exc]
 
 
 def _schema_type_matches(value: Any, schema: dict[str, Any]) -> bool:

@@ -145,12 +145,21 @@ class FrontendWorkspace:
                 raise ValueError(f"Duplicate or empty key {key}")
             aliases[key] = entity_id
 
-        # Component extraction is explicit and occurs only in the assembly pass.
-        for item in batch.get("components", []):
+        pending_components = list(batch.get("components", []))
+        while pending_components:
+            item = next((item for item in pending_components
+                         if not item["existing_component_id"]
+                         or "id" in item["existing_component_id"]
+                         or item["existing_component_id"].get("local") in aliases), None)
+            if item is None:
+                raise ValueError("Cyclic or unresolved component declaration dependencies")
+            pending_components.remove(item)
             cid = resolve(item["existing_component_id"], aliases)
             if cid:
                 if cid not in candidate.tables["components"]:
                     raise ValueError(f"Unknown component {cid}")
+                if cid not in editable_ids | set(aliases.values()):
+                    raise ValueError(f"Assembly outside editable_ids: {cid}")
                 component = candidate.tables["components"][cid]
                 component["requirement_ids"] = list(dict.fromkeys(component["requirement_ids"] + requirements))
             else:
@@ -159,15 +168,6 @@ class FrontendWorkspace:
             alias(item["key"] + ".root", component["ui_root_id"])
             touched[component["id"]] = "components"
             touched[component["ui_root_id"]] = "ui"
-        for item in batch.get("components", []):
-            cid = aliases[item["key"]]
-            extraction = {**item, **{name: [resolve(v, aliases) for v in item[name]]
-                                    for name in ("ui_ids", "property_ids", "data_ids")}}
-            use_id, moved = candidate._extract(extraction, cid, requirements, editable_ids)
-            if use_id:
-                alias(item["key"] + ".use", use_id)
-            touched.update(moved)
-
         allowed = {"data", "properties", "ui"}
         if stage == "behavior":
             allowed |= {"events", "handlers", "effects"}
@@ -175,6 +175,21 @@ class FrontendWorkspace:
             if item["table"] not in allowed:
                 raise ValueError(f"Cannot create {item['table']} in {stage}")
             alias(item["key"], candidate.allocate(item["table"]))
+        # Reserve use-site symbols too, so every create may forward-reference them.
+        for item in batch.get("components", []):
+            if item["ui_ids"]:
+                alias(item["key"] + ".use", candidate.allocate("ui"))
+        for item in batch.get("components", []):
+            if not item["ui_ids"]:
+                continue
+            cid = aliases[item["key"]]
+            first = resolve(item["ui_ids"][0], aliases)
+            parent = candidate.owner(first) if first in candidate.tables["ui"] else None
+            use = next((u for u in candidate.tables["ui"].values()
+                        if item["existing_component_id"] and u["kind"] == "COMPONENT"
+                        and u["component_ref"] == cid and u["component_id"] == parent), None)
+            if use:
+                aliases[item["key"] + ".use"] = use["id"]
         for item in batch["creates"]:
             cid = resolve(item["component_ref"], aliases) or candidate.root_component_id
             if cid not in candidate.tables["components"]:
@@ -182,6 +197,27 @@ class FrontendWorkspace:
             fields = candidate._fields(item["table"], item["fields"], aliases)
             row = candidate.new(item["table"], fields, requirements, cid, aliases[item["key"]])
             touched[row["id"]] = item["table"]
+        # Materialize declarations before extraction. A use-site dependency waits
+        # for its producing extraction; unrelated extractions retain input order.
+        pending = list(batch.get("components", []))
+        while pending:
+            pending_uses = {item["key"] + ".use" for item in pending}
+            ready = next((item for item in pending
+                          if all(v.get("local") not in pending_uses
+                                 and resolve(v, aliases) in candidate.tables["ui"]
+                                 for v in item["ui_ids"])), None)
+            if ready is None:
+                raise ValueError("Cyclic or unresolved assembly UI dependencies")
+            pending.remove(ready)
+            cid = aliases[ready["key"]]
+            extraction = {**ready, **{name: [resolve(v, aliases) for v in ready[name]]
+                                      for name in ("ui_ids", "property_ids", "data_ids")}}
+            use_id, moved = candidate._extract(
+                extraction, cid, requirements, editable_ids | set(aliases.values()),
+                aliases.get(ready["key"] + ".use"))
+            if ready["ui_ids"] and use_id is None:
+                raise ValueError(f"Assembly {ready['key']} must extract UI from another component")
+            touched.update(moved)
         for item in batch["updates"]:
             eid = resolve(item["id"], aliases)
             if eid not in editable_ids | set(aliases.values()):
@@ -231,13 +267,18 @@ class FrontendWorkspace:
             if table == "ui" and eid == candidate.tables["components"][owner]["ui_root_id"]:
                 if row["kind"] != "FRAGMENT":
                     raise ValueError("Keep component roots as FRAGMENT")
+        for reference in batch.get("associations", []):
+            eid = resolve(reference, aliases)
+            table, row = candidate.find(eid)
+            row["requirement_ids"] = list(dict.fromkeys(row["requirement_ids"] + requirements))
+            touched[eid] = table
         changes = [{"before": before[eid], "after": copy.deepcopy(candidate.find(eid)[1])}
                    for eid in touched if eid in before and before[eid] != candidate.find(eid)[1]]
         self.__dict__.update(candidate.__dict__)
         return {"aliases": aliases, "touched_ids": list(touched), "changes": changes}
 
     def _extract(self, item: dict[str, Any], cid: str, requirements: list[str],
-                 editable_ids: set[str]) -> tuple[str | None, dict[str, str]]:
+                 editable_ids: set[str], planned_use_id: str | None = None) -> tuple[str | None, dict[str, str]]:
         roots = list(dict.fromkeys(item["ui_ids"]))
         if not roots:
             if item["property_ids"] or item["data_ids"]:
@@ -283,6 +324,10 @@ class FrontendWorkspace:
             touched[uid] = "ui"
         for table, key in (("properties", "property_ids"), ("data", "data_ids")):
             for eid in item[key]:
+                if eid in editable_ids and eid in self.tables[table]:
+                    row = self.tables[table][eid]
+                    if row.get("owner_id" if table == "data" else "component_id") == cid:
+                        continue  # Already declared directly in the target component.
                 if eid not in editable_ids or eid not in self.tables[table] or self.owner(eid) != parent:
                     raise ValueError(f"Cannot extract {eid}")
                 row = self.tables[table][eid]
@@ -293,12 +338,12 @@ class FrontendWorkspace:
         root = self.tables["components"][cid]["ui_root_id"]
         self.tables["ui"][root]["children"].extend(roots)
         touched[root] = "ui"
-        use = next((u for u in self.tables["ui"].values()
+        use = self.tables["ui"].get(planned_use_id) if planned_use_id else next((u for u in self.tables["ui"].values()
                     if item["existing_component_id"] and u["kind"] == "COMPONENT"
                     and u["component_ref"] == cid and u["component_id"] == parent), None)
         if use is None:
             use = self.new("ui", {"name": self.tables["components"][cid]["name"], "spec": item["spec"],
-                                 "kind": "COMPONENT", "component_ref": cid}, requirements, parent)
+                                 "kind": "COMPONENT", "component_ref": cid}, requirements, parent, planned_use_id)
             host["children"].insert(position, use["id"])
         else:
             use["requirement_ids"] = list(dict.fromkeys(use["requirement_ids"] + requirements))

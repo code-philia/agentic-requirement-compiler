@@ -54,22 +54,23 @@ class CompilerArtifactStore:
     def write_frontend_design(
         self, *, frontend_ir: dict[str, Any], report: dict[str, Any],
         batches: list[dict[str, Any]],
+        traceability: dict[str, Any],
     ) -> dict[str, str]:
         """Persist incremental design, including partial results, without the legacy validator."""
+        from .frontend_generation import ui_data_associations
         path = self.frontend_design_root / "frontend.json"
         write_json_atomic(path, frontend_ir)
-        report_path = self.frontend_design_root / "report.json"
-        requirement_path = self.frontend_design_root / "requirements.json"
+        traceability_path = self.frontend_design_root / "traceability.json"
         batch_paths = []
         for index, batch in enumerate(batches, 1):
             batch_path = self.frontend_design_root / "batches" / f"{index:05d}.json"
             write_json_atomic(batch_path, batch)
             batch_paths.append(str(batch_path.relative_to(self.frontend_design_root)))
         # Only files in this manifest belong to this run; old batch files are not read back.
-        write_json_atomic(report_path, {**report, "batch_files": batch_paths})
-        write_json_atomic(requirement_path, report.get("requirement_entities", {}))
-        return {"frontend_design_ir": str(path), "frontend_design_report": str(report_path),
-                "frontend_requirement_entities": str(requirement_path)}
+        write_json_atomic(traceability_path, {"status": report["status"], "requirements": traceability,
+                                             "ui_data": ui_data_associations(frontend_ir),
+                                             "batch_files": batch_paths})
+        return {"frontend_design_ir": str(path), "frontend_traceability": str(traceability_path)}
 
     def write_frontend_lowering(
         self, *, report: dict[str, Any], sources: dict[str, str], batches: list[dict[str, Any]],

@@ -17,6 +17,7 @@ from dotenv import load_dotenv
 from openai import OpenAI
 
 from core.logging import SynchronousLog
+from arcbench_agent_runtime.jsonio import write_json_atomic
 
 from .frontend_ir import (
     VISUAL_ANALYSIS_SCHEMA,
@@ -541,6 +542,34 @@ class VisualReferenceAnalyzer:
                     "text_cues": [],
                 }
             records.append(reference.to_ir(analysis))
+        return VisualReferenceAnalysisResult(references=records, errors=errors)
+
+    def analyze_cached(self, references: Sequence[ResolvedVisualReference], path: Path) -> VisualReferenceAnalysisResult:
+        """Persist reusable image observations by document-relative path, verified by content."""
+        try:
+            cached = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else {}
+        except (OSError, ValueError):
+            cached = {}
+        if not isinstance(cached, dict):
+            cached = {}
+        records, errors = [], []
+        for reference in references:
+            saved = next((cached.get(key) for key in [reference.source_path, *reference.aliases]
+                          if isinstance(cached.get(key), dict)
+                          and cached[key].get("sha256") == reference.sha256
+                          and not _visual_analysis_error(cached[key].get("analysis"), reference.id)), None)
+            if saved is not None:
+                record = reference.to_ir(saved["analysis"])
+            else:
+                result = self.analyze([reference])
+                errors.extend(result.errors)
+                if result.errors:
+                    continue  # Failed analysis is not reusable cache content.
+                record = result.references[0]
+            records.append(record)
+            for key in [reference.source_path, *reference.aliases]:
+                cached[key] = record
+            write_json_atomic(path, cached)
         return VisualReferenceAnalysisResult(references=records, errors=errors)
 
     def _analyze_one(

@@ -38,7 +38,7 @@ from .symbol_planning import GlobalSymbolPlanner
 from .tdd_orchestrator import NodeTDDOrchestrator
 from .test_generation import RequirementTestGenerationPass, TestEnvironmentInitializer
 from .test_runner import TestRunner
-from .visual_reference import VisualReferenceResolver
+from .visual_reference import VisualReferenceResolver, VisualReferenceAnalyzer
 
 
 LogCallback = Callable[[str, str, str | None, str | None], Awaitable[None] | None]
@@ -80,7 +80,7 @@ class Compiler:
                 "project_manifest": ".arc/project/project-manifest.json",
                 "database_schema": ".arc/database/schema.json", "fixture_ir": ".arc/fixtures/fixture_ir.json",
                 "design_ir": ".arc/design/design.json", "frontend_design_ir": ".arc/design/frontend/frontend.json",
-                "frontend_design_report": ".arc/design/frontend/report.json",
+                "frontend_traceability": ".arc/design/frontend/traceability.json",
                 "frontend_lowering_report": ".arc/code/frontend/lowering.json",
             }.items():
                 if (request.output_dir / relative).is_file():
@@ -552,6 +552,12 @@ class Compiler:
             visuals = VisualReferenceResolver().resolve(
                 request.requirement_path, preprocessing.requirement_ir,
             )
+            visual_path = artifact_store.frontend_design_root / "visual-references.json"
+            visual_analysis = VisualReferenceAnalyzer.from_env(artifact_store.root).analyze_cached(
+                visuals.references, visual_path,
+            )
+            if visual_path.is_file():
+                artifacts["frontend_visual_references"] = str(visual_path)
             await self._log(
                 "Compiler",
                 "Generating frontend IR in three requirement-scheduled passes: UI/data, component assembly, behavior.",
@@ -561,8 +567,9 @@ class Compiler:
                 preprocessing.dependency_graph,
                 design.design_ir,
                 visuals.references,
+                visual_analysis.references,
             )
-            for issue in visuals.errors:
+            for issue in [*visuals.errors, *visual_analysis.errors]:
                 frontend.report["warnings"].append(issue.format())
             if frontend.report["warnings"] and frontend.report["status"] == "GENERATED":
                 frontend.report["status"] = "GENERATED_WITH_WARNINGS"
@@ -571,6 +578,7 @@ class Compiler:
                 frontend_ir=frontend.frontend_ir,
                 report=frontend.report,
                 batches=frontend.batches,
+                traceability=frontend.traceability,
             ))
             self._runtime.traceability.merge_frontend_design_links(
                 frontend_ir_traceability(frontend.frontend_ir)

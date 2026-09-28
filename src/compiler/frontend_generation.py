@@ -12,11 +12,13 @@ from pathlib import Path
 from typing import Any, Callable
 
 from core.logging import SynchronousLog
+from arcbench_agent_runtime.jsonio import write_json_atomic
 
 from .design_projection import project_api_contracts
 from .frontend_generation_contracts import (
     BEHAVIOR_INSTRUCTIONS, REQUIREMENT_ASSEMBLY_INSTRUCTIONS,
-    UI_INSTRUCTIONS, ShapeError, check_shape, normalize_patch, patch_schema, protocol_examples,
+    UI_INSTRUCTIONS, ShapeError, BatchValidationError, collect_shape_errors, check_shape,
+    normalize_patch, patch_schema, protocol_examples,
 )
 from .frontend_workspace import FrontendWorkspace, references
 from .frontend_protocol import (
@@ -34,7 +36,7 @@ MAX_REQUEST_CHARS = 100000
 MAX_OUTPUT_CHARS = 20000
 MAX_EDITS = 32
 TEXT_CHUNK = 3500
-CATALOG_SIZE = 12
+CATALOG_SIZE = 6
 
 
 def encoded(value: Any) -> str:
@@ -58,11 +60,50 @@ def ranked(rows: list[dict[str, Any]], query: Any, count: int) -> list[dict[str,
     return sorted(rows, key=lambda row: (-score(row), str(row.get("id", ""))))[:count]
 
 
+def ui_data_associations(frontend_ir: dict[str, Any]) -> dict[str, dict[str, list[str]]]:
+    """Derived lookup, never a second model-authored source of UI binding truth."""
+    data = {row["id"]: row for row in frontend_ir.get("data", [])}
+    properties = {row["id"]: row for row in frontend_ir.get("properties", [])}
+    values = {**data, **properties}
+    ui_rows = {row["id"]: row for row in frontend_ir.get("ui", [])}
+    def item_sources(value: Any) -> set[str]:
+        if isinstance(value, list):
+            return {uid for child in value for uid in item_sources(child)}
+        if not isinstance(value, dict) or value.get("kind") == "LITERAL":
+            return set()
+        found = {value["ui_id"]} if value.get("kind") == "ITEM" else set()
+        return found | {uid for child in value.values() for uid in item_sources(child)}
+    result = {}
+    for ui in frontend_ir.get("ui", []):
+        direct = {target for _, target in references(ui) if target in values}
+        sources, source_pending = set(), list(item_sources(ui))
+        seen = set(direct)
+        while source_pending:
+            uid = source_pending.pop()
+            if uid in sources:
+                continue
+            sources.add(uid)
+            source = (ui_rows.get(uid, {}).get("repeat") or {}).get("source")
+            seen.update(target for _, target in references(source) if target in values)
+            source_pending.extend(item_sources(source) - sources)
+        pending = list(seen)
+        while pending:
+            for _, target in references(values[pending.pop()]):
+                if target in values and target not in seen:
+                    seen.add(target)
+                    pending.append(target)
+        result[ui["id"]] = {"direct_ids": sorted(direct), "repeat_ui_ids": sorted(sources),
+                            "data_ids": sorted(seen & data.keys()),
+                            "property_ids": sorted(seen & properties.keys())}
+    return result
+
+
 @dataclass
 class FrontendIRGenerationResult:
     frontend_ir: dict[str, Any]
     report: dict[str, Any]
     batches: list[dict[str, Any]] = field(default_factory=list)
+    traceability: dict[str, Any] = field(default_factory=dict)
 
     @property
     def ok(self) -> bool:
@@ -73,17 +114,21 @@ class FrontendIRGenerationPass:
     def __init__(self, model: StructuredModel, artifact_root: Path,
                  visual_model: VisualStructuredModel | None = None) -> None:
         self.model = model
+        self.traceability_path = artifact_root / "design" / "frontend" / "traceability.json"
         self.visual_model = visual_model
         self.log = SynchronousLog("FrontendIRGenerationPass", workspace_root=artifact_root.resolve().parent)
 
     def compile(self, requirement_ir: dict[str, Any], dependency_graph: dict[str, Any],
                 backend_design_ir: dict[str, Any],
-                visual_references: list[ResolvedVisualReference | dict[str, Any]]) -> FrontendIRGenerationResult:
+                visual_references: list[ResolvedVisualReference | dict[str, Any]],
+                visual_analyses: list[dict[str, Any]] | None = None) -> FrontendIRGenerationResult:
         self.workspace = FrontendWorkspace()
         self.batches: list[dict[str, Any]] = []
         self.failures: list[dict[str, Any]] = []
         self.warnings: list[str] = []
         self.nodes = requirement_ir.get("nodes", {})
+        self.visual_analyses = {row["id"]: row for row in visual_analyses or []}
+        self.traceability = {rid: {"mode": "DESIGN"} for rid in self.nodes}
         self.dependencies = dependency_graph.get("requirement_dependencies", {})
         self.apis = {row["id"]: row for row in project_api_contracts(backend_design_ir)}
         self.api_owners: dict[str, set[str]] = {}
@@ -92,7 +137,21 @@ class FrontendIRGenerationPass:
         for row in backend_design_ir.get("modules", []):
             if row.get("kind") == "API":
                 self.api_owners.setdefault(str(row.get("owner_requirement", "")), set()).add(row["id"])
-        ordered = list(dict.fromkeys([*requirement_ir.get("node_order", []), *self.nodes]))
+        ordered, visiting, visited = [], set(), set()
+        def visit(rid: str) -> None:
+            if rid in visited or rid not in self.nodes:
+                return
+            if rid in visiting:
+                raise ValueError(f"Requirement dependency/parent cycle at {rid}")
+            visiting.add(rid)
+            children = [key for key, node in self.nodes.items() if node.get("parent_id") == rid]
+            for dependency in dict.fromkeys([*self.dependencies.get(rid, []), *children]):
+                visit(dependency)
+            visiting.remove(rid)
+            visited.add(rid)
+            ordered.append(rid)
+        for rid in [*requirement_ir.get("node_order", []), *self.nodes]:
+            visit(rid)
         root_id = requirement_ir.get("root_id")
         if ordered:
             self.workspace.ensure_root([root_id] if root_id in self.nodes else [ordered[0]])
@@ -107,29 +166,46 @@ class FrontendIRGenerationPass:
                        if rid in (v.get("requirement_ids", []) if isinstance(v, dict) else v.requirement_ids)]
             for index, fragment in enumerate(fragments):
                 tasks.append({"id": rid, "name": node.get("name", ""), "fragment": fragment,
-                              "part": index + 1, "parts": len(fragments),
-                              "visual": visuals[0] if visuals and index == 0 else None})
+                              "part": index + 1, "parts": len(fragments), "has_visual": bool(visuals),
+                              "visual": visuals[0] if visuals else None})
             # The visual interface accepts one image. Extra images remain supplements of this requirement.
             for visual in visuals[1:]:
                 tasks.append({"id": rid, "name": node.get("name", ""), "fragment": source[:TEXT_CHUNK],
-                              "visual": visual, "visual_supplement": True})
+                              "visual": visual, "has_visual": True, "visual_supplement": True})
         failed_ui: set[str] = set()
         for task in tasks:
             if not self._requirement_task("ui", task):
                 failed_ui.add(task["id"])
+        failed_assemble: set[str] = set()
         for stage in ("assemble", "behavior"):
             for task in tasks:
                 rid = task["id"]
-                if task.get("visual_supplement"):
+                if stage == "behavior" and task.get("visual_supplement"):
                     continue
                 if rid in failed_ui:
                     self._fail(stage, [rid], "Requirement UI generation failed; dependent task skipped.")
+                    continue
+                if stage == "behavior" and rid in failed_assemble:
+                    self._fail(stage, [rid], "Requirement assembly failed; behavior task skipped.")
+                    continue
+                if self.traceability[rid]["mode"] == "SUMMARY":
+                    if stage == "assemble":
+                        linked = self.traceability[rid].get("ui_ids", [])
+                        components = {self.workspace.owner(eid) for eid in linked}
+                        for child in self.nodes:
+                            if self.nodes[child].get("parent_id") == rid:
+                                components.update(self.traceability[child].get("component_ids", []))
+                        self.workspace.apply_requirement_batch(
+                            {"creates": [], "updates": [], "associations": [{"id": cid} for cid in sorted(components)[:8]]},
+                            [rid], set(), stage)
+                        self._refresh_traceability()
                     continue
                 component_roots = {c["ui_root_id"] for c in self.workspace.tables["components"].values()}
                 if not any(rid in row["requirement_ids"] for table, rows in self.workspace.tables.items()
                            for row in rows.values() if table != "components" and row["id"] not in component_roots):
                     continue
-                self._requirement_task(stage, task)
+                if not self._requirement_task(stage, task) and stage == "assemble":
+                    failed_assemble.add(rid)
 
         self.warnings.extend(self.workspace.inspect(set(self.apis)))
         status = "PARTIAL" if self.failures else ("GENERATED_WITH_WARNINGS" if self.warnings else "GENERATED")
@@ -144,7 +220,19 @@ class FrontendIRGenerationPass:
                       row["id"] for rows in self.workspace.tables.values() for row in rows.values()
                       if rid in row["requirement_ids"]
                   ] for rid in ordered}}
-        return FrontendIRGenerationResult(self.workspace.export(), report, self.batches)
+        self._refresh_traceability(status)
+        return FrontendIRGenerationResult(self.workspace.export(), report, self.batches, self.traceability)
+
+    def _refresh_traceability(self, status: str = "IN_PROGRESS") -> None:
+        links = frontend_ir_traceability(self.workspace.export())
+        for rid in self.nodes:
+            mode = self.traceability[rid]["mode"]
+            self.traceability[rid] = {"mode": mode,
+                                      **{key: [] for key in ("component_ids", "ui_ids", "data_ids", "property_ids",
+                                                            "event_ids", "handler_ids", "effect_ids")},
+                                      **links.get(rid, {})}
+        write_json_atomic(self.traceability_path, {"status": status, "requirements": self.traceability,
+                                                   "ui_data": ui_data_associations(self.workspace.export())})
 
     def _requirement_task(self, stage: str, task: dict[str, Any],
                           focus_ids: list[str] | None = None, depth: int = 0) -> bool:
@@ -152,18 +240,30 @@ class FrontendIRGenerationPass:
         requirement = {k: v for k, v in task.items() if k != "visual"}
         local = self._requirement_context(rid, requirement, focus_ids)
         context = {**local, "requirement": requirement,
+                   "child_requirements": [{"id": child, "name": node.get("name", ""),
+                                            "description": str(node.get("description", ""))[:500],
+                                            "links": self.traceability[child]}
+                                           for child, node in self.nodes.items() if node.get("parent_id") == rid],
                    "related_requirements": self._requirement_summaries([rid]),
-                   "api_contracts": self._api_context([rid], requirement)}
+                   "api_contracts": self._api_context([rid], requirement) if stage != "assemble" else []}
+        if stage in {"assemble", "behavior"}:
+            ui_data = ui_data_associations(self.workspace.export())
+            context["ui_data"] = {row["id"]: ui_data[row["id"]] for row in local["entities"] if row["id"] in ui_data}
         example = protocol_examples("C.EXAMPLE", "U.EXAMPLE")
+        example["associations"] = []
+        if stage == "ui":
+            example["requirement_mode"] = "DESIGN"
         if stage == "assemble":
             example["components"] = []
         if stage == "behavior":
             example["creates"].update(events=[], handlers=[], effects=[])
         context["protocol_example"] = example
         image = None
-        visual = task.get("visual") if stage == "ui" else None
+        visual = task.get("visual") if stage in {"ui", "assemble"} else None
         if isinstance(visual, dict):
             context["visual_analysis"] = visual.get("analysis", {})
+            context["visual_reference_id"] = visual.get("id")
+            context["visual_reference_path"] = visual.get("source_path")
         elif visual is not None:
             try:
                 content = visual.absolute_path.read_bytes()
@@ -171,6 +271,8 @@ class FrontendIRGenerationPass:
                     raise ValueError("Visual reference changed after resolution")
                 image = f"data:{visual.media_type};base64,{base64.b64encode(content).decode('ascii')}"
                 context["visual_reference_id"] = visual.id
+                context["visual_reference_path"] = visual.source_path
+                context["visual_analysis"] = self.visual_analyses.get(visual.id, {}).get("analysis", {})
             except (OSError, ValueError) as exc:
                 self.warnings.append(f"Visual {visual.id} unavailable: {exc}")
         # Split only an oversized requirement context, never one request per ordinary UI node.
@@ -183,16 +285,27 @@ class FrontendIRGenerationPass:
             return left and right
         instructions = {"ui": UI_INSTRUCTIONS, "assemble": REQUIREMENT_ASSEMBLY_INSTRUCTIONS,
                         "behavior": BEHAVIOR_INSTRUCTIONS}[stage]
-        return self._call(stage, patch_schema(stage), instructions, context, [rid],
-                          lambda batch: self.workspace.apply_requirement_batch(
-                              batch, [rid], set(local["editable_ids"]), stage), image=image)
+        def apply(batch: dict[str, Any]) -> dict[str, Any]:
+            mode = batch.get("requirement_mode", "DESIGN")
+            if stage == "ui" and mode == "SUMMARY" and (
+                task.get("has_visual") or batch["creates"] or batch["updates"] or not context["child_requirements"]
+            ):
+                raise ValueError("SUMMARY requires a parent without images and empty creates/updates")
+            result = self.workspace.apply_requirement_batch(batch, [rid], set(local["editable_ids"]), stage)
+            if stage == "ui":
+                previous = self.traceability[rid].get("mode")
+                self.traceability[rid]["mode"] = "DESIGN" if task.get("part", 1) > 1 and previous == "DESIGN" else mode
+            self._refresh_traceability()
+            return result
+        return self._call(stage, patch_schema(stage), instructions, context, [rid], apply, image=image)
 
     def _requirement_context(self, rid: str, query: Any,
                              focus_ids: list[str] | None) -> dict[str, Any]:
         ws = self.workspace
         all_rows = {eid: row for rows in ws.tables.values() for eid, row in rows.items()}
         roots = {c["ui_root_id"] for c in ws.tables["components"].values()}
-        owned = [row for row in all_rows.values() if rid in row["requirement_ids"]
+        linked_ids = {eid for key, values in self.traceability[rid].items() if key.endswith("_ids") for eid in values}
+        owned = [row for row in all_rows.values() if row["id"] in linked_ids
                  and row["id"] not in roots and row["id"] not in ws.tables["components"]]
         focus = focus_ids if focus_ids is not None else [row["id"] for row in owned]
         selected = set(focus)
@@ -238,8 +351,30 @@ class FrontendIRGenerationPass:
                 "split_requirement": focus_ids is not None,
                 "entities": [copy.deepcopy(all_rows[eid]) for eid in sorted(selected) if eid in all_rows],
                 "editable_ids": sorted(eid for eid in selected if eid in all_rows),
-                "component_catalog": [brief(row) for row in ranked(
+                "component_catalog": [self._component_summary(row) for row in ranked(
                     list(ws.tables["components"].values()), query, CATALOG_SIZE)]}
+
+    def _component_summary(self, component: dict[str, Any]) -> dict[str, Any]:
+        """Bounded reuse index; full records and mutation rights stay in the local context."""
+        cid = component["id"]
+        requirements = [rid for rid, links in self.traceability.items()
+                        if cid in links.get("component_ids", [])]
+        inputs = [row for row in self.workspace.tables["data"].values() if row["owner_id"] == cid]
+        events = [row for row in self.workspace.tables["events"].values()
+                  if row["component_id"] == cid and row["kind"] == "CUSTOM"]
+        use_sites = [row for row in self.workspace.tables["ui"].values()
+                     if row["kind"] == "COMPONENT" and row["component_ref"] == cid]
+        root = self.workspace.tables["ui"][component["ui_root_id"]]
+        return {**brief(component),
+                "requirements": [{"id": rid, "name": self.nodes[rid].get("name", ""),
+                                  "summary": str(self.nodes[rid].get("description", ""))[:160]}
+                                 for rid in requirements[:3]],
+                "render_roots": [brief(self.workspace.tables["ui"][uid]) for uid in root["children"][:4]],
+                "inputs": [{"id": row["id"], "name": row["name"], "required": row["required"]} for row in inputs[:6]],
+                "custom_events": [{"id": row["id"], "name": row["event_name"]} for row in events[:4]],
+                "use_sites": [{"id": row["id"], "component_id": row["component_id"]} for row in use_sites[:4]],
+                "counts": {"requirements": len(requirements), "render_roots": len(root["children"]),
+                           "inputs": len(inputs), "custom_events": len(events), "use_sites": len(use_sites)}}
 
     def _call(self, phase: str, schema: dict[str, Any], instructions: str, context: dict[str, Any],
               requirements: list[str], apply: Callable[[dict[str, Any]], Any],
@@ -305,9 +440,12 @@ class FrontendIRGenerationPass:
                 # One protocol only: no aliases, field renaming, or literal-format coercion.
                 if len(encoded(candidate)) > MAX_OUTPUT_CHARS:
                     raise ValueError("Repaired candidate exceeds the local output budget")
-                check_shape(candidate, schema)
-                check_references(candidate, {row["id"] for row in context.get("entities", [])}
-                                 | {row["id"] for row in context.get("component_catalog", [])})
+                errors = collect_shape_errors(candidate, schema)
+                errors.extend(check_references(
+                    candidate, {eid for rows in self.workspace.tables.values() for eid in rows},
+                    set(context.get("editable_ids", []))))
+                if errors:
+                    raise BatchValidationError(errors)
                 batch = normalize_patch(candidate)
                 if len(batch["creates"]) + len(batch["updates"]) + len(batch.get("components", [])) > MAX_EDITS:
                     raise ValueError(f"Return at most {MAX_EDITS} local edits for this task.")
@@ -332,7 +470,11 @@ class FrontendIRGenerationPass:
                             for k in ("updates", "components"))
                 ):
                     candidate = None
-                if isinstance(exc, ShapeError) and exc.path in {"$", "$.creates", "$.updates", "$.components"}:
+                shape_errors = exc.errors if isinstance(exc, BatchValidationError) else [exc]
+                if any(isinstance(error, ShapeError) and error.path in {
+                    "$", "$.creates", "$.updates", "$.components",
+                    *{f"$.creates.{table}" for table in self.workspace.tables},
+                } for error in shape_errors):
                     candidate = None
                 client = self.visual_model if image is not None and not repairing else self.model
                 attempt_record["structured_output_mode"] = getattr(client, "structured_output_mode", "unknown")
@@ -379,4 +521,10 @@ def frontend_ir_traceability(frontend_ir: dict[str, Any]) -> dict[str, dict[str,
             for rid in row["requirement_ids"]:
                 link = links.setdefault(rid, {"ui_scope": "UI_REQUIRED"})
                 link.setdefault(field_name, []).append(row["id"])
+    # Reusing an existing UI also associates its current owning component.
+    for row in frontend_ir.get("ui", []):
+        for rid in row["requirement_ids"]:
+            components = links[rid].setdefault("component_ids", [])
+            if row["component_id"] not in components:
+                components.append(row["component_id"])
     return links
