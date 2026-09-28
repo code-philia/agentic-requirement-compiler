@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import os
+import copy
+import hashlib
 import json
 import re
 import time
@@ -9,6 +11,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from arc_agents import FrontendImplementationAgent, ImplementationAgent, ImplementationRequest, JsonModel
+from arcbench_agent_runtime.jsonio import write_json_atomic
 from core.logging import append_debug_log, write_terminal_log
 
 from .code_binding import CodeTargetResolver
@@ -49,7 +52,7 @@ class TDDStageResult:
 
 
 class NodeTDDOrchestrator:
-    """Implement and verify a node against its frozen tests."""
+    """Implement and verify a node, allowing diagnosed test corrections."""
 
     _BACKEND_KINDS = {"DB", "FUNC", "API"}
     _FRONTEND_KINDS = {"API_CLIENT", "STORE", "COMPONENT", "PAGE", "LAYOUT"}
@@ -341,7 +344,7 @@ class NodeTDDOrchestrator:
             feedback = self._raw_output(run)
             while not run.ok:
                 budget_key = (requirement_id, layer)
-                if layer == "E2E" and not has_editable_targets and not aggregate_repairs:
+                if layer == "E2E" and not has_editable_targets and not aggregate_repairs and not run.selected_files:
                     result.failed_requirements.append(requirement_id)
                     return self._fail(
                         result,
@@ -454,7 +457,9 @@ class NodeTDDOrchestrator:
         iteration: int = 0,
         test_layer: str = "",
     ) -> tuple[bool, str]:
-        snapshot = self.file_patcher.snapshot(self._checkpoint_files(requirement_id))
+        snapshot = self.file_patcher.snapshot([
+            *self._checkpoint_files(requirement_id), *test_files,
+        ])
         implementation = agent.implement(ImplementationRequest(
             requirement_id=requirement_id,
             requirement=requirement,
@@ -472,6 +477,7 @@ class NodeTDDOrchestrator:
         applied = self.file_patcher.apply(implementation.patch)
         if not applied.ok:
             return False, "\n".join(applied.errors)
+        corrected_tests = sorted(set(applied.changed_files) & set(test_files))
         build = ProjectBuilder(self.output_root).build()
         if not build.ok:
             _, restore_errors = self.file_patcher.restore(snapshot)
@@ -486,8 +492,37 @@ class NodeTDDOrchestrator:
                 typecheck.stdout, typecheck.stderr, typecheck.error or "",
                 *(f"PATCH_ROLLBACK_FAILED: {error}" for error in restore_errors),
             ])
+        if corrected_tests:
+            # Keep integrity checking enabled: only re-freeze tests explicitly
+            # admitted by the agent's diagnosis and successfully built above.
+            try:
+                manifest_path = self.output_root / ".arc" / "tests" / "test_manifest.json"
+                manifest = copy.deepcopy(self.test_manifest) if self.test_manifest is not None else json.loads(
+                    manifest_path.read_text(encoding="utf-8"))
+                rows = {row["test_file"]: row for row in manifest.get("files", [])}
+                for relative in corrected_tests:
+                    rows[relative]["content_sha256"] = hashlib.sha256(
+                        (self.output_root / relative).read_bytes()).hexdigest()
+                write_json_atomic(manifest_path, manifest)
+                if self.test_manifest is not None:
+                    self.test_manifest.clear()
+                    self.test_manifest.update(manifest)
+                else:
+                    self.test_manifest = manifest
+            except (OSError, ValueError, KeyError) as exc:
+                _, restore_errors = self.file_patcher.restore(snapshot)
+                return False, "\n".join([
+                    f"TEST_CORRECTION_MANIFEST_FAILED: {exc}",
+                    *(f"PATCH_ROLLBACK_FAILED: {error}" for error in restore_errors),
+                ])
+            self._trace_implementation(
+                f"TEST_CORRECTION_APPLIED requirement={requirement_id} layer={test_layer} "
+                f"iteration={iteration}/{self.policy.max_iterations_per_layer} files={corrected_tests}")
         if commit_stage:
-            ProjectGitHistory(self.output_root).commit(commit_stage, applied.changed_files)
+            ProjectGitHistory(self.output_root).commit(commit_stage, [
+                *applied.changed_files,
+                *([".arc/tests/test_manifest.json"] if corrected_tests else []),
+            ])
         result.changed_files = sorted(set(result.changed_files) | set(applied.changed_files))
         return True, ""
 

@@ -43,14 +43,52 @@ Preserve dependency public contracts and behavior used by other requirements.
 The requirement is the source of behavior. Read the complete related source files for
 existing signatures, imports, exports, types and dependencies. If test_output is
 present, it is the unmodified output of the test/build command, not a diagnosis.
-Use the supplied test source only to understand the expected behavior; do not edit it.
-Do not invent paths, change tests or edit read-only files. Preserve existing public
+Tests are read-only unless test_correction explicitly authorizes a listed file after
+failure diagnosis. In that case correct only the evidenced test defect against the
+requirement and public contracts. Preserve scenarios, meaningful assertions and test
+isolation; never skip/delete tests, accept erroneous behavior, or mock away the public
+seam to obtain a pass. Fix implementation defects as well when diagnosis is MIXED.
+Do not invent paths or edit read-only files. Preserve existing public
 interfaces, routes and generated glue. Return only JSON with exact file/search/replacement
 edits. Copy search verbatim from a unique fragment of the current editable file.
 The keys of editable_files are the complete write allowlist for this invocation.
-related_files, test files, and paths mentioned in frontend_design are read-only context.
+related_files and paths mentioned only in frontend_design are read-only context.
+api_contracts fixes the HTTP method, path and input_source: use query for query inputs
+and body for body inputs in both handlers and test requests. Do not infer the method
+from a function name or change generated routes to accommodate an incorrect test.
 If a screen is only in related_files, implement its owned components now; the page
 will be handled in its own subsequent invocation.
+"""
+
+FAILURE_DIAGNOSIS_SCHEMA: dict[str, Any] = {
+    "type": "object", "additionalProperties": False,
+    "required": ["verdict", "reason", "test_errors"],
+    "properties": {
+        "verdict": {"type": "string", "enum": ["IMPLEMENTATION", "TEST", "MIXED", "DESIGN", "UNKNOWN"]},
+        "reason": {"type": "string"},
+        "test_errors": {"type": "array", "items": {
+            "type": "object", "additionalProperties": False,
+            "required": ["file", "test_evidence", "contract_evidence", "correction"],
+            "properties": {key: {"type": "string"} for key in
+                           ("file", "test_evidence", "contract_evidence", "correction")},
+        }},
+    },
+}
+
+FAILURE_DIAGNOSIS_INSTRUCTIONS = """Diagnose this failed test batch before editing anything.
+Compare the original requirement and scenarios, api_contracts, generated router,
+test source, implementation and raw failure output. Requirements determine behavior;
+frozen contracts determine public interfaces, HTTP method/path and input_source.
+Use TEST only for a concrete test defect, IMPLEMENTATION for application defects,
+MIXED for both, DESIGN when the required API/module is missing or the design cannot
+satisfy the requirement, UNKNOWN when evidence is insufficient. A 404 or assertion
+failure alone does not prove the test is wrong. Check routing before handler logic.
+For TEST/MIXED list only defective files from candidate_test_files, quote an exact
+source fragment as test_evidence, cite the conflicting requirement/contract as
+contract_evidence, and describe the correction. Do not treat unimplemented behavior
+as a test defect. Never propose removing scenarios, skipping tests, weakening valid
+assertions, or inventing routes. Other verdicts must return an empty test_errors array.
+Return only the diagnosis object; no edits in this step.
 """
 
 FRONTEND_IMPLEMENTATION_INSTRUCTIONS = IMPLEMENTATION_INSTRUCTIONS + """
@@ -139,6 +177,13 @@ class ImplementationAgent:
             model_log=model_log,
             agent_name="ImplementationAgent",
         )
+        self._diagnosis_agent = BaseStructuredAgent(
+            model, schema_name="arc_implementation_failure_diagnosis",
+            instructions=FAILURE_DIAGNOSIS_INSTRUCTIONS,
+            output_schema=FAILURE_DIAGNOSIS_SCHEMA, retries=retries,
+            trace=trace, model_log=model_log, agent_name="ImplementationFailureDiagnosis",
+        )
+        self._trace = trace
 
     def implement(self, request: ImplementationRequest) -> ImplementationResult:
         requirement_id = str(request.requirement_id).strip()
@@ -146,6 +191,32 @@ class ImplementationAgent:
             context, hashes = self._context(request)
         except (KeyError, ValueError, OSError, UnicodeError) as exc:
             return ImplementationResult(requirement_id, "CONTEXT_REJECTED", errors=[str(exc)])
+        if request.test_layer and request.test_output:
+            diagnosis = self._diagnosis_agent.invoke(
+                {**context, "candidate_test_files": list(request.test_files)},
+                validate=lambda output: self._validate_diagnosis(output, request),
+            )
+            if not diagnosis.ok or diagnosis.output is None:
+                return ImplementationResult(requirement_id, "DIAGNOSIS_REJECTED", errors=diagnosis.errors)
+            decision = diagnosis.output
+            if self._trace:
+                self._trace(
+                    f"FAILURE_DIAGNOSED requirement={requirement_id} layer={request.test_layer} "
+                    f"iteration={request.iteration}/{request.iteration_limit} "
+                    f"verdict={decision['verdict']} reason={decision['reason']}"
+                )
+            context["failure_diagnosis"] = decision
+            if decision["test_errors"]:
+                context["test_correction"] = decision["test_errors"]
+                for defect in decision["test_errors"]:
+                    relative = defect["file"]
+                    source = context["related_files"].pop(relative)
+                    context["editable_files"][relative] = source
+                    hashes[relative] = hashlib.sha256(source.encode("utf-8")).hexdigest()
+                context["writable_file_paths"] = sorted(hashes)
+                if self._trace:
+                    self._trace(f"TEST_CORRECTION_AUTHORIZED requirement={requirement_id} "
+                                f"files={[row['file'] for row in decision['test_errors']]}")
         invocation = self._agent.invoke(
             context,
             validate=lambda output: self._validate(output, hashes),
@@ -188,7 +259,7 @@ class ImplementationAgent:
         )
         if requested - {row["module_id"] for row in owned}:
             raise ValueError("Requested target is not writable by this requirement and agent.")
-        if not owned:
+        if not owned and not (request.test_layer and request.test_files):
             raise ValueError("No writable source files for this requirement.")
         editable_paths = {row["file"] for row in owned}
         dependencies = [*resolved["dependency_targets"], *resolved["type_targets"]]
@@ -196,6 +267,9 @@ class ImplementationAgent:
             str(row.get("file", "")) for row in dependencies if row.get("file")
         })
         related = set(paths)
+        router = "backend/src/generated/router.ts"
+        if (self.output_root / router).is_file():
+            related.add(router)
         entrypoints = {
             "API": "backend/src/app.ts",
             "PAGE": "frontend/src/app/router.tsx",
@@ -253,6 +327,9 @@ class ImplementationAgent:
             "editable_files": editable_files,
             "writable_file_paths": sorted(editable_files),
             "related_files": related_files,
+            "api_contracts": [copy.deepcopy(row) for row in
+                              request.code_binding_registry.get("code_bindings", [])
+                              if row.get("kind") == "API"],
         }
         if request.frontend_ir is not None and "root_component_id" in request.frontend_ir:
             from compiler.frontend_context import frontend_subgraph, visual_context
@@ -341,6 +418,37 @@ class ImplementationAgent:
         if len(str(context)) > self._max_context_characters:
             raise ValueError("Implementation context exceeds its size limit.")
         return context, hashes
+
+    @staticmethod
+    def _validate_diagnosis(output: dict[str, Any], request: ImplementationRequest) -> list[str]:
+        if not isinstance(output, dict) or set(output) != {"verdict", "reason", "test_errors"}:
+            return ["Return verdict, reason and test_errors."]
+        if not isinstance(output["verdict"], str) or output["verdict"] not in {
+            "IMPLEMENTATION", "TEST", "MIXED", "DESIGN", "UNKNOWN"
+        }:
+            return ["Unknown diagnosis verdict."]
+        if not isinstance(output["reason"], str) or not output["reason"].strip():
+            return ["Diagnosis requires a reason supported by the supplied evidence."]
+        defects = output["test_errors"]
+        if not isinstance(defects, list):
+            return ["test_errors must be an array."]
+        if bool(defects) != (output["verdict"] in {"TEST", "MIXED"}):
+            return ["Only TEST/MIXED must include concrete test_errors."]
+        errors: list[str] = []
+        seen: set[str] = set()
+        for defect in defects:
+            if not isinstance(defect, dict) or set(defect) != {
+                "file", "test_evidence", "contract_evidence", "correction"
+            } or not all(isinstance(value, str) and value.strip() for value in defect.values()):
+                errors.append("Each test defect needs file, exact test_evidence, contract_evidence and correction.")
+                continue
+            relative = defect["file"]
+            if relative not in request.test_files or relative in seen:
+                errors.append("Test correction must name a unique file from this failed batch.")
+            elif not relative.startswith(f"tests/{request.test_layer.lower()}/"):
+                errors.append("Test correction must stay in the current test layer.")
+            seen.add(relative)
+        return errors
 
     def _read_file(self, relative: str) -> str:
         path = PurePosixPath(relative.replace(chr(92), "/"))

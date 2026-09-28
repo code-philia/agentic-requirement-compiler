@@ -70,6 +70,10 @@ process.env.ARC_TEST_BASE_URL! (or a local variable assigned from that value).
 For example: import request from "supertest"; const api = request(process.env.ARC_TEST_BASE_URL!);
 then send requests with api.get("/...") or api.post("/..."). Do not use fetch instead of Supertest.
 Send real requests to the separately started backend.
+api_contracts is authoritative for HTTP method, path and input_source. For a GET
+query contract use api.get(path).query(input); for a body contract use its declared
+method and .send(input). Never infer a POST from the presence of a request DTO.
+Reuse the declared prerequisite APIs and do not invent test-only endpoints.
 The test runner resets the database before every
 integration and E2E test. Prepare test-specific data through public API requests
 or test inputs, not application fixture declarations or /__arc/seed. Never import
@@ -935,6 +939,7 @@ def _build_context_pack(
         "requirement": model_requirement,
         "source_files": source_files,
         "layers": model_layers,
+        "api_contracts": [row for row in all_target_rows if row.get("kind") == "API"],
     }
     validation_context = {
         "requirement_id": requirement_id,

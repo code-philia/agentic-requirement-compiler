@@ -144,7 +144,7 @@ MODULE_DECOMPOSITION_SCHEMA: dict[str, Any] = {
     "required": ["self_obligation_ids", "modules"],
     "properties": {
         "self_obligation_ids": {"type": "array", "items": {"type": "string"}},
-        "modules": {"type": "array", "minItems": 0, "maxItems": 8, "items": DECOMPOSED_MODULE_SCHEMA},
+        "modules": {"type": "array", "minItems": 0, "items": DECOMPOSED_MODULE_SCHEMA},
     },
 }
 
@@ -169,7 +169,7 @@ API_DECOMPOSITION_SCHEMA: dict[str, Any] = {
     "required": ["self_obligation_ids", "modules"],
     "properties": {
         "self_obligation_ids": {"type": "array", "items": {"type": "string"}},
-        "modules": {"type": "array", "minItems": 0, "maxItems": 4, "items": API_MODULE_SCHEMA},
+        "modules": {"type": "array", "minItems": 0, "items": API_MODULE_SCHEMA},
     },
 }
 
@@ -352,6 +352,27 @@ Never duplicate a mutating effect merely to satisfy coverage.
 """
 MODULE_DECOMPOSITION_INSTRUCTIONS = (
     MODULE_DECOMPOSITION_INSTRUCTIONS.rstrip() + "\n\n" + _SELF_OWNERSHIP_RULE + "\n"
+)
+
+REQUIREMENT_CONTRACT_INSTRUCTIONS += """
+Completeness checklist: inspect every scenario's setup, action, successful outcome,
+boundary/invalid input, authorization, empty result and prohibited side effects.
+Include supporting reads needed for real user journeys (available choices/dates,
+detail lookup, current session) when required by the requirement; reuse existing
+operations rather than inventing test-only APIs or fixture/seed endpoints. Include
+all data needed by the frontend to display the required result. Do not omit a
+responsibility merely because it occurs before the main action. Do not add generic
+CRUD operations or business rules unsupported by this requirement.
+"""
+API_DECOMPOSITION_INSTRUCTIONS += """
+Cover every required server operation, including prerequisite reads and observable
+results; one user action may require multiple distinct operations. Reuse an existing
+operation when its behavior and contract match, not merely because it reads the same
+table. Do not combine unrelated operations just to minimize the API count.
+"""
+API_DECOMPOSITION_INSTRUCTIONS = API_DECOMPOSITION_INSTRUCTIONS.replace(
+    "two APIs that read the same entity fields are\nthe same operation even when their specs are phrased differently.",
+    "matching entity fields alone do not establish equivalent behavior or authorization.",
 )
 
 
@@ -688,6 +709,7 @@ class DesignPass:
     ) -> DecisionResult:
         feedback: list[str] = []
         last_issues: list[DesignIssue] = []
+        last_decision: dict[str, Any] | None = None
         for attempt in range(self._local_retries + 1):
             payload = copy.deepcopy(context)
             if feedback:
