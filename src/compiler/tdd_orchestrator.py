@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from arc_agents import FrontendImplementationAgent, ImplementationAgent, ImplementationRequest, JsonModel
+from arc_agents.contracts import ProposedPatch
 from arcbench_agent_runtime.jsonio import write_json_atomic
 from core.logging import append_debug_log, write_terminal_log
 
@@ -460,6 +461,38 @@ class NodeTDDOrchestrator:
         snapshot = self.file_patcher.snapshot([
             *self._checkpoint_files(requirement_id), *test_files,
         ])
+        changed_files: list[str] = []
+
+        def accept_patch(patch: ProposedPatch) -> list[str]:
+            applied = self.file_patcher.apply(patch)
+            errors = list(applied.errors)
+            if applied.ok:
+                build = ProjectBuilder(self.output_root).build()
+                errors = list(build.errors) if not build.ok else []
+                if not build.ok and not errors:
+                    errors = ["PROJECT_BUILD_FAILED: build did not pass."]
+                if not errors:
+                    typecheck = self.test_runner.run_workspace_typecheck()
+                    if typecheck.status != "PASSED":
+                        errors = [part for part in (
+                            "PROJECT_TYPECHECK_FAILED: typecheck did not pass.",
+                            typecheck.stdout, typecheck.stderr, typecheck.error,
+                        ) if part]
+                if not errors:
+                    changed_files[:] = applied.changed_files
+                    return []
+            elif not errors:
+                errors = ["PATCH_APPLY_FAILED: patch was not applied."]
+            _, restore_errors = self.file_patcher.restore(snapshot)
+            return [
+                *errors,
+                *(f"PATCH_ROLLBACK_FAILED: {error}" for error in restore_errors),
+                *([] if restore_errors else [
+                    "The rejected patch was rolled back. Return a complete corrected patch "
+                    "against the original editable_files, including all required implementation changes.",
+                ]),
+            ]
+
         implementation = agent.implement(ImplementationRequest(
             requirement_id=requirement_id,
             requirement=requirement,
@@ -471,27 +504,10 @@ class NodeTDDOrchestrator:
             iteration=iteration,
             iteration_limit=self.policy.max_iterations_per_layer,
             test_layer=test_layer,
-        ))
+        ), accept_patch=accept_patch)
         if not implementation.ok or implementation.patch is None:
             return False, "\n".join(implementation.errors)
-        applied = self.file_patcher.apply(implementation.patch)
-        if not applied.ok:
-            return False, "\n".join(applied.errors)
-        corrected_tests = sorted(set(applied.changed_files) & set(test_files))
-        build = ProjectBuilder(self.output_root).build()
-        if not build.ok:
-            _, restore_errors = self.file_patcher.restore(snapshot)
-            return False, "\n".join([
-                *build.errors,
-                *(f"PATCH_ROLLBACK_FAILED: {error}" for error in restore_errors),
-            ])
-        typecheck = self.test_runner.run_workspace_typecheck()
-        if typecheck.status != "PASSED":
-            _, restore_errors = self.file_patcher.restore(snapshot)
-            return False, "\n".join([
-                typecheck.stdout, typecheck.stderr, typecheck.error or "",
-                *(f"PATCH_ROLLBACK_FAILED: {error}" for error in restore_errors),
-            ])
+        corrected_tests = sorted(set(changed_files) & set(test_files))
         if corrected_tests:
             # Keep integrity checking enabled: only re-freeze tests explicitly
             # admitted by the agent's diagnosis and successfully built above.
@@ -520,10 +536,10 @@ class NodeTDDOrchestrator:
                 f"iteration={iteration}/{self.policy.max_iterations_per_layer} files={corrected_tests}")
         if commit_stage:
             ProjectGitHistory(self.output_root).commit(commit_stage, [
-                *applied.changed_files,
+                *changed_files,
                 *([".arc/tests/test_manifest.json"] if corrected_tests else []),
             ])
-        result.changed_files = sorted(set(result.changed_files) | set(applied.changed_files))
+        result.changed_files = sorted(set(result.changed_files) | set(changed_files))
         return True, ""
 
     def _owned_targets(self, requirement_id: str) -> list[dict[str, Any]]:

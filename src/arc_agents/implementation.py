@@ -185,7 +185,12 @@ class ImplementationAgent:
         )
         self._trace = trace
 
-    def implement(self, request: ImplementationRequest) -> ImplementationResult:
+    def implement(
+        self,
+        request: ImplementationRequest,
+        *,
+        accept_patch: Callable[[ProposedPatch], list[str]] | None = None,
+    ) -> ImplementationResult:
         requirement_id = str(request.requirement_id).strip()
         try:
             context, hashes = self._context(request)
@@ -217,25 +222,35 @@ class ImplementationAgent:
                 if self._trace:
                     self._trace(f"TEST_CORRECTION_AUTHORIZED requirement={requirement_id} "
                                 f"files={[row['file'] for row in decision['test_errors']]}")
-        invocation = self._agent.invoke(
-            context,
-            validate=lambda output: self._validate(output, hashes),
-        )
+        proposed_patch: ProposedPatch | None = None
+
+        def validate_attempt(output: dict[str, Any]) -> list[str]:
+            nonlocal proposed_patch
+            errors = self._validate(output, hashes)
+            if errors:
+                return errors
+            patch = ProposedPatch(requirement_id=requirement_id, edits=tuple(
+                ProposedEdit(
+                    file=row["file"], expected_sha256=hashes[row["file"]],
+                    search=row["search"], replacement=row["replacement"],
+                ) for row in output["edits"]
+            ))
+            if accept_patch is not None:
+                errors = accept_patch(patch)
+                if errors:
+                    return errors
+            proposed_patch = patch
+            return []
+
+        invocation = self._agent.invoke(context, validate=validate_attempt)
         if not invocation.ok or invocation.output is None:
             return ImplementationResult(
                 requirement_id, "MODEL_REJECTED",
                 attempts=invocation.attempts, errors=invocation.errors,
             )
-        edits = tuple(
-            ProposedEdit(
-                file=row["file"], expected_sha256=hashes[row["file"]],
-                search=row["search"], replacement=row["replacement"],
-            )
-            for row in invocation.output["edits"]
-        )
         return ImplementationResult(
             requirement_id, "PATCH_PROPOSED",
-            patch=ProposedPatch(requirement_id=requirement_id, edits=edits),
+            patch=proposed_patch,
             attempts=invocation.attempts,
         )
 

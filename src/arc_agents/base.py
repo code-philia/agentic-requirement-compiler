@@ -179,6 +179,10 @@ class BaseStructuredAgent:
                 f"MODEL_REJECTED attempt={attempt}/{self._retries + 1} "
                 + "; ".join(last_errors)
             )
+            # A failed rollback leaves the original context/hashes stale. Do not
+            # ask for another patch against a workspace we could not restore.
+            if any("PATCH_ROLLBACK_FAILED:" in error for error in last_errors):
+                return AgentInvocationResult(output=None, attempts=attempt, errors=last_errors)
         return AgentInvocationResult(
             output=None,
             attempts=self._retries + 1,
