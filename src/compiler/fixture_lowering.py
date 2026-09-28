@@ -87,7 +87,7 @@ def _render_database_initializer(statements: list[str]) -> str:
         'if (databaseUrl !== ":memory:") mkdirSync(dirname(resolve(databaseUrl)), { recursive: true });',
         'const database = new Database(databaseUrl);',
         f'const statements = {json.dumps(statements, ensure_ascii=False)};',
-        'const { fixture_sets: fixtureSets } = JSON.parse(readFileSync(new URL("../.arc/fixtures/fixture_ir.json", import.meta.url), "utf8"));',
+            'const { fixture_sets: fixtureSets } = JSON.parse(readFileSync(new URL("../.arc/design/database/fixture_ir.json", import.meta.url), "utf8"));',
         "try {",
         '  database.pragma("foreign_keys = OFF");',
         "  database.transaction(() => {",

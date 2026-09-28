@@ -55,8 +55,8 @@ class CheckpointStore:
             if committed != snapshot:
                 raise ValueError("Checkpoint snapshot differs from HEAD; select a committed checkpoint.")
             changed = history._run(["diff", "--name-only", "HEAD", "--", "backend", "frontend", "shared",
-                                    "package.json", "package-lock.json", ".arc/design", ".arc/database",
-                                    ".arc/fixtures", ".arc/preprocessing", ".arc/project"])
+                                    "package.json", "package-lock.json", ".arc/design", ".arc/lowering",
+                                    ".arc/database", ".arc/fixtures", ".arc/code", ".arc/preprocessing", ".arc/project"])
             if changed:
                 raise ValueError("Checkpoint source has uncommitted changes: " + changed)
             self.payload = snapshot["payload"]
@@ -150,6 +150,15 @@ def legacy_snapshot(history: ProjectGitHistory, commit: str, stage: str) -> dict
         raise ValueError(f"Expected historical stage commit 'ARC: {expected[stage]}', got {subject!r}")
     def read(path: str) -> dict[str, Any]:
         return json.loads(history._run(["show", f"{commit}:{path}"]))
+
+    def read_first(*paths: str) -> dict[str, Any]:
+        last: Exception | None = None
+        for path in paths:
+            try:
+                return read(path)
+            except Exception as exc:
+                last = exc
+        raise last or ValueError("No historical artifact path supplied")
     manifest = read(".arc/project/project-manifest.json")
     port = urlparse(manifest["deployment"]["e2eBaseUrl"]).port
     if port is None:
@@ -161,18 +170,35 @@ def legacy_snapshot(history: ProjectGitHistory, commit: str, stage: str) -> dict
         payload["preprocessing"] = {"requirement_ir": requirements,
                                     "dependency_graph": read(".arc/preprocessing/dependency_graph.json")}
         digest = requirements["source"]["sha256"]
-        payload["database"] = read(".arc/database/schema.json")
+        payload["database"] = read_first(".arc/design/database/schema.json", ".arc/database/schema.json")
     if stage in {"backend-ir", "frontend-ir", "lowered"}:
-        payload["fixture_ir"] = read(".arc/fixtures/fixture_ir.json")
-        payload["design"] = read(".arc/design/design.json")
+        payload["fixture_ir"] = read_first(".arc/design/database/fixture_ir.json", ".arc/fixtures/fixture_ir.json")
+        requirements = read_first(".arc/design/backend/requirements.json", ".arc/design/design.json")
+        modules = read_first(".arc/design/backend/modules.json", ".arc/design/design.json")
+        payload["design"] = {"requirements": requirements.get("requirements", []),
+                              "modules": modules.get("modules", [])}
+        if "modules" not in modules and "requirements" in modules:
+            payload["design"] = modules
     if stage in {"frontend-ir", "lowered"}:
-        payload["frontend"] = {"frontend_ir": read(".arc/design/frontend/frontend.json"),
-                               "report": read(".arc/design/frontend/report.json")}
+        frontend_tables = {}
+        for table in ("components", "data", "ui", "properties", "events", "handlers", "effects", "api_dependencies"):
+            frontend_tables[table] = read_first(
+                f".arc/design/frontend/{table}.json",
+                ".arc/design/frontend/frontend.json",
+            ).get(table, [])
+        metadata = read_first(".arc/design/frontend/metadata.json", ".arc/design/frontend/frontend.json")
+        frontend_ir = {"root_component_id": metadata.get("root_component_id") or next(
+            (row["id"] for row in frontend_tables["components"] if row.get("name") == "App"), None
+        ), **frontend_tables}
+        visual = read_first(".arc/design/frontend/visual_references.json", ".arc/design/frontend/visual-references.json")
+        frontend_ir["visual_references"] = visual.get("visual_references", [])
+        payload["frontend"] = {"frontend_ir": frontend_ir,
+                               "report": read_first(".arc/design/frontend/report.json")}
         if payload["frontend"]["report"]["status"] not in {"GENERATED", "GENERATED_WITH_WARNINGS"}:
             raise ValueError("Historical frontend IR is partial; select backend-ir instead")
         if "root_component_id" not in payload["frontend"]["frontend_ir"]:
             raise ValueError("Historical Thin Frontend IR is not supported")
-    if stage == "lowered" and read(".arc/code/frontend/lowering.json").get("build_status") != "PASSED":
+    if stage == "lowered" and read_first(".arc/lowering/frontend/lowering.json", ".arc/code/frontend/lowering.json").get("build_status") != "PASSED":
         raise ValueError("Historical lowering has no successful build record")
     return {"stage": stage, "web_port": port, "requirement_sha256": digest, "payload": payload}
 

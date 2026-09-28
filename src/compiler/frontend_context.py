@@ -53,13 +53,21 @@ def frontend_subgraph(ir: dict[str, Any], requirement_id: str, target_ids: set[s
 
 def visual_context(project_root: Path, requirement_id: str) -> list[dict[str, Any]]:
     root = project_root / ".arc/design/frontend"
-    cache_path = root / "visual-references.json"
+    cache_path = root / "visual_references.json"
+    if not cache_path.is_file():
+        cache_path = root / "visual_cache.json"
     if not cache_path.is_file():
         return []
     try:
         cached = json.loads(cache_path.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError):
         return []
+    if isinstance(cached, dict) and isinstance(cached.get("visual_references"), list):
+        cached = {
+            str(row.get("id", index)): row
+            for index, row in enumerate(cached["visual_references"])
+            if isinstance(row, dict)
+        }
     if not isinstance(cached, dict):
         return []
 
@@ -88,7 +96,9 @@ def visual_context(project_root: Path, requirement_id: str) -> list[dict[str, An
             for key in ("visual_reference_path", "source_path"):
                 if row.get(key):
                     linked_paths.add(str(row[key]).replace(chr(92), "/"))
-    trace_path = root / "traceability.json"
+    trace_path = root / "requirements.json"
+    if not trace_path.is_file():
+        trace_path = root / "traceability.json"
     if trace_path.is_file():
         try:
             trace = json.loads(trace_path.read_text(encoding="utf-8"))

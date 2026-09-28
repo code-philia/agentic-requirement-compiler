@@ -79,10 +79,10 @@ class Compiler:
             artifacts["checkpoint"] = str(request.output_dir / ".arc/checkpoints/current.json")
             for name, relative in {
                 "project_manifest": ".arc/project/project-manifest.json",
-                "database_schema": ".arc/database/schema.json", "fixture_ir": ".arc/fixtures/fixture_ir.json",
-                "design_ir": ".arc/design/design.json", "frontend_design_ir": ".arc/design/frontend/frontend.json",
-                "frontend_traceability": ".arc/design/frontend/traceability.json",
-                "frontend_lowering_report": ".arc/code/frontend/lowering.json",
+                "database_schema": ".arc/design/database/schema.json", "fixture_ir": ".arc/design/database/fixture_ir.json",
+                "design_ir": ".arc/design/backend/modules.json", "frontend_design_ir": ".arc/design/frontend/components.json",
+                "frontend_traceability": ".arc/design/frontend/requirements.json",
+                "frontend_lowering_report": ".arc/lowering/frontend/lowering.json",
             }.items():
                 if (request.output_dir / relative).is_file():
                     artifacts[name] = str(request.output_dir / relative)
@@ -536,11 +536,34 @@ class Compiler:
                     artifacts=artifacts,
                 )
             artifacts.update(artifact_store.write_generated_sources(backend_glue.sources))
+            artifacts.update(artifact_store.write_backend_lowering(
+                report={
+                    "status": "LOWERED",
+                    "errors": list(backend_glue.errors),
+                    "warnings": [],
+                    "files": sorted(backend_glue.sources),
+                    "manifest": backend_glue.manifest,
+                    "import_plan": backend_glue.import_plan,
+                    "route_registry": backend_glue.route_registry,
+                },
+                sources=backend_glue.sources,
+                tables={
+                    "symbols": symbol_planning.registry,
+                    "files": file_planning.registry,
+                    "types": type_lowering.manifest,
+                    "database": lowered_database.manifest,
+                    "modules_db": db_modules.manifest,
+                    "modules_func": func_modules.manifest,
+                    "modules_api": api_modules.manifest,
+                    "routes": backend_glue.route_registry,
+                    "imports": backend_glue.import_plan,
+                },
+            ))
             await self._log(
                 "Compiler",
                 "Global Glue Code, Route Registration, Barrel Export, Import Plan, and Backend Manifest generated.",
             )
-            history.commit("3.2 backend lowering", [".arc", "backend/src", "shared/src"])
+            history.commit("3.2 backend lowering", [".arc/lowering/backend", "backend/src", "shared/src"])
             failed_gate = await self._build_gate(request, "3.2 backend lowering", root_id, states, artifacts)
             if failed_gate is not None:
                 return failed_gate
@@ -561,7 +584,7 @@ class Compiler:
             visuals = VisualReferenceResolver().resolve(
                 request.requirement_path, preprocessing.requirement_ir,
             )
-            visual_path = artifact_store.frontend_design_root / "visual-references.json"
+            visual_path = artifact_store.frontend_design_root / "visual_cache.json"
             visual_analysis = VisualReferenceAnalyzer.from_env(artifact_store.root).analyze_cached(
                 visuals.references, visual_path,
             )
@@ -653,7 +676,7 @@ class Compiler:
             for rid in requirement_ids:
                 states[rid] = "FRONTEND_BUILD_FAILED"
             return failed_gate
-        history.commit("4.3 frontend build accepted", [".arc/code/frontend"])
+        history.commit("4.3 frontend build accepted", [".arc/lowering/frontend"])
         checkpoints.save("lowered")
         await self._log("Compiler", "Frontend React lowering completed; build and typecheck passed.", "success")
         return await self._continue_after_lowering(
@@ -683,7 +706,10 @@ class Compiler:
             types = checked(TypeLowerer().lower(symbols.registry, files.registry))
             modules = {kind: checked(ModuleSkeletonLowerer().lower(
                 kind, design_ir, symbols.registry, files.registry)).manifest for kind in ("DB", "FUNC", "API")}
-            report = json.loads((request.output_dir / ".arc/code/frontend/lowering.json").read_text(encoding="utf-8"))
+            report_path = request.output_dir / ".arc/lowering/frontend/lowering.json"
+            if not report_path.is_file():
+                report_path = request.output_dir / ".arc/code/frontend/lowering.json"
+            report = json.loads(report_path.read_text(encoding="utf-8"))
             bindings = checked(CodeBindingLowerer().lower(
                 output_root=request.output_dir, requirement_ir=preprocessing.requirement_ir,
                 dependency_graph=preprocessing.dependency_graph, design_ir=design_ir, frontend_ir=frontend_ir,
@@ -697,7 +723,7 @@ class Compiler:
             await self._log("Compiler", f"TDD handoff failed: {exc}", "error")
             return CompilationResult(ok=False, root_id=root_id, states=states, artifacts=artifacts)
         artifacts["code_bindings"] = artifact_store.write_code_bindings(bindings.registry)
-        ProjectGitHistory(request.output_dir).commit("4.4 code bindings", [".arc/code/code_bindings.json"])
+        ProjectGitHistory(request.output_dir).commit("4.4 code bindings", [".arc/lowering/code_bindings.json"])
         return await self._run_tdd(
             request=request, artifact_store=artifact_store, requirement_ir=preprocessing.requirement_ir,
             dependency_graph=preprocessing.dependency_graph, database_schema=database_schema,

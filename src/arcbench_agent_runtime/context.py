@@ -16,7 +16,10 @@ class RuntimePaths:
         return cls(
             project_dir=root,
             runner_events_path=root / ".arc" / "runner-events.jsonl",
-            traceability_dir=root / ".arc" / "traceability",
+            # Cross-stage requirement links are design metadata, not a second
+            # top-level artifact tree.  Keep them beside the stage-owned design
+            # tables so .arc has one canonical layout.
+            traceability_dir=root / ".arc" / "design" / "traceability",
         )
 
     def ensure_parent_dirs(self) -> None:

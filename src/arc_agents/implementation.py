@@ -37,7 +37,9 @@ IMPLEMENTATION_OUTPUT_SCHEMA: dict[str, Any] = {
 
 IMPLEMENTATION_INSTRUCTIONS = """Implement the supplied requirement in the editable source files.
 When aggregate_requirement is supplied, repair its failing user journey through
-the current child requirement's owned source files; do not edit other owners' files.
+the supplied editable source files, including dependency modules where necessary.
+Dependency ownership does not prohibit edits when the file is in editable_files.
+Preserve dependency public contracts and behavior used by other requirements.
 The requirement is the source of behavior. Read the complete related source files for
 existing signatures, imports, exports, types and dependencies. If test_output is
 present, it is the unmodified output of the test/build command, not a diagnosis.
@@ -95,6 +97,9 @@ class ImplementationRequest:
     test_output: str = ""
     test_files: tuple[str, ...] = ()
     frontend_ir: dict[str, Any] | None = None
+    iteration: int = 0
+    iteration_limit: int = 5
+    test_layer: str = ""
 
 
 @dataclass(slots=True)
@@ -176,6 +181,11 @@ class ImplementationAgent:
             if (not requested or row["module_id"] in requested)
             and (self._allowed_kinds is None or row["kind"] in self._allowed_kinds)
         ]
+        owned.extend(
+            row for row in resolved["dependency_targets"]
+            if (self._allowed_kinds is None or row["kind"] in self._allowed_kinds)
+            and row["module_id"] not in {item["module_id"] for item in owned}
+        )
         if requested - {row["module_id"] for row in owned}:
             raise ValueError("Requested target is not writable by this requirement and agent.")
         if not owned:
@@ -235,6 +245,9 @@ class ImplementationAgent:
                 related_files[relative] = self._read_file(relative)
         context = {
             "requirement_id": request.requirement_id,
+            "iteration": request.iteration,
+            "iteration_limit": request.iteration_limit,
+            "test_layer": request.test_layer,
             "implementation_mode": "frontend" if request.frontend_ir is not None else "backend",
             "requirement": request.requirement,
             "editable_files": editable_files,

@@ -105,7 +105,7 @@ class FrontendIRGenerationPass:
     def __init__(self, model: StructuredModel, artifact_root: Path,
                  visual_model: VisualStructuredModel | None = None) -> None:
         self.model = model
-        self.traceability_path = artifact_root / "design" / "frontend" / "traceability.json"
+        self.traceability_path = artifact_root / "design" / "frontend" / "requirements.json"
         self.visual_model = visual_model
         self.log = SynchronousLog("FrontendIRGenerationPass", workspace_root=artifact_root.resolve().parent)
 
@@ -224,8 +224,7 @@ class FrontendIRGenerationPass:
                                       **{key: [] for key in ("component_ids", "ui_ids", "data_ids", "property_ids",
                                                             "event_ids", "handler_ids", "effect_ids")},
                                       **links.get(rid, {})}
-        write_json_atomic(self.traceability_path, {"status": status, "requirements": self.traceability,
-                                                   "ui_data": ui_data_associations(self.workspace.export())})
+        write_json_atomic(self.traceability_path, {"status": status, "requirements": self.traceability})
 
     def _requirement_task(self, stage: str, task: dict[str, Any]) -> bool:
         rid = task["id"]

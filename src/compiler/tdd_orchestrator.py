@@ -22,16 +22,16 @@ from .test_runner import TestRunResult, TestRunner, TestSelection
 
 @dataclass(frozen=True, slots=True)
 class NodeTDDPolicy:
-    max_iterations_per_layer: int = 10
+    max_iterations_per_layer: int = 5
 
     @classmethod
     def from_environment(cls, environment: Mapping[str, str] | None = None) -> "NodeTDDPolicy":
         values = os.environ if environment is None else environment
-        raw = values.get("ARC_TDD_MAX_ITERATIONS_PER_LAYER", "10")
+        raw = values.get("ARC_TDD_MAX_ITERATIONS_PER_LAYER", "5")
         try:
             budget = max(1, min(int(raw), 50))
         except (TypeError, ValueError):
-            budget = 10
+            budget = 5
         return cls(max_iterations_per_layer=budget)
 
 
@@ -334,12 +334,14 @@ class NodeTDDOrchestrator:
                 result.failed_requirements.append(requirement_id)
                 return self._fail(result, self._raw_output(run))
             aggregate_repairs: list[tuple[str, tuple[str, ...], bool]] = []
-            if layer == "E2E" and not self._owned_targets(requirement_id):
+            scope = CodeTargetResolver(self.code_binding_registry).resolve_requirement_targets(requirement_id)
+            has_editable_targets = bool(scope["owned_targets"] or scope["dependency_targets"])
+            if layer == "E2E" and not has_editable_targets:
                 aggregate_repairs = self._aggregate_repair_targets(requirement_id)
             feedback = self._raw_output(run)
             while not run.ok:
                 budget_key = (requirement_id, layer)
-                if layer == "E2E" and not self._owned_targets(requirement_id) and not aggregate_repairs:
+                if layer == "E2E" and not has_editable_targets and not aggregate_repairs:
                     result.failed_requirements.append(requirement_id)
                     return self._fail(
                         result,
@@ -347,12 +349,18 @@ class NodeTDDOrchestrator:
                         feedback,
                     )
                 if budgets.get(budget_key, 0) >= self.policy.max_iterations_per_layer:
+                    self._trace_implementation(
+                        f"REPAIR_BUDGET_EXHAUSTED requirement={requirement_id} layer={layer} "
+                        f"iteration={budgets[budget_key]}/{self.policy.max_iterations_per_layer}")
                     result.failed_requirements.append(requirement_id)
                     result.errors.append(feedback)
                     result.status = "BUDGET_EXHAUSTED"
                     return result
                 repair_index = budgets.get(budget_key, 0)
                 budgets[budget_key] = repair_index + 1
+                self._trace_implementation(
+                    f"REPAIR_STARTED requirement={requirement_id} layer={layer} "
+                    f"iteration={repair_index + 1}/{self.policy.max_iterations_per_layer}")
                 agent = (
                     self.frontend_implementation_agent
                     if layer == "E2E" else self.implementation_agent
@@ -377,16 +385,25 @@ class NodeTDDOrchestrator:
                     result,
                     target_ids=target_ids,
                     test_output=feedback,
+                    iteration=repair_index + 1,
+                    test_layer=layer,
                     test_files=tuple(run.selected_files),
                     commit_stage=f"6.{TEST_LAYERS.index(layer) + 3} {layer.lower()} repair {requirement_id}",
                 )
                 if not changed:
+                    self._trace_implementation(
+                        f"REPAIR_REJECTED requirement={requirement_id} layer={layer} "
+                        f"iteration={repair_index + 1}/{self.policy.max_iterations_per_layer} error={error}")
                     if "PATCH_ROLLBACK_FAILED:" in error:
                         result.failed_requirements.append(requirement_id)
                         return self._fail(result, self._raw_output(run), error)
                     feedback = "\n".join(part for part in (self._raw_output(run), error) if part)
                     continue
                 run = self._run_tests(requirement_id, layer)
+                self._trace_implementation(
+                    f"REPAIR_FINISHED requirement={requirement_id} layer={layer} "
+                    f"iteration={repair_index + 1}/{self.policy.max_iterations_per_layer} "
+                    f"status={'PASSED' if run.ok else 'FAILED'}")
                 if not run.commands:
                     result.failed_requirements.append(requirement_id)
                     return self._fail(result, *run.errors)
@@ -434,6 +451,8 @@ class NodeTDDOrchestrator:
         test_output: str = "",
         test_files: tuple[str, ...] = (),
         commit_stage: str = "",
+        iteration: int = 0,
+        test_layer: str = "",
     ) -> tuple[bool, str]:
         snapshot = self.file_patcher.snapshot(self._checkpoint_files(requirement_id))
         implementation = agent.implement(ImplementationRequest(
@@ -444,6 +463,9 @@ class NodeTDDOrchestrator:
             test_output=test_output,
             test_files=test_files,
             frontend_ir=self.frontend_ir if agent is self.frontend_implementation_agent else None,
+            iteration=iteration,
+            iteration_limit=self.policy.max_iterations_per_layer,
+            test_layer=test_layer,
         ))
         if not implementation.ok or implementation.patch is None:
             return False, "\n".join(implementation.errors)
@@ -481,9 +503,10 @@ class NodeTDDOrchestrator:
         )
 
     def _checkpoint_files(self, requirement_id: str) -> list[str]:
+        resolved = CodeTargetResolver(self.code_binding_registry).resolve_requirement_targets(requirement_id)
         return sorted({
             str(row["file"])
-            for row in self._owned_targets(requirement_id)
+            for row in [*resolved["owned_targets"], *resolved["dependency_targets"]]
             if row.get("file")
         })
 

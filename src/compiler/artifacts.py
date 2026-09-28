@@ -14,11 +14,13 @@ class CompilerArtifactStore:
     def __init__(self, output_dir: Path) -> None:
         self.root = output_dir.expanduser().resolve() / ".arc"
         self.preprocessing_root = self.root / "preprocessing"
-        self.database_root = self.root / "database"
-        self.fixtures_root = self.root / "fixtures"
         self.design_root = self.root / "design"
+        self.database_root = self.design_root / "database"
+        self.backend_design_root = self.design_root / "backend"
         self.frontend_design_root = self.design_root / "frontend"
-        self.code_root = self.root / "code"
+        self.lowering_root = self.root / "lowering"
+        self.backend_lowering_root = self.lowering_root / "backend"
+        self.frontend_lowering_root = self.lowering_root / "frontend"
         self.tests_root = self.root / "tests"
 
     def write_preprocessing(
@@ -36,7 +38,7 @@ class CompilerArtifactStore:
         return {name: str(path) for name, path in paths.items()}
 
     def write_fixture_ir(self, fixture_ir: dict[str, Any]) -> str:
-        path = self.fixtures_root / "fixture_ir.json"
+        path = self.database_root / "fixture_ir.json"
         write_json_atomic(path, fixture_ir)
         return str(path)
 
@@ -48,9 +50,20 @@ class CompilerArtifactStore:
 
 
     def write_design(self, *, design_ir: dict[str, Any]) -> dict[str, str]:
-        path = self.design_root / "design.json"
-        write_json_atomic(path, design_ir)
-        return {"design_ir": str(path)}
+        requirements = design_ir.get("requirements", [])
+        modules = design_ir.get("modules", [])
+        paths = {
+            "design_requirements": self.backend_design_root / "requirements.json",
+            "design_modules": self.backend_design_root / "modules.json",
+            "design_modules_db": self.backend_design_root / "modules_db.json",
+            "design_modules_func": self.backend_design_root / "modules_func.json",
+            "design_modules_api": self.backend_design_root / "modules_api.json",
+        }
+        write_json_atomic(paths["design_requirements"], {"requirements": requirements})
+        write_json_atomic(paths["design_modules"], {"modules": modules})
+        for kind, key in (("DB", "design_modules_db"), ("FUNC", "design_modules_func"), ("API", "design_modules_api")):
+            write_json_atomic(paths[key], {"modules": [row for row in modules if row.get("kind") == kind]})
+        return {name: str(path) for name, path in paths.items()}
 
     def write_frontend_design(
         self, *, frontend_ir: dict[str, Any], report: dict[str, Any],
@@ -59,25 +72,33 @@ class CompilerArtifactStore:
     ) -> dict[str, str]:
         """Persist incremental design, including partial results, without the legacy validator."""
         from .frontend_generation import ui_data_associations
-        path = self.frontend_design_root / "frontend.json"
-        write_json_atomic(path, frontend_ir)
-        traceability_path = self.frontend_design_root / "traceability.json"
-        batch_paths = []
-        for index, batch in enumerate(batches, 1):
-            batch_path = self.frontend_design_root / "batches" / f"{index:05d}.json"
-            write_json_atomic(batch_path, batch)
-            batch_paths.append(str(batch_path.relative_to(self.frontend_design_root)))
-        # Only files in this manifest belong to this run; old batch files are not read back.
-        write_json_atomic(traceability_path, {"status": report["status"], "requirements": traceability,
-                                             "ui_data": ui_data_associations(frontend_ir),
-                                             "batch_files": batch_paths})
-        return {"frontend_design_ir": str(path), "frontend_traceability": str(traceability_path)}
+        paths: dict[str, str] = {}
+        for table in ("components", "data", "ui", "properties", "events", "handlers", "effects", "api_dependencies"):
+            path = self.frontend_design_root / f"{table}.json"
+            write_json_atomic(path, {table: frontend_ir.get(table, [])})
+            paths[f"frontend_{table}"] = str(path)
+        metadata_path = self.frontend_design_root / "metadata.json"
+        write_json_atomic(metadata_path, {"root_component_id": frontend_ir.get("root_component_id")})
+        paths["frontend_metadata"] = str(metadata_path)
+        visual_path = self.frontend_design_root / "visual_references.json"
+        write_json_atomic(visual_path, {"visual_references": frontend_ir.get("visual_references", [])})
+        report_path = self.frontend_design_root / "report.json"
+        write_json_atomic(report_path, report)
+        requirements_path = self.frontend_design_root / "requirements.json"
+        ui_data_path = self.frontend_design_root / "ui_data.json"
+        write_json_atomic(requirements_path, {"requirements": traceability})
+        write_json_atomic(ui_data_path, {"ui_data": ui_data_associations(frontend_ir)})
+        paths.update({"frontend_visual_references": str(visual_path),
+                      "frontend_report": str(report_path),
+                      "frontend_requirements": str(requirements_path),
+                      "frontend_ui_data": str(ui_data_path)})
+        return paths
 
     def write_frontend_lowering(
         self, *, report: dict[str, Any], sources: dict[str, str], batches: list[dict[str, Any]],
     ) -> dict[str, str]:
         """Keep failed attempts reviewable without replacing a working frontend."""
-        root = self.code_root / "frontend"
+        root = self.frontend_lowering_root
         if not hasattr(self, "_previous_frontend_sources"):
             installed = root / "installed-sources.json"
             previous = installed if installed.is_file() else root / "sources.json"
@@ -85,17 +106,31 @@ class CompilerArtifactStore:
             # Keep published-file ownership separate from a failed candidate generation.
             if not installed.is_file():
                 write_json_atomic(installed, self._previous_frontend_sources)
-        batch_files = []
-        for index, batch in enumerate(batches, 1):
-            path = root / "batches" / f"{index:05d}.json"
-            write_json_atomic(path, batch)
-            batch_files.append(str(path.relative_to(root)))
         report_path = root / "lowering.json"
-        write_json_atomic(report_path, {**report, "batch_files": batch_files})
+        write_json_atomic(report_path, report)
+        write_json_atomic(root / "bindings.json", {"bindings": report.get("bindings", [])})
+        write_json_atomic(root / "implementation_tasks.json", {
+            "implementation_tasks": report.get("implementation_tasks", [])
+        })
         # Candidate source remains an artifact until every local implementation succeeds.
         candidate_path = root / "sources.json"
         write_json_atomic(candidate_path, sources)
         return {"frontend_lowering_report": str(report_path), "frontend_lowering_sources": str(candidate_path)}
+
+    def write_backend_lowering(
+        self, *, report: dict[str, Any], sources: dict[str, str],
+        tables: dict[str, Any] | None = None,
+    ) -> dict[str, str]:
+        """Persist backend lowering in the same report/source shape as frontend."""
+        root = self.backend_lowering_root
+        report_path = root / "lowering.json"
+        sources_path = root / "sources.json"
+        write_json_atomic(report_path, report)
+        write_json_atomic(sources_path, sources)
+        for name, value in (tables or {}).items():
+            write_json_atomic(root / f"{name}.json", value)
+        return {"backend_lowering_report": str(report_path),
+                "backend_lowering_sources": str(sources_path)}
 
     def write_frontend_sources(self, sources: dict[str, str]) -> dict[str, str]:
         """Retire unchanged compiler-owned files after component renaming, preserving recoverability."""
@@ -120,14 +155,14 @@ class CompilerArtifactStore:
                 raise ValueError(f"Obsolete generated file has local edits; preserve or move it before lowering: {relative}")
             retiring.append((relative, target))
         artifacts = self.write_generated_sources(sources)
-        archive = self.code_root / "frontend" / "retired" / uuid.uuid4().hex
+        archive = self.frontend_lowering_root / "retired" / uuid.uuid4().hex
         for relative, target in retiring:
             backup = archive / relative
             backup.parent.mkdir(parents=True, exist_ok=True)
             target.rename(backup)
             artifacts[f"retired_source:{relative}"] = str(backup)
         self._previous_frontend_sources = dict(sources)
-        write_json_atomic(self.code_root / "frontend" / "installed-sources.json", sources)
+        write_json_atomic(self.frontend_lowering_root / "installed-sources.json", sources)
         return artifacts
 
     def read_project_manifest(self) -> tuple[dict[str, Any] | None, str | None]:
@@ -167,7 +202,7 @@ class CompilerArtifactStore:
 
 
     def write_code_bindings(self, registry: dict[str, Any]) -> str:
-        path = self.code_root / "code_bindings.json"
+        path = self.lowering_root / "code_bindings.json"
         write_json_atomic(path, registry)
         return str(path)
 
