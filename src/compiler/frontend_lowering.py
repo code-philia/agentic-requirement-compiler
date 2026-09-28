@@ -174,7 +174,7 @@ class FrontendGlobalSymbolPlanner:
             owner_id=symbol_id,
             fields=fields,
             events=events,
-            includes_children=kind == "LAYOUT",
+            includes_children=kind == "LAYOUT" or item.get("composition_mode") == "CONTENT_SLOT",
         )
         self._ui_bindings[symbol_id] = {
             "ui_id": symbol_id,
@@ -1173,6 +1173,9 @@ class FrontendSkeletonLowerer:
                 implementation_dependencies.append("useNavigate")
             fields = item.get("route_inputs", []) if kind == "PAGE" else item.get("inputs", [])
             props_lines.extend(_render_fields(fields).splitlines() if fields else [])
+            if kind == "COMPONENT" and item.get("composition_mode") == "CONTENT_SLOT":
+                rows.append(_import("ReactNode", "react", type_only=True))
+                props_lines.append("  children?: ReactNode;")
             if kind == "COMPONENT":
                 for event in item.get("events", []):
                     if not isinstance(event, dict):
@@ -1270,6 +1273,8 @@ class FrontendSkeletonLowerer:
             ]
             body_lines = [*obligation_lines, *child_lines]
             if kind == "LAYOUT":
+                body_lines.append("      {_props.children}")
+            if kind == "COMPONENT" and item.get("composition_mode") == "CONTENT_SLOT":
                 body_lines.append("      {_props.children}")
             if not body_lines:
                 body_lines.append("      <span>Implementation pending</span>")

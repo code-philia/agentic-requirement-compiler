@@ -175,7 +175,10 @@ class BaseStructuredAgent:
                 *base_feedback,
                 *last_errors,
             ]
-            self._emit("MODEL_REJECTED " + "; ".join(last_errors))
+            self._emit(
+                f"MODEL_REJECTED attempt={attempt}/{self._retries + 1} "
+                + "; ".join(last_errors)
+            )
         return AgentInvocationResult(
             output=None,
             attempts=self._retries + 1,

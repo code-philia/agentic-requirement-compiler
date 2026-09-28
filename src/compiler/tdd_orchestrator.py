@@ -1,14 +1,17 @@
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Mapping
 
 from arc_agents import FrontendImplementationAgent, ImplementationAgent, ImplementationRequest, JsonModel
+from core.logging import append_debug_log, write_terminal_log
 
 from .code_binding import CodeTargetResolver
 from .exact_file_patcher import ExactFilePatcher
+from .frontend_thin_design import project_frontend_runtime_ir
 from .git_history import ProjectGitHistory
 from .project_build import ProjectBuilder
 from .test_generation import TEST_LAYERS
@@ -68,14 +71,42 @@ class NodeTDDOrchestrator:
         self.requirement_ir = requirement_ir
         self.code_binding_registry = code_binding_registry
         self.frontend_ir = frontend_ir
+        runtime_ir = project_frontend_runtime_ir(frontend_ir) if frontend_ir is not None else {}
+        self._frontend_pages = {
+            str(row["id"]): row for row in runtime_ir.get("pages", []) if isinstance(row, dict)
+        }
+        self._frontend_components = {
+            str(row["id"]): row for row in runtime_ir.get("components", []) if isinstance(row, dict)
+        }
+        self._binding_by_id = {
+            str(row["module_id"]): row
+            for row in code_binding_registry.get("code_bindings", []) if isinstance(row, dict)
+        }
         self.test_manifest = test_manifest
         self.policy = policy or NodeTDDPolicy.from_environment()
         self.test_runner = test_runner or TestRunner(self.output_root)
         self.implementation_agent = implementation_agent or ImplementationAgent(model, self.output_root)
         self.frontend_implementation_agent = frontend_implementation_agent or FrontendImplementationAgent(
-            model, self.output_root
+            model, self.output_root, trace=self._trace_frontend_implementation
         )
         self.file_patcher = file_patcher or ExactFilePatcher(self.output_root)
+
+    def _trace_frontend_implementation(self, message: str) -> None:
+        if "MODEL_REJECTED" not in message or "read-only or unknown file" not in message:
+            return
+        attempt = re.search(r"attempt=(\d+)/(\d+)", message)
+        retrying = attempt is not None and int(attempt.group(1)) < int(attempt.group(2))
+        detail = (
+            "The edit was rejected without changing any source. Regenerating with the "
+            "writable-file allowlist."
+            if retrying else "The edit was rejected without changing any source; retry budget exhausted."
+        )
+        warning = f"ARC4551 FRONTEND_EDIT_SCOPE_WARNING: {message} {detail}"
+        append_debug_log(
+            "NodeTDDOrchestrator", warning, status="warning",
+            workspace_root=str(self.output_root),
+        )
+        write_terminal_log("NodeTDDOrchestrator", warning, status="warning")
 
     def implement_backend(self, requirement_ids: list[str]) -> TDDStageResult:
         return self._implement_stage(
@@ -142,55 +173,66 @@ class NodeTDDOrchestrator:
             if not targets:
                 continue
             requirement = self._requirement(requirement_id)
-            changed, error = self._apply_edit(
-                requirement_id,
-                requirement,
-                agent,
-                result,
-                target_ids=tuple(str(target["module_id"]) for target in targets),
-                test_files=tuple(
-                    str(row["test_file"])
-                    for row in (self.test_manifest or {}).get("files", [])
-                    if row.get("requirement_id") == requirement_id
-                ),
+            phases = (
+                [
+                    [row for row in targets if row.get("kind") != "PAGE"],
+                    [row for row in targets if row.get("kind") == "PAGE"],
+                ] if agent is self.frontend_implementation_agent else [targets]
             )
-            if not changed:
-                result.failed_requirements.append(requirement_id)
-                result.errors.append(f"{requirement_id}: {error}")
-                result.status = "IMPLEMENTATION_FAILED"
-                return result
-            if agent is self.frontend_implementation_agent:
-                for _ in range(self.policy.max_iterations_per_layer):
-                    pending = self._pending_frontend_targets(targets)
-                    if not pending:
-                        break
-                    changed, error = self._apply_edit(
-                        requirement_id,
-                        requirement,
-                        agent,
-                        result,
-                        target_ids=tuple(str(row["module_id"]) for row in pending),
-                        test_output=(
-                            "FRONTEND_INCOMPLETE: replace every 'Implementation pending' "
-                            "skeleton with complete UI matching frontend_design, including "
-                            "all states and visual references. Remaining files: "
-                            + ", ".join(sorted({str(row["file"]) for row in pending}))
-                        ),
-                    )
-                    if not changed:
-                        result.failed_requirements.append(requirement_id)
-                        result.errors.append(f"{requirement_id}: {error}")
-                        result.status = "IMPLEMENTATION_FAILED"
-                        return result
-                pending = self._pending_frontend_targets(targets)
-                if pending:
+            for phase_targets in phases:
+                if not phase_targets:
+                    continue
+                changed, error = self._apply_edit(
+                    requirement_id,
+                    requirement,
+                    agent,
+                    result,
+                    target_ids=tuple(str(row["module_id"]) for row in phase_targets),
+                    test_files=tuple(
+                        str(row["test_file"])
+                        for row in (self.test_manifest or {}).get("files", [])
+                        if row.get("requirement_id") == requirement_id
+                    ),
+                )
+                if not changed:
                     result.failed_requirements.append(requirement_id)
-                    result.errors.append(
-                        f"{requirement_id}: FRONTEND_INCOMPLETE: unfinished UI in "
-                        + ", ".join(sorted({str(row["file"]) for row in pending}))
-                    )
+                    result.errors.append(f"{requirement_id}: {error}")
                     result.status = "IMPLEMENTATION_FAILED"
                     return result
+                if agent is self.frontend_implementation_agent:
+                    for _ in range(self.policy.max_iterations_per_layer):
+                        pending = self._pending_frontend_targets(phase_targets)
+                        if not pending:
+                            break
+                        changed, error = self._apply_edit(
+                            requirement_id,
+                            requirement,
+                            agent,
+                            result,
+                            target_ids=tuple(str(row["module_id"]) for row in pending),
+                            test_output=(
+                                "FRONTEND_INCOMPLETE: finish every placeholder and compose "
+                                "shared children instead of duplicating them. CONTENT_SLOT "
+                                "form components must wrap the page form and render children. "
+                                "Remaining files: "
+                                + ", ".join(sorted({str(row["file"]) for row in pending}))
+                            ),
+                        )
+                        if not changed:
+                            result.failed_requirements.append(requirement_id)
+                            result.errors.append(f"{requirement_id}: {error}")
+                            result.status = "IMPLEMENTATION_FAILED"
+                            return result
+                    pending = self._pending_frontend_targets(phase_targets)
+                    if pending:
+                        result.failed_requirements.append(requirement_id)
+                        result.errors.append(
+                            f"{requirement_id}: FRONTEND_INCOMPLETE: unfinished UI or "
+                            "uncomposed child in "
+                            + ", ".join(sorted({str(row["file"]) for row in pending}))
+                        )
+                        result.status = "IMPLEMENTATION_FAILED"
+                        return result
         return result
 
     def _pending_frontend_targets(self, targets: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -208,6 +250,31 @@ class NodeTDDOrchestrator:
                 f"data-arc-{str(row['kind']).lower()}=",
             )):
                 pending.append(row)
+                continue
+            if row.get("kind") == "COMPONENT":
+                component = self._frontend_components.get(str(row["module_id"]), {})
+                if component.get("composition_mode") == "CONTENT_SLOT" and not re.search(
+                    r"\{\s*(?:(?:_props|props)\.)?children\s*\}", text,
+                ):
+                    pending.append(row)
+            if row.get("kind") == "PAGE":
+                page = self._frontend_pages.get(str(row["module_id"]), {})
+                for child_id in page.get("component_ids", []):
+                    child = self._frontend_components.get(str(child_id), {})
+                    symbol = str(self._binding_by_id.get(str(child_id), {}).get("symbol", ""))
+                    if not symbol:
+                        continue
+                    if not re.search(r"<" + re.escape(symbol) + r"\b", text):
+                        pending.append(row)
+                        break
+                    if child.get("composition_mode") == "CONTENT_SLOT" and not re.search(
+                        r"<" + re.escape(symbol) + r"\b[^>]*>"
+                        r"(?:(?!</" + re.escape(symbol) + r"\s*>).)*?<form\b"
+                        r"(?:(?!</" + re.escape(symbol) + r"\s*>).)*?"
+                        r"</" + re.escape(symbol) + r"\s*>", text, re.DOTALL,
+                    ):
+                        pending.append(row)
+                        break
         return pending
 
     def _run_layer(

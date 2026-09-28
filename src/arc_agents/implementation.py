@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import hashlib
 import posixpath
 import re
@@ -44,6 +45,10 @@ Use the supplied test source only to understand the expected behavior; do not ed
 Do not invent paths, change tests or edit read-only files. Preserve existing public
 interfaces, routes and generated glue. Return only JSON with exact file/search/replacement
 edits. Copy search verbatim from a unique fragment of the current editable file.
+The keys of editable_files are the complete write allowlist for this invocation.
+related_files, test files, and paths mentioned in frontend_design are read-only context.
+If a screen is only in related_files, implement its owned components now; the page
+will be handled in its own subsequent invocation.
 """
 
 FRONTEND_IMPLEMENTATION_INSTRUCTIONS = IMPLEMENTATION_INSTRUCTIONS + """
@@ -58,6 +63,11 @@ match their composition, colors, typography, spacing, and prominent controls as 
 as the supplied evidence allows. Reuse the reference style across related screens that
 do not have their own image. Passing E2E assertions alone is not completion.
 Only edit supplied editable files; preserve component contracts and existing behavior.
+Treat editable_modules.component_ids as composition contracts: implement child modules
+first, place shared header/navigation/footer in their page regions, and do not recreate
+their markup beside a decorative or empty child invocation. A CONTENT_SLOT component
+owns the shared presentation and renders its children; the page supplies its actual
+form fields and submit behavior inside that component, never as a sibling form.
 """
 
 
@@ -209,6 +219,7 @@ class ImplementationAgent:
         context = {
             "requirement": request.requirement,
             "editable_files": editable_files,
+            "writable_file_paths": sorted(editable_files),
             "related_files": related_files,
         }
         if request.frontend_ir is not None:
@@ -220,11 +231,20 @@ class ImplementationAgent:
                 for row in runtime_ir.get(table, [])
                 if isinstance(row, dict) and str(row.get("id", "")) in target_ids
             ]
+            child_ids = {
+                str(child_id)
+                for row in frontend_modules
+                for child_id in row.get("component_ids", [])
+            }
+            component_contracts = [
+                row for row in runtime_ir.get("components", [])
+                if isinstance(row, dict) and str(row.get("id", "")) in child_ids
+            ]
             screens = [
                 row for row in frontend_ir.get("screens", [])
                 if isinstance(row, dict) and (
                     str(row.get("id", "")) in target_ids
-                    or requirement_id in row.get("requirement_ids", [])
+                    or request.requirement_id in row.get("requirement_ids", [])
                 )
             ]
             screen_ids = {str(row.get("id", "")) for row in screens}
@@ -234,7 +254,7 @@ class ImplementationAgent:
             ]
             visual_ids = {
                 str(visual_id)
-                for row in [*screens, *components, *frontend_modules]
+                for row in [*screens, *components, *frontend_modules, *component_contracts]
                 for visual_id in row.get("visual_reference_ids", [])
             }
             if not visual_ids:
@@ -247,6 +267,7 @@ class ImplementationAgent:
                 "screens": copy.deepcopy(screens),
                 "screen_components": copy.deepcopy(components),
                 "editable_modules": copy.deepcopy(frontend_modules),
+                "child_component_contracts": copy.deepcopy(component_contracts),
                 "visual_references": [
                     {
                         "id": row.get("id"),
@@ -281,11 +302,16 @@ class ImplementationAgent:
         if not isinstance(edits, list) or not edits:
             return ["Return at least one exact edit."]
         errors: list[str] = []
+        writable_paths = sorted(hashes)
         for row in edits:
             if not isinstance(row, dict) or set(row) != {"file", "search", "replacement"}:
                 errors.append("Each edit needs file, search and replacement.")
-            elif row["file"] not in hashes:
-                errors.append("Edit refers to a read-only or unknown file.")
+            elif not isinstance(row["file"], str) or row["file"] not in hashes:
+                errors.append(
+                    f"Edit targets read-only or unknown file {row['file']!r}. "
+                    f"Regenerate edits using only writable_file_paths={writable_paths!r}; "
+                    "related_files and frontend_design paths are context, not editable targets."
+                )
             elif not isinstance(row["search"], str) or not row["search"]:
                 errors.append("Search must contain an exact source fragment.")
             elif not isinstance(row["replacement"], str):

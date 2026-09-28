@@ -357,7 +357,7 @@ def _compile_decision(
                         requirement_id, fixture_key, field_name, str(field.get("type", ""))
                     )
                     continue
-                if field_name in {"created_at", "updated_at"} and field.get("type") in {"date", "datetime"}:
+                if field_name in {"created_at", "updated_at", "viewed_at"} and field.get("type") in {"date", "datetime"}:
                     values[field_name] = (
                         "2000-01-01" if field["type"] == "date" else "2000-01-01T00:00:00Z"
                     )

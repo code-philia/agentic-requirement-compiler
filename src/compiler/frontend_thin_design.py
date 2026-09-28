@@ -1292,8 +1292,16 @@ def project_frontend_runtime_ir(frontend_ir: dict[str, Any]) -> dict[str, Any]:
             suffix += 1
         component_ids.add(component_id)
         requirements = sorted({rid for screen in owners for rid in screen["requirement_ids"]})
+        content_slot = surface_key.endswith(".form")
         shared_components.append({
-            "id": component_id, "spec": f"Shared {surface_key} surface.", "inputs": [],
+            "id": component_id,
+            "spec": (
+                f"Shared {surface_key} form presentation. Render children as the sole form "
+                "content; the parent page owns fields, submission, and validation."
+                if content_slot else f"Shared {surface_key} surface; render its reusable UI here, not again in each page."
+            ),
+            "composition_mode": "CONTENT_SLOT" if content_slot else "SELF_CONTAINED",
+            "inputs": [],
             "scope": "SHARED", "owner_page_id": None, "owner_layout_id": None,
             "events": [], "requirement_ids": requirements, "layout_id": None,
             "component_ids": [], "api_dependencies": [], "store_dependencies": [
