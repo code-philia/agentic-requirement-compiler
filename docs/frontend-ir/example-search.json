@@ -1,0 +1,593 @@
+{
+  "schema_version": "arc.frontend-ir/1.0",
+  "root_component_id": "C.Search",
+  "components": [
+    {
+      "id": "C.Search",
+      "name": "Search",
+      "spec": "提供即时搜索：输入非空关键词后请求结果，空字符串清空结果；展示加载、错误和结果。",
+      "requirement_ids": [
+        "REQ.SEARCH"
+      ],
+      "ui_root_id": "U.Search"
+    }
+  ],
+  "data": [
+    {
+      "id": "D.Search.initialQuery",
+      "name": "initialQuery",
+      "spec": "挂载时的初始搜索词；默认空字符串。",
+      "requirement_ids": [
+        "REQ.SEARCH"
+      ],
+      "owner_id": "C.Search",
+      "direction": "INPUT",
+      "type": {
+        "kind": "string"
+      },
+      "required": false,
+      "default": {
+        "kind": "LITERAL",
+        "value": ""
+      }
+    },
+    {
+      "id": "D.QueryChanged.value",
+      "name": "value",
+      "spec": "输入框变化时的当前完整字符串。",
+      "requirement_ids": [
+        "REQ.SEARCH"
+      ],
+      "owner_id": "E.QueryChanged",
+      "direction": "OUTPUT",
+      "type": {
+        "kind": "string"
+      },
+      "required": true,
+      "default": null
+    },
+    {
+      "id": "D.UpdateQuery.value",
+      "name": "value",
+      "spec": "应保存的新搜索词。",
+      "requirement_ids": [
+        "REQ.SEARCH"
+      ],
+      "owner_id": "H.UpdateQuery",
+      "direction": "INPUT",
+      "type": {
+        "kind": "string"
+      },
+      "required": true,
+      "default": null
+    },
+    {
+      "id": "D.SearchRequest.query",
+      "name": "query",
+      "spec": "发送到既有搜索接口的关键词。",
+      "requirement_ids": [
+        "REQ.SEARCH"
+      ],
+      "owner_id": "F.SearchRequest",
+      "direction": "INPUT",
+      "type": {
+        "kind": "string"
+      },
+      "required": true,
+      "default": null
+    },
+    {
+      "id": "D.SearchRequest.items",
+      "name": "items",
+      "spec": "请求成功返回的结果；id 在同一响应中唯一且跨请求稳定。",
+      "requirement_ids": [
+        "REQ.SEARCH"
+      ],
+      "owner_id": "F.SearchRequest",
+      "direction": "OUTPUT",
+      "type": {
+        "kind": "array",
+        "items": {
+          "kind": "object",
+          "fields": [
+            {
+              "name": "id",
+              "type": {
+                "kind": "string"
+              },
+              "required": true
+            },
+            {
+              "name": "title",
+              "type": {
+                "kind": "string"
+              },
+              "required": true
+            }
+          ]
+        }
+      },
+      "required": true,
+      "default": null
+    }
+  ],
+  "properties": [
+    {
+      "id": "P.Search.query",
+      "name": "query",
+      "spec": "当前搜索词。",
+      "requirement_ids": [
+        "REQ.SEARCH"
+      ],
+      "component_id": "C.Search",
+      "kind": "STATE",
+      "type": {
+        "kind": "string"
+      },
+      "initial": {
+        "kind": "REF",
+        "ref_id": "D.Search.initialQuery",
+        "path": []
+      },
+      "derive": null
+    },
+    {
+      "id": "P.Search.results",
+      "name": "results",
+      "spec": "最近一次有效搜索的结果。",
+      "requirement_ids": [
+        "REQ.SEARCH"
+      ],
+      "component_id": "C.Search",
+      "kind": "STATE",
+      "type": {
+        "kind": "array",
+        "items": {
+          "kind": "object",
+          "fields": [
+            {
+              "name": "id",
+              "type": {
+                "kind": "string"
+              },
+              "required": true
+            },
+            {
+              "name": "title",
+              "type": {
+                "kind": "string"
+              },
+              "required": true
+            }
+          ]
+        }
+      },
+      "initial": {
+        "kind": "LITERAL",
+        "value": []
+      },
+      "derive": null
+    },
+    {
+      "id": "P.Search.loading",
+      "name": "loading",
+      "spec": "当前有效搜索是否仍在等待。",
+      "requirement_ids": [
+        "REQ.SEARCH"
+      ],
+      "component_id": "C.Search",
+      "kind": "STATE",
+      "type": {
+        "kind": "boolean"
+      },
+      "initial": {
+        "kind": "LITERAL",
+        "value": false
+      },
+      "derive": null
+    },
+    {
+      "id": "P.Search.error",
+      "name": "error",
+      "spec": "当前有效搜索的错误文本；null 表示没有错误。",
+      "requirement_ids": [
+        "REQ.SEARCH"
+      ],
+      "component_id": "C.Search",
+      "kind": "STATE",
+      "type": {
+        "kind": "union",
+        "variants": [
+          {
+            "kind": "string"
+          },
+          {
+            "kind": "null"
+          }
+        ]
+      },
+      "initial": {
+        "kind": "LITERAL",
+        "value": null
+      },
+      "derive": null
+    }
+  ],
+  "ui": [
+    {
+      "id": "U.Search",
+      "name": "Search panel",
+      "spec": "包含搜索框、状态提示和结果列表。",
+      "requirement_ids": [
+        "REQ.SEARCH"
+      ],
+      "component_id": "C.Search",
+      "kind": "ELEMENT",
+      "element": "section",
+      "component_ref": null,
+      "slot_data_id": null,
+      "attributes": [],
+      "text": null,
+      "children": [
+        "U.Query",
+        "U.Loading",
+        "U.Error",
+        "U.Results"
+      ],
+      "condition": null,
+      "repeat": null,
+      "arguments": [],
+      "callbacks": [],
+      "presentation": "单列布局，输入框占可用宽度；状态文字清晰且不只依靠颜色区分。"
+    },
+    {
+      "id": "U.Query",
+      "name": "Query input",
+      "spec": "受控搜索输入框。",
+      "requirement_ids": [
+        "REQ.SEARCH"
+      ],
+      "component_id": "C.Search",
+      "kind": "ELEMENT",
+      "element": "input",
+      "component_ref": null,
+      "slot_data_id": null,
+      "attributes": [
+        {
+          "name": "type",
+          "value": {
+            "kind": "LITERAL",
+            "value": "search"
+          }
+        },
+        {
+          "name": "aria-label",
+          "value": {
+            "kind": "LITERAL",
+            "value": "搜索关键词"
+          }
+        },
+        {
+          "name": "value",
+          "value": {
+            "kind": "REF",
+            "ref_id": "P.Search.query",
+            "path": []
+          }
+        }
+      ],
+      "text": null,
+      "children": [],
+      "condition": null,
+      "repeat": null,
+      "arguments": [],
+      "callbacks": [],
+      "presentation": ""
+    },
+    {
+      "id": "U.Loading",
+      "name": "Loading message",
+      "spec": "当前搜索进行时展示加载提示。",
+      "requirement_ids": [
+        "REQ.SEARCH"
+      ],
+      "component_id": "C.Search",
+      "kind": "ELEMENT",
+      "element": "p",
+      "component_ref": null,
+      "slot_data_id": null,
+      "attributes": [
+        {
+          "name": "role",
+          "value": {
+            "kind": "LITERAL",
+            "value": "status"
+          }
+        }
+      ],
+      "text": null,
+      "children": [
+        "U.LoadingText"
+      ],
+      "condition": {
+        "kind": "REF",
+        "ref_id": "P.Search.loading",
+        "path": []
+      },
+      "repeat": null,
+      "arguments": [],
+      "callbacks": [],
+      "presentation": ""
+    },
+    {
+      "id": "U.LoadingText",
+      "name": "Loading text",
+      "spec": "加载提示文案。",
+      "requirement_ids": [
+        "REQ.SEARCH"
+      ],
+      "component_id": "C.Search",
+      "kind": "TEXT",
+      "element": null,
+      "component_ref": null,
+      "slot_data_id": null,
+      "attributes": [],
+      "text": {
+        "kind": "LITERAL",
+        "value": "正在搜索…"
+      },
+      "children": [],
+      "condition": null,
+      "repeat": null,
+      "arguments": [],
+      "callbacks": [],
+      "presentation": ""
+    },
+    {
+      "id": "U.Error",
+      "name": "Error message",
+      "spec": "搜索失败时展示错误信息。",
+      "requirement_ids": [
+        "REQ.SEARCH"
+      ],
+      "component_id": "C.Search",
+      "kind": "ELEMENT",
+      "element": "p",
+      "component_ref": null,
+      "slot_data_id": null,
+      "attributes": [
+        {
+          "name": "role",
+          "value": {
+            "kind": "LITERAL",
+            "value": "alert"
+          }
+        }
+      ],
+      "text": null,
+      "children": [
+        "U.ErrorText"
+      ],
+      "condition": {
+        "kind": "OP",
+        "operator": "NE",
+        "args": [
+          {
+            "kind": "REF",
+            "ref_id": "P.Search.error",
+            "path": []
+          },
+          {
+            "kind": "LITERAL",
+            "value": null
+          }
+        ]
+      },
+      "repeat": null,
+      "arguments": [],
+      "callbacks": [],
+      "presentation": ""
+    },
+    {
+      "id": "U.ErrorText",
+      "name": "Error text",
+      "spec": "显示错误文本。",
+      "requirement_ids": [
+        "REQ.SEARCH"
+      ],
+      "component_id": "C.Search",
+      "kind": "TEXT",
+      "element": null,
+      "component_ref": null,
+      "slot_data_id": null,
+      "attributes": [],
+      "text": {
+        "kind": "OP",
+        "operator": "COALESCE",
+        "args": [
+          {
+            "kind": "REF",
+            "ref_id": "P.Search.error",
+            "path": []
+          },
+          {
+            "kind": "LITERAL",
+            "value": ""
+          }
+        ]
+      },
+      "children": [],
+      "condition": null,
+      "repeat": null,
+      "arguments": [],
+      "callbacks": [],
+      "presentation": ""
+    },
+    {
+      "id": "U.Results",
+      "name": "Result list",
+      "spec": "展示当前有效结果。",
+      "requirement_ids": [
+        "REQ.SEARCH"
+      ],
+      "component_id": "C.Search",
+      "kind": "ELEMENT",
+      "element": "ul",
+      "component_ref": null,
+      "slot_data_id": null,
+      "attributes": [],
+      "text": null,
+      "children": [
+        "U.Result"
+      ],
+      "condition": null,
+      "repeat": null,
+      "arguments": [],
+      "callbacks": [],
+      "presentation": ""
+    },
+    {
+      "id": "U.Result",
+      "name": "Result item",
+      "spec": "每条结果使用稳定 id 作为 key。",
+      "requirement_ids": [
+        "REQ.SEARCH"
+      ],
+      "component_id": "C.Search",
+      "kind": "ELEMENT",
+      "element": "li",
+      "component_ref": null,
+      "slot_data_id": null,
+      "attributes": [],
+      "text": null,
+      "children": [
+        "U.ResultTitle"
+      ],
+      "condition": null,
+      "repeat": {
+        "source": {
+          "kind": "REF",
+          "ref_id": "P.Search.results",
+          "path": []
+        },
+        "item_name": "item",
+        "key": {
+          "kind": "ITEM",
+          "ui_id": "U.Result",
+          "path": [
+            "id"
+          ]
+        }
+      },
+      "arguments": [],
+      "callbacks": [],
+      "presentation": ""
+    },
+    {
+      "id": "U.ResultTitle",
+      "name": "Result title",
+      "spec": "展示该条结果的标题。",
+      "requirement_ids": [
+        "REQ.SEARCH"
+      ],
+      "component_id": "C.Search",
+      "kind": "TEXT",
+      "element": null,
+      "component_ref": null,
+      "slot_data_id": null,
+      "attributes": [],
+      "text": {
+        "kind": "ITEM",
+        "ui_id": "U.Result",
+        "path": [
+          "title"
+        ]
+      },
+      "children": [],
+      "condition": null,
+      "repeat": null,
+      "arguments": [],
+      "callbacks": [],
+      "presentation": ""
+    }
+  ],
+  "events": [
+    {
+      "id": "E.QueryChanged",
+      "name": "Query changed",
+      "spec": "捕获输入框 change 交互，将 currentTarget.value 提取为 D.QueryChanged.value；不阻止默认行为，不停止传播。",
+      "requirement_ids": [
+        "REQ.SEARCH"
+      ],
+      "component_id": "C.Search",
+      "kind": "UI",
+      "ui_id": "U.Query",
+      "event_name": "change",
+      "handler_id": "H.UpdateQuery",
+      "arguments": [
+        {
+          "parameter_id": "D.UpdateQuery.value",
+          "value": {
+            "kind": "REF",
+            "ref_id": "D.QueryChanged.value",
+            "path": []
+          }
+        }
+      ]
+    }
+  ],
+  "handlers": [
+    {
+      "id": "H.UpdateQuery",
+      "name": "Update query",
+      "spec": "收到输入后，将 D.UpdateQuery.value 原样写入 P.Search.query；无异步等待，不发出业务事件。搜索由响应式 Effect 跟随 query 变化执行。",
+      "requirement_ids": [
+        "REQ.SEARCH"
+      ],
+      "component_id": "C.Search",
+      "reads": [
+        "D.UpdateQuery.value"
+      ],
+      "writes": [
+        "P.Search.query"
+      ],
+      "invokes": [],
+      "emits": []
+    }
+  ],
+  "effects": [
+    {
+      "id": "F.SearchRequest",
+      "name": "Search request",
+      "spec": "挂载后及关键词变化后执行。输入 query 是空字符串时，不请求接口，将 results=[]、loading=false、error=null。否则先将 results=[]、loading=true、error=null，再调用 API.SearchItems，传入 query。成功时将 D.SearchRequest.items 写入 results；失败时将 results=[]，error 写为适合用户阅读的错误文本。仅当前有效执行可在成功或失败结束时写入 loading=false。旧执行的成功、失败和最终状态写入均忽略；取消不展示为错误。",
+      "requirement_ids": [
+        "REQ.SEARCH"
+      ],
+      "component_id": "C.Search",
+      "kind": "REQUEST",
+      "activation": "REACTIVE",
+      "dependencies": [
+        "P.Search.query"
+      ],
+      "arguments": [
+        {
+          "parameter_id": "D.SearchRequest.query",
+          "value": {
+            "kind": "REF",
+            "ref_id": "P.Search.query",
+            "path": []
+          }
+        }
+      ],
+      "reads": [],
+      "writes": [
+        "P.Search.results",
+        "P.Search.loading",
+        "P.Search.error"
+      ],
+      "target": "API.SearchItems",
+      "async_policy": "LATEST_WINS",
+      "cleanup": "依赖变化或卸载时，使本次执行失效并取消未完成请求；接口传输层支持取消。取消后的完成、失败与最终状态更新均不得写入状态。"
+    }
+  ]
+}
