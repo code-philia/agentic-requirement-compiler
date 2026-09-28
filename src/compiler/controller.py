@@ -587,7 +587,7 @@ class Compiler:
                 rid for task in frontend.report["failed_tasks"] for rid in task["requirement_ids"]
             }
             for rid in requirement_ids:
-                states[rid] = "FRONTEND_IR_PARTIAL" if rid in failed_requirements else "FRONTEND_IR_GENERATED"
+                states[rid] = "FRONTEND_IR_GENERATED_WITH_WARNINGS" if rid in failed_requirements else "FRONTEND_IR_GENERATED"
             for warning in frontend.report["warnings"]:
                 await self._log("Compiler", warning, "warning")
             for failure in frontend.report["failed_tasks"]:
@@ -602,17 +602,18 @@ class Compiler:
                 states[rid] = "FRONTEND_IR_GENERATED"
 
         if not frontend.ok:
-            await self._log("Compiler", "Frontend IR is incomplete; React lowering skipped.", "warning")
+            await self._log("Compiler", "Frontend design produced no usable requirement input; React lowering cannot start.", "error")
             return CompilationResult(
                 ok=False, root_id=root_id, states=states,
                 failed_nodes=sorted(failed_requirements), artifacts=artifacts,
             )
         if rank < 4:
             checkpoints.save("frontend-ir", backend_routes=backend_glue.route_registry,
-                             frontend={"frontend_ir": frontend.frontend_ir, "report": frontend.report})
+                             frontend={"frontend_ir": frontend.frontend_ir,
+                                       "report": {"status": frontend.report["status"], "warnings": [], "failed_tasks": []}})
         self._runtime.events.mark_phase_started("FRONTEND_LOWERING", "Lowering frontend IR to React.")
-        await self._log("Compiler", "Lowering React structure and implementing bounded local behavior/presentation contracts.")
-        lowered_frontend = FrontendReactLowerer(model, artifact_store.root).lower(
+        await self._log("Compiler", "Deterministically lowering React components, types, wiring and behavior placeholders; no model calls.")
+        lowered_frontend = FrontendReactLowerer(request.output_dir).lower(
             frontend.frontend_ir, design.design_ir, backend_glue.route_registry, request.web_port,
         )
         artifacts.update(artifact_store.write_frontend_lowering(
@@ -626,7 +627,11 @@ class Compiler:
             return CompilationResult(
                 ok=False, root_id=root_id, states=states, artifacts=artifacts,
             )
-        artifacts.update(artifact_store.write_generated_sources(lowered_frontend.sources))
+        try:
+            artifacts.update(artifact_store.write_frontend_sources(lowered_frontend.sources))
+        except (OSError, ValueError) as exc:
+            await self._log("Compiler", f"Cannot publish frontend skeleton: {exc}", "error")
+            return CompilationResult(ok=False, root_id=root_id, states=states, artifacts=artifacts)
         for rid in requirement_ids:
             states[rid] = "FRONTEND_LOWERED"
         history.commit("4.2 frontend React lowering", [".arc", "frontend"])

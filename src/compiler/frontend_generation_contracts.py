@@ -196,17 +196,20 @@ COMMON = """Design React UI from the supplied requirements. Return only the smal
 Never output source files, JSX, global IDs for new entities, or run metadata.
 Reuse supplied IDs and API contracts; do not invent APIs. A screenshot provides appearance, not hidden behavior.
 Keep names/specs concise but make behavior precise. Do not repeat the complete application IR.
-Keep the response under 20,000 characters. Prefer a handful of meaningful records per call.
+Return the complete incremental batch for this requirement; do not return the whole application.
 protocol_example is an illustrative patch for a hypothetical empty component, not a feature request.
 Never copy its EXAMPLE IDs or invent its search feature; replace them with supplied IDs and actual requirement data.
-When split_requirement is true, handle only the supplied focus_ids subset of this same requirement;
-do not regenerate the rest. Reuse already generated entities across all requirements.
+Reuse already generated entities across all requirements.
 """
 PATCH_INSTRUCTIONS = COMMON + """Return creates as an OBJECT of entity arrays: data, properties, ui (and in the
 behavior pass events, handlers, effects). Each new entity is a named object, NOT a fields list. Use [] for empty
-arrays. Return at most 32 new entities and updates in total. Updates use {table,record:{...full entity record...}}.
+arrays. Updates use {table,record:{...full entity record...}}.
 Creates and updates use the FULL final entity field set, identical to supplied entities; never shorten by kind.
 Updates replace all model-owned fields: copy the existing record and modify it, preserving siblings and callbacks.
+Prefer updating the existing UI node over replacing it with a new node for the same role.
+For example, change an existing TEXT node's text from LITERAL to a state-dependent expression while preserving
+its ID and its parent's children. Do not create replacement captions and disconnect the old nodes.
+Create new UI only for genuinely new roles or occurrences; associate unchanged reused UI without copying it.
 Only compiler-owned id (on creates), requirement_ids, and component ui_root_id may be omitted or echoed.
 Compiler-owned fields are explicitly described in Schema and compiler_fields; they are not model decisions.
 New entities have a unique plain key. ALL entity references are objects: {local:key} for new entities,
@@ -288,6 +291,8 @@ listed state/inputs, and preserves entity IDs. The compiler connects the extract
 When extending a component already used by the same parent, the existing use-site is reused, not duplicated.
 ui_ids must share one current owner. Do not extract App's root. Reuse components deliberately, not by name alone.
 Reference this component as {local:key}, its FRAGMENT root as {local:"key.root"}, and its parent use-site as {local:"key.use"}.
+These root/use records are CREATED BY THE COMPILER. Never add creates.ui records with key.root or key.use keys.
+Only reference those symbols. The compiler also preserves the extracted UI's position; do not duplicate that wiring.
 All local symbols are registered before creates are materialized; extraction follows its use-site dependencies.
 data_ids/property_ids may also name same-batch creates owned by this component; these are already bound, not moved.
 The .use symbol exists only for a declaration extracting a nonempty UI subtree from another component.
@@ -322,6 +327,10 @@ handlers. REACTIVE effects run on mount/dependency changes and need no fake even
 Describe loading, success, failure, cancellation and stale results in spec. Each behavior belongs to its declared
 component. Reads are data/property IDs; writes are mutable property IDs. Event payload and Effect result fields
 are Data with direction OUTPUT. For list interactions put item/key in event payload. Use actual supplied API IDs.
+REQUEST.target is a string copied EXACTLY from api_contracts.id, including the requirement prefix (for example,
+REQ-1.1::API.RegisterTravelerAccount). Never shorten it to API.RegisterTravelerAccount or use an API name.
+If no supplied API fits, omit that REQUEST and describe the missing integration in the Handler spec;
+do not fabricate an API target or use a different Effect kind to disguise an unbound request.
 Behavior Data must explicitly include type, direction, required and owner_id. You may add missing status UI/state.
 Complete this requirement's child input arguments and connect custom events to parent handlers in this response.
 Create child CUSTOM events and parent callbacks/handlers together when this requirement needs them; forward
@@ -365,7 +374,7 @@ class ShapeError(ValueError):
         super().__init__(f"{path}: {message}")
 
     def feedback(self) -> dict[str, Any]:
-        hint = "Repair the reported record using the supplied response schema. Preserve unrelated decisions."
+        hint = "Use the original input and supplied schema to return a complete batch addressing this error."
         if ".data[" in self.path:
             hint += " Data is a boundary contract: no kind/initial/derive. Internal STATE/DERIVED/REF belongs in properties."
         elif ".properties[" in self.path:
@@ -384,7 +393,7 @@ class BatchValidationError(ShapeError):
 
     def feedback(self) -> dict[str, Any]:
         return {"error": f"{len(self.errors)} validation errors", "errors": [e.feedback() for e in self.errors],
-                "hint": "Repair all listed records in one response. Preserve unrelated records and existing references."}
+                  "hint": "Return a complete replacement batch addressing all listed errors, using the original input."}
 
 
 def collect_shape_errors(value: Any, schema: dict[str, Any], defs: dict[str, Any] | None = None,

@@ -1,30 +1,23 @@
 """Lower the seven-entity frontend IR without projecting it into Thin Frontend IR.
 
-The compiler owns React structure and wiring. Models implement only one local
-behavior or presentation contract at a time; they never select output paths.
+The compiler emits React structure, types and explicit unimplemented behavior stubs.
+No model calls or interpretation of prose occurs during lowering.
 """
 from __future__ import annotations
 
-import hashlib
 import json
 import re
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Any
+from pathlib import Path
 
-from core.logging import SynchronousLog
 from .design_projection import project_api_contracts
-from .frontend_generation_contracts import check_shape
 from .frontend_workspace import references
-from .model_client import StructuredModel, describe_model_error
+from .typescript_format import format_typescript
 
 
 def js(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, allow_nan=False)
-
-
-def symbol(identifier: str) -> str:
-    return re.sub(r"[^a-zA-Z0-9_]", "_", identifier) + "_" + hashlib.sha256(identifier.encode()).hexdigest()[:8]
 
 
 def ts_type(value: dict[str, Any]) -> str:
@@ -40,7 +33,7 @@ def ts_type(value: dict[str, Any]) -> str:
     if kind == "union":
         return "(" + " | ".join(ts_type(v) for v in value["variants"]) + ")"
     if kind == "object":
-        return "{ " + "; ".join(js(f["name"]) + ("" if f["required"] else "?") + ": " + ts_type(f["type"]) for f in value["fields"]) + " }"
+        return "{\n" + ";\n".join(js(f["name"]) + ("" if f["required"] else "?") + ": " + ts_type(f["type"]) for f in value["fields"]) + " }"
     raise ValueError(f"Unsupported type: {kind}")
 
 
@@ -50,6 +43,8 @@ class ReactLoweringResult:
     bindings: list[dict[str, Any]] = field(default_factory=list)
     batches: list[dict[str, Any]] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
+    implementation_tasks: list[dict[str, Any]] = field(default_factory=list)
 
     @property
     def ok(self) -> bool:
@@ -57,14 +52,14 @@ class ReactLoweringResult:
 
     @property
     def report(self) -> dict[str, Any]:
-        return {"status": "LOWERED" if self.ok else "FAILED", "errors": self.errors,
-                "files": sorted(self.sources), "bindings": self.bindings}
+        return {"status": "LOWERED" if self.ok else "FAILED", "errors": self.errors, "warnings": self.warnings,
+                "files": sorted(self.sources), "bindings": self.bindings,
+                "implementation_tasks": self.implementation_tasks, "implementation_status": "SKELETON"}
 
 
 class FrontendReactLowerer:
-    def __init__(self, model: StructuredModel, artifact_root: Path) -> None:
-        self.model = model
-        self.log = SynchronousLog("FrontendReactLowerer", workspace_root=artifact_root.resolve().parent)
+    def __init__(self, project_root: Path) -> None:
+        self.project_root = project_root.resolve()
 
     def lower(self, ir: dict[str, Any], backend_design: dict[str, Any],
               backend_routes: dict[str, Any], backend_port: int) -> ReactLoweringResult:
@@ -73,8 +68,6 @@ class FrontendReactLowerer:
         self.rows: dict[str, dict[str, Any]] = {}
         self.apis = {r["id"]: r for r in project_api_contracts(backend_design)}
         self.routes = {r["module_id"]: r for r in backend_routes.get("routes", [])}
-        self.fragments: dict[str, str] = {}
-        self.rendering: set[str] = set()
         try:
             for table in ("components", "data", "properties", "ui", "events", "handlers", "effects"):
                 for row in ir[table]:
@@ -95,17 +88,19 @@ class FrontendReactLowerer:
                         visit(ui["component_ref"], ancestors | {key})
             for component in ir["components"]:
                 visit(component["id"], set())
+            self.component_names = self._component_names(ir["components"])
+            self._plan_symbols()
             self._api_source()
             for component in ir["components"]:
                 try:
                     self._component(component)
                 except (ValueError, KeyError, TypeError, RecursionError) as exc:
                     self.result.errors.append(f"{component['id']}: {exc}")
-            root = symbol(ir["root_component_id"])
+            root = self.component_names[ir["root_component_id"]]
             required = [d for d in self.data(ir["root_component_id"], "INPUT") if d["required"] and d.get("default") is None]
             if required:
                 raise ValueError("Root has unsupplied required inputs: " + ", ".join(d["id"] for d in required))
-            self.result.sources["frontend/src/App.tsx"] = f'import {{ {root} }} from "./components/{root}";\nexport default function App() {{ return <{root} />; }}\n'
+            self.result.sources["frontend/src/App.tsx"] = f'import {{ {root} as RootComponent }} from "./components/{root}";\nexport default function App() {{ return <RootComponent />; }}\n'
             self.result.sources["frontend/src/runtime/effects.ts"] = EFFECT_RUNTIME
             self.result.sources["frontend/vite.config.ts"] = (
                 'import { defineConfig } from "vite";\nimport react from "@vitejs/plugin-react";\n'
@@ -115,16 +110,18 @@ class FrontendReactLowerer:
             )
         except (ValueError, KeyError, TypeError) as exc:
             self.result.errors.append(str(exc))
+        if self.result.ok:
+            try:
+                self.result.sources = format_typescript(self.result.sources, self.project_root)
+            except (OSError, ValueError) as exc:
+                self.result.errors.append(str(exc))
         return self.result
 
     def data(self, owner: str, direction: str) -> list[dict[str, Any]]:
         return [r for r in self.ir["data"] if r["owner_id"] == owner and r["direction"] == direction]
 
     def signature(self, owner: str, direction: str) -> str:
-        return "{ " + "; ".join(symbol(d["id"]) + ("" if d["required"] and d.get("default") is None else "?") + ": " + ts_type(d["type"]) for d in self.data(owner, direction)) + " }"
-
-    def args(self, values: list[dict[str, Any]]) -> str:
-        return "{ " + ", ".join(symbol(v["parameter_id"]) + ": " + self.expr(v["value"]) for v in values) + " }"
+        return "{\n" + ";\n".join(self.member(d["id"]) + ("" if d["required"] and d.get("default") is None else "?") + ": " + ts_type(d["type"]) for d in self.data(owner, direction)) + "\n}"
 
     def expr(self, value: dict[str, Any] | None) -> str:
         if value is None:
@@ -135,12 +132,13 @@ class FrontendReactLowerer:
         if kind in {"REF", "ITEM"}:
             key = value["ref_id"] if kind == "REF" else value["ui_id"]
             row = self.rows[key]
-            base = symbol(key) if kind == "REF" else "item_" + symbol(key)
+            base = self.symbol(key) if kind == "REF" else "item_" + self.symbol(key)
             if kind == "REF" and row.get("kind") == "REF":
                 base += ".current"
             return base + "".join("[" + js(p) + "]" for p in value.get("path", []))
         if kind == "UI_REF":
-            return self.render(value["ui_id"], set())
+            # UI-valued expressions are completed with the component's deferred render task.
+            return "null"
         if kind != "OP":
             raise ValueError(f"Unsupported expression: {kind}")
         args = [self.expr(v) for v in value["args"]]
@@ -156,75 +154,116 @@ class FrontendReactLowerer:
         operators = {"AND": "&&", "OR": "||", "EQ": "===", "NE": "!==", "GT": ">", "GE": ">=", "LT": "<", "LE": "<=", "ADD": "+", "SUB": "-", "MUL": "*", "DIV": "/", "COALESCE": "??"}
         return "(" + f" {operators[op]} ".join(args) + ")"
 
-    def _fragment(self, row: dict[str, Any], contract: str, scope: Any) -> str:
-        schema = {"type": "object", "properties": {"code": {"type": "string"}}, "required": ["code"], "additionalProperties": False}
-        payload = {"entity": row, "contract": contract, "scope": scope}
-        record: dict[str, Any] = {"entity_id": row["id"], "input": payload, "attempts": []}
-        self.result.batches.append(record)
-        error = ""
-        for attempt in range(2):
-            request = {**payload, "repair": error[:1200]}
-            if len(js(request)) > 24000:
-                record["status"] = "FAILED"
-                record["attempts"].append({"error": "Local implementation context exceeds 24000 chars"})
-                raise ValueError(f"{row['id']}: local implementation context exceeds 24000 chars")
-            self.log.info(f"MODEL_REQUEST phase=frontend_lowering task={row['id']} attempt={attempt + 1}/2 input_chars={len(js(request))}")
-            try:
-                output = self.model.generate_json(
-                    schema_name="frontend_local_implementation", output_schema=schema, input_payload=request,
-                    instructions="Implement precisely one React/TypeScript fragment using the supplied contract and exact compiler symbols. Return {code: string} only. No markdown, imports, exports, hooks, dependencies, invented API endpoints, TODOs or placeholders. Do not change the IR or component tree. Handle success/failure according to spec. Use existing browser APIs and supplied bindings only. Keep code concise (at most 8000 characters).",
-                )
-                check_shape(output, schema)
-                code = output["code"].strip()
-                if not code or len(code) > 8000 or "```" in code or re.search(r"\b(import|export)\s|\bTODO\b", code):
-                    raise ValueError("Return a nonempty local fragment <=8000 chars, without module declarations or placeholders")
-                record["attempts"].append({"output": output})
-                record["status"] = "GENERATED"
-                self.log.info(f"MODEL_APPLIED phase=frontend_lowering task={row['id']} output_chars={len(code)}")
-                return code
-            except Exception as exc:
-                error = describe_model_error(exc)
-                record["attempts"].append({"error": error})
-                self.log.info(f"MODEL_{'RETRY' if attempt == 0 else 'FAILED'} phase=frontend_lowering task={row['id']} error={error}")
-        record["status"] = "FAILED"
-        raise ValueError(f"{row['id']}: {error}")
+    @staticmethod
+    def _name(text: str, *, pascal: bool = False) -> str:
+        clean = "".join(ch if ch.isidentifier() or ch.isdecimal() else " " for ch in text)
+        words = re.findall(r"[^\W_]+", clean, flags=re.UNICODE)
+        if not words:
+            return "Component" if pascal else "value"
+        first = words[0][:1].upper() + words[0][1:] if pascal else words[0][:1].lower() + words[0][1:]
+        name = (first + "".join(w[:1].upper() + w[1:] for w in words[1:]))[:80]
+        return name if name.isidentifier() else ("Component" if pascal else "value") + name
 
-    def _scope(self, row: dict[str, Any]) -> list[dict[str, Any]]:
-        ids = set(row.get("reads", [])) | set(row.get("writes", [])) | set(row.get("dependencies", []))
-        ids.update(key for _, key in references(row))
-        result = []
-        for key in sorted(ids):
-            item = self.rows.get(key)
-            if item is None or key == row["id"]:
-                continue
-            if item.get("type"):
-                result.append({"id": key, "symbol": symbol(key) + (".current" if item.get("kind") == "REF" else ""),
-                               "type": ts_type(item["type"]), "spec": item.get("spec", ""),
-                               "setter": "set_" + symbol(key) if key in row.get("writes", []) else None})
-        return result
+    @classmethod
+    def _allocate_names(cls, rows: list[dict[str, Any]], reserved: set[str], *,
+                        pascal: bool = False, casefold: bool = False) -> dict[str, str]:
+        normalize = str.casefold if casefold else str
+        used = {normalize(name) for name in reserved}
+        bases = {r["id"]: cls._name(str(r.get("name", "")), pascal=pascal) for r in rows}
+        counts: dict[str, int] = {}
+        for base in bases.values():
+            key = normalize(base)
+            counts[key] = counts.get(key, 0) + 1
+        names = {}
+        for row in sorted(rows, key=lambda row: row["id"]):
+            base = bases[row["id"]]
+            suffix = re.sub(r"\W", "_", row["id"])
+            name = base
+            if counts[normalize(base)] > 1 or normalize(name) in used:
+                name = f"{base}_{suffix}"
+            while normalize(name) in used:
+                name += "_" + suffix
+            names[row["id"]] = name
+            used.update(normalize(n) for n in (name, "set_" + name, "default_" + name,
+                                               "runner_" + name, "start_" + name, "item_" + name))
+        return names
+
+    @classmethod
+    def _component_names(cls, components: list[dict[str, Any]]) -> dict[str, str]:
+        return cls._allocate_names(components, {
+            "React", "createEffectRunner", "callApi", "con", "prn", "aux", "nul",
+            *{f"com{i}" for i in range(10)}, *{f"lpt{i}" for i in range(10)},
+        }, pascal=True, casefold=True)
+
+    def _plan_symbols(self) -> None:
+        reserved = set(
+            "break case catch class const continue debugger default delete do else enum export extends false "
+            "finally for function if import in instanceof new null return super switch this throw true try "
+            "typeof var void while with yield let static implements interface package private protected public "
+            "await async arguments eval input props payload event signal onCleanup isCurrent run console Error "
+            "React createEffectRunner callApi".split()
+        ) | set(self.component_names.values())
+        self.symbols = dict(self.component_names)
+        self.members = {}
+        component_scopes = {}
+        for component in self.ir["components"]:
+            cid = component["id"]
+            rows = [r for table in ("properties", "handlers", "effects", "events")
+                    for r in self.ir[table] if r["component_id"] == cid]
+            rows += self.data(cid, "INPUT")
+            names = self._allocate_names(rows, reserved)
+            self.symbols.update(names)
+            component_scopes[cid] = reserved | set(names.values())
+            for row in rows:
+                if row["id"] in {d["id"] for d in self.data(cid, "INPUT")} or row.get("kind") == "CUSTOM":
+                    self.members[row["id"]] = names[row["id"]]
+            # Repeated UI nodes have named item bindings, separate from event/behavior names.
+            self.symbols.update(self._allocate_names(
+                [r for r in self.ir["ui"] if r["component_id"] == cid], component_scopes[cid]))
+        for table in ("events", "handlers", "effects"):
+            for owner in self.ir[table]:
+                inputs, outputs = self.data(owner["id"], "INPUT"), self.data(owner["id"], "OUTPUT")
+                for rows in (inputs, outputs):
+                    self.members.update(self._allocate_names(rows, set()))
+                # Local input aliases must not shadow captured parent state or functions.
+                self.symbols.update(self._allocate_names(
+                    inputs + outputs, component_scopes[owner["component_id"]]))
+
+    def symbol(self, identifier: str) -> str:
+        return self.symbols[identifier]
+
+    def member(self, identifier: str) -> str:
+        return self.members.get(identifier, self.symbol(identifier))
+
+    def _placeholder(self, row: dict[str, Any], category: str) -> str:
+        self.result.implementation_tasks.append({
+            "entity_id": row["id"], "category": category, "name": row.get("name", ""),
+            "file": f"frontend/src/components/{self.component_names[row['component_id']]}.tsx",
+            "spec": row.get("spec", ""), "contract": row,
+            "input_data": self.data(row["id"], "INPUT"), "output_data": self.data(row["id"], "OUTPUT"),
+        })
+        # Throwing fulfills every declared return type without fabricating successful business results.
+        return "throw new Error(" + js("Not implemented: " + row["id"] + " " + row.get("name", "")) + ");"
 
     def _component(self, component: dict[str, Any]) -> None:
         cid = component["id"]
-        name = symbol(cid)
+        name = self.component_names[cid]
         path = f"frontend/src/components/{name}.tsx"
         local = {table: [r for r in self.ir[table] if r.get("component_id") == cid] for table in ("properties", "ui", "events", "handlers", "effects")}
         imports = ['import * as React from "react";', 'import { createEffectRunner } from "../runtime/effects";', 'import { callApi } from "../api/client";']
-        for child in sorted({u["component_ref"] for u in local["ui"] if u["kind"] == "COMPONENT"}):
-            if child != cid:
-                imports.append(f'import {{ {symbol(child)} }} from "./{symbol(child)}";')
         props = self.signature(cid, "INPUT")
         callbacks = [e for e in local["events"] if e["kind"] == "CUSTOM"]
-        props += " & { " + "; ".join(f"{symbol(e['id'])}?: (payload: {self.signature(e['id'], 'OUTPUT')}) => void" for e in callbacks) + " }"
-        lines = [*imports, f"export function {name}(props: {props}) {{", "void [React, createEffectRunner, callApi, props];"]
+        props += " & { " + "; ".join(f"{self.symbol(e['id'])}?: (payload: {self.signature(e['id'], 'OUTPUT')}) => void" for e in callbacks) + " }"
+        lines = [*imports, "", f"export function {name}(props: {props}) {{", "void [React, createEffectRunner, callApi, props];"]
         for d in self.data(cid, "INPUT"):
-            n = symbol(d["id"])
+            n = self.symbol(d["id"])
             if d.get("default") is not None:
                 if d["default"]["kind"] != "LITERAL":
                     raise ValueError(f"{d['id']}: input default must be a literal")
                 lines.append(f"const default_{n} = React.useMemo<{ts_type(d['type'])}>(() => ({self.expr(d['default'])}), []);")
-                lines.append(f"const {n} = props.{n} === undefined ? default_{n} : props.{n};")
+                lines.append(f"const {n} = props.{self.member(d['id'])} === undefined ? default_{n} : props.{self.member(d['id'])};")
             else:
-                lines.append(f"const {n} = props.{n};")
+                lines.append(f"const {n} = props.{self.member(d['id'])};")
         # Topologically order derived/initial expressions, with a useful cycle failure.
         pending = list(local["properties"])
         while pending:
@@ -232,134 +271,66 @@ class FrontendReactLowerer:
             if not ready:
                 raise ValueError("Cyclic Property initial/derive dependencies")
             for p in ready:
-                n, typ = symbol(p["id"]), ts_type(p["type"])
+                n, typ = self.symbol(p["id"]), ts_type(p["type"])
                 if p["kind"] == "STATE":
                     lines.append(f"const [{n}, set_{n}] = React.useState<{typ}>(() => ({self.expr(p['initial'])}));")
                 elif p["kind"] == "REF":
                     lines.append(f"const {n} = React.useRef<{typ}>({self.expr(p['initial'])});")
                     lines.append(f"const set_{n} = (value: {typ}) => {{ {n}.current = value; }};")
                 else:
-                    deps = ", ".join(self.expr({"kind": "REF", "ref_id": k, "path": []}) for k in sorted({key for _, key in references(p["derive"])}))
+                    deps = ", ".join(self.expr({"kind": "REF", "ref_id": k, "path": []}) for k in sorted({key for _, key in references(p["derive"]) if key in self.members or self.rows[key].get("kind") in {"STATE", "REF", "DERIVED"}}))
                     lines.append(f"const {n} = React.useMemo<{typ}>(() => ({self.expr(p['derive'])}), [{deps}]);")
                 pending.remove(p)
         for e in callbacks:
-            lines.append(f"const {symbol(e['id'])} = (payload: {self.signature(e['id'], 'OUTPUT')}) => props.{symbol(e['id'])}?.(payload);")
+            lines.append(f"const {self.symbol(e['id'])} = (payload: {self.signature(e['id'], 'OUTPUT')}) => props.{self.symbol(e['id'])}?.(payload);")
         for effect in local["effects"]:
-            n = symbol(effect["id"])
+            n = self.symbol(effect["id"])
             lines.extend([f"const runner_{n} = React.useRef(createEffectRunner({js(effect['async_policy'])}));",
                           f"React.useEffect(() => () => runner_{n}.current.cancelAll(), []);"])
         for row in [*local["effects"], *local["handlers"]]:
-            n = symbol(row["id"])
+            n = self.symbol(row["id"])
             is_effect = row in local["effects"]
-            bindings = [f"const {symbol(d['id'])} = input.{symbol(d['id'])}" + (f" === undefined ? {self.expr(d['default'])} : input.{symbol(d['id'])}" if d.get("default") is not None else "") + ";" for d in self.data(row["id"], "INPUT")]
-            bindings.append("void [input" + "".join(", " + symbol(d["id"]) for d in self.data(row["id"], "INPUT")) + "];")
-            scope = {"values": self._scope(row), "inputs": self.data(row["id"], "INPUT"), "outputs": self.data(row["id"], "OUTPUT"), "symbols": {d["id"]: symbol(d["id"]) for direction in ("INPUT", "OUTPUT") for d in self.data(row["id"], direction)}}
-            contract = f"Async function BODY only. Return output object of type {self.signature(row['id'], 'OUTPUT')}; return {{}} when no outputs. Input values are declared for you."
+            bindings = [f"const {self.symbol(d['id'])} = input.{self.member(d['id'])}" + (f" === undefined ? {self.expr(d['default'])} : input.{self.member(d['id'])}" if d.get("default") is not None else "") + ";" for d in self.data(row["id"], "INPUT")]
+            bindings.append("void [\n" + ",\n".join(["input", *[self.symbol(d["id"]) for d in self.data(row["id"], "INPUT")]]) + "\n];")
+            body = self._placeholder(row, "effect" if is_effect else "handler")
             if is_effect:
-                scope["external"] = {"api": self.apis.get(row.get("target")), "route": self.routes.get(row.get("target"))}
                 if row["kind"] == "REQUEST" and row["target"] not in self.routes:
-                    raise ValueError(f"{row['id']}: unknown API target {row['target']}")
-                contract += " Use onCleanup(() => ...) for all cleanup, signal for cancellation. Set state only through supplied set_* functions; writes are guarded by compiler against stale results. Backend call: await callApi<T>(exact API id, input object, signal). Never write REF.current directly. NOT_ASYNC must not await. For subscriptions and timers register and return promptly; onCleanup releases the resource."
-                if row["kind"] == "DOM":
-                    scope["dom_targets"] = [{"id": u["id"], "element": u["element"], "spec": u["spec"], "selector": '[data-arc-ui="' + u["id"] + '"]'} for u in local["ui"] if u["kind"] == "ELEMENT"]
-                guards = []
-                for key in row["writes"]:
-                    p = self.rows[key]
-                    typ = ts_type(p["type"])
-                    n2 = symbol(key)
-                    guards.append(f"const set_{n2} = (value: {typ}" + (f" | ((previous: {typ}) => {typ})" if p["kind"] == "STATE" else "") + f") => {{ if (isCurrent()) write_{n2}(value); }};")
-                    lines.append(f"const write_{n2} = set_{n2};" if not any(f"const write_{n2} =" in l for l in lines) else "")
-                guards.append("void [signal, onCleanup, isCurrent" + "".join(", set_" + symbol(key) for key in row["writes"]) + "];")
-                body = self._fragment(row, contract, scope)
-                lines.append(f"function start_{n}(input: {self.signature(row['id'], 'INPUT')}) {{ return runner_{n}.current.run(async ({{ signal, onCleanup, isCurrent }}): Promise<{self.signature(row['id'], 'OUTPUT')}> => {{\n" + "\n".join(bindings + guards) + f"\n{body}\n}}); }}")
+                    self.result.warnings.append(
+                        f"{row['id']}: unbound API target {row['target']}; generated an effect placeholder only.")
+                lines.append(f"function start_{n}(input: {self.signature(row['id'], 'INPUT')}) {{ return runner_{n}.current.run(async ({{ signal, onCleanup, isCurrent }}): Promise<{self.signature(row['id'], 'OUTPUT')}> => {{\n" + "\n".join(bindings) + f"\nvoid [signal, onCleanup, isCurrent];\n{body}\n}}); }}")
                 lines.append(f"function {n}(input: {self.signature(row['id'], 'INPUT')}) {{ return start_{n}(input).promise; }}")
             else:
-                scope["calls"] = [{"symbol": symbol(v["effect_id"]), "arguments": self.args(v["arguments"]), "return_type": self.signature(v["effect_id"], "OUTPUT")} for v in row["invokes"]]
-                scope["emits"] = [{"symbol": symbol(v["event_id"]), "arguments": self.args(v["arguments"])} for v in row["emits"]]
-                contract += " Invoke/emits list is permission, not unconditional execution. Use supplied argument expressions, branch and order according to spec. Effects return promises of output objects keyed by Data symbols: bind any referenced effect output from the awaited result before using it. Never write REF.current directly; use its setter."
-                body = self._fragment(row, contract, scope)
                 lines.append(f"async function {n}(input: {self.signature(row['id'], 'INPUT')}): Promise<{self.signature(row['id'], 'OUTPUT')}> {{\n" + "\n".join(bindings) + f"\n{body}\n}}")
         for event in local["events"]:
             if event["kind"] == "UI":
-                ui = self.rows[event["ui_id"]]
-                contract = f"Synchronous function BODY. Native React event is named event (React.SyntheticEvent<HTMLElement>). Narrow event.currentTarget as needed for {ui['element']}. Apply preventDefault/stopPropagation per spec. Return payload type {self.signature(event['id'], 'OUTPUT')}; no handler invocation here."
-                self.fragments[event["id"]] = self._fragment(event, contract, {"outputs": self.data(event["id"], "OUTPUT"), "symbols": {d["id"]: symbol(d["id"]) for d in self.data(event["id"], "OUTPUT")}})
-        for ui in local["ui"]:
-            if ui.get("presentation") and ui["kind"] == "ELEMENT":
-                self.fragments[ui["id"]] = self._fragment(
-                    {k: ui[k] for k in ("id", "element", "presentation", "spec")},
-                    'Return one JavaScript object EXPRESSION containing only className and/or style (React.CSSProperties). Use Tailwind 4 literal classes or inline styles. No behavior, children, text, or event attributes.',
-                    {"component_spec": component["spec"]},
-                )
+                body = self._placeholder(event, "event_payload")
+                lines.append(f"function {self.symbol(event['id'])}(event: React.SyntheticEvent<HTMLElement>): {self.signature(event['id'], 'OUTPUT')} {{\nvoid event;\n{body}\n}}")
+        self.result.implementation_tasks.append({
+            "entity_id": cid, "category": "component_render", "name": component["name"], "file": path,
+            "contract": component, "input_data": self.data(cid, "INPUT"), "ui": local["ui"],
+            "events": local["events"], "effects": local["effects"],
+            "description": "Implement the component body, child composition, bindings and effect activation from the design IR.",
+        })
         for effect in local["effects"]:
             if effect["activation"] == "REACTIVE":
                 deps = ", ".join(self.expr({"kind": "REF", "ref_id": key, "path": []}) for key in effect["dependencies"])
-                lines.append(f"React.useEffect(() => {{ const run = start_{symbol(effect['id'])}({self.args(effect['arguments'])}); void run.promise.catch(console.error); return run.cancel; }}, [{deps}]);")
-        # Contracts can declare optional values/capabilities unused by one local implementation.
+                lines.append(f"React.useEffect(() => {{\n// TODO: Implement reactive activation for {self.symbol(effect['id'])}.\n// Do not execute an unimplemented effect on mount.\n}}, [{deps}]);")
+        # Keep declared capabilities available to the later implementation stage.
         # Retain those declarations without disabling the project's noUnused checks.
-        available = [symbol(d["id"]) for d in self.data(cid, "INPUT")]
-        available.extend(symbol(r["id"]) for table in ("properties", "handlers", "effects") for r in local[table])
-        available.extend("set_" + symbol(p["id"]) for p in local["properties"] if p["kind"] != "DERIVED")
-        available.extend(symbol(e["id"]) for e in callbacks)
-        lines.append("void [" + ", ".join(available) + "];")
-        lines.extend([f"return ({self.render(component['ui_root_id'], set())});", "}", ""])
+        available = [self.symbol(d["id"]) for d in self.data(cid, "INPUT")]
+        available.extend(self.symbol(r["id"]) for table in ("properties", "handlers", "effects") for r in local[table])
+        available.extend("set_" + self.symbol(p["id"]) for p in local["properties"] if p["kind"] != "DERIVED")
+        available.extend(self.symbol(e["id"]) for e in local["events"])
+        if available:
+            lines.append("void [\n" + ",\n".join(available) + "\n];")
+        lines.extend(["// TODO: Implement the component UI and bindings from the design IR.",
+                      "return <React.Fragment />;", "}", ""])
         self.result.sources[path] = "\n".join(lines)
         ids = [component, *[r for rows in local.values() for r in rows]]
         ids.extend(d for d in self.ir["data"] if d["owner_id"] in {r["id"] for r in ids})
         self.result.bindings.extend({"entity_id": r["id"], "file": path, "component_symbol": name,
-                                     "symbol": None if r in local["ui"] or (r in local["events"] and r["kind"] == "UI") else symbol(r["id"]),
+                                     "symbol": name if r["id"] == cid else None if r in local["ui"] else self.symbol(r["id"]),
                                      "requirement_ids": r["requirement_ids"]} for r in ids)
-
-    def render(self, key: str, ancestors: set[str]) -> str:
-        if key in self.rendering:
-            raise ValueError(f"Cyclic UI reference: {key}")
-        self.rendering.add(key)
-        try:
-            return self._render(key, ancestors)
-        finally:
-            self.rendering.remove(key)
-
-    def _render(self, key: str, ancestors: set[str]) -> str:
-        if key in ancestors:
-            raise ValueError(f"Cyclic UI children: {key}")
-        u = self.rows[key]
-        ancestors = ancestors | {key}
-        children = [self.render(k, ancestors) for k in u["children"]]
-        kind = u["kind"]
-        if kind == "TEXT":
-            value = self.expr(u["text"])
-        elif kind == "SLOT":
-            value = symbol(u["slot_data_id"])
-        elif kind == "FRAGMENT":
-            value = "React.createElement(React.Fragment, null" + "".join(", " + c for c in children) + ")"
-        else:
-            attrs = []
-            if kind == "COMPONENT":
-                tag = symbol(u["component_ref"])
-                attrs.extend(symbol(a["parameter_id"]) + ": " + self.expr(a["value"]) for a in u["arguments"])
-                for cb in u["callbacks"]:
-                    declarations = " ".join(f"const {symbol(d['id'])} = payload.{symbol(d['id'])}; void {symbol(d['id'])};" for d in self.data(cb["event_id"], "OUTPUT")) + " void payload;"
-                    attrs.append(f"{symbol(cb['event_id'])}: (payload: {self.signature(cb['event_id'], 'OUTPUT')}) => {{ {declarations} void {symbol(cb['handler_id'])}({self.args(cb['arguments'])}).catch(console.error); }}")
-            else:
-                tag = js(u["element"])
-                attrs.append('"data-arc-ui": ' + js(key))
-                if key in self.fragments:
-                    attrs.append("...(" + self.fragments[key] + ")")
-                attrs.extend(js({"class": "className", "for": "htmlFor", "tabindex": "tabIndex"}.get(a["name"], a["name"])) + ": " + self.expr(a["value"]) for a in u["attributes"])
-                for e in self.ir["events"]:
-                    if e.get("ui_id") != key:
-                        continue
-                    event_name = e["event_name"]
-                    event_name = event_name if event_name.startswith("on") else "on" + {"dblclick": "DoubleClick", "keydown": "KeyDown", "keyup": "KeyUp", "mouseenter": "MouseEnter", "mouseleave": "MouseLeave", "pointerdown": "PointerDown", "focusout": "Blur"}.get(event_name, event_name[:1].upper() + event_name[1:])
-                    declarations = " ".join(f"const {symbol(d['id'])} = payload.{symbol(d['id'])}; void {symbol(d['id'])};" for d in self.data(e["id"], "OUTPUT")) + " void payload;"
-                    attrs.append(f"{js(event_name)}: (event: React.SyntheticEvent<HTMLElement>) => {{ void event; const payload = ((): {self.signature(e['id'], 'OUTPUT')} => {{ {self.fragments[e['id']]} }})(); {declarations} void {symbol(e['handler_id'])}({self.args(e['arguments'])}).catch(console.error); }}")
-            value = f"React.createElement({tag}, {{ " + ", ".join(attrs) + " }" + "".join(", " + c for c in children) + ")"
-        if u.get("condition") is not None:
-            value = f"({self.expr(u['condition'])} ? {value} : null)"
-        if u.get("repeat"):
-            repeat = u["repeat"]
-            value = f"({self.expr(repeat['source'])}).map((item_{symbol(key)}) => {{ void item_{symbol(key)}; return React.createElement(React.Fragment, {{ key: {self.expr(repeat['key'])} }}, {value}); }})"
-        return value
 
     def _api_source(self) -> None:
         routes = {key: {k: row[k] for k in ("method", "path", "input_source")} for key, row in self.routes.items()}

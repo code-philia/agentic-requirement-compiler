@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import uuid
 from pathlib import Path, PurePosixPath
 from typing import Any
 
@@ -77,6 +78,13 @@ class CompilerArtifactStore:
     ) -> dict[str, str]:
         """Keep failed attempts reviewable without replacing a working frontend."""
         root = self.code_root / "frontend"
+        if not hasattr(self, "_previous_frontend_sources"):
+            installed = root / "installed-sources.json"
+            previous = installed if installed.is_file() else root / "sources.json"
+            self._previous_frontend_sources = json.loads(previous.read_text(encoding="utf-8")) if previous.is_file() else {}
+            # Keep published-file ownership separate from a failed candidate generation.
+            if not installed.is_file():
+                write_json_atomic(installed, self._previous_frontend_sources)
         batch_files = []
         for index, batch in enumerate(batches, 1):
             path = root / "batches" / f"{index:05d}.json"
@@ -88,6 +96,39 @@ class CompilerArtifactStore:
         candidate_path = root / "sources.json"
         write_json_atomic(candidate_path, sources)
         return {"frontend_lowering_report": str(report_path), "frontend_lowering_sources": str(candidate_path)}
+
+    def write_frontend_sources(self, sources: dict[str, str]) -> dict[str, str]:
+        """Retire unchanged compiler-owned files after component renaming, preserving recoverability."""
+        workspace = self.root.parent.resolve()
+        frontend_root = (workspace / "frontend" / "src").resolve()
+        previous = getattr(self, "_previous_frontend_sources", {})
+        if not isinstance(previous, dict):
+            raise ValueError("Invalid prior frontend source manifest")
+        retiring = []
+        current_paths = {str((workspace / relative).resolve()).casefold() for relative in sources}
+        for relative, old_content in previous.items():
+            if relative in sources or not relative.startswith("frontend/src/"):
+                continue
+            target = (workspace / relative).resolve()
+            if str(target).casefold() in current_paths:
+                continue
+            if not target.is_relative_to(frontend_root):
+                raise ValueError(f"Retired frontend source escapes source directory: {relative}")
+            if not target.is_file():
+                continue
+            if not isinstance(old_content, str) or target.read_text(encoding="utf-8") != old_content.replace("\r\n", "\n"):
+                raise ValueError(f"Obsolete generated file has local edits; preserve or move it before lowering: {relative}")
+            retiring.append((relative, target))
+        artifacts = self.write_generated_sources(sources)
+        archive = self.code_root / "frontend" / "retired" / uuid.uuid4().hex
+        for relative, target in retiring:
+            backup = archive / relative
+            backup.parent.mkdir(parents=True, exist_ok=True)
+            target.rename(backup)
+            artifacts[f"retired_source:{relative}"] = str(backup)
+        self._previous_frontend_sources = dict(sources)
+        write_json_atomic(self.code_root / "frontend" / "installed-sources.json", sources)
+        return artifacts
 
     def read_project_manifest(self) -> tuple[dict[str, Any] | None, str | None]:
         """Validate the project-initialization boundary before compilation continues."""

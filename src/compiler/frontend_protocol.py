@@ -1,12 +1,45 @@
-"""Canonical model projection, explicit linking and bounded record repairs."""
+"""Canonical model projection and lightweight reference checks."""
 from __future__ import annotations
 
 import copy
-import re
+from difflib import SequenceMatcher
 from typing import Any
 
-from .frontend_generation_contracts import ShapeError, DEFS
+from .frontend_generation_contracts import ShapeError
 from .frontend_workspace import REF_FIELDS
+
+
+def check_request_targets(raw: Any, api_ids: set[str]) -> list[ShapeError]:
+    """Validate external API identities on both new and updated Effect records."""
+    if not isinstance(raw, dict):
+        return []
+    records = []
+    creates = raw.get("creates")
+    effects = creates.get("effects") if isinstance(creates, dict) else None
+    if isinstance(effects, list):
+        records.extend((f"$.creates.effects[{i}].target", row) for i, row in enumerate(effects))
+    updates = raw.get("updates")
+    if isinstance(updates, list):
+        records.extend((f"$.updates[{i}].record.target", item.get("record"))
+                       for i, item in enumerate(updates)
+                       if isinstance(item, dict) and item.get("table") == "effects")
+    errors = []
+    for path, row in records:
+        if not isinstance(row, dict) or row.get("kind") != "REQUEST":
+            continue
+        target = row.get("target")
+        if isinstance(target, str) and target in api_ids:
+            continue
+        candidates = sorted(api_ids, key=lambda key: (
+            -SequenceMatcher(None, str(target), key).ratio(), key))[:5]
+        errors.append(ShapeError(
+            path,
+            "Unknown REQUEST API target. Copy an exact api_contracts.id, including its requirement prefix; "
+            "do not invent or shorten IDs. Candidate IDs: " + repr(candidates) +
+            (". No backend API is available; omit this REQUEST and describe the missing integration in the handler spec."
+             if not api_ids else ". Select only a matching contract; otherwise omit this REQUEST and describe the missing integration in the handler spec."),
+            target))
+    return errors
 
 
 def project_context(value: Any) -> Any:
@@ -32,6 +65,7 @@ def check_references(raw: dict[str, Any], existing: set[str], editable: set[str]
     if not isinstance(raw, dict):
         return errors
     aliases: set[str] = set()
+    create_paths: dict[str, str] = {}
     creates = raw.get("creates", {})
     for table, rows in (creates.items() if isinstance(creates, dict) else []):
         if not isinstance(rows, list):
@@ -40,6 +74,7 @@ def check_references(raw: dict[str, Any], existing: set[str], editable: set[str]
             if not isinstance(row, dict) or not isinstance(row.get("key"), str):
                 continue
             key = row["key"]
+            create_paths[key] = f"$.creates.{table}[{i}].key"
             if not key or key != key.strip() or "@" in key or key in aliases or key in existing:
                 errors.append(ShapeError(f"$.creates.{table}[{i}].key", "Empty, duplicate or reserved local key", key))
             aliases.add(key)
@@ -51,6 +86,11 @@ def check_references(raw: dict[str, Any], existing: set[str], editable: set[str]
         if row.get("ui_ids"):
             keys.append(row["key"] + ".use")
         for key in keys:
+            if key in create_paths and key != row["key"]:
+                errors.append(ShapeError(create_paths[key],
+                                         "Compiler-created component root/use symbol; remove this create record, "
+                                         "keep references to the compiler symbol", key))
+                continue
             if not row["key"] or key != key.strip() or "@" in key or key in aliases or key in existing:
                 errors.append(ShapeError(f"$.components[{i}].key", "Empty, duplicate or reserved local key", key))
             aliases.add(key)
@@ -103,89 +143,3 @@ def check_references(raw: dict[str, Any], existing: set[str], editable: set[str]
         if eid in existing and eid not in editable:
             errors.append(ShapeError(path, "Existing entity is referenceable but outside editable_ids", eid))
     return errors
-
-
-REPAIR_SCHEMA = {
-    "type": "object", "additionalProperties": False, "required": ["repairs"],
-    "properties": {"repairs": {"type": "array", "items": {
-        "type": "object", "additionalProperties": False, "required": ["path", "value"],
-        "properties": {"path": {"type": "string"}, "value": {"$ref": "#/$defs/json_value"}},
-    }}},
-}
-REPAIR_SCHEMA["$defs"] = {"json_value": DEFS["json_value"]}
-REPAIR_SCHEMA["x-arc-output-mode"] = "json_object"
-REPAIR_INSTRUCTIONS = """Repair a frozen frontend design candidate, not the design itself.
-Return only repairs [{path,value}]. Each path must be an exact supplied editable record path
-or an allowed append path. value is the native replacement object, never a JSON-encoded string.
-For /associations return the complete reference array; for /requirement_mode return DESIGN or SUMMARY.
-Preserve every unrelated field and decision. Never regenerate another requirement or copy examples.
-Fix the reported error and equivalent errors in supplied records. At most 32 repairs.
-References are {local: key} or {id: supplied_id}. Never use @ prefixes.
-LITERAL expressions use native value; updates use {table,record} with the full final entity record.
-Keep all kind-inactive fields as null/[]; never shorten a record. Do not invent business contracts or APIs.
-"""
-
-
-def repair_context(candidate: dict[str, Any], feedback: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
-    records = {}
-    for table, rows in candidate.get("creates", {}).items():
-        for i, row in enumerate(rows):
-            records[f"/creates/{table}/{i}"] = row
-    for table in ("updates", "components"):
-        for i, row in enumerate(candidate.get(table, [])):
-            records[f"/{table}/{i}"] = row
-    selected = set()
-    for field in ("associations", "requirement_mode"):
-        if field in candidate:
-            records[f"/{field}"] = candidate[field]
-    for issue in feedback.get("errors", [feedback]):
-        match = re.match(r"^\$\.(creates\.([a-z]+)|updates|components)\[(\d+)\]", issue.get("path", ""))
-        if match:
-            selected.add("/" + match[1].replace(".", "/") + "/" + match[3])
-        for field in ("associations", "requirement_mode"):
-            if issue.get("path", "").startswith("$." + field):
-                selected.add("/" + field)
-    if selected:
-        records = {key: value for key, value in records.items() if key in selected}
-    return {
-        "error": {**feedback, "hint": "Repair only supplied records, or append the missing declaration. Return repairs, never a complete patch."},
-        "editable_records": records,
-        "append_paths": [f"/creates/{table}/-" for table in candidate.get("creates", {})],
-        "local_symbols": [{"key": row.get("key"), "table": table, "name": row.get("name"),
-                           "component_id": row.get("component_id"), "type": row.get("type")}
-                          for table, rows in candidate.get("creates", {}).items() for row in rows],
-        "editable_ids": context.get("editable_ids", []),
-        "component_decisions": candidate.get("components", []),
-        "existing_entities": [{k: row[k] for k in ("id", "name", "kind", "component_id", "owner_id", "type") if k in row}
-                              for row in context.get("entities", [])],
-        "api_contracts": context.get("api_contracts", []),
-    }
-
-
-def apply_repairs(candidate: dict[str, Any], response: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
-    if not 1 <= len(response["repairs"]) <= 32:
-        raise ValueError("Return 1 to 32 local record repairs")
-    result = copy.deepcopy(candidate)
-    seen = set()
-    for repair in response["repairs"]:
-        path = repair["path"]
-        if path not in context["editable_records"] and path not in context["append_paths"]:
-            raise ValueError(f"Repair outside supplied scope: {path}")
-        if path in seen and not path.endswith("/-"):
-            raise ValueError(f"Repeated repair: {path}")
-        seen.add(path)
-        value = copy.deepcopy(repair["value"])
-        if path in {"/associations", "/requirement_mode"}:
-            result[path[1:]] = value
-            continue
-        if not isinstance(value, dict):
-            raise ValueError("A repaired entity/update must be an object")
-        parts = path.lstrip("/").split("/")
-        parent = result
-        for part in parts[:-1]:
-            parent = parent[part]
-        if parts[-1] == "-":
-            parent.append(value)
-        else:
-            parent[int(parts[-1])] = value
-    return result

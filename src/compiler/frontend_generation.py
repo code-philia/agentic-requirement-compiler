@@ -17,25 +17,16 @@ from arcbench_agent_runtime.jsonio import write_json_atomic
 from .design_projection import project_api_contracts
 from .frontend_generation_contracts import (
     BEHAVIOR_INSTRUCTIONS, REQUIREMENT_ASSEMBLY_INSTRUCTIONS,
-    UI_INSTRUCTIONS, ShapeError, BatchValidationError, collect_shape_errors, check_shape,
+    UI_INSTRUCTIONS, ShapeError, BatchValidationError, collect_shape_errors,
     normalize_patch, patch_schema, protocol_examples,
 )
 from .frontend_workspace import FrontendWorkspace, references
-from .frontend_protocol import (
-    project_context, check_references, repair_context, apply_repairs,
-    REPAIR_SCHEMA, REPAIR_INSTRUCTIONS,
-)
+from .frontend_protocol import project_context, check_references, check_request_targets
 from .model_client import StructuredModel, describe_model_error
 from .visual_reference import ResolvedVisualReference, VisualModel, VisualStructuredModel
 
 
-MAX_INPUT_CHARS = 24000
-RETRY_RESERVE = 1800
-# Text envelope including instructions and schema, independent of image bytes/provider tokens.
-MAX_REQUEST_CHARS = 100000
-MAX_OUTPUT_CHARS = 20000
-MAX_EDITS = 32
-TEXT_CHUNK = 3500
+MODEL_RETRIES = 2
 CATALOG_SIZE = 6
 
 
@@ -124,6 +115,7 @@ class FrontendIRGenerationPass:
                 visual_analyses: list[dict[str, Any]] | None = None) -> FrontendIRGenerationResult:
         self.workspace = FrontendWorkspace()
         self.batches: list[dict[str, Any]] = []
+        self.task_count = 0
         self.failures: list[dict[str, Any]] = []
         self.warnings: list[str] = []
         self.nodes = requirement_ir.get("nodes", {})
@@ -161,7 +153,7 @@ class FrontendIRGenerationPass:
         for rid in ordered:
             node = self.nodes[rid]
             source = str(node.get("description", "")) + "\n" + encoded(node.get("scenarios", []))
-            fragments = [source[i:i + TEXT_CHUNK] for i in range(0, len(source), TEXT_CHUNK)] or [""]
+            fragments = [source]
             visuals = [v for v in visual_references
                        if rid in (v.get("requirement_ids", []) if isinstance(v, dict) else v.requirement_ids)]
             for index, fragment in enumerate(fragments):
@@ -170,7 +162,7 @@ class FrontendIRGenerationPass:
                               "visual": visuals[0] if visuals else None})
             # The visual interface accepts one image. Extra images remain supplements of this requirement.
             for visual in visuals[1:]:
-                tasks.append({"id": rid, "name": node.get("name", ""), "fragment": source[:TEXT_CHUNK],
+                tasks.append({"id": rid, "name": node.get("name", ""), "fragment": source,
                               "visual": visual, "has_visual": True, "visual_supplement": True})
         failed_ui: set[str] = set()
         for task in tasks:
@@ -183,11 +175,9 @@ class FrontendIRGenerationPass:
                 if stage == "behavior" and task.get("visual_supplement"):
                     continue
                 if rid in failed_ui:
-                    self._fail(stage, [rid], "Requirement UI generation failed; dependent task skipped.")
-                    continue
+                    self.warnings.append(f"{rid}: UI task failed; {stage} uses the committed IR where available.")
                 if stage == "behavior" and rid in failed_assemble:
-                    self._fail(stage, [rid], "Requirement assembly failed; behavior task skipped.")
-                    continue
+                    self.warnings.append(f"{rid}: assembly task failed; behavior uses the committed component structure.")
                 if self.traceability[rid]["mode"] == "SUMMARY":
                     if stage == "assemble":
                         linked = self.traceability[rid].get("ui_ids", [])
@@ -208,7 +198,10 @@ class FrontendIRGenerationPass:
                     failed_assemble.add(rid)
 
         self.warnings.extend(self.workspace.inspect(set(self.apis)))
-        status = "PARTIAL" if self.failures else ("GENERATED_WITH_WARNINGS" if self.warnings else "GENERATED")
+        if self.failures:
+            self.warnings.append(f"{len(self.failures)} design tasks failed; lowering will use successfully committed records. "
+                                 "Requirement coverage is not guaranteed; inspect failed batches.")
+        status = "GENERATED_WITH_WARNINGS" if self.failures or self.warnings else "GENERATED"
         if not self.nodes:
             status = "FAILED"
             self.warnings.append("No requirements were supplied.")
@@ -234,11 +227,10 @@ class FrontendIRGenerationPass:
         write_json_atomic(self.traceability_path, {"status": status, "requirements": self.traceability,
                                                    "ui_data": ui_data_associations(self.workspace.export())})
 
-    def _requirement_task(self, stage: str, task: dict[str, Any],
-                          focus_ids: list[str] | None = None, depth: int = 0) -> bool:
+    def _requirement_task(self, stage: str, task: dict[str, Any]) -> bool:
         rid = task["id"]
         requirement = {k: v for k, v in task.items() if k != "visual"}
-        local = self._requirement_context(rid, requirement, focus_ids)
+        local = self._requirement_context(rid, requirement)
         context = {**local, "requirement": requirement,
                    "child_requirements": [{"id": child, "name": node.get("name", ""),
                                             "description": str(node.get("description", ""))[:500],
@@ -275,14 +267,6 @@ class FrontendIRGenerationPass:
                 context["visual_analysis"] = self.visual_analyses.get(visual.id, {}).get("analysis", {})
             except (OSError, ValueError) as exc:
                 self.warnings.append(f"Visual {visual.id} unavailable: {exc}")
-        # Split only an oversized requirement context, never one request per ordinary UI node.
-        focus = local["focus_ids"]
-        projected_size = len(encoded(project_context({k: v for k, v in context.items() if k != "protocol_example"}))) + len(encoded(context.get("protocol_example", {})))
-        if projected_size > MAX_INPUT_CHARS - RETRY_RESERVE and len(focus) > 1 and depth < 5:
-            midpoint = len(focus) // 2
-            left = self._requirement_task(stage, task, focus[:midpoint], depth + 1)
-            right = self._requirement_task(stage, task, focus[midpoint:], depth + 1)
-            return left and right
         instructions = {"ui": UI_INSTRUCTIONS, "assemble": REQUIREMENT_ASSEMBLY_INSTRUCTIONS,
                         "behavior": BEHAVIOR_INSTRUCTIONS}[stage]
         def apply(batch: dict[str, Any]) -> dict[str, Any]:
@@ -291,29 +275,29 @@ class FrontendIRGenerationPass:
                 task.get("has_visual") or batch["creates"] or batch["updates"] or not context["child_requirements"]
             ):
                 raise ValueError("SUMMARY requires a parent without images and empty creates/updates")
-            result = self.workspace.apply_requirement_batch(batch, [rid], set(local["editable_ids"]), stage)
+            result = self.workspace.apply_requirement_batch(batch, [rid], set(context["editable_ids"]), stage)
             if stage == "ui":
                 previous = self.traceability[rid].get("mode")
                 self.traceability[rid]["mode"] = "DESIGN" if task.get("part", 1) > 1 and previous == "DESIGN" else mode
-            self._refresh_traceability()
             return result
-        return self._call(stage, patch_schema(stage), instructions, context, [rid], apply, image=image)
+        applied = self._call(stage, patch_schema(stage), instructions, context, [rid], apply, image=image)
+        if applied:
+            self._refresh_traceability()
+        return applied
 
-    def _requirement_context(self, rid: str, query: Any,
-                             focus_ids: list[str] | None) -> dict[str, Any]:
+    def _requirement_context(self, rid: str, query: Any) -> dict[str, Any]:
         ws = self.workspace
         all_rows = {eid: row for rows in ws.tables.values() for eid, row in rows.items()}
         roots = {c["ui_root_id"] for c in ws.tables["components"].values()}
         linked_ids = {eid for key, values in self.traceability[rid].items() if key.endswith("_ids") for eid in values}
         owned = [row for row in all_rows.values() if row["id"] in linked_ids
                  and row["id"] not in roots and row["id"] not in ws.tables["components"]]
-        focus = focus_ids if focus_ids is not None else [row["id"] for row in owned]
+        focus = [row["id"] for row in owned]
         selected = set(focus)
         # Existing matching UI/state is reusable. Retrieval does not schedule extra model calls.
-        if focus_ids is None:
-            related = [row for row in all_rows.values()
-                       if row["id"] not in selected and row["id"] not in roots]
-            selected.update(row["id"] for row in ranked(related, query, 8))
+        related = [row for row in all_rows.values()
+                   if row["id"] not in selected and row["id"] not in roots]
+        selected.update(row["id"] for row in ranked(related, query, 8))
         # Extracted subtrees keep their identity; include descendants and data/behavior contracts.
         pending = list(selected)
         while pending:
@@ -324,7 +308,7 @@ class FrontendIRGenerationPass:
             for field, target in references(row):
                 if field in {"component_id", "owner_id", "component_ref", "ui_root_id"}:
                     continue
-                if focus_ids is not None and field == "children":
+                if not focus and field == "children":
                     continue
                 if target in all_rows and target not in selected:
                     selected.add(target)
@@ -348,7 +332,6 @@ class FrontendIRGenerationPass:
             if row["owner_id"] in selected:
                 selected.add(row["id"])
         return {"default_component_id": ws.root_component_id, "focus_ids": focus,
-                "split_requirement": focus_ids is not None,
                 "entities": [copy.deepcopy(all_rows[eid]) for eid in sorted(selected) if eid in all_rows],
                 "editable_ids": sorted(eid for eid in selected if eid in all_rows),
                 "component_catalog": [self._component_summary(row) for row in ranked(
@@ -376,9 +359,8 @@ class FrontendIRGenerationPass:
                 "counts": {"requirements": len(requirements), "render_roots": len(root["children"]),
                            "inputs": len(inputs), "custom_events": len(events), "use_sites": len(use_sites)}}
 
-    def _call(self, phase: str, schema: dict[str, Any], instructions: str, context: dict[str, Any],
-              requirements: list[str], apply: Callable[[dict[str, Any]], Any],
-              image: str | None = None) -> bool:
+    @staticmethod
+    def _prepare_context(context: dict[str, Any]) -> dict[str, Any]:
         # Examples already use the model protocol; project only canonical context entities.
         context = {**project_context({k: v for k, v in context.items() if k != "protocol_example"}),
                    "protocol_example": context["protocol_example"]}
@@ -391,98 +373,59 @@ class FrontendIRGenerationPass:
                         "ui_root_id": "Component root is compiler-owned; omit or echo."},
             "records": "Include the full entity field set for every kind; inactive fields are null or [].",
         }
-        task_id = f"{phase}-{len(self.batches) + 1:05d}"
-        record: dict[str, Any] = {"task_id": task_id, "phase": phase,
-                                  "requirement_ids": requirements, "input": copy.deepcopy(context), "attempts": []}
-        self.batches.append(record)
-        if len(encoded(context)) > MAX_INPUT_CHARS - RETRY_RESERVE:
-            self._fail(phase, requirements, "Local context exceeds the input budget; task retained as incomplete.", task_id)
-            record["status"] = "FAILED"
-            return False
-        feedback: dict[str, Any] | None = None
-        candidate: dict[str, Any] | None = None
-        last_error = ""
-        for attempt in range(2):
-            repairing = attempt > 0 and candidate is not None
-            payload = repair_context(candidate, feedback or {}, context) if repairing else copy.deepcopy(context)
-            if feedback and not repairing:
-                payload["repair_feedback"] = feedback
-            call_schema = REPAIR_SCHEMA if repairing else schema
-            call_instructions = REPAIR_INSTRUCTIONS if repairing else instructions
-            if repairing:
-                call_instructions += "\nThe frozen candidate uses this schema; replacement records must conform to their corresponding branch. This is NOT your response schema:\n" + encoded(schema)
-            request_chars = len(encoded(payload)) + len(call_instructions) + len(encoded(call_schema))
-            if len(encoded(payload)) > MAX_INPUT_CHARS or request_chars > MAX_REQUEST_CHARS:
-                last_error = "Local request exceeds payload/text-envelope budget; no contract was truncated."
-                record["attempts"].append({"error": last_error, "input_chars": len(encoded(payload)), "request_chars": request_chars})
-                break
-            self.log.info(f"MODEL_REQUEST phase=frontend_{phase} task={task_id} requirements={requirements} attempt={attempt + 1}/2 repair={repairing} input_chars={len(encoded(payload))} request_chars={request_chars}")
-            raw = None
-            attempt_record: dict[str, Any] = {"input": payload, "repair": repairing, "request_chars": request_chars}
+        return context
+
+    def _call(self, phase: str, schema: dict[str, Any], instructions: str, context: dict[str, Any],
+              requirements: list[str], apply: Callable[[dict[str, Any]], Any],
+              image: str | None = None) -> bool:
+        original = self._prepare_context(context)
+        self.task_count += 1
+        task_id = f"{phase}-{self.task_count:05d}"
+        feedback = None
+        for attempt in range(MODEL_RETRIES + 1):
+            payload = copy.deepcopy(original)
+            if feedback is not None:
+                payload["retry_feedback"] = feedback
+            self.log.info(f"MODEL_REQUEST phase=frontend_{phase} task={task_id} "
+                          f"requirements={requirements} attempt={attempt + 1}/{MODEL_RETRIES + 1} "
+                          f"input_chars={len(encoded(payload))}")
             try:
-                kwargs = dict(schema_name=f"frontend_{phase}" + ("_repair" if repairing else ""), instructions=call_instructions,
-                              input_payload=payload, output_schema=call_schema)
-                if image is not None and not repairing:
+                kwargs = dict(schema_name=f"frontend_{phase}", instructions=instructions,
+                              input_payload=payload, output_schema=schema)
+                if image is not None:
                     if self.visual_model is None:
                         self.visual_model = VisualModel.from_env()
                     raw = self.visual_model.generate_visual_json(**kwargs, image_data_url=image)
+                    client = self.visual_model
                 else:
                     raw = self.model.generate_json(**kwargs)
-                client = self.visual_model if image is not None and not repairing else self.model
-                attempt_record["structured_output_mode"] = getattr(client, "structured_output_mode", "unknown")
-                if len(encoded(raw)) > MAX_OUTPUT_CHARS:
-                    raise ValueError("Output too large; return concise edits for this requirement, not the whole application.")
-                if repairing:
-                    check_shape(raw, REPAIR_SCHEMA)
-                    candidate = apply_repairs(candidate, raw, payload)
-                else:
-                    candidate = copy.deepcopy(raw)
-                # One protocol only: no aliases, field renaming, or literal-format coercion.
-                if len(encoded(candidate)) > MAX_OUTPUT_CHARS:
-                    raise ValueError("Repaired candidate exceeds the local output budget")
-                errors = collect_shape_errors(candidate, schema)
+                    client = self.model
+                output_chars = len(encoded(raw))
+                errors = collect_shape_errors(raw, schema)
+                errors.extend(check_request_targets(raw, set(self.apis)))
                 errors.extend(check_references(
-                    candidate, {eid for rows in self.workspace.tables.values() for eid in rows},
-                    set(context.get("editable_ids", []))))
+                    raw, {eid for rows in self.workspace.tables.values() for eid in rows},
+                    set(original.get("editable_ids", []))))
                 if errors:
                     raise BatchValidationError(errors)
-                batch = normalize_patch(candidate)
-                if len(batch["creates"]) + len(batch["updates"]) + len(batch.get("components", [])) > MAX_EDITS:
-                    raise ValueError(f"Return at most {MAX_EDITS} local edits for this task.")
-                result = apply(batch)
-                record["attempts"].append({**attempt_record, "output": raw, "candidate": candidate, "status": "APPLIED", "merge": result})
-                record["status"] = "APPLIED"
-                self.log.info(f"MODEL_APPLIED phase=frontend_{phase} task={task_id} requirements={requirements} mode={attempt_record['structured_output_mode']} output_chars={len(encoded(raw))}")
+                result = apply(normalize_patch(raw))
+                # Persist only accepted output and original input, never retry feedback or failures.
+                self.batches.append({"task_id": task_id, "phase": phase, "requirement_ids": requirements,
+                                     "input": copy.deepcopy(original), "status": "APPLIED",
+                                     "output": raw, "merge": result,
+                                     "structured_output_mode": getattr(client, "structured_output_mode", "unknown")})
+                self.log.info(f"MODEL_APPLIED phase=frontend_{phase} task={task_id} "
+                              f"output_chars={output_chars}")
                 return True
             except Exception as exc:
-                last_error = describe_model_error(exc)
-                feedback = exc.feedback() if isinstance(exc, ShapeError) else {
-                    "error": last_error[:900],
-                    "hint": "Use {local: key} for new references and {id: supplied_id} for existing references. "
-                            "Preserve valid unrelated records.",
-                }
-                # Malformed top-level structures have no safe record-level repair target.
-                if candidate is not None and not (
-                    isinstance(candidate, dict) and isinstance(candidate.get("creates"), dict)
-                    and all(isinstance(rows, list) and all(isinstance(row, dict) for row in rows)
-                            for rows in candidate["creates"].values())
-                    and all(isinstance(candidate.get(k, []), list) and all(isinstance(row, dict) for row in candidate.get(k, []))
-                            for k in ("updates", "components"))
-                ):
-                    candidate = None
-                shape_errors = exc.errors if isinstance(exc, BatchValidationError) else [exc]
-                if any(isinstance(error, ShapeError) and error.path in {
-                    "$", "$.creates", "$.updates", "$.components",
-                    *{f"$.creates.{table}" for table in self.workspace.tables},
-                } for error in shape_errors):
-                    candidate = None
-                client = self.visual_model if image is not None and not repairing else self.model
-                attempt_record["structured_output_mode"] = getattr(client, "structured_output_mode", "unknown")
-                record["attempts"].append({**attempt_record, "output": raw, "error": last_error, "repair_feedback": feedback})
-                label = "MODEL_RETRY" if attempt == 0 else "MODEL_FAILED"
-                self.log.info(f"{label} phase=frontend_{phase} task={task_id} requirements={requirements} error={last_error}")
-        record["status"] = "FAILED"
-        self._fail(phase, requirements, last_error, task_id)
+                feedback = exc.feedback() if isinstance(exc, ShapeError) else {"error": describe_model_error(exc)}
+                feedback["instruction"] = (
+                    "The previous response was not merged. Using the unchanged original input and this feedback, "
+                    "return a complete replacement batch in the SAME schema, not repair operations.")
+                # Error details stay in memory for the next attempt.
+                label = "MODEL_RETRY" if attempt < MODEL_RETRIES else "MODEL_SKIPPED"
+                self.log.info(f"{label} phase=frontend_{phase} task={task_id}")
+        self._fail(phase, requirements, "Retries exhausted; continuing with committed IR.", task_id)
         return False
 
     def _fail(self, phase: str, requirements: list[str], message: str, task_id: str = "") -> None:
