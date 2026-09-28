@@ -12,7 +12,7 @@ _current_run_id: ContextVar[str | None] = ContextVar("arc_run_id", default=None)
 
 
 def set_run_id(run_id: str | None) -> None:
-    """Attach one compiler-run identifier to all logs in the current context."""
+    """Retain the compiler-run context without displaying it in log prefixes."""
 
     _current_run_id.set(str(run_id).strip() if run_id else None)
 
@@ -31,9 +31,6 @@ def append_debug_log(
     log_path.parent.mkdir(parents=True, exist_ok=True)
     timestamp = local_timestamp()
     prefix = f"[{timestamp}] [{agent_name}]"
-    run_id = _current_run_id.get()
-    if run_id:
-        prefix += f"[run_id={run_id}]"
     if node_id:
         prefix += f"[{node_id}]"
     if status:
@@ -53,9 +50,6 @@ def format_terminal_log(
 ) -> str:
     timestamp = local_timestamp()
     prefix = f"[{timestamp}] [{agent_name}]"
-    run_id = _current_run_id.get()
-    if run_id:
-        prefix += f"[run_id={run_id}]"
     if node_id:
         prefix += f"[{node_id}]"
     if status:
@@ -110,7 +104,7 @@ ANSI_GRAY = "\033[90m"
 
 
 def local_timestamp() -> str:
-    return datetime.now(_log_timezone()).isoformat(timespec="milliseconds")
+    return datetime.now(_log_timezone()).strftime("%m-%d %H:%M:%S")
 
 
 def _log_timezone() -> tzinfo:
