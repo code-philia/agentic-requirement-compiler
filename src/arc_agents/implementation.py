@@ -119,6 +119,7 @@ class ImplementationAgent:
         retries: int = 2,
         max_context_characters: int = 600_000,
         trace: Callable[[str], None] | None = None,
+        model_log: Callable[[dict[str, Any]], None] | None = None,
     ) -> None:
         self.output_root = output_root.expanduser().resolve()
         self._max_context_characters = max_context_characters
@@ -130,6 +131,7 @@ class ImplementationAgent:
             output_schema=IMPLEMENTATION_OUTPUT_SCHEMA,
             retries=retries,
             trace=trace,
+            model_log=model_log,
             agent_name="ImplementationAgent",
         )
 
@@ -232,6 +234,8 @@ class ImplementationAgent:
             if relative not in paths:
                 related_files[relative] = self._read_file(relative)
         context = {
+            "requirement_id": request.requirement_id,
+            "implementation_mode": "frontend" if request.frontend_ir is not None else "backend",
             "requirement": request.requirement,
             "editable_files": editable_files,
             "writable_file_paths": sorted(editable_files),
@@ -369,10 +373,12 @@ class FrontendImplementationAgent(ImplementationAgent):
         retries: int = 2,
         max_context_characters: int = 600_000,
         trace: Callable[[str], None] | None = None,
+        model_log: Callable[[dict[str, Any]], None] | None = None,
     ) -> None:
         super().__init__(
             model, output_root, retries=retries,
             max_context_characters=max_context_characters, trace=trace,
+            model_log=model_log,
         )
         self._allowed_kinds = None
         self._agent = BaseStructuredAgent(
@@ -382,5 +388,6 @@ class FrontendImplementationAgent(ImplementationAgent):
             output_schema=IMPLEMENTATION_OUTPUT_SCHEMA,
             retries=retries,
             trace=trace,
+            model_log=model_log,
             agent_name="FrontendImplementationAgent",
         )

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import os
+import json
 import re
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Mapping
@@ -86,28 +88,52 @@ class NodeTDDOrchestrator:
         self.test_manifest = test_manifest
         self.policy = policy or NodeTDDPolicy.from_environment()
         self.test_runner = test_runner or TestRunner(self.output_root)
-        self.implementation_agent = implementation_agent or ImplementationAgent(model, self.output_root)
+        self.implementation_agent = implementation_agent or ImplementationAgent(
+            model, self.output_root,
+            trace=self._trace_implementation,
+            model_log=self._write_implementation_model_log,
+        )
         self.frontend_implementation_agent = frontend_implementation_agent or FrontendImplementationAgent(
-            model, self.output_root, trace=self._trace_frontend_implementation
+            model, self.output_root,
+            trace=self._trace_frontend_implementation,
+            model_log=self._write_implementation_model_log,
         )
         self.file_patcher = file_patcher or ExactFilePatcher(self.output_root)
 
     def _trace_frontend_implementation(self, message: str) -> None:
-        if "MODEL_REJECTED" not in message or "read-only or unknown file" not in message:
-            return
-        attempt = re.search(r"attempt=(\d+)/(\d+)", message)
-        retrying = attempt is not None and int(attempt.group(1)) < int(attempt.group(2))
-        detail = (
-            "The edit was rejected without changing any source. Regenerating with the "
-            "writable-file allowlist."
-            if retrying else "The edit was rejected without changing any source; retry budget exhausted."
-        )
-        warning = f"ARC4551 FRONTEND_EDIT_SCOPE_WARNING: {message} {detail}"
+        self._trace_implementation(message, frontend=True)
+
+    def _trace_implementation(self, message: str, *, frontend: bool = False) -> None:
+        status = "warning" if "MODEL_REJECTED" in message else "info"
+        if frontend and "MODEL_REJECTED" in message and "read-only or unknown file" in message:
+            attempt = re.search(r"attempt=(\d+)/(\d+)", message)
+            retrying = attempt is not None and int(attempt.group(1)) < int(attempt.group(2))
+            detail = (
+                "The edit was rejected without changing any source. Regenerating with the "
+                "writable-file allowlist."
+                if retrying else "The edit was rejected without changing any source; retry budget exhausted."
+            )
+            message = f"ARC4551 FRONTEND_EDIT_SCOPE_WARNING: {message} {detail}"
+            status = "warning"
         append_debug_log(
-            "NodeTDDOrchestrator", warning, status="warning",
+            "NodeTDDOrchestrator", message, status=status,
             workspace_root=str(self.output_root),
         )
-        write_terminal_log("NodeTDDOrchestrator", warning, status="warning")
+        write_terminal_log("NodeTDDOrchestrator", message, status=status)
+
+    def _write_implementation_model_log(self, payload: dict[str, Any]) -> None:
+        """Persist complete implementation model exchanges for replay/audit."""
+        agent_name = str(payload.get("agent_name", "implementation")).lower()
+        phase = "frontend_implementation" if "frontend" in agent_name else "implementation"
+        log_root = self.output_root / ".arc" / "model_logs" / phase
+        log_root.mkdir(parents=True, exist_ok=True)
+        stamp = time.strftime("%Y%m%dT%H%M%S", time.gmtime()) + f"{time.time_ns() % 1_000_000_000:09d}Z"
+        requirement_id = re.sub(
+            r"[^A-Za-z0-9_.-]+", "_", str(payload.get("requirement_id", "unknown"))
+        )
+        attempt = int(payload.get("attempt", 0) or 0)
+        path = log_root / f"{stamp}-{requirement_id}-attempt-{attempt}.json"
+        path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
 
     def implement_backend(self, requirement_ids: list[str]) -> TDDStageResult:
         return self._implement_stage(
