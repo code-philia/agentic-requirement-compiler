@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import inspect
+import json
 from types import SimpleNamespace
 from typing import Any, Awaitable, Callable
 
@@ -9,7 +10,7 @@ from arcbench_agent_runtime.runtime import AgentRuntime
 from .artifacts import CompilerArtifactStore
 from .checkpoints import CheckpointStore, START_FROM
 from .backend_lowering import BackendGlueLowerer
-from .code_binding import CodeTargetResolver
+from .code_binding import CodeTargetResolver, CodeBindingLowerer
 from .database_stage import (
     DatabaseSchemaPass,
     database_traceability,
@@ -169,7 +170,15 @@ class Compiler:
             for rid in requirement_ids:
                 states[rid] = "FRONTEND_LOWERED"
             failure = await self._build_gate(request, "Restart from lowered", root_id, states, artifacts)
-            return failure or CompilationResult(ok=True, root_id=root_id, states=states, artifacts=artifacts)
+            if failure is not None:
+                return failure
+            return await self._continue_after_lowering(
+                request=request, artifact_store=artifact_store, preprocessing=preprocessing,
+                database_schema=saved["database"], design_ir=saved["design"],
+                frontend_ir=saved["frontend"]["frontend_ir"], backend_routes=saved["backend_routes"],
+                fixture_ir=saved["fixture_ir"], project_manifest=project_manifest,
+                root_id=root_id, states=states, artifacts=artifacts,
+            )
 
         # ===================================================================
         #                    Compiler Database Stage
@@ -647,8 +656,53 @@ class Compiler:
         history.commit("4.3 frontend build accepted", [".arc/code/frontend"])
         checkpoints.save("lowered")
         await self._log("Compiler", "Frontend React lowering completed; build and typecheck passed.", "success")
-        return CompilationResult(
-            ok=True, root_id=root_id, states=states, artifacts=artifacts,
+        return await self._continue_after_lowering(
+            request=request, artifact_store=artifact_store, preprocessing=preprocessing,
+            database_schema=database.schema, design_ir=design.design_ir,
+            frontend_ir=frontend.frontend_ir, backend_routes=backend_glue.route_registry,
+            fixture_ir=fixture_ir, project_manifest=project_manifest,
+            root_id=root_id, states=states, artifacts=artifacts, model=model,
+        )
+
+    async def _continue_after_lowering(
+        self, *, request, artifact_store, preprocessing, database_schema, design_ir,
+        frontend_ir, backend_routes, fixture_ir, project_manifest, root_id, states, artifacts,
+        model=None,
+    ) -> CompilationResult:
+        """Restore deterministic binding metadata without regenerating installed source files."""
+        await self._log("Compiler", "Preparing code bindings; continuing to test generation and TDD.")
+        try:
+            model = model or self._model or Model.from_env()
+            def checked(result):
+                if not result.ok:
+                    raise ValueError("; ".join(result.errors))
+                return result
+            symbols = checked(GlobalSymbolPlanner().plan(design_ir, database_schema, project_manifest))
+            files = checked(GlobalFilePlanner(request.output_dir).plan(
+                design_ir, symbols.registry, project_manifest, fixture_paths=fixture_source_paths(fixture_ir)))
+            types = checked(TypeLowerer().lower(symbols.registry, files.registry))
+            modules = {kind: checked(ModuleSkeletonLowerer().lower(
+                kind, design_ir, symbols.registry, files.registry)).manifest for kind in ("DB", "FUNC", "API")}
+            report = json.loads((request.output_dir / ".arc/code/frontend/lowering.json").read_text(encoding="utf-8"))
+            bindings = checked(CodeBindingLowerer().lower(
+                output_root=request.output_dir, requirement_ir=preprocessing.requirement_ir,
+                dependency_graph=preprocessing.dependency_graph, design_ir=design_ir, frontend_ir=frontend_ir,
+                backend_symbol_registry=symbols.registry, backend_type_manifest=types.manifest,
+                backend_module_manifests=modules, backend_route_registry=backend_routes,
+                frontend_symbol_registry={"symbols": []},
+                frontend_file_registry={"ui_locations": [], "store_locations": [], "api_client_locations": []},
+                frontend_route_registry={"routes": []}, frontend_lowering_report=report,
+            ))
+        except (ModelConfigurationError, OSError, ValueError, KeyError) as exc:
+            await self._log("Compiler", f"TDD handoff failed: {exc}", "error")
+            return CompilationResult(ok=False, root_id=root_id, states=states, artifacts=artifacts)
+        artifacts["code_bindings"] = artifact_store.write_code_bindings(bindings.registry)
+        ProjectGitHistory(request.output_dir).commit("4.4 code bindings", [".arc/code/code_bindings.json"])
+        return await self._run_tdd(
+            request=request, artifact_store=artifact_store, requirement_ir=preprocessing.requirement_ir,
+            dependency_graph=preprocessing.dependency_graph, database_schema=database_schema,
+            design_ir=design_ir, frontend_ir=frontend_ir, code_binding_registry=bindings.registry,
+            model=model, root_id=root_id, states=states, artifacts=artifacts,
         )
 
     async def _build_gate(
@@ -788,7 +842,7 @@ class Compiler:
                 has_screen = any(
                     isinstance(screen, dict)
                     and requirement_id in screen.get("requirement_ids", [])
-                    for screen in frontend_ir.get("screens", [])
+                    for screen in frontend_ir.get("components" if "root_component_id" in frontend_ir else "screens", [])
                 )
                 if not targets["owned_targets"] and not has_screen:
                     states[requirement_id] = "AGGREGATE_NO_UI"
@@ -906,7 +960,7 @@ class Compiler:
         }
         incomplete = [
             f"{screen.get('id')}: no writable page binding"
-            for screen in frontend_ir.get("screens", [])
+            for screen in frontend_ir.get("components" if "root_component_id" in frontend_ir else "screens", [])
             if isinstance(screen, dict)
             and (
                 str(screen.get("id", "")) not in ui_bindings
@@ -920,6 +974,7 @@ class Compiler:
             text = source.read_text(encoding="utf-8") if source.is_file() else ""
             if not source.is_file() or any(marker in text for marker in (
                 "Implementation pending", "data-arc-obligation=",
+                "TODO: Implement", "Not implemented:",
                 f"data-arc-{str(binding['kind']).lower()}=",
             )):
                 incomplete.append(f"{module_id}: unfinished {binding.get('file', '')}")

@@ -128,6 +128,16 @@ class TestEnvironmentInitializer:
         errors: list[str] = []
         spec = test_workspace_spec(self.catalog, backend_port=self.backend_port)
         browser_installed = False
+        # Empty test layer directories are not represented in Git commits.
+        # Recreate the compiler-owned roots before validating the restored
+        # checkpoint so --start-from lowered can continue into TDD.
+        for directory in ("unit", "integration", "e2e", "support"):
+            try:
+                (self.tests_root / directory).mkdir(parents=True, exist_ok=True)
+            except OSError as exc:
+                errors.append(
+                    f"ARC4401 TEST_ENVIRONMENT_INVALID: cannot create tests/{directory}: {exc}"
+                )
         try:
             root_package = _read_json_object(self.output_root / "package.json")
             test_package = _read_json_object(self.tests_root / "package.json")
@@ -563,7 +573,7 @@ class RequirementTestGenerationPass:
         required_layers = _plan_test_layers(resolved_targets, design_ir)
         if requirement_id in requirement_ir.get("folder_nodes", []):
             related_screens = [
-                screen for screen in frontend_ir.get("screens", [])
+                screen for screen in frontend_ir.get("components" if "root_component_id" in frontend_ir else "screens", [])
                 if isinstance(screen, dict)
                 and requirement_id in screen.get("requirement_ids", [])
             ]
@@ -991,6 +1001,11 @@ def _build_model_layers(
         }
         if layer == "E2E":
             layers[layer]["entry_routes"] = _e2e_entry_routes(requirement_id, frontend_subgraph)
+            if "root_component_id" in frontend_subgraph:
+                layers[layer]["frontend_design"] = frontend_subgraph
+                layers[layer]["navigation_guidance"] = (
+                    "Start at / and use the designed UI interactions to reach conditional components. "
+                    "Components are not automatically URL routes. Test requirement behavior, not placeholder output.")
     return layers, source_files
 
 
@@ -1059,6 +1074,8 @@ def _project_one_hop_dependencies(
             if str(value)
         )
         dependency_ids.update(api_ids)
+        dependency_ids.update(row["target"] for row in frontend_subgraph.get("effects", [])
+                              if row.get("kind") == "REQUEST" and row.get("target"))
         dependency_ids.update(f"API_CLIENT::{api_id}" for api_id in api_ids)
 
     return sorted(
@@ -1078,7 +1095,11 @@ def _project_frontend_subgraph(
     frontend_ir: dict[str, Any],
     owned_targets: list[dict[str, Any]],
     required_layers: list[str],
-) -> dict[str, list[dict[str, Any]]]:
+) -> dict[str, Any]:
+    if "root_component_id" in frontend_ir:
+        from .frontend_context import frontend_subgraph
+        return frontend_subgraph(frontend_ir, requirement_id,
+                                 {str(row.get("module_id", "")) for row in owned_targets})
     owned_ids = {
         str(row.get("source_ir_id", row.get("module_id", "")))
         for row in owned_targets
@@ -1168,6 +1189,8 @@ def _e2e_entry_routes(
     requirement_id: str,
     frontend_subgraph: dict[str, list[dict[str, Any]]],
 ) -> list[str]:
+    if "root_component_id" in frontend_subgraph:
+        return list(frontend_subgraph.get("entry_routes", []))
     screens = {
         str(row.get("id", "")): row
         for row in frontend_subgraph.get("screens", [])
@@ -1427,6 +1450,7 @@ def _validate_test_code(
             for row in context_pack.get("relevant_frontend_subgraph", {}).get("screens", [])
             if isinstance(row, dict) and str(row.get("route", "")).strip()
         }
+        allowed_routes.update(context_pack.get("e2e_entry_routes", []))
         literal_routes = re.findall(
             r"\bpage\.goto\s*\(\s*[\"']([^\"']+)[\"']\s*\)",
             code,

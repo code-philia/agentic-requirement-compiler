@@ -71,7 +71,8 @@ class NodeTDDOrchestrator:
         self.requirement_ir = requirement_ir
         self.code_binding_registry = code_binding_registry
         self.frontend_ir = frontend_ir
-        runtime_ir = project_frontend_runtime_ir(frontend_ir) if frontend_ir is not None else {}
+        runtime_ir = (frontend_ir if frontend_ir is not None and "root_component_id" in frontend_ir else
+                      project_frontend_runtime_ir(frontend_ir) if frontend_ir is not None else {})
         self._frontend_pages = {
             str(row["id"]): row for row in runtime_ir.get("pages", []) if isinstance(row, dict)
         }
@@ -247,10 +248,20 @@ class NodeTDDOrchestrator:
             text = source.read_text(encoding="utf-8")
             if any(marker in text for marker in (
                 "Implementation pending", "data-arc-obligation=",
+                "TODO: Implement", "Not implemented:",
                 f"data-arc-{str(row['kind']).lower()}=",
             )):
                 pending.append(row)
                 continue
+            if self.frontend_ir is not None and "root_component_id" in self.frontend_ir \
+                    and row.get("kind") == "COMPONENT":
+                # The deterministic lowering emits this exact shell until the
+                # implementation pass materializes the seven-entity UI tree.
+                # Treat an unchanged empty return as incomplete even if a model
+                # removed the comment marker.
+                if re.search(r"return\s*<React\.Fragment\s*/>\s*;", text):
+                    pending.append(row)
+                    continue
             if row.get("kind") == "COMPONENT":
                 component = self._frontend_components.get(str(row["module_id"]), {})
                 if component.get("composition_mode") == "CONTENT_SLOT" and not re.search(

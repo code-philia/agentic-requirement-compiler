@@ -68,6 +68,21 @@ first, place shared header/navigation/footer in their page regions, and do not r
 their markup beside a decorative or empty child invocation. A CONTENT_SLOT component
 owns the shared presentation and renders its children; the page supplies its actual
 form fields and submit behavior inside that component, never as a sibling form.
+
+For the current seven-entity frontend IR, frontend_design.components is the complete
+component scope visible to this requirement and frontend_design.ui is the render tree
+that each component must return. properties and data are the state, ref, derived and
+input/output contracts; events, handlers and effects are the behavior contracts.
+Implement the return layout from the UI records and supplied visual analysis: honor
+children, condition, repeat, attributes, text and arguments, and pass declared data to
+child components. Implement event wiring and handler/effect logic from reads, writes,
+invokes, emits, target, dependencies, activation and cleanup. Add a local React
+STATE, REF, DERIVED value or boundary data adapter only when the requirement or
+visual evidence truly needs it, and keep it local to the writable component; do not
+invent a new global store. The requirement's associated
+components and their associated UI/behavior entities are the writable design scope;
+reuse an existing component or UI node instead of creating a duplicate. Preserve the
+existing typed props and component exports while replacing lowering placeholders.
 """
 
 
@@ -222,7 +237,33 @@ class ImplementationAgent:
             "writable_file_paths": sorted(editable_files),
             "related_files": related_files,
         }
-        if request.frontend_ir is not None:
+        if request.frontend_ir is not None and "root_component_id" in request.frontend_ir:
+            from compiler.frontend_context import frontend_subgraph, visual_context
+            context["frontend_design"] = frontend_subgraph(
+                request.frontend_ir, request.requirement_id,
+                {str(row.get("module_id", "")) for row in owned})
+            context["frontend_design"]["editable_modules"] = copy.deepcopy(owned)
+            editable_ids = {
+                str(row.get("module_id", "")) for row in owned if row.get("module_id")
+            }
+            context["frontend_design"]["editable_component_ids"] = sorted(
+                editable_ids & {
+                    str(row.get("id", ""))
+                    for row in context["frontend_design"].get("components", [])
+                }
+            )
+            context["frontend_design"]["editable_scope"] = (
+                "Only components in editable_component_ids and their associated UI, "
+                "properties, events, handlers and effects may be changed; other rows "
+                "are read-only dependencies."
+            )
+            context["frontend_design"]["visual_references"] = visual_context(self.output_root, request.requirement_id)
+            context["frontend_design"]["implementation_guidance"] = (
+                "Implement the seven-entity IR: component return bodies and composition, UI/data bindings, "
+                "events, handlers and effects. Replace TODO and Not implemented placeholders. "
+                "The generated React app starts at /; reach conditional pages through designed interactions, "
+                "not invented routes. Preserve typed contracts and edit only writable files.")
+        elif request.frontend_ir is not None:
             frontend_ir = request.frontend_ir
             target_ids = {str(row.get("source_ir_id", row.get("module_id", ""))) for row in owned}
             runtime_ir = project_frontend_runtime_ir(frontend_ir)

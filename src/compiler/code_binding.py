@@ -39,6 +39,7 @@ class CodeBindingLowerer:
         frontend_symbol_registry: dict[str, Any],
         frontend_file_registry: dict[str, Any],
         frontend_route_registry: dict[str, Any],
+        frontend_lowering_report: dict[str, Any] | None = None,
     ) -> CodeBindingResult:
         errors: list[str] = []
         root = output_root.expanduser().resolve()
@@ -144,7 +145,57 @@ class CodeBindingLowerer:
             "PAGE": "pages",
             "COMPONENT": "components",
         }
+        if "root_component_id" in frontend_ir:
+            ui_tables = {}
         frontend_items: dict[str, dict[str, Any]] = {}
+        if "root_component_id" in frontend_ir:
+            locations = {row["entity_id"]: row for row in (frontend_lowering_report or {}).get("bindings", [])}
+            entities = [row for table in ("components", "ui", "properties", "events", "handlers", "effects")
+                        for row in frontend_ir.get(table, [])]
+            # A requirement may name a parent UI while the actual editable
+            # implementation lives in a reused child component (or vice versa).
+            # Compute the same composition ownership closure used by the
+            # implementation context so target resolution is consistent.
+            component_owners = {
+                str(component["id"]): set(component.get("requirement_ids", []))
+                for component in frontend_ir.get("components", [])
+            }
+            for row in entities:
+                component_id = row.get("component_id")
+                if component_id in component_owners:
+                    component_owners[component_id].update(row.get("requirement_ids", []))
+            changed = True
+            while changed:
+                changed = False
+                for row in frontend_ir.get("ui", []):
+                    if row.get("kind") != "COMPONENT":
+                        continue
+                    parent = str(row.get("component_id", ""))
+                    child = str(row.get("component_ref", ""))
+                    if parent not in component_owners or child not in component_owners:
+                        continue
+                    merged = component_owners[parent] | component_owners[child]
+                    if merged != component_owners[parent] or merged != component_owners[child]:
+                        component_owners[parent] = set(merged)
+                        component_owners[child] = set(merged)
+                        changed = True
+            for component in frontend_ir.get("components", []):
+                cid = component["id"]
+                frontend_items[cid] = component
+                location = locations.get(cid)
+                if location is None:
+                    errors.append(f"ARC4302 CODE_BINDING_COVERAGE_INVALID: no lowered source for {cid}.")
+                    continue
+                owners = component_owners.get(cid, set())
+                callees = {row["component_ref"] for row in frontend_ir.get("ui", [])
+                           if row.get("component_id") == cid and row.get("kind") == "COMPONENT"}
+                callees.update(row["target"] for row in frontend_ir.get("effects", [])
+                               if row.get("component_id") == cid and row.get("kind") == "REQUEST"
+                               and row.get("target") in backend_modules)
+                bindings.append({"module_id": cid, "owner_requirements": sorted(owners),
+                                 "kind": "COMPONENT", "file": location["file"], "symbol": location["symbol"],
+                                 "input_type": None, "output_type": None, "props_type": None,
+                                 "route": None, "callees": sorted(callees)})
         for kind, table in ui_tables.items():
             rows = _index_rows(frontend_ir.get(table), "id", f"Frontend {table}", errors)
             for ui_id, item in sorted(rows.items()):
@@ -176,7 +227,7 @@ class CodeBindingLowerer:
                     }
                 )
 
-        store_rows = _index_rows(frontend_ir.get("stores"), "id", "Frontend stores", errors)
+        store_rows = _index_rows(frontend_ir.get("stores", []), "id", "Frontend stores", errors)
         for store_id in sorted(store_rows):
             location = frontend_store_locations.get(store_id)
             if location is None:
@@ -547,10 +598,24 @@ def _requirement_targets(
             and str(nodes[owner].get("type", "")).upper() == "ATOMIC"
         }
         if atomic_owners:
-            for requirement_id in requirement_ids:
-                owned_by_requirement[requirement_id].discard(module_id)
-            for owner in atomic_owners:
-                owned_by_requirement[owner].add(module_id)
+            if binding.get("kind") in {"PAGE", "COMPONENT", "STORE", "LAYOUT"}:
+                for owner in _strings(binding.get("owner_requirements")):
+                    if owner in owned_by_requirement:
+                        owned_by_requirement[owner].add(module_id)
+            else:
+                for requirement_id in requirement_ids:
+                    owned_by_requirement[requirement_id].discard(module_id)
+                for owner in atomic_owners:
+                    owned_by_requirement[owner].add(module_id)
+        else:
+            # Seven-entity frontend records are intentionally editable from
+            # every requirement that semantically references the component or
+            # one of its UI/behavior descendants.  Backend modules retain the
+            # single-writer policy below; this branch only expands the
+            # frontend composition scope.
+            for owner in _strings(binding.get("owner_requirements")):
+                if owner in owned_by_requirement:
+                    owned_by_requirement[owner].add(module_id)
     requirement_dependencies = dependency_graph.get("requirement_dependencies", {})
     atomic_dependencies = dependency_graph.get("atomic_dependencies", {})
 
