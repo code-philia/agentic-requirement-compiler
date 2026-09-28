@@ -53,13 +53,13 @@ class CompilerArtifactStore:
 
     def write_frontend_design(
         self, *, frontend_ir: dict[str, Any], report: dict[str, Any],
-        observations: list[dict[str, Any]], batches: list[dict[str, Any]],
+        batches: list[dict[str, Any]],
     ) -> dict[str, str]:
         """Persist incremental design, including partial results, without the legacy validator."""
         path = self.frontend_design_root / "frontend.json"
         write_json_atomic(path, frontend_ir)
         report_path = self.frontend_design_root / "report.json"
-        observation_path = self.frontend_design_root / "observations.json"
+        requirement_path = self.frontend_design_root / "requirements.json"
         batch_paths = []
         for index, batch in enumerate(batches, 1):
             batch_path = self.frontend_design_root / "batches" / f"{index:05d}.json"
@@ -67,10 +67,26 @@ class CompilerArtifactStore:
             batch_paths.append(str(batch_path.relative_to(self.frontend_design_root)))
         # Only files in this manifest belong to this run; old batch files are not read back.
         write_json_atomic(report_path, {**report, "batch_files": batch_paths})
-        write_json_atomic(observation_path, {"observations": observations,
-            "component_assignments": report.get("observation_components", {})})
+        write_json_atomic(requirement_path, report.get("requirement_entities", {}))
         return {"frontend_design_ir": str(path), "frontend_design_report": str(report_path),
-                "frontend_observations": str(observation_path)}
+                "frontend_requirement_entities": str(requirement_path)}
+
+    def write_frontend_lowering(
+        self, *, report: dict[str, Any], sources: dict[str, str], batches: list[dict[str, Any]],
+    ) -> dict[str, str]:
+        """Keep failed attempts reviewable without replacing a working frontend."""
+        root = self.code_root / "frontend"
+        batch_files = []
+        for index, batch in enumerate(batches, 1):
+            path = root / "batches" / f"{index:05d}.json"
+            write_json_atomic(path, batch)
+            batch_files.append(str(path.relative_to(root)))
+        report_path = root / "lowering.json"
+        write_json_atomic(report_path, {**report, "batch_files": batch_files})
+        # Candidate source remains an artifact until every local implementation succeeds.
+        candidate_path = root / "sources.json"
+        write_json_atomic(candidate_path, sources)
+        return {"frontend_lowering_report": str(report_path), "frontend_lowering_sources": str(candidate_path)}
 
     def read_project_manifest(self) -> tuple[dict[str, Any] | None, str | None]:
         """Validate the project-initialization boundary before compilation continues."""

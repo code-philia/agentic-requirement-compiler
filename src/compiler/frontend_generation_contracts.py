@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 
@@ -36,8 +37,16 @@ STRING = {"type": "string"}
 STRINGS = array(STRING)
 EXPR = ref("expression")
 TYPE = ref("value_type")
-ARGUMENTS = array(obj({"parameter_id": STRING, "value": EXPR}))
+REFERENCE = ref("entity_reference")
+REFERENCES = array(REFERENCE)
+ARGUMENTS = array(obj({"parameter_id": REFERENCE, "value": EXPR}))
 DEFS = {
+    "entity_reference": {"anyOf": [obj({"id": STRING}), obj({"local": STRING})]},
+    "json_value": {"anyOf": [
+        STRING, {"type": "number"}, {"type": "boolean"}, {"type": "null"},
+        array(ref("json_value")),
+        {"type": "object", "properties": {}, "additionalProperties": ref("json_value")},
+    ]},
     "value_type": {"anyOf": [
         obj({"kind": enum("string", "number", "integer", "boolean", "null", "ui")}),
         obj({"kind": enum("array"), "items": TYPE}),
@@ -47,12 +56,10 @@ DEFS = {
         obj({"kind": enum("union"), "variants": array(TYPE)}),
     ]},
     "expression": {"anyOf": [
-        # A JSON literal string keeps arbitrary object literals compatible with strict providers.
-        # Only this leaf is decoded; expressions themselves are never executable strings.
-        obj({"kind": enum("LITERAL"), "value_json": STRING}),
-        obj({"kind": enum("REF"), "ref_id": STRING, "path": ref("path")}),
-        obj({"kind": enum("ITEM"), "ui_id": STRING, "path": ref("path")}),
-        obj({"kind": enum("UI_REF"), "ui_id": STRING}),
+        obj({"kind": enum("LITERAL"), "value": ref("json_value")}),
+        obj({"kind": enum("REF"), "ref_id": REFERENCE, "path": ref("path")}),
+        obj({"kind": enum("ITEM"), "ui_id": REFERENCE, "path": ref("path")}),
+        obj({"kind": enum("UI_REF"), "ui_id": REFERENCE}),
         obj({"kind": enum("OP"), "operator": enum(
             "NOT", "LENGTH", "IF", "AND", "OR", "EQ", "NE", "GT", "GE", "LT", "LE",
             "ADD", "SUB", "MUL", "DIV", "CONCAT", "COALESCE",
@@ -62,25 +69,25 @@ DEFS = {
 }
 
 FIELD_SCHEMAS = {
-    "name": STRING, "spec": STRING, "owner_id": STRING,
+    "name": STRING, "spec": STRING, "owner_id": REFERENCE,
     "direction": enum("INPUT", "OUTPUT"), "type": TYPE,
     "required": {"type": "boolean"}, "default": nullable(EXPR),
     "kind": enum("STATE", "DERIVED", "REF", "ELEMENT", "TEXT", "FRAGMENT", "COMPONENT",
                  "SLOT", "UI", "CUSTOM", "REQUEST", "SUBSCRIPTION", "STORAGE", "DOM",
                  "NAVIGATION", "TIMER", "OTHER"),
     "initial": nullable(EXPR), "derive": nullable(EXPR),
-    "element": nullable(STRING), "component_ref": nullable(STRING),
-    "slot_data_id": nullable(STRING),
+    "element": nullable(STRING), "component_ref": nullable(REFERENCE),
+    "slot_data_id": nullable(REFERENCE),
     "attributes": array(obj({"name": STRING, "value": EXPR})),
-    "text": nullable(EXPR), "children": STRINGS, "condition": nullable(EXPR),
+    "text": nullable(EXPR), "children": REFERENCES, "condition": nullable(EXPR),
     "repeat": nullable(obj({"source": EXPR, "item_name": STRING, "key": EXPR})),
     "arguments": ARGUMENTS,
-    "callbacks": array(obj({"event_id": STRING, "handler_id": STRING, "arguments": ARGUMENTS})),
-    "presentation": STRING, "ui_id": nullable(STRING), "event_name": STRING,
-    "handler_id": nullable(STRING), "reads": STRINGS, "writes": STRINGS,
-    "invokes": array(obj({"effect_id": STRING, "arguments": ARGUMENTS})),
-    "emits": array(obj({"event_id": STRING, "arguments": ARGUMENTS})),
-    "activation": enum("INVOKED", "REACTIVE"), "dependencies": STRINGS,
+    "callbacks": array(obj({"event_id": REFERENCE, "handler_id": REFERENCE, "arguments": ARGUMENTS})),
+    "presentation": STRING, "ui_id": nullable(REFERENCE), "event_name": STRING,
+    "handler_id": nullable(REFERENCE), "reads": REFERENCES, "writes": REFERENCES,
+    "invokes": array(obj({"effect_id": REFERENCE, "arguments": ARGUMENTS})),
+    "emits": array(obj({"event_id": REFERENCE, "arguments": ARGUMENTS})),
+    "activation": enum("INVOKED", "REACTIVE"), "dependencies": REFERENCES,
     "target": STRING, "async_policy": enum("NOT_ASYNC", "LATEST_WINS", "SERIAL", "PARALLEL"),
     "cleanup": nullable(STRING),
 }
@@ -97,45 +104,88 @@ ENTITY_FIELDS = {
                 "writes", "target", "async_policy", "cleanup"},
 }
 
-OBSERVATION_SCHEMA = obj({"observations": array(obj({
-    "existing_observation_id": nullable(STRING), "name": STRING, "spec": STRING,
-    "content": array(obj({"name": STRING, "mode": enum("STATIC", "DYNAMIC", "INPUT", "REPEAT"),
-                          "type_hint": STRING, "description": STRING})),
-    "structure_hint": STRING,
-    "behavior_hints": array(obj({"name": STRING,
-        "trigger": enum("UI", "MOUNT", "DEPENDENCY", "CLEANUP", "CUSTOM"),
-        "description": STRING, "api_ids": STRINGS})),
-}))})
 
-ASSEMBLY_SCHEMA = obj({
-    "components": array(obj({
-        "key": STRING, "existing_component_id": nullable(STRING), "name": STRING,
-        "spec": STRING, "observation_ids": STRINGS,
-        "inputs": array(obj({"key": STRING, "name": STRING, "spec": STRING, "type": TYPE,
-                             "required": {"type": "boolean"}, "default": nullable(EXPR)})),
-        "properties": array(obj({"key": STRING, "name": STRING, "spec": STRING,
-            "kind": enum("STATE", "DERIVED", "REF"), "type": TYPE,
-            "initial": nullable(EXPR), "derive": nullable(EXPR)})),
-    })),
-    "placements": array(obj({"parent_ref": STRING, "child_ref": STRING, "spec": STRING})),
-})
-ASSEMBLY_SCHEMA["$defs"] = DEFS
+
+KIND_VALUES = {
+    "properties": ("STATE", "DERIVED", "REF"),
+    "ui": ("ELEMENT", "TEXT", "FRAGMENT", "COMPONENT", "SLOT"),
+    "events": ("UI", "CUSTOM"),
+    "effects": ("REQUEST", "SUBSCRIPTION", "STORAGE", "DOM", "NAVIGATION", "TIMER", "OTHER"),
+}
+
+
+def entity_field_schema(table: str, name: str) -> dict[str, Any]:
+    if name == "kind":
+        return enum(*KIND_VALUES[table])
+    return FIELD_SCHEMAS[name]
+
+
+def record_schema(table: str, *, create: bool) -> dict[str, Any]:
+    """Full final-record fields for every kind; only compiler metadata is optional."""
+    fields = {name: entity_field_schema(table, name) for name in sorted(ENTITY_FIELDS[table])}
+    fields.update(id=nullable(STRING) if create else STRING, requirement_ids=nullable(STRINGS))
+    ignored = {"requirement_ids"}
+    if create:
+        fields["key"] = STRING
+        ignored.add("id")
+    if table not in {"data", "components"}:
+        fields["component_id"] = nullable(REFERENCE) if create else REFERENCE
+    if table == "components":
+        fields["ui_root_id"] = nullable(REFERENCE)
+        ignored.add("ui_root_id")
+    schema = obj(fields)
+    schema["required"] = [name for name in fields if name not in ignored]
+    for name in ignored:
+        schema["properties"][name] = {**schema["properties"][name],
+                                     "description": "Compiler-owned: omit or echo; never used to change compiler metadata."}
+    return schema
+
+
+def create_schema(table: str) -> dict[str, Any]:
+    return record_schema(table, create=True)
 
 
 def patch_schema(stage: str) -> dict[str, Any]:
-    allowed = ["data", "properties", "ui"] if stage == "ui" else [
+    allowed = ["data", "properties", "ui"] if stage in {"ui", "assemble"} else [
         "data", "properties", "ui", "events", "handlers", "effects",
     ]
-    names = set().union(*(ENTITY_FIELDS[t] for t in allowed))
-    fields = array(ref("edit_field"))
+    # Both creates and updates select an entity-specific schema. No shared union of fields.
+    definitions = dict(DEFS)
+    update_variants = []
+    for table in [*allowed, "components"]:
+        update_variants.append(obj({"table": enum(table), "record": record_schema(table, create=False)}))
     schema = obj({
-        "creates": array(obj({"table": enum(*allowed), "key": STRING, "fields": fields})),
-        "updates": array(obj({"id": STRING, "fields": fields})),
+        "creates": obj({table: array(create_schema(table)) for table in allowed}),
+        "updates": array({"anyOf": update_variants}),
     })
-    schema["$defs"] = {**DEFS, "edit_field": {"anyOf": [
-        obj({"field": enum(name), "value": FIELD_SCHEMAS[name]}) for name in sorted(names)
-    ]}}
+    schema["$defs"] = definitions
+    # Arbitrary JSON literals and omitted update fields intentionally use JSON mode.
+    schema["x-arc-output-mode"] = "json_object"
+    if stage == "assemble":
+        schema["properties"]["components"] = array(obj({
+            "key": STRING, "existing_component_id": nullable(REFERENCE), "name": STRING, "spec": STRING,
+            "ui_ids": REFERENCES, "property_ids": REFERENCES, "data_ids": REFERENCES,
+        }))
+        schema["required"].append("components")
     return schema
+
+
+def normalize_patch(value: dict[str, Any]) -> dict[str, Any]:
+    """Convert the typed model protocol into the existing atomic workspace edit protocol."""
+    creates = []
+    for table, rows in value["creates"].items():
+        for row in rows:
+            creates.append({"table": table, "key": row["key"],
+                            "component_ref": row.get("component_id"),
+                            "fields": [{"field": key, "value": item} for key, item in row.items()
+                                       if key in ENTITY_FIELDS[table]]})
+    updates = [{"table": row["table"], "id": {"id": row["record"]["id"]},
+                "component_id": row["record"].get("component_id"),
+                "ui_root_id": row["record"].get("ui_root_id"),
+                "fields": [{"field": k, "value": v} for k, v in row["record"].items()
+                           if k in ENTITY_FIELDS[row["table"]]]}
+               for row in value["updates"]]
+    return {**value, "creates": creates, "updates": updates}
 
 
 COMMON = """Design React UI from the supplied requirements. Return only the small requested decision.
@@ -143,93 +193,191 @@ Never output source files, JSX, global IDs for new entities, or run metadata.
 Reuse supplied IDs and API contracts; do not invent APIs. A screenshot provides appearance, not hidden behavior.
 Keep names/specs concise but make behavior precise. Do not repeat the complete application IR.
 Keep the response under 20,000 characters. Prefer a handful of meaningful records per call.
+protocol_example is an illustrative patch for a hypothetical empty component, not a feature request.
+Never copy its EXAMPLE IDs or invent its search feature; replace them with supplied IDs and actual requirement data.
+When split_requirement is true, handle only the supplied focus_ids subset of this same requirement;
+do not regenerate the rest. Reuse already generated entities across all requirements.
 """
-OBSERVATION_INSTRUCTIONS = COMMON + """Identify UI regions, displayed/input data, layout hints and behaviors.
-Return observations only for this requirement fragment or image. Use existing_observation_id for an explicit
-match in the supplied catalog; otherwise null. Backend-only text may produce an empty observations array.
-Include loading/empty/error states when required. Repeated rows are one template, not copies per sample item.
-Record UI interaction and mount/dependency/cleanup behaviors; do not design handlers or components yet.
-"""
-ASSEMBLY_INSTRUCTIONS = COMMON + """Assign the supplied observations to reusable components. App already exists.
-Use existing_component_id to extend a supplied component, otherwise null with a unique local key.
-Reference newly declared components/inputs/properties as @key. All keys in this response must be unique.
-Declare only direct placements needed to connect these components, in display order. Do not repeat an existing
-placement. A component can have multiple use sites. Do not create a new root or copy the App component.
-Use few cohesive components. Declare known shared state and child input contracts now; empty arrays are fine.
-Every supplied observation must be assigned. Component observations are task associations, not final IR fields.
-Reuse existing input/property IDs from the catalog; do not redeclare them. Initial/default expressions use
-LITERAL with value_json (JSON text), or REF with ref_id and path; new parameter references use @key.
-"""
-PATCH_INSTRUCTIONS = COMMON + """Return at most 32 creates and updates in total, each with fields:[{field,value}]. Omitted fields
-are unchanged. Arrays replace the complete field: preserve existing siblings/attributes/callbacks.
-New entities have a unique key; references to new entities use @key, existing entities use their ID.
-The compiler supplies id, component_id, requirement_ids and irrelevant empty fields. Data must specify owner_id
-(a Component, Event, Handler or Effect). Do not change entity identity or ownership. You can update only IDs
-provided in editable_ids. Related component contracts are read-only.
+PATCH_INSTRUCTIONS = COMMON + """Return creates as an OBJECT of entity arrays: data, properties, ui (and in the
+behavior pass events, handlers, effects). Each new entity is a named object, NOT a fields list. Use [] for empty
+arrays. Return at most 32 new entities and updates in total. Updates use {table,record:{...full entity record...}}.
+Creates and updates use the FULL final entity field set, identical to supplied entities; never shorten by kind.
+Updates replace all model-owned fields: copy the existing record and modify it, preserving siblings and callbacks.
+Only compiler-owned id (on creates), requirement_ids, and component ui_root_id may be omitted or echoed.
+Compiler-owned fields are explicitly described in Schema and compiler_fields; they are not model decisions.
+New entities have a unique plain key. ALL entity references are objects: {local:key} for new entities,
+{id:existing_id} for existing entities. Never use @ prefixes or bare reference strings.
+Catalog identity id/key fields are strings; relationship fields are reference objects.
+Property/UI/Event/Handler/Effect records use component_id for their owning component. On creates only,
+component_id:null selects default_component_id. Data uses owner_id, and has no component_id.
+For a COMPONENT UI, component_ref means the CHILD component rendered, not the owner.
+The compiler allocates new id and requirement_ids. Include ALL entity fields, even those inactive for this kind:
+inactive scalars are null and inactive arrays are []. Data must specify owner_id
+(a Component, Event, Handler or Effect). Do not change entity identity or ownership through fields.
+You may edit multiple components in ONE response, but update only IDs provided in editable_ids.
 Types: {kind:string|number|integer|boolean|null|ui}, array with items, object with fields[{name,type,required}],
-or union with variants. Pure expressions: LITERAL with value_json (JSON-encoded literal, e.g. \"[]\" or \"false\"),
+or union with variants. Pure expressions: LITERAL with native JSON value (string, number, boolean, null, array or object),
 REF with ref_id/path, ITEM with repeat ui_id/path, UI_REF with ui_id, OP with operator/args. Never embed JS.
 Data is a boundary parameter: specify owner_id, INPUT/OUTPUT direction, type and required. Component Data is
 INPUT; Event Data is OUTPUT. STATE/DERIVED/REF Property is component-owned. Only STATE/REF may be written.
+DECISION RULE: internal session/form/search state belongs in creates.properties, NEVER creates.data.
+Data has no kind/initial/derive. Property has no owner_id/direction/required/default/presentation.
+Property STATE/REF has initial and derive:null; DERIVED has initial:null and derive. Always include both fields.
+Do not invent UI fields on Property: use spec for its meaning, not presentation.
 ELEMENT uses element/attributes/children; TEXT uses text; FRAGMENT uses children; COMPONENT uses component_ref,
 arguments[{parameter_id,value}], callbacks[{event_id,handler_id,arguments}]; SLOT uses slot_data_id.
-Every new UI must be connected to the current region or used through UI_REF. Keep compiler-created roots
-and regions; place actual layout inside them. Render conditions and repeat{source,item_name,key} live on UI.
+ELEMENT includes text:null: create a TEXT child for a caption. FRAGMENT includes attributes:[].
+Every UI has element, component_ref, slot_data_id, attributes, text, children, condition, repeat, arguments,
+callbacks and presentation, regardless of kind. CUSTOM Event has ui_id:null, handler_id:null, arguments:[].
+Include name/spec on every new entity. In UI variants condition/repeat may be null, presentation may be empty.
+Every new UI must be connected to its component root or used through UI_REF. Keep compiler-created roots
+as FRAGMENT; place actual layout inside them. Render conditions and repeat{source,item_name,key} live on UI.
 """
-UI_INSTRUCTIONS = PATCH_INSTRUCTIONS + """Expand only the current region (or the supplied assembly skeleton).
+UI_INSTRUCTIONS = PATCH_INSTRUCTIONS + """Visit the CURRENT REQUIREMENT and directly produce all of its needed
+UI nodes and data/state as a small increment. Do not output observations or schedule per-element expansion.
+Reuse existing UI by ID when requirements describe the same interface. Backend-only requirements may return
+empty entity arrays/updates. Initially UI belongs to App; component extraction happens in the assembly pass.
 Produce UI details and data contracts/state. Fill attributes/text/condition/repeat and child arguments.
 Do not create events or effects yet. Do not recreate existing input or state with another ID.
 Supply Property initial (STATE/REF) or derive (DERIVED); make nullable/array types explicit.
-For the assembly skeleton task, arrange existing region/use-site nodes and model page selection; keep every
-existing child reachable, do not render mutually exclusive pages simultaneously without conditions.
 """
-BEHAVIOR_INSTRUCTIONS = PATCH_INSTRUCTIONS + """Complete only the supplied behaviors, reusing existing entities.
+REQUIREMENT_ASSEMBLY_INSTRUCTIONS = PATCH_INSTRUCTIONS + """Visit the CURRENT REQUIREMENT again to organize
+its ALREADY GENERATED UI into components and layout. Do not regenerate UI or describe unimplemented regions.
+Return components plus creates/updates. components may be empty when existing ownership is appropriate.
+Each component entry has key, existing_component_id (null for new), name, spec, ui_ids (existing subtree roots),
+property_ids and data_ids (existing component inputs). Extraction moves complete UI subtrees, only the explicitly
+listed state/inputs, and preserves entity IDs. The compiler connects the extracted component at the old location.
+When extending a component already used by the same parent, the existing use-site is reused, not duplicated.
+ui_ids must share one current owner. Do not extract App's root. Reuse components deliberately, not by name alone.
+Reference this component as {local:key}, its FRAGMENT root as {local:"key.root"}, and its parent use-site as {local:"key.use"}.
+Use creates/updates to connect layout, conditions, component arguments and boundary Data after extraction.
+State shared with UI remaining in the parent stays in the parent; declare child inputs and rewire REF expressions.
+Keep all existing siblings connected. Do not display mutually exclusive pages simultaneously.
+"""
+BEHAVIOR_INSTRUCTIONS = PATCH_INSTRUCTIONS + """Visit the CURRENT REQUIREMENT and complete its behaviors across
+all supplied components in one response, reusing existing entities. Also check mount/dependency/cleanup behavior.
 UI Event: kind UI, ui_id, event_name, handler_id, arguments mapping event OUTPUT Data to Handler INPUT Data.
 CUSTOM Event: kind CUSTOM, event_name; notify through Handler.emits and parent UI.callbacks.
 Handler: reads, writes, invokes[{effect_id,arguments}], emits[{event_id,arguments}], spec with ordering/guards.
 Effect: kind REQUEST/SUBSCRIPTION/STORAGE/DOM/NAVIGATION/TIMER/OTHER, activation INVOKED or REACTIVE,
 target, reads/writes, dependencies, arguments, async_policy and cleanup. Only INVOKED effects are invoked by
 handlers. REACTIVE effects run on mount/dependency changes and need no fake event; arguments fill their inputs.
-Describe loading, success, failure, cancellation and stale results in spec. All behaviors belong to the current
+Describe loading, success, failure, cancellation and stale results in spec. Each behavior belongs to its declared
 component. Reads are data/property IDs; writes are mutable property IDs. Event payload and Effect result fields
 are Data with direction OUTPUT. For list interactions put item/key in event payload. Use actual supplied API IDs.
 Behavior Data must explicitly include type, direction, required and owner_id. You may add missing status UI/state.
-For use-site wiring tasks complete child input arguments and connect supplied custom events to parent handlers.
+Complete this requirement's child input arguments and connect custom events to parent handlers in this response.
+Create child CUSTOM events and parent callbacks/handlers together when this requirement needs them; forward
+references across components are supported in the same response. No separate per-component wiring pass follows.
 """
+
+
+def protocol_examples(component_id: str, root_ui_id: str) -> dict[str, Any]:
+    """One small complete patch contrasts component input, local state and rendered content."""
+    return {
+        "creates": {
+            "data": [{"key": "initialQuery", "name": "initialQuery",
+                      "spec": "Optional initial query supplied to this component.", "owner_id": {"id": component_id},
+                      "direction": "INPUT", "type": {"kind": "string"}, "required": False,
+                      "default": {"kind": "LITERAL", "value": ""}}],
+            "properties": [{"key": "query", "component_id": None, "name": "query",
+                            "spec": "Editable query owned by this component.", "kind": "STATE",
+                            "type": {"kind": "string"},
+                            "initial": {"kind": "REF", "ref_id": {"local": "initialQuery"}, "path": []}, "derive": None}],
+            "ui": [{"key": "queryText", "component_id": None, "name": "Query text",
+                    "spec": "Display the query.", "kind": "TEXT", "condition": None,
+                    "repeat": None, "presentation": "",
+                    "element": None, "component_ref": None, "slot_data_id": None,
+                    "attributes": [], "children": [], "arguments": [], "callbacks": [],
+                    "text": {"kind": "REF", "ref_id": {"local": "query"}, "path": []}}],
+        },
+        "updates": [{"table": "ui", "record": {
+            "id": root_ui_id, "component_id": {"id": component_id}, "name": "Root", "spec": "Component root.",
+            "kind": "FRAGMENT", "element": None, "component_ref": None, "slot_data_id": None,
+            "attributes": [], "text": None, "children": [{"local": "queryText"}], "condition": None,
+            "repeat": None, "arguments": [], "callbacks": [], "presentation": "",
+        }}],
+    }
+
+
+class ShapeError(ValueError):
+    def __init__(self, path: str, message: str, actual: Any) -> None:
+        self.path = path
+        self.detail = message
+        self.actual = actual
+        super().__init__(f"{path}: {message}")
+
+    def feedback(self) -> dict[str, Any]:
+        hint = "Repair the reported record using the supplied response schema. Preserve unrelated decisions."
+        if ".data[" in self.path:
+            hint += " Data is a boundary contract: no kind/initial/derive. Internal STATE/DERIVED/REF belongs in properties."
+        elif ".properties[" in self.path:
+            hint += " Property ownership uses component_id, not owner_id. Include initial and derive; the inactive one is null."
+        return {"path": self.path, "error": self.detail,
+                "actual": json.dumps(self.actual, ensure_ascii=False, default=str)[:500], "hint": hint}
+
+
+def _schema_type_matches(value: Any, schema: dict[str, Any]) -> bool:
+    kind = schema.get("type")
+    return not kind or {"object": isinstance(value, dict), "array": isinstance(value, list),
+                       "string": isinstance(value, str), "boolean": isinstance(value, bool),
+                       "number": isinstance(value, (int, float)) and not isinstance(value, bool),
+                       "integer": isinstance(value, int) and not isinstance(value, bool),
+                       "null": value is None}.get(kind, False)
 
 
 def check_shape(value: Any, schema: dict[str, Any], defs: dict[str, Any] | None = None,
                 path: str = "$", depth: int = 0) -> None:
     """Validate the small schema vocabulary used above, without a semantic validator dependency."""
     if depth > 80:
-        raise ValueError(f"{path}: excessive nesting")
+        raise ShapeError(path, "excessive nesting", value)
     defs = defs if defs is not None else schema.get("$defs", {})
     if "$ref" in schema:
         return check_shape(value, defs[schema["$ref"].split("/")[-1]], defs, path, depth + 1)
     if "anyOf" in schema:
-        for option in schema["anyOf"]:
+        options = schema["anyOf"]
+        # Select a discriminated branch first so its real error is not swallowed by anyOf.
+        if isinstance(value, dict):
+            for discriminator in ("table", "kind", "field"):
+                tagged = [o for o in options if discriminator in o.get("properties", {})
+                          and "enum" in o["properties"][discriminator]]
+                if tagged and discriminator in value:
+                    matches = [o for o in tagged if value[discriminator] in o["properties"][discriminator]["enum"]]
+                    if not matches:
+                        allowed = sorted({v for o in tagged for v in o["properties"][discriminator]["enum"]})
+                        raise ShapeError(f"{path}.{discriminator}", f"expected one of {allowed}", value[discriminator])
+                    options = matches
+                    break
+        options = [o for o in options if _schema_type_matches(value, o)]
+        errors = []
+        for option in options:
             try:
                 check_shape(value, option, defs, path, depth + 1)
                 return
-            except ValueError:
-                pass
-        raise ValueError(f"{path}: does not match an allowed shape")
+            except ShapeError as exc:
+                errors.append(exc)
+        if errors:
+            raise max(errors, key=lambda exc: len(exc.path))
+        raise ShapeError(path, "expected " + " or ".join(o.get("type", "object") for o in schema["anyOf"]), value)
     kind = schema.get("type")
     valid = {"object": isinstance(value, dict), "array": isinstance(value, list),
              "string": isinstance(value, str), "boolean": isinstance(value, bool),
+             "number": isinstance(value, (int, float)) and not isinstance(value, bool),
              "integer": isinstance(value, int) and not isinstance(value, bool),
              "null": value is None}
     if kind and not valid.get(kind, False):
-        raise ValueError(f"{path}: expected {kind}")
+        raise ShapeError(path, f"expected {kind}", value)
     if "enum" in schema and value not in schema["enum"]:
-        raise ValueError(f"{path}: invalid value {value!r}")
+        raise ShapeError(path, f"expected one of {schema['enum']}", value)
     if kind == "object":
         missing = set(schema.get("required", [])) - value.keys()
-        extra = value.keys() - schema["properties"].keys()
+        extra = value.keys() - schema["properties"].keys() if schema.get("additionalProperties") is False else set()
         if missing or extra:
-            raise ValueError(f"{path}: missing {sorted(missing)}, unknown {sorted(extra)}")
+            raise ShapeError(path, f"missing {sorted(missing)}, unknown {sorted(extra)}; "
+                             f"allowed fields: {list(schema['properties'])}", value)
         for key, item in value.items():
-            check_shape(item, schema["properties"][key], defs, f"{path}.{key}", depth + 1)
+            child_schema = schema["properties"].get(key, schema.get("additionalProperties", {}))
+            check_shape(item, child_schema, defs, f"{path}.{key}", depth + 1)
     elif kind == "array":
         for index, item in enumerate(value):
             check_shape(item, schema["items"], defs, f"{path}[{index}]", depth + 1)

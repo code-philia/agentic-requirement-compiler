@@ -16,6 +16,7 @@ from .database_lowering import lower_database
 from .design_stage import DesignPass, design_traceability
 from .file_planning import GlobalFilePlanner
 from .frontend_generation import FrontendIRGenerationPass, frontend_ir_traceability
+from .frontend_react_lowering import FrontendReactLowerer
 from .git_history import GitStageError, ProjectGitHistory
 from .fixture_stage import (
     FixturePass,
@@ -489,7 +490,7 @@ class Compiler:
         )
         await self._log(
             "Compiler",
-            "Generating frontend IR through bounded observation, assembly, UI/data and behavior passes.",
+            "Generating frontend IR in three requirement-scheduled passes: UI/data, component assembly, behavior.",
         )
         frontend = FrontendIRGenerationPass(model, artifact_store.root).compile(
             preprocessing.requirement_ir,
@@ -505,7 +506,6 @@ class Compiler:
         artifacts.update(artifact_store.write_frontend_design(
             frontend_ir=frontend.frontend_ir,
             report=frontend.report,
-            observations=frontend.observations,
             batches=frontend.batches,
         ))
         self._runtime.traceability.merge_frontend_design_links(
@@ -521,15 +521,44 @@ class Compiler:
         for failure in frontend.report["failed_tasks"]:
             await self._log("Compiler", f"{failure['phase']}: {failure['message']}", "warning")
         history.commit("4.1 frontend IR generation", [".arc"])
-        await self._log(
-            "Compiler",
-            f"Frontend IR {frontend.report['status']}; saved to {artifacts['frontend_design_ir']}. "
-            "This run ends at frontend design; the legacy frontend lowering does not consume this metamodel.",
-            "success" if frontend.ok else "warning",
+        if not frontend.ok:
+            await self._log("Compiler", "Frontend IR is incomplete; React lowering skipped.", "warning")
+            return CompilationResult(
+                ok=False, root_id=root_id, states=states,
+                failed_nodes=sorted(failed_requirements), artifacts=artifacts,
+            )
+        self._runtime.events.mark_phase_started("FRONTEND_LOWERING", "Lowering frontend IR to React.")
+        await self._log("Compiler", "Lowering React structure and implementing bounded local behavior/presentation contracts.")
+        lowered_frontend = FrontendReactLowerer(model, artifact_store.root).lower(
+            frontend.frontend_ir, design.design_ir, backend_glue.route_registry, request.web_port,
         )
+        artifacts.update(artifact_store.write_frontend_lowering(
+            report=lowered_frontend.report, sources=lowered_frontend.sources, batches=lowered_frontend.batches,
+        ))
+        for error in lowered_frontend.errors:
+            await self._log("Compiler", error, "error")
+        if not lowered_frontend.ok:
+            for rid in requirement_ids:
+                states[rid] = "FRONTEND_LOWERING_FAILED"
+            return CompilationResult(
+                ok=False, root_id=root_id, states=states, artifacts=artifacts,
+            )
+        artifacts.update(artifact_store.write_generated_sources(lowered_frontend.sources))
+        for rid in requirement_ids:
+            states[rid] = "FRONTEND_LOWERED"
+        history.commit("4.2 frontend React lowering", [".arc", "frontend"])
+        failed_gate = await self._build_gate(request, "Frontend lowering", root_id, states, artifacts)
+        artifacts.update(artifact_store.write_frontend_lowering(
+            report={**lowered_frontend.report, "build_status": "FAILED" if failed_gate is not None else "PASSED"},
+            sources=lowered_frontend.sources, batches=lowered_frontend.batches,
+        ))
+        if failed_gate is not None:
+            for rid in requirement_ids:
+                states[rid] = "FRONTEND_BUILD_FAILED"
+            return failed_gate
+        await self._log("Compiler", "Frontend React lowering completed; build and typecheck passed.", "success")
         return CompilationResult(
-            ok=frontend.ok, root_id=root_id, states=states,
-            failed_nodes=sorted(failed_requirements), artifacts=artifacts,
+            ok=True, root_id=root_id, states=states, artifacts=artifacts,
         )
 
     async def _build_gate(

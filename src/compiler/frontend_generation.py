@@ -1,4 +1,4 @@
-"""Bounded observation, assembly, UI and behavior passes for the seven-entity IR."""
+"""Requirement-scheduled UI, assembly and behavior passes for the seven-entity IR."""
 
 from __future__ import annotations
 
@@ -15,15 +15,22 @@ from core.logging import SynchronousLog
 
 from .design_projection import project_api_contracts
 from .frontend_generation_contracts import (
-    ASSEMBLY_INSTRUCTIONS, ASSEMBLY_SCHEMA, BEHAVIOR_INSTRUCTIONS,
-    OBSERVATION_INSTRUCTIONS, OBSERVATION_SCHEMA, UI_INSTRUCTIONS, check_shape, patch_schema,
+    BEHAVIOR_INSTRUCTIONS, REQUIREMENT_ASSEMBLY_INSTRUCTIONS,
+    UI_INSTRUCTIONS, ShapeError, check_shape, normalize_patch, patch_schema, protocol_examples,
 )
 from .frontend_workspace import FrontendWorkspace, references
+from .frontend_protocol import (
+    project_context, check_references, repair_context, apply_repairs,
+    REPAIR_SCHEMA, REPAIR_INSTRUCTIONS,
+)
 from .model_client import StructuredModel, describe_model_error
 from .visual_reference import ResolvedVisualReference, VisualModel, VisualStructuredModel
 
 
 MAX_INPUT_CHARS = 24000
+RETRY_RESERVE = 1800
+# Text envelope including instructions and schema, independent of image bytes/provider tokens.
+MAX_REQUEST_CHARS = 100000
 MAX_OUTPUT_CHARS = 20000
 MAX_EDITS = 32
 TEXT_CHUNK = 3500
@@ -32,11 +39,6 @@ CATALOG_SIZE = 12
 
 def encoded(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
-
-
-def chunks(values: list[Any], size: int):
-    for index in range(0, len(values), size):
-        yield values[index:index + size]
 
 
 def brief(row: dict[str, Any]) -> dict[str, Any]:
@@ -60,7 +62,6 @@ def ranked(rows: list[dict[str, Any]], query: Any, count: int) -> list[dict[str,
 class FrontendIRGenerationResult:
     frontend_ir: dict[str, Any]
     report: dict[str, Any]
-    observations: list[dict[str, Any]] = field(default_factory=list)
     batches: list[dict[str, Any]] = field(default_factory=list)
 
     @property
@@ -79,7 +80,6 @@ class FrontendIRGenerationPass:
                 backend_design_ir: dict[str, Any],
                 visual_references: list[ResolvedVisualReference | dict[str, Any]]) -> FrontendIRGenerationResult:
         self.workspace = FrontendWorkspace()
-        self.observations: dict[str, dict[str, Any]] = {}
         self.batches: list[dict[str, Any]] = []
         self.failures: list[dict[str, Any]] = []
         self.warnings: list[str] = []
@@ -97,78 +97,41 @@ class FrontendIRGenerationPass:
         if ordered:
             self.workspace.ensure_root([root_id] if root_id in self.nodes else [ordered[0]])
 
-        # S1: visit every requirement, splitting long original text instead of dropping its tail.
+        # Three requirement traversals. No per-observation, per-UI or per-component model loop.
+        tasks = []
         for rid in ordered:
             node = self.nodes[rid]
             source = str(node.get("description", "")) + "\n" + encoded(node.get("scenarios", []))
             fragments = [source[i:i + TEXT_CHUNK] for i in range(0, len(source), TEXT_CHUNK)] or [""]
+            visuals = [v for v in visual_references
+                       if rid in (v.get("requirement_ids", []) if isinstance(v, dict) else v.requirement_ids)]
             for index, fragment in enumerate(fragments):
-                context = {"requirement": {"id": rid, "name": node.get("name", ""),
-                                           "fragment": fragment, "part": index + 1, "parts": len(fragments)},
-                           "related_requirements": self._requirement_summaries([rid]),
-                           "api_catalog": self._api_context([rid], fragment, full=False),
-                           "existing_observations": self._observation_catalog(fragment)}
-                self._call("observe", OBSERVATION_SCHEMA, OBSERVATION_INSTRUCTIONS, context, [rid],
-                           lambda batch, ids=[rid]: self._merge_observations(batch, ids, []))
-        for visual in visual_references:
-            self._observe_visual(visual)
-
-        # S2: small slices of observations; App and earlier component identities remain compiler-owned.
-        for group in chunks(list(self.observations.values()), 3):
-            rids = list(dict.fromkeys(r for obs in group for r in obs["requirement_ids"]))
-            context = {"observations": group, "root_component_id": self.workspace.root_component_id,
-                       "components": self._component_catalog(group)}
-            self._call("assemble", ASSEMBLY_SCHEMA, ASSEMBLY_INSTRUCTIONS, context, rids,
-                       lambda batch, ids=rids, obs={o["id"] for o in group}:
-                       self.workspace.apply_assembly(batch, ids, obs))
-        self.workspace.add_regions(self.observations)
-
-        # S3: each region gets its own UI/data task, then a small assembly/layout task per component.
-        failed_components: set[str] = set()
-        for cid in self.workspace.parent_first_components():
-            for oid, uid in self.workspace.regions.get(cid, {}).items():
-                observation = self.observations[oid]
-                if not self._patch_task("ui", cid, [uid], {"observation": observation},
-                                        observation["requirement_ids"]):
-                    failed_components.add(cid)
-            component = self.workspace.tables["components"][cid]
-            root = component["ui_root_id"]
-            if not self._patch_task("ui", cid, [root], {"task": "Arrange the component assembly skeleton."},
-                                    component["requirement_ids"], skeleton=True):
-                failed_components.add(cid)
-
-        # S4: bounded behavior batches; an empty list still asks about mount/cleanup behavior.
-        for cid in self.workspace.parent_first_components():
-            if cid in failed_components:
-                self._fail("behavior", self.workspace.tables["components"][cid]["requirement_ids"],
-                           "UI task failed; dependent behavior tasks were not run.")
-                continue
-            regions = self.workspace.regions.get(cid, {})
-            if not regions:
-                component = self.workspace.tables["components"][cid]
-                self._patch_task("behavior", cid, [component["ui_root_id"]],
-                                 {"behavior_hints": [], "task": "Component lifecycle behavior, if needed."},
-                                 component["requirement_ids"], skeleton=True)
-            for oid, uid in regions.items():
-                observation = self.observations[oid]
-                for hints in chunks(observation["behavior_hints"], 3) if observation["behavior_hints"] else [[]]:
-                    self._patch_task("behavior", cid, [uid],
-                                     {"observation": {k: v for k, v in observation.items() if k != "behavior_hints"},
-                                      "behavior_hints": hints}, observation["requirement_ids"])
-        # Child CUSTOM events are known only now. Wire one parent use-site per call, without redoing S3.
-        for use in list(self.workspace.tables["ui"].values()):
-            if use["kind"] != "COMPONENT" or use["component_id"] in failed_components:
-                continue
-            events = [e for e in self.workspace.tables["events"].values()
-                      if e["component_id"] == use["component_ref"] and e["kind"] == "CUSTOM"]
-            for event_group in chunks(events, 3) if events else [[]]:
-                self._patch_task("behavior", use["component_id"], [use["id"]],
-                                 {"task": "Complete child input arguments and wire callbacks required by the requirements.",
-                                  "child_events": event_group}, use["requirement_ids"], skeleton=True)
+                tasks.append({"id": rid, "name": node.get("name", ""), "fragment": fragment,
+                              "part": index + 1, "parts": len(fragments),
+                              "visual": visuals[0] if visuals and index == 0 else None})
+            # The visual interface accepts one image. Extra images remain supplements of this requirement.
+            for visual in visuals[1:]:
+                tasks.append({"id": rid, "name": node.get("name", ""), "fragment": source[:TEXT_CHUNK],
+                              "visual": visual, "visual_supplement": True})
+        failed_ui: set[str] = set()
+        for task in tasks:
+            if not self._requirement_task("ui", task):
+                failed_ui.add(task["id"])
+        for stage in ("assemble", "behavior"):
+            for task in tasks:
+                rid = task["id"]
+                if task.get("visual_supplement"):
+                    continue
+                if rid in failed_ui:
+                    self._fail(stage, [rid], "Requirement UI generation failed; dependent task skipped.")
+                    continue
+                component_roots = {c["ui_root_id"] for c in self.workspace.tables["components"].values()}
+                if not any(rid in row["requirement_ids"] for table, rows in self.workspace.tables.items()
+                           for row in rows.values() if table != "components" and row["id"] not in component_roots):
+                    continue
+                self._requirement_task(stage, task)
 
         self.warnings.extend(self.workspace.inspect(set(self.apis)))
-        if self.observations and not self.workspace.observation_components:
-            self.warnings.append("No observations were assigned to components.")
         status = "PARTIAL" if self.failures else ("GENERATED_WITH_WARNINGS" if self.warnings else "GENERATED")
         if not self.nodes:
             status = "FAILED"
@@ -176,120 +139,213 @@ class FrontendIRGenerationPass:
         report = {"status": status, "warnings": list(dict.fromkeys(self.warnings)),
                   "failed_tasks": self.failures,
                   "task_counts": {phase: sum(b["phase"] == phase for b in self.batches)
-                                  for phase in ("observe", "visual", "assemble", "ui", "behavior")},
-                  "observation_components": self.workspace.observation_components}
-        return FrontendIRGenerationResult(self.workspace.export(), report,
-                                          list(self.observations.values()), self.batches)
+                                  for phase in ("ui", "assemble", "behavior")},
+                  "requirement_entities": {rid: [
+                      row["id"] for rows in self.workspace.tables.values() for row in rows.values()
+                      if rid in row["requirement_ids"]
+                  ] for rid in ordered}}
+        return FrontendIRGenerationResult(self.workspace.export(), report, self.batches)
+
+    def _requirement_task(self, stage: str, task: dict[str, Any],
+                          focus_ids: list[str] | None = None, depth: int = 0) -> bool:
+        rid = task["id"]
+        requirement = {k: v for k, v in task.items() if k != "visual"}
+        local = self._requirement_context(rid, requirement, focus_ids)
+        context = {**local, "requirement": requirement,
+                   "related_requirements": self._requirement_summaries([rid]),
+                   "api_contracts": self._api_context([rid], requirement)}
+        example = protocol_examples("C.EXAMPLE", "U.EXAMPLE")
+        if stage == "assemble":
+            example["components"] = []
+        if stage == "behavior":
+            example["creates"].update(events=[], handlers=[], effects=[])
+        context["protocol_example"] = example
+        image = None
+        visual = task.get("visual") if stage == "ui" else None
+        if isinstance(visual, dict):
+            context["visual_analysis"] = visual.get("analysis", {})
+        elif visual is not None:
+            try:
+                content = visual.absolute_path.read_bytes()
+                if hashlib.sha256(content).hexdigest() != visual.sha256:
+                    raise ValueError("Visual reference changed after resolution")
+                image = f"data:{visual.media_type};base64,{base64.b64encode(content).decode('ascii')}"
+                context["visual_reference_id"] = visual.id
+            except (OSError, ValueError) as exc:
+                self.warnings.append(f"Visual {visual.id} unavailable: {exc}")
+        # Split only an oversized requirement context, never one request per ordinary UI node.
+        focus = local["focus_ids"]
+        projected_size = len(encoded(project_context({k: v for k, v in context.items() if k != "protocol_example"}))) + len(encoded(context.get("protocol_example", {})))
+        if projected_size > MAX_INPUT_CHARS - RETRY_RESERVE and len(focus) > 1 and depth < 5:
+            midpoint = len(focus) // 2
+            left = self._requirement_task(stage, task, focus[:midpoint], depth + 1)
+            right = self._requirement_task(stage, task, focus[midpoint:], depth + 1)
+            return left and right
+        instructions = {"ui": UI_INSTRUCTIONS, "assemble": REQUIREMENT_ASSEMBLY_INSTRUCTIONS,
+                        "behavior": BEHAVIOR_INSTRUCTIONS}[stage]
+        return self._call(stage, patch_schema(stage), instructions, context, [rid],
+                          lambda batch: self.workspace.apply_requirement_batch(
+                              batch, [rid], set(local["editable_ids"]), stage), image=image)
+
+    def _requirement_context(self, rid: str, query: Any,
+                             focus_ids: list[str] | None) -> dict[str, Any]:
+        ws = self.workspace
+        all_rows = {eid: row for rows in ws.tables.values() for eid, row in rows.items()}
+        roots = {c["ui_root_id"] for c in ws.tables["components"].values()}
+        owned = [row for row in all_rows.values() if rid in row["requirement_ids"]
+                 and row["id"] not in roots and row["id"] not in ws.tables["components"]]
+        focus = focus_ids if focus_ids is not None else [row["id"] for row in owned]
+        selected = set(focus)
+        # Existing matching UI/state is reusable. Retrieval does not schedule extra model calls.
+        if focus_ids is None:
+            related = [row for row in all_rows.values()
+                       if row["id"] not in selected and row["id"] not in roots]
+            selected.update(row["id"] for row in ranked(related, query, 8))
+        # Extracted subtrees keep their identity; include descendants and data/behavior contracts.
+        pending = list(selected)
+        while pending:
+            eid = pending.pop()
+            row = all_rows.get(eid)
+            if row is None:
+                continue
+            for field, target in references(row):
+                if field in {"component_id", "owner_id", "component_ref", "ui_root_id"}:
+                    continue
+                if focus_ids is not None and field == "children":
+                    continue
+                if target in all_rows and target not in selected:
+                    selected.add(target)
+                    pending.append(target)
+        owners = {ws.owner(eid) for eid in selected} | {ws.root_component_id}
+        for cid in owners:
+            if cid in ws.tables["components"]:
+                selected.add(cid)
+                selected.add(ws.tables["components"][cid]["ui_root_id"])
+        # Parent use-sites and child inputs/events allow same-response cross-component wiring.
+        for row in ws.tables["ui"].values():
+            if row["kind"] == "COMPONENT" and (row["id"] in selected or row["component_ref"] in owners):
+                selected.add(row["id"])
+                selected.add(row["component_id"])
+                selected.add(row["component_ref"])
+                selected.add(ws.tables["components"][row["component_id"]]["ui_root_id"])
+        for row in ws.tables["events"].values():
+            if row["component_id"] in selected and row["kind"] == "CUSTOM":
+                selected.add(row["id"])
+        for row in ws.tables["data"].values():
+            if row["owner_id"] in selected:
+                selected.add(row["id"])
+        return {"default_component_id": ws.root_component_id, "focus_ids": focus,
+                "split_requirement": focus_ids is not None,
+                "entities": [copy.deepcopy(all_rows[eid]) for eid in sorted(selected) if eid in all_rows],
+                "editable_ids": sorted(eid for eid in selected if eid in all_rows),
+                "component_catalog": [brief(row) for row in ranked(
+                    list(ws.tables["components"].values()), query, CATALOG_SIZE)]}
 
     def _call(self, phase: str, schema: dict[str, Any], instructions: str, context: dict[str, Any],
               requirements: list[str], apply: Callable[[dict[str, Any]], Any],
               image: str | None = None) -> bool:
+        # Examples already use the model protocol; project only canonical context entities.
+        context = {**project_context({k: v for k, v in context.items() if k != "protocol_example"}),
+                   "protocol_example": context["protocol_example"]}
+        context["compiler_fields"] = {
+            "creates": {"id": "Omit or null; compiler always allocates the ID.",
+                        "requirement_ids": "Omit or echo; compiler uses current requirement attribution."},
+            "updates": {"id": "Required existing identity; not editable.",
+                        "requirement_ids": "Omit or echo; compiler preserves and merges attribution.",
+                        "component_id": "Copy existing ownership; moves require assembly actions.",
+                        "ui_root_id": "Component root is compiler-owned; omit or echo."},
+            "records": "Include the full entity field set for every kind; inactive fields are null or [].",
+        }
         task_id = f"{phase}-{len(self.batches) + 1:05d}"
         record: dict[str, Any] = {"task_id": task_id, "phase": phase,
                                   "requirement_ids": requirements, "input": copy.deepcopy(context), "attempts": []}
         self.batches.append(record)
-        if len(encoded(context)) > MAX_INPUT_CHARS:
+        if len(encoded(context)) > MAX_INPUT_CHARS - RETRY_RESERVE:
             self._fail(phase, requirements, "Local context exceeds the input budget; task retained as incomplete.", task_id)
             record["status"] = "FAILED"
             return False
-        feedback = ""
+        feedback: dict[str, Any] | None = None
+        candidate: dict[str, Any] | None = None
+        last_error = ""
         for attempt in range(2):
-            payload = copy.deepcopy(context)
-            if feedback:
-                payload["repair_feedback"] = feedback[:900]
-            self.log.info(f"MODEL_REQUEST phase=frontend_{phase} task={task_id} attempt={attempt + 1}/2 input_chars={len(encoded(payload))}")
+            repairing = attempt > 0 and candidate is not None
+            payload = repair_context(candidate, feedback or {}, context) if repairing else copy.deepcopy(context)
+            if feedback and not repairing:
+                payload["repair_feedback"] = feedback
+            call_schema = REPAIR_SCHEMA if repairing else schema
+            call_instructions = REPAIR_INSTRUCTIONS if repairing else instructions
+            if repairing:
+                call_instructions += "\nThe frozen candidate uses this schema; replacement records must conform to their corresponding branch. This is NOT your response schema:\n" + encoded(schema)
+            request_chars = len(encoded(payload)) + len(call_instructions) + len(encoded(call_schema))
+            if len(encoded(payload)) > MAX_INPUT_CHARS or request_chars > MAX_REQUEST_CHARS:
+                last_error = "Local request exceeds payload/text-envelope budget; no contract was truncated."
+                record["attempts"].append({"error": last_error, "input_chars": len(encoded(payload)), "request_chars": request_chars})
+                break
+            self.log.info(f"MODEL_REQUEST phase=frontend_{phase} task={task_id} requirements={requirements} attempt={attempt + 1}/2 repair={repairing} input_chars={len(encoded(payload))} request_chars={request_chars}")
             raw = None
+            attempt_record: dict[str, Any] = {"input": payload, "repair": repairing, "request_chars": request_chars}
             try:
-                kwargs = dict(schema_name=f"frontend_{phase}", instructions=instructions,
-                              input_payload=payload, output_schema=schema)
-                if image is not None:
+                kwargs = dict(schema_name=f"frontend_{phase}" + ("_repair" if repairing else ""), instructions=call_instructions,
+                              input_payload=payload, output_schema=call_schema)
+                if image is not None and not repairing:
                     if self.visual_model is None:
                         self.visual_model = VisualModel.from_env()
                     raw = self.visual_model.generate_visual_json(**kwargs, image_data_url=image)
                 else:
                     raw = self.model.generate_json(**kwargs)
+                client = self.visual_model if image is not None and not repairing else self.model
+                attempt_record["structured_output_mode"] = getattr(client, "structured_output_mode", "unknown")
                 if len(encoded(raw)) > MAX_OUTPUT_CHARS:
-                    raise ValueError("Output too large; return concise regional edits, not the whole component.")
-                check_shape(raw, schema)
-                if len(raw.get("creates", [])) + len(raw.get("updates", [])) > MAX_EDITS:
+                    raise ValueError("Output too large; return concise edits for this requirement, not the whole application.")
+                if repairing:
+                    check_shape(raw, REPAIR_SCHEMA)
+                    candidate = apply_repairs(candidate, raw, payload)
+                else:
+                    candidate = copy.deepcopy(raw)
+                # One protocol only: no aliases, field renaming, or literal-format coercion.
+                if len(encoded(candidate)) > MAX_OUTPUT_CHARS:
+                    raise ValueError("Repaired candidate exceeds the local output budget")
+                check_shape(candidate, schema)
+                check_references(candidate, {row["id"] for row in context.get("entities", [])}
+                                 | {row["id"] for row in context.get("component_catalog", [])})
+                batch = normalize_patch(candidate)
+                if len(batch["creates"]) + len(batch["updates"]) + len(batch.get("components", [])) > MAX_EDITS:
                     raise ValueError(f"Return at most {MAX_EDITS} local edits for this task.")
-                result = apply(raw)
-                record["attempts"].append({"output": raw, "status": "APPLIED", "merge": result})
+                result = apply(batch)
+                record["attempts"].append({**attempt_record, "output": raw, "candidate": candidate, "status": "APPLIED", "merge": result})
                 record["status"] = "APPLIED"
-                self.log.info(f"MODEL_APPLIED phase=frontend_{phase} task={task_id} output_chars={len(encoded(raw))}")
+                self.log.info(f"MODEL_APPLIED phase=frontend_{phase} task={task_id} requirements={requirements} mode={attempt_record['structured_output_mode']} output_chars={len(encoded(raw))}")
                 return True
             except Exception as exc:
-                feedback = describe_model_error(exc)
-                record["attempts"].append({"output": raw, "error": feedback})
-                self.log.info(f"MODEL_RETRY phase=frontend_{phase} task={task_id} error={feedback}")
+                last_error = describe_model_error(exc)
+                feedback = exc.feedback() if isinstance(exc, ShapeError) else {
+                    "error": last_error[:900],
+                    "hint": "Use {local: key} for new references and {id: supplied_id} for existing references. "
+                            "Preserve valid unrelated records.",
+                }
+                # Malformed top-level structures have no safe record-level repair target.
+                if candidate is not None and not (
+                    isinstance(candidate, dict) and isinstance(candidate.get("creates"), dict)
+                    and all(isinstance(rows, list) and all(isinstance(row, dict) for row in rows)
+                            for rows in candidate["creates"].values())
+                    and all(isinstance(candidate.get(k, []), list) and all(isinstance(row, dict) for row in candidate.get(k, []))
+                            for k in ("updates", "components"))
+                ):
+                    candidate = None
+                if isinstance(exc, ShapeError) and exc.path in {"$", "$.creates", "$.updates", "$.components"}:
+                    candidate = None
+                client = self.visual_model if image is not None and not repairing else self.model
+                attempt_record["structured_output_mode"] = getattr(client, "structured_output_mode", "unknown")
+                record["attempts"].append({**attempt_record, "output": raw, "error": last_error, "repair_feedback": feedback})
+                label = "MODEL_RETRY" if attempt == 0 else "MODEL_FAILED"
+                self.log.info(f"{label} phase=frontend_{phase} task={task_id} requirements={requirements} error={last_error}")
         record["status"] = "FAILED"
-        self._fail(phase, requirements, feedback, task_id)
+        self._fail(phase, requirements, last_error, task_id)
         return False
 
     def _fail(self, phase: str, requirements: list[str], message: str, task_id: str = "") -> None:
         self.failures.append({"task_id": task_id, "phase": phase,
                               "requirement_ids": requirements, "message": message})
-
-    def _merge_observations(self, batch: dict[str, Any], requirements: list[str], visuals: list[str]) -> None:
-        candidate = copy.deepcopy(self.observations)
-        for item in batch["observations"]:
-            oid = item["existing_observation_id"]
-            if oid and oid not in candidate:
-                raise ValueError(f"Unknown observation {oid}")
-            if not item["name"].strip() or not item["spec"].strip():
-                raise ValueError("Observation name and spec must be nonempty")
-            if not oid:
-                oid = f"O.{len(candidate) + 1:06d}"
-                candidate[oid] = {"id": oid, "requirement_ids": [], "visual_reference_ids": [],
-                                  "content": [], "behavior_hints": [], "structure_hint": "", "spec": ""}
-            row = candidate[oid]
-            row["name"] = item["name"]
-            for key in ("spec", "structure_hint"):
-                if item[key] and item[key] not in row[key]:
-                    row[key] = (row[key] + "\n" + item[key]).strip()
-            for key, values in (("content", item["content"]), ("behavior_hints", item["behavior_hints"]),
-                                ("requirement_ids", requirements), ("visual_reference_ids", visuals)):
-                row[key].extend(value for value in values if value not in row[key])
-        self.observations = candidate
-
-    def _observe_visual(self, visual: ResolvedVisualReference | dict[str, Any]) -> None:
-        if isinstance(visual, dict):
-            rids = [rid for rid in visual.get("requirement_ids", []) if rid in self.nodes]
-            context = {"visual_analysis": visual.get("analysis", {}),
-                       "related_requirements": self._requirement_summaries(rids),
-                       "existing_observations": self._observation_catalog(visual.get("analysis", {}))}
-            self._call("visual", OBSERVATION_SCHEMA, OBSERVATION_INSTRUCTIONS, context, rids,
-                       lambda batch: self._merge_observations(batch, rids, [str(visual.get("id", ""))]))
-            self.warnings.append(f"Visual {visual.get('id')}: used supplied analysis, not raw pixels.")
-            return
-        rids = [rid for rid in visual.requirement_ids if rid in self.nodes]
-        try:
-            content = visual.absolute_path.read_bytes()
-            if hashlib.sha256(content).hexdigest() != visual.sha256:
-                raise ValueError("Visual reference changed after resolution")
-            image = f"data:{visual.media_type};base64,{base64.b64encode(content).decode('ascii')}"
-        except (OSError, ValueError) as exc:
-            self.warnings.append(f"Visual {visual.id} unavailable: {exc}")
-            return
-        context = {"visual_reference_id": visual.id, "related_requirements": self._requirement_summaries(rids),
-                   "existing_observations": self._observation_catalog(rids)}
-        self._call("visual", OBSERVATION_SCHEMA, OBSERVATION_INSTRUCTIONS, context, rids,
-                   lambda batch: self._merge_observations(batch, rids, [visual.id]), image=image)
-
-    def _observation_catalog(self, query: Any) -> list[dict[str, Any]]:
-        return [brief(row) for row in ranked(list(self.observations.values()), query, CATALOG_SIZE)]
-
-    def _component_catalog(self, query: Any) -> list[dict[str, Any]]:
-        selected = ranked(list(self.workspace.tables["components"].values()), query, CATALOG_SIZE)
-        root = self.workspace.tables["components"].get(self.workspace.root_component_id)
-        if root and root not in selected:
-            selected.insert(0, root)
-        return [{**brief(row), "inputs": [brief(d) | {"type": d["type"]} for d in self.workspace.tables["data"].values()
-                                         if d["owner_id"] == row["id"]],
-                 "properties": [brief(p) | {"type": p["type"]} for p in self.workspace.tables["properties"].values()
-                                if p["component_id"] == row["id"]],
-                 "uses": [brief(u) for u in self.workspace.tables["ui"].values()
-                          if u["component_id"] == row["id"] and u["kind"] == "COMPONENT"]} for row in selected]
 
     def _requirement_summaries(self, requirements: list[str]) -> list[dict[str, Any]]:
         ids = list(requirements)
@@ -312,77 +368,6 @@ class FrontendIRGenerationPass:
             candidates = ranked(list(self.apis.values()), query, 4)
         selected = ranked(candidates, query, 4)
         return [copy.deepcopy(row) if full else {"id": row["id"], "spec": row["spec"][:250]} for row in selected]
-
-    def _patch_task(self, stage: str, cid: str, focus_ids: list[str], task: dict[str, Any],
-                    requirements: list[str], skeleton: bool = False) -> bool:
-        local = self._local_context(cid, focus_ids, task, skeleton)
-        context = {**task, **local, "requirements": self._requirement_summaries(requirements),
-                   "api_contracts": self._api_context(requirements, task)}
-        # A hint may explicitly name an API outside the ranked shortlist; include it intact.
-        wanted = {aid for hint in task.get("behavior_hints", []) for aid in hint.get("api_ids", [])}
-        current = {row["id"] for row in context["api_contracts"]}
-        context["api_contracts"].extend(copy.deepcopy(self.apis[aid]) for aid in sorted(wanted - current) if aid in self.apis)
-        schema = patch_schema(stage)
-        def apply(batch: dict[str, Any]) -> dict[str, Any]:
-            before = {edit["id"]: copy.deepcopy(self.workspace.find(edit["id"])[1]) for edit in batch["updates"]}
-            aliases = self.workspace.apply_patch(batch, cid, requirements, set(local["editable_ids"]), stage)
-            return {"aliases": aliases, "changes": [
-                {"before": row, "after": copy.deepcopy(self.workspace.find(entity_id)[1])}
-                for entity_id, row in before.items()
-            ]}
-        return self._call(stage, schema, UI_INSTRUCTIONS if stage == "ui" else BEHAVIOR_INSTRUCTIONS,
-                          context, requirements, apply)
-
-    def _local_context(self, cid: str, focus_ids: list[str], query: Any, skeleton: bool) -> dict[str, Any]:
-        ws = self.workspace
-        selected = set(focus_ids)
-        pending = list(focus_ids)
-        while pending:
-            uid = pending.pop()
-            ui = ws.tables["ui"].get(uid)
-            if not ui:
-                continue
-            for child in ui["children"]:
-                if child not in selected:
-                    selected.add(child)
-                    if not skeleton:
-                        pending.append(child)
-        owned = [row for rows in ws.tables.values() for row in rows.values() if ws.owner(row["id"]) == cid]
-        owned_ids = {row["id"] for row in owned}
-        shared = [row for row in owned if row["id"].startswith(("D.", "P."))]
-        selected.update(row["id"] for row in ranked(shared, query, 16))
-        for row in owned:
-            if row["id"].startswith("E.") and row.get("ui_id") in selected:
-                selected.add(row["id"])
-        # Follow local data/behavior references; don't expand a skeleton into every UI descendant.
-        changed = True
-        while changed:
-            before = len(selected)
-            for row in owned:
-                if row["id"] in selected:
-                    selected.update(target for key, target in references(row)
-                                    if key not in {"children", "component_ref", "component_id", "ui_root_id"}
-                                    and target in owned_ids)
-                if row.get("owner_id") in selected:
-                    selected.add(row["id"])
-            changed = len(selected) != before
-        current_rows = [copy.deepcopy(row) for row in owned if row["id"] in selected]
-        contracts = []
-        child_ids = {row.get("component_ref") for row in current_rows if row.get("kind") == "COMPONENT"}
-        for child in child_ids:
-            contracts.extend(copy.deepcopy(row) for row in ws.tables["data"].values() if row["owner_id"] == child)
-            events = [row for row in ws.tables["events"].values() if row["component_id"] == child and row["kind"] == "CUSTOM"]
-            contracts.extend(copy.deepcopy(events))
-            contracts.extend(copy.deepcopy(row) for row in ws.tables["data"].values()
-                             if row["owner_id"] in {e["id"] for e in events})
-        # Let child tasks see their parent-provided input values without granting parent edit authority.
-        parent_uses = [copy.deepcopy(u) for u in ws.tables["ui"].values()
-                       if u["kind"] == "COMPONENT" and u["component_ref"] == cid]
-        return {"component": copy.deepcopy(ws.tables["components"][cid]), "focus_ids": focus_ids,
-                "entities": current_rows, "editable_ids": sorted(row["id"] for row in current_rows),
-                "related_contracts": contracts, "parent_uses": parent_uses,
-                "other_local_entities": [brief(row) for row in ranked(
-                    [r for r in owned if r["id"] not in selected], query, 12)]}
 
 
 def frontend_ir_traceability(frontend_ir: dict[str, Any]) -> dict[str, dict[str, Any]]:

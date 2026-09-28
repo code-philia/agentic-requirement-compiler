@@ -105,6 +105,11 @@ class VisualModel:
             max_retries=max(0, transport_retries),
         )
 
+    @property
+    def structured_output_mode(self) -> str:
+        """Expose provider fallback for generation attempt diagnostics."""
+        return getattr(self, "_last_output_mode", self._structured_output_mode)
+
     @classmethod
     def from_env(cls) -> "VisualModel":
         env_file = os.environ.get("ARC_ENV_FILE", "").strip()
@@ -130,9 +135,12 @@ class VisualModel:
         image_data_url: str,
         output_schema: dict[str, Any],
     ) -> dict[str, Any]:
+        output_schema = dict(output_schema)
+        force_json = output_schema.pop("x-arc-output-mode", None) == "json_object"
+        self._last_output_mode = "json_object" if force_json else self._structured_output_mode
         messages = _visual_messages(instructions, input_payload, image_data_url)
         response = None
-        if self._structured_output_mode == "json_schema":
+        if not force_json and self._structured_output_mode == "json_schema":
             try:
                 response = self._client.chat.completions.create(
                     **completion_request_kwargs(
@@ -155,11 +163,13 @@ class VisualModel:
                 # pass is synchronous, so later images can skip the known-bad
                 # request without introducing shared-state races.
                 self._structured_output_mode = "json_object"
+                self._last_output_mode = "json_object"
 
         fallback_instructions = (
             f"{instructions.rstrip()}\n\n"
             "Return exactly one JSON object matching this JSON Schema; include every required "
-            "property, do not add properties, and do not use Markdown:\n"
+            "property; optional properties may be omitted. Additional properties are allowed only where "
+            "the schema permits them (such as literal JSON objects). Do not use Markdown:\n"
             f"{json.dumps(output_schema, ensure_ascii=False, separators=(',', ':'))}"
         )
         fallback_messages = _visual_messages(
@@ -167,7 +177,7 @@ class VisualModel:
             input_payload,
             image_data_url,
         )
-        if response is None and self._structured_output_mode == "json_object":
+        if response is None and (force_json or self._structured_output_mode == "json_object"):
             try:
                 response = self._client.chat.completions.create(
                     **completion_request_kwargs(
@@ -179,7 +189,10 @@ class VisualModel:
             except Exception as exc:
                 if not response_format_unavailable(exc):
                     raise
+                if force_json:
+                    raise VisualModelConfigurationError("Frontend protocol requires JSON-object output support; no prompt-only fallback.") from exc
                 self._structured_output_mode = "prompt_only"
+                self._last_output_mode = "prompt_only"
 
         if response is None:
             response = self._client.chat.completions.create(

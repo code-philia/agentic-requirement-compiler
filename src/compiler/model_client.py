@@ -101,6 +101,11 @@ class Model:
             max_retries=max(0, transport_retries),
         )
 
+    @property
+    def structured_output_mode(self) -> str:
+        """Actual negotiated transport mode, including provider fallback."""
+        return getattr(self, "_last_output_mode", self._structured_output_mode)
+
     @classmethod
     def from_env(cls) -> "Model":
         env_file = os.environ.get("ARC_ENV_FILE", "").strip()
@@ -122,13 +127,16 @@ class Model:
         input_payload: dict[str, Any],
         output_schema: dict[str, Any],
     ) -> dict[str, Any]:
+        output_schema = dict(output_schema)
+        force_json = output_schema.pop("x-arc-output-mode", None) == "json_object"
+        self._last_output_mode = "json_object" if force_json else self._structured_output_mode
         user_messages = _user_messages(input_payload)
         messages = [
             {"role": "system", "content": instructions},
             *user_messages,
         ]
         response = None
-        if self._structured_output_mode == "json_schema":
+        if not force_json and self._structured_output_mode == "json_schema":
             try:
                 response = self._client.chat.completions.create(
                     **completion_request_kwargs(
@@ -148,18 +156,20 @@ class Model:
                 if not response_format_unavailable(exc):
                     raise
                 self._structured_output_mode = "json_object"
+                self._last_output_mode = "json_object"
 
         fallback_instructions = (
             f"{instructions.rstrip()}\n\n"
             "Return exactly one JSON object matching this JSON Schema. Include every required "
-            "property, do not add properties, and do not use Markdown:\n"
+            "property; optional properties may be omitted. Additional properties are allowed only where "
+            "the schema permits them (such as literal JSON objects). Do not use Markdown:\n"
             f"{json.dumps(output_schema, ensure_ascii=False, separators=(',', ':'))}"
         )
         fallback_messages = [
             {"role": "system", "content": fallback_instructions},
             *user_messages,
         ]
-        if response is None and self._structured_output_mode == "json_object":
+        if response is None and (force_json or self._structured_output_mode == "json_object"):
             try:
                 response = self._client.chat.completions.create(
                     **completion_request_kwargs(
@@ -171,7 +181,10 @@ class Model:
             except Exception as exc:
                 if not response_format_unavailable(exc):
                     raise
+                if force_json:
+                    raise ModelConfigurationError("Frontend protocol requires JSON-object output support; no prompt-only fallback.") from exc
                 self._structured_output_mode = "prompt_only"
+                self._last_output_mode = "prompt_only"
 
         if response is None:
             response = self._client.chat.completions.create(

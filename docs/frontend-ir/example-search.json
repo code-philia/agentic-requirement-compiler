@@ -1,5 +1,4 @@
 {
-  "schema_version": "arc.frontend-ir/1.0",
   "root_component_id": "C.Search",
   "components": [
     {

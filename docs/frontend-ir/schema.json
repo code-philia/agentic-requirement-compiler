@@ -4,9 +4,6 @@
   "description": "Seven-entity design IR. Cross-reference and behavioral validity additionally require FIR001–FIR016 in metamodel.md.",
   "type": "object",
   "properties": {
-    "schema_version": {
-      "const": "arc.frontend-ir/1.0"
-    },
     "root_component_id": {
       "type": "string",
       "pattern": "^[C]\\.[A-Za-z0-9_][A-Za-z0-9_.-]*$"
@@ -57,7 +54,6 @@
     }
   },
   "required": [
-    "schema_version",
     "root_component_id",
     "components",
     "data",

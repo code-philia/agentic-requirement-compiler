@@ -58,9 +58,8 @@ def decode(value: Any, aliases: dict[str, str]) -> Any:
     if not isinstance(value, dict):
         return value
     if value.get("kind") == "LITERAL":
-        literal = json.loads(value["value_json"], parse_constant=_invalid_constant)
-        json.dumps(literal, allow_nan=False)
-        return {"kind": "LITERAL", "value": literal}
+        json.dumps(value["value"], allow_nan=False)
+        return copy.deepcopy(value)
     result = {}
     for key, child in value.items():
         if key in REF_FIELDS:
@@ -70,16 +69,16 @@ def decode(value: Any, aliases: dict[str, str]) -> Any:
     return result
 
 
-def _invalid_constant(value: str) -> None:
-    raise ValueError(f"Invalid JSON literal constant: {value}")
-
-
 def resolve(value: Any, aliases: dict[str, str]) -> Any:
-    if isinstance(value, str) and value.startswith("@"):
-        if value not in aliases:
-            raise ValueError(f"Unresolved local reference {value}")
-        return aliases[value]
-    return value
+    if value is None:
+        return None
+    if isinstance(value, dict) and set(value) == {"id"}:
+        return value["id"]
+    if isinstance(value, dict) and set(value) == {"local"}:
+        if value["local"] not in aliases:
+            raise ValueError(f"Unresolved local reference {value['local']}")
+        return aliases[value["local"]]
+    raise ValueError("Expected reference {id: string} or {local: string}")
 
 
 class FrontendWorkspace:
@@ -87,8 +86,6 @@ class FrontendWorkspace:
         self.tables: dict[str, dict[str, dict[str, Any]]] = {name: {} for name in TABLES}
         self.counters = dict.fromkeys(TABLES, 0)
         self.root_component_id: str | None = None
-        self.observation_components: dict[str, list[str]] = {}
-        self.regions: dict[str, dict[str, str]] = {}
 
     def allocate(self, table: str) -> str:
         self.counters[table] += 1
@@ -135,143 +132,189 @@ class FrontendWorkspace:
             return None
         return row.get("component_id")
 
-    def apply_assembly(self, batch: dict[str, Any], requirements: list[str],
-                       observation_ids: set[str]) -> dict[str, str]:
+    def apply_requirement_batch(self, batch: dict[str, Any], requirements: list[str],
+                                editable_ids: set[str], stage: str) -> dict[str, Any]:
+        """One atomic decision may edit several components for the same requirement."""
         candidate = copy.deepcopy(self)
         aliases: dict[str, str] = {}
-        assignments: set[str] = set()
-        for item in batch["components"]:
-            key = "@" + item["key"]
-            if not item["key"] or key in aliases:
-                raise ValueError("Assembly keys must be nonempty and unique")
-            cid = item["existing_component_id"]
+        touched: dict[str, str] = {}
+        before = {eid: copy.deepcopy(self.find(eid)[1]) for eid in editable_ids}
+
+        def alias(key: str, entity_id: str) -> None:
+            if not key or key in aliases:
+                raise ValueError(f"Duplicate or empty key {key}")
+            aliases[key] = entity_id
+
+        # Component extraction is explicit and occurs only in the assembly pass.
+        for item in batch.get("components", []):
+            cid = resolve(item["existing_component_id"], aliases)
             if cid:
                 if cid not in candidate.tables["components"]:
                     raise ValueError(f"Unknown component {cid}")
-                row = candidate.tables["components"][cid]
-                row.update(name=item["name"], spec=item["spec"])
-                row["requirement_ids"] = list(dict.fromkeys(row["requirement_ids"] + requirements))
+                component = candidate.tables["components"][cid]
+                component["requirement_ids"] = list(dict.fromkeys(component["requirement_ids"] + requirements))
             else:
-                row = candidate.component(item["name"], item["spec"], requirements)
-                cid = row["id"]
-            aliases[key] = cid
-            for oid in item["observation_ids"]:
-                if oid not in observation_ids:
-                    raise ValueError(f"Observation {oid} is outside this assembly task")
-                assignments.add(oid)
-                owners = candidate.observation_components.setdefault(oid, [])
-                if cid not in owners:
-                    owners.append(cid)
-        for item in batch["components"]:
-            for table, label in (("data", "inputs"), ("properties", "properties")):
-                for field in item[label]:
-                    key = "@" + field["key"]
-                    if not field["key"] or key in aliases:
-                        raise ValueError(f"Duplicate or empty local key {key}")
-                    aliases[key] = candidate.allocate(table)
-        for item in batch["components"]:
-            cid = aliases["@" + item["key"]]
-            for table, label in (("data", "inputs"), ("properties", "properties")):
-                for field in item[label]:
-                    values = decode({k: v for k, v in field.items() if k != "key"}, aliases)
-                    if table == "data":
-                        values.update(owner_id=cid, direction="INPUT")
-                    candidate.new(table, values, requirements, cid, aliases["@" + field["key"]])
-        for placement in batch["placements"]:
-            parent = resolve(placement["parent_ref"], aliases)
-            child = resolve(placement["child_ref"], aliases)
-            if parent not in candidate.tables["components"] or child not in candidate.tables["components"]:
-                raise ValueError("Placement must reference known components")
-            if parent == child or child == candidate.root_component_id:
-                raise ValueError("A placement cannot contain itself or the application root")
-            use = candidate.new("ui", {"name": candidate.tables["components"][child]["name"],
-                "spec": placement["spec"], "kind": "COMPONENT", "component_ref": child}, requirements, parent)
-            root = candidate.tables["components"][parent]["ui_root_id"]
-            candidate.tables["ui"][root]["children"].append(use["id"])
-        if assignments != observation_ids:
-            raise ValueError(f"Assign remaining observations: {sorted(observation_ids - assignments)}")
-        self.__dict__.update(candidate.__dict__)
-        return aliases
+                component = candidate.component(item["name"], item["spec"], requirements)
+            alias(item["key"], component["id"])
+            alias(item["key"] + ".root", component["ui_root_id"])
+            touched[component["id"]] = "components"
+            touched[component["ui_root_id"]] = "ui"
+        for item in batch.get("components", []):
+            cid = aliases[item["key"]]
+            extraction = {**item, **{name: [resolve(v, aliases) for v in item[name]]
+                                    for name in ("ui_ids", "property_ids", "data_ids")}}
+            use_id, moved = candidate._extract(extraction, cid, requirements, editable_ids)
+            if use_id:
+                alias(item["key"] + ".use", use_id)
+            touched.update(moved)
 
-    def add_regions(self, observations: dict[str, dict[str, Any]]) -> None:
-        for oid, owners in self.observation_components.items():
-            for cid in owners:
-                observation = observations[oid]
-                region = self.new("ui", {"name": observation["name"], "spec": observation["spec"],
-                    "kind": "FRAGMENT"}, observation["requirement_ids"], cid)
-                self.regions.setdefault(cid, {})[oid] = region["id"]
-                root = self.tables["components"][cid]["ui_root_id"]
-                self.tables["ui"][root]["children"].append(region["id"])
-
-    def apply_patch(self, batch: dict[str, Any], component_id: str, requirements: list[str],
-                    editable_ids: set[str], stage: str) -> dict[str, str]:
-        candidate = copy.deepcopy(self)
-        aliases: dict[str, str] = {}
         allowed = {"data", "properties", "ui"}
-        if stage != "ui":
+        if stage == "behavior":
             allowed |= {"events", "handlers", "effects"}
         for item in batch["creates"]:
             if item["table"] not in allowed:
-                raise ValueError(f"Cannot create {item['table']} in this pass")
-            key = "@" + item["key"]
-            if not item["key"] or key in aliases:
-                raise ValueError("Create keys must be nonempty and unique")
-            aliases[key] = candidate.allocate(item["table"])
-        touched = []
+                raise ValueError(f"Cannot create {item['table']} in {stage}")
+            alias(item["key"], candidate.allocate(item["table"]))
         for item in batch["creates"]:
-            table = item["table"]
-            fields = candidate._fields(table, item["fields"], aliases)
-            row = candidate.new(table, fields, requirements, component_id, aliases["@" + item["key"]])
-            touched.append((table, row))
+            cid = resolve(item["component_ref"], aliases) or candidate.root_component_id
+            if cid not in candidate.tables["components"]:
+                raise ValueError(f"Unknown owning component {cid}")
+            fields = candidate._fields(item["table"], item["fields"], aliases)
+            row = candidate.new(item["table"], fields, requirements, cid, aliases[item["key"]])
+            touched[row["id"]] = item["table"]
         for item in batch["updates"]:
-            if item["id"] not in editable_ids:
-                raise ValueError(f"Update outside supplied scope: {item['id']}")
-            table, row = candidate.find(item["id"])
+            eid = resolve(item["id"], aliases)
+            if eid not in editable_ids | set(aliases.values()):
+                raise ValueError(f"Update outside supplied requirement context: {eid}")
+            table, row = candidate.find(eid)
+            if item.get("component_id") is not None and resolve(item["component_id"], aliases) != row.get("component_id"):
+                raise ValueError("Move component ownership only through assembly declarations")
+            # ui_root_id and requirement_ids are compiler-owned, never update decisions.
+            if item["table"] != table:
+                raise ValueError(f"Update {eid} belongs to {table}, not {item['table']}; "
+                                 f"use table={table} and its allowed fields {sorted(ENTITY_FIELDS[table])}")
             if table not in allowed | {"components"}:
-                raise ValueError(f"Cannot update {table} in this pass")
+                raise ValueError(f"Cannot update {table} in {stage}")
             fields = candidate._fields(table, item["fields"], aliases)
             if "owner_id" in fields and fields["owner_id"] != row.get("owner_id"):
-                raise ValueError("Data ownership is immutable")
+                raise ValueError("Move ownership only through assembly component declarations")
             row.update(fields)
             row["requirement_ids"] = list(dict.fromkeys(row["requirement_ids"] + requirements))
-            touched.append((table, row))
-        for table, row in touched:
-            if candidate.owner(row["id"]) != component_id:
-                raise ValueError(f"{row['id']} must belong to the current component")
+            touched[eid] = table
+
+        # Check after ALL edits, allowing same-batch child events and parent callbacks.
+        for eid, table in touched.items():
+            row = candidate.tables[table][eid]
+            owner = candidate.owner(eid)
+            if owner not in candidate.tables["components"]:
+                raise ValueError(f"{eid}: missing component owner")
             if table in KINDS and row.get("kind") not in KINDS[table]:
-                raise ValueError(f"{row['id']}: invalid or missing kind")
-            if table == "data" and row.get("direction") not in {"INPUT", "OUTPUT"}:
-                raise ValueError(f"{row['id']}: missing INPUT/OUTPUT direction")
+                raise ValueError(f"{eid}: invalid kind")
             if table == "data":
                 owner_table, _ = candidate.find(row["owner_id"])
+                if row["direction"] not in {"INPUT", "OUTPUT"}:
+                    raise ValueError(f"{eid}: missing direction")
                 if owner_table == "components" and row["direction"] != "INPUT":
                     raise ValueError("Component Data must be INPUT")
                 if owner_table == "events" and row["direction"] != "OUTPUT":
                     raise ValueError("Event Data must be OUTPUT")
-            # Required local reference integrity is cheap; leave full type/behavior checks for later.
             for field, target in references(row):
                 target_table, target_row = candidate.find(target)
                 if TABLES[target_table] not in REF_FIELDS[field]:
-                    raise ValueError(f"{row['id']}.{field}: wrong reference type {target}")
-                if field == "writes" and (candidate.owner(target) != component_id or target_row.get("kind") == "DERIVED"):
-                    raise ValueError(f"Cannot write {target} from {component_id}")
-                if field == "children" and candidate.owner(target) != component_id:
-                    raise ValueError("UI children must belong to the same component")
-                if table == "events" and field in {"ui_id", "handler_id"} and candidate.owner(target) != component_id:
-                    raise ValueError("UI Event and its source/handler must belong to the same component")
-            if table == "ui" and row["id"] == candidate.tables["components"][component_id]["ui_root_id"]:
+                    raise ValueError(f"{eid}.{field}: wrong reference type {target}")
+                if field == "writes" and (candidate.owner(target) != owner or target_row.get("kind") == "DERIVED"):
+                    raise ValueError(f"{eid}: cannot write {target}")
+                if field == "children" and candidate.owner(target) != owner:
+                    raise ValueError("UI children must have the same owner")
+                if table == "events" and field in {"ui_id", "handler_id"} and candidate.owner(target) != owner:
+                    raise ValueError("UI Event source/handler must have the same owner")
+            if table == "ui" and eid == candidate.tables["components"][owner]["ui_root_id"]:
                 if row["kind"] != "FRAGMENT":
-                    raise ValueError("Keep the compiler-owned root as FRAGMENT")
+                    raise ValueError("Keep component roots as FRAGMENT")
+        changes = [{"before": before[eid], "after": copy.deepcopy(candidate.find(eid)[1])}
+                   for eid in touched if eid in before and before[eid] != candidate.find(eid)[1]]
         self.__dict__.update(candidate.__dict__)
-        return aliases
+        return {"aliases": aliases, "touched_ids": list(touched), "changes": changes}
+
+    def _extract(self, item: dict[str, Any], cid: str, requirements: list[str],
+                 editable_ids: set[str]) -> tuple[str | None, dict[str, str]]:
+        roots = list(dict.fromkeys(item["ui_ids"]))
+        if not roots:
+            if item["property_ids"] or item["data_ids"]:
+                raise ValueError("Extract state/inputs with an explicit UI subtree")
+            return None, {}
+        if any(uid not in editable_ids or uid not in self.tables["ui"] for uid in roots):
+            raise ValueError("Extraction roots must be supplied UI IDs")
+        owners = {self.owner(uid) for uid in roots}
+        if len(owners) != 1:
+            raise ValueError("Extract UI from one current owner per component declaration")
+        parent = owners.pop()
+        component_roots = {c["ui_root_id"] for c in self.tables["components"].values()}
+        if any(uid in component_roots for uid in roots):
+            raise ValueError("Do not extract a component root")
+        if parent == cid:
+            return None, {}
+        subtree, pending = set(), list(roots)
+        while pending:
+            uid = pending.pop()
+            if uid in subtree:
+                continue
+            if self.owner(uid) != parent:
+                raise ValueError("Extraction crosses a UI ownership boundary")
+            subtree.add(uid)
+            pending.extend(self.tables["ui"][uid]["children"])
+        if any(child in roots for uid in subtree for child in self.tables["ui"][uid]["children"]):
+            raise ValueError("Extraction roots must not overlap")
+        if any(self.tables["ui"][uid].get("component_ref") == cid for uid in subtree):
+            raise ValueError("Extraction would contain the target component itself")
+        # Preserve the first extracted position, not an unrelated append at the application end.
+        containers = [(u, u["children"].index(roots[0])) for u in self.tables["ui"].values()
+                      if roots[0] in u["children"] and u["id"] not in subtree]
+        if not containers:
+            raise ValueError("Extraction UI must already be connected")
+        host, position = containers[0]
+        touched = {}
+        for ui in self.tables["ui"].values():
+            if ui["id"] not in subtree and any(uid in ui["children"] for uid in roots):
+                ui["children"] = [uid for uid in ui["children"] if uid not in roots]
+                touched[ui["id"]] = "ui"
+        for uid in subtree:
+            self.tables["ui"][uid]["component_id"] = cid
+            touched[uid] = "ui"
+        for table, key in (("properties", "property_ids"), ("data", "data_ids")):
+            for eid in item[key]:
+                if eid not in editable_ids or eid not in self.tables[table] or self.owner(eid) != parent:
+                    raise ValueError(f"Cannot extract {eid}")
+                row = self.tables[table][eid]
+                if table == "data" and row["owner_id"] != parent:
+                    raise ValueError("Only component inputs can be extracted")
+                row["owner_id" if table == "data" else "component_id"] = cid
+                touched[eid] = table
+        root = self.tables["components"][cid]["ui_root_id"]
+        self.tables["ui"][root]["children"].extend(roots)
+        touched[root] = "ui"
+        use = next((u for u in self.tables["ui"].values()
+                    if item["existing_component_id"] and u["kind"] == "COMPONENT"
+                    and u["component_ref"] == cid and u["component_id"] == parent), None)
+        if use is None:
+            use = self.new("ui", {"name": self.tables["components"][cid]["name"], "spec": item["spec"],
+                                 "kind": "COMPONENT", "component_ref": cid}, requirements, parent)
+            host["children"].insert(position, use["id"])
+        else:
+            use["requirement_ids"] = list(dict.fromkeys(use["requirement_ids"] + requirements))
+        touched[host["id"]] = "ui"
+        touched[use["id"]] = "ui"
+        return use["id"], touched
 
     @staticmethod
     def _fields(table: str, edits: list[dict[str, Any]], aliases: dict[str, str]) -> dict[str, Any]:
         fields = {}
         for edit in edits:
             name = edit["field"]
-            if name not in ENTITY_FIELDS[table] or name in fields:
-                raise ValueError(f"Unknown or repeated field {table}.{name}")
+            if name not in ENTITY_FIELDS[table]:
+                raise ValueError(f"Unsupported field {table}.{name}; allowed: {sorted(ENTITY_FIELDS[table])}")
+            if name in fields:
+                raise ValueError(f"Repeated field {table}.{name}; provide the field once")
             fields[name] = edit["value"]
         return decode(fields, aliases)
 
@@ -280,19 +323,6 @@ class FrontendWorkspace:
             table: [copy.deepcopy(rows[key]) for key in sorted(rows)] for table, rows in self.tables.items()
         }}
 
-    def parent_first_components(self) -> list[str]:
-        remaining = set(self.tables["components"])
-        edges = [(u["component_id"], u["component_ref"]) for u in self.tables["ui"].values()
-                 if u["kind"] == "COMPONENT"]
-        ordered = []
-        while remaining:
-            ready = sorted(c for c in remaining if not any(b == c and a in remaining for a, b in edges))
-            if not ready:
-                ordered.extend(sorted(remaining))
-                break
-            ordered.extend(ready)
-            remaining.difference_update(ready)
-        return ordered
 
     def inspect(self, api_ids: set[str]) -> list[str]:
         warnings = []
