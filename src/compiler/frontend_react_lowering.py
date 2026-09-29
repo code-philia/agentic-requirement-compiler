@@ -236,13 +236,35 @@ class FrontendReactLowerer:
         return self.members.get(identifier, self.symbol(identifier))
 
     def _contract_value(self, value: Any) -> Any:
+        """Readable reference/expression notation, not a second serialization of IR."""
         if isinstance(value, str) and value in self.rows:
             return self.symbols.get(value, self.rows[value].get("name", value))
+        if isinstance(value, str):
+            return self._brief(value)
         if isinstance(value, list):
             return [self._contract_value(item) for item in value]
         if isinstance(value, dict):
+            kind = value.get("kind")
+            if kind == "LITERAL":
+                literal = value.get("value")
+                if isinstance(literal, dict):
+                    return "object(" + ", ".join(literal) + ")"
+                if isinstance(literal, list):
+                    return f"array({len(literal)} items)"
+                return self._contract_value(literal)
+            if kind in {"REF", "ITEM", "UI_REF"}:
+                key = value.get("ref_id") or value.get("ui_id")
+                return str(self._contract_value(key)) + "".join("." + str(p) for p in value.get("path", []))
+            if kind == "OP":
+                return str(value.get("operator")) + "(" + ", ".join(
+                    str(self._contract_value(arg)) for arg in value.get("args", [])) + ")"
             return {key: self._contract_value(item) for key, item in value.items()}
         return value
+
+    @staticmethod
+    def _brief(value: str, limit: int = 160) -> str:
+        text = " ".join(value.split())
+        return text if len(text) <= limit else text[:limit].rsplit(" ", 1)[0] + "…"
 
     def _contract_comment(self, row: dict[str, Any]) -> str:
         """Preserve deterministic design facts beside the generated declaration."""
@@ -250,12 +272,13 @@ class FrontendReactLowerer:
             "spec", "ui_root_id", "source_ui_id", "event_id", "handler_id", "handlers",
             "reads", "writes", "invokes", "emits", "target", "dependencies", "activation",
             "async_policy", "cleanup", "trigger", "ui_id", "handler_ids", "event_name", "arguments",
-        ) if key in row and row[key] is not None}
+        ) if row.get(key) not in (None, [], "")}
         for direction in ("INPUT", "OUTPUT"):
             data = self.data(row["id"], direction)
             if data:
-                facts[direction.lower()] = [{"name": self.members.get(d["id"], self.symbols.get(d["id"], d["name"])), "type": d["type"],
-                                             "required": d["required"]} for d in data]
+                # Full types/defaults already appear in the generated signature.
+                facts[direction.lower()] = [self.members.get(d["id"], self.symbols.get(d["id"], d["name"]))
+                                             for d in data]
         return "\n".join("// Contract " + key + ": " + js(value)
                          for key, value in facts.items())
 
@@ -350,9 +373,18 @@ class FrontendReactLowerer:
         if available:
             lines.append("void [\n" + ",\n".join(available) + "\n];")
         for ui in local["ui"]:
-            facts = {key: self._contract_value(ui[key]) for key in ("name", "kind", "element", "spec", "children", "component_ref",
-                     "arguments", "callbacks", "condition", "repeat", "attributes", "text", "slot_data_id", "presentation")
+            facts = {key: self._contract_value(ui[key]) for key in ("kind", "element", "children", "component_ref",
+                     "arguments", "callbacks", "condition", "repeat", "text", "slot_data_id")
                      if ui.get(key) not in (None, [], "")}
+            attributes = [attribute for attribute in ui.get("attributes", [])
+                          if any(references(attribute)) or attribute.get("name") in {
+                              "type", "name", "role", "aria-label", "htmlFor", "href", "placeholder",
+                              "required", "disabled", "checked", "value",
+                          }]
+            if attributes:
+                facts["attributes"] = self._contract_value(attributes)
+            if ui.get("spec"):
+                facts["purpose"] = self._brief(ui["spec"], 100)
             lines.append("// UI " + self.symbol(ui["id"]) + ": " + js(facts))
         lines.extend(["// TODO: Implement the component UI and bindings from the contracts above.",
                       "return <React.Fragment />;", "}", ""])

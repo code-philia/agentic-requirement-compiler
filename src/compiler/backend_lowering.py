@@ -517,6 +517,7 @@ def _render_glue(
         _import("fileURLToPath", "node:url"),
         _import("sqliteDatabase", "./db/client.js", source=database_path),
         _import("resetDatabase", "./db/client.js", source=database_path),
+        _import("restoreFixtures", "./fixtures/index.js", source="backend/src/fixtures/index.ts"),
         _import("router", "./generated/router.js", source=router_path),
         _import("toErrorBody", "./runtime/errors.js", source="backend/src/runtime/errors.ts"),
     ]
@@ -712,6 +713,7 @@ def _render_app(imports: list[dict[str, Any]]) -> str:
             "    return;",
             "  }",
             "  resetDatabase();",
+            "  restoreFixtures();",
             "  response.status(204).end();",
             "});",
             "app.use(router);",

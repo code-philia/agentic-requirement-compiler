@@ -42,7 +42,7 @@ class CheckpointStore:
         })
         ProjectGitHistory(self.root).commit(f"checkpoint {stage}", [SNAPSHOT])
 
-    def load(self, stage: str) -> dict[str, Any]:
+    def load(self, stage: str, *, resume: bool = False) -> dict[str, Any]:
         try:
             snapshot = json.loads((self.root / SNAPSHOT).read_text(encoding="utf-8"))
             validate_snapshot(snapshot, stage)
@@ -54,9 +54,10 @@ class CheckpointStore:
             committed = json.loads(history._run(["show", f"HEAD:{SNAPSHOT}"]))
             if committed != snapshot:
                 raise ValueError("Checkpoint snapshot differs from HEAD; select a committed checkpoint.")
-            changed = history._run(["diff", "--name-only", "HEAD", "--", "backend", "frontend", "shared",
-                                    "package.json", "package-lock.json", ".arc/design", ".arc/lowering",
-                                    ".arc/database", ".arc/fixtures", ".arc/code", ".arc/preprocessing", ".arc/project"])
+            protected = ([".arc/design", ".arc/preprocessing", ".arc/database", ".arc/fixtures"] if resume else
+                         ["backend", "frontend", "shared", "package.json", "package-lock.json", ".arc/design",
+                          ".arc/lowering", ".arc/database", ".arc/fixtures", ".arc/code", ".arc/preprocessing", ".arc/project"])
+            changed = history._run(["diff", "--name-only", "HEAD", "--", *protected])
             if changed:
                 raise ValueError("Checkpoint source has uncommitted changes: " + changed)
             self.payload = snapshot["payload"]

@@ -6,12 +6,13 @@ import hashlib
 import json
 import re
 import time
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Mapping
 
 from arc_agents import FrontendImplementationAgent, ImplementationAgent, ImplementationRequest, JsonModel
 from arc_agents.contracts import ProposedPatch
+from arc_agents.test_repair import TestFailureAnalysisAgent, TestRepairAgent
 from arcbench_agent_runtime.jsonio import write_json_atomic
 from core.logging import append_debug_log, write_terminal_log
 
@@ -20,6 +21,7 @@ from .exact_file_patcher import ExactFilePatcher
 from .frontend_thin_design import project_frontend_runtime_ir
 from .git_history import ProjectGitHistory
 from .project_build import ProjectBuilder
+from .repair_context import RepairContextBuilder
 from .test_generation import TEST_LAYERS, _format_model_log
 from .test_runner import TestRunResult, TestRunner, TestSelection
 
@@ -103,7 +105,12 @@ class NodeTDDOrchestrator:
             model_log=self._write_implementation_model_log,
         )
         self.file_patcher = file_patcher or ExactFilePatcher(self.output_root)
-        self._recent_changes: dict[str, dict[str, dict[str, Any]]] = {}
+        self.analysis_agent = TestFailureAnalysisAgent(
+            model, trace=self._trace_implementation, model_log=self._write_implementation_model_log)
+        self.repair_agent = TestRepairAgent(
+            model, trace=self._trace_implementation, model_log=self._write_implementation_model_log)
+        self.repair_context = RepairContextBuilder(self.output_root, code_binding_registry, frontend_ir)
+        self._history: dict[str, list[dict[str, Any]]] = {}
 
     def _trace_frontend_implementation(self, message: str) -> None:
         self._trace_implementation(message, frontend=True)
@@ -129,7 +136,9 @@ class NodeTDDOrchestrator:
     def _write_implementation_model_log(self, payload: dict[str, Any]) -> None:
         """Persist complete implementation model exchanges for replay/audit."""
         agent_name = str(payload.get("agent_name", "implementation")).lower()
-        phase = "frontend_implementation" if "frontend" in agent_name else "implementation"
+        phase = ("failure_analysis" if agent_name == "testfailureanalysisagent" else
+                 "test_repair" if agent_name == "testrepairagent" else
+                 "frontend_implementation" if "frontend" in agent_name else "implementation")
         log_root = self.output_root / ".arc" / "model_logs" / phase
         log_root.mkdir(parents=True, exist_ok=True)
         stamp = time.strftime("%Y%m%dT%H%M%S", time.gmtime()) + f"{time.time_ns() % 1_000_000_000:09d}Z"
@@ -185,6 +194,8 @@ class NodeTDDOrchestrator:
                 result.stage = layer_result.stage
                 result.status = layer_result.status
                 result.failed_requirements = sorted(set(result.failed_requirements))
+                if layer_result.status == "PRECONDITION_BLOCKED":
+                    return result
                 write_terminal_log(
                     "NodeTDDOrchestrator",
                     f"{layer} failed; continuing to subsequent test layers with their own repair budgets.",
@@ -259,39 +270,21 @@ class NodeTDDOrchestrator:
                     result.status = "IMPLEMENTATION_FAILED"
                     return result
                 if agent is self.frontend_implementation_agent:
-                    for _ in range(self.policy.max_iterations_per_layer):
-                        pending = self._pending_frontend_targets(phase_targets)
-                        if not pending:
-                            break
-                        changed, error = self._apply_edit(
-                            requirement_id,
-                            requirement,
-                            agent,
-                            result,
-                            target_ids=tuple(str(row["module_id"]) for row in pending),
-                            implementation_feedback=(
-                                "FRONTEND_INCOMPLETE: finish every placeholder and compose "
-                                "shared children instead of duplicating them. CONTENT_SLOT "
-                                "form components must wrap the page form and render children. "
-                                "Remaining files: "
-                                + ", ".join(sorted({str(row["file"]) for row in pending}))
-                            ),
-                        )
-                        if not changed:
-                            result.failed_requirements.append(requirement_id)
-                            result.errors.append(f"{requirement_id}: {error}")
-                            result.status = "IMPLEMENTATION_FAILED"
-                            return result
                     pending = self._pending_frontend_targets(phase_targets)
                     if pending:
                         result.failed_requirements.append(requirement_id)
-                        result.errors.append(
+                        feedback = (
                             f"{requirement_id}: FRONTEND_INCOMPLETE: unfinished UI or "
                             "uncomposed child in "
                             + ", ".join(sorted({str(row["file"]) for row in pending}))
                         )
+                        result.errors.append(feedback)
+                        self._history.setdefault(requirement_id, []).append({
+                            "event": "implementation_feedback", "implementation_feedback": feedback,
+                        })
                         result.status = "IMPLEMENTATION_FAILED"
-                        return result
+                        # Still initialize subsequent page targets before tests.
+                        # Completion feedback never consumes the repair budget.
         return result
 
     def _pending_frontend_targets(self, targets: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -359,137 +352,100 @@ class NodeTDDOrchestrator:
         ]
         for requirement_id in layer_requirements:
             run = self._run_tests(requirement_id, layer)
+            history = self._history.setdefault(requirement_id, [])
+            history.append({"event": "test", "layer": layer, "result": asdict(run)})
             if not run.commands:
                 result.failed_requirements.append(requirement_id)
                 return self._fail(result, *run.errors)
             if self._has_infrastructure_error(run):
                 result.failed_requirements.append(requirement_id)
                 return self._fail(result, self._raw_output(run))
-            aggregate_repairs: list[tuple[str, tuple[str, ...], bool]] = []
-            scope = CodeTargetResolver(self.code_binding_registry).resolve_requirement_targets(requirement_id)
-            has_editable_targets = bool(scope["owned_targets"] or scope["dependency_targets"])
-            if layer == "E2E" and not has_editable_targets:
-                aggregate_repairs = self._aggregate_repair_targets(requirement_id)
-            feedback = self._raw_output(run)
-            repair_feedback = ""
             while not run.ok:
-                budget_key = (requirement_id, layer)
-                if layer == "E2E" and not has_editable_targets and not aggregate_repairs and not run.selected_files:
+                if "PRECONDITION: database reset/fixture restore failed:" in self._raw_output(run):
                     result.failed_requirements.append(requirement_id)
-                    return self._fail(
-                        result,
-                        f"{requirement_id}: no related descendant owns a writable repair target.",
-                        feedback,
-                    )
-                if budgets.get(budget_key, 0) >= self.policy.max_iterations_per_layer:
-                    self._trace_implementation(
-                        f"REPAIR_BUDGET_EXHAUSTED requirement={requirement_id} layer={layer} "
-                        f"iteration={budgets[budget_key]}/{self.policy.max_iterations_per_layer}")
-                    result.failed_requirements.append(requirement_id)
-                    result.errors.append(feedback)
-                    result.status = "BUDGET_EXHAUSTED"
+                    result.status = "PRECONDITION_BLOCKED"
+                    result.errors.append(
+                        f"PRECONDITION_BLOCKED: {requirement_id} {layer}: fixture setup failed; "
+                        "business repair is stopped.\n" + self._raw_output(run))
                     return result
-                repair_index = budgets.get(budget_key, 0)
-                budgets[budget_key] = repair_index + 1
+                budget_key = (requirement_id, layer)
+                used = budgets.get(budget_key, 0)
+                if used >= self.policy.max_iterations_per_layer:
+                    result.failed_requirements.append(requirement_id)
+                    result.status = "BUDGET_EXHAUSTED"
+                    result.errors.append(self._raw_output(run))
+                    result.errors.append(f"{requirement_id} {layer}: {used} repair calls exhausted.")
+                    return result
+                try:
+                    context = self.repair_context.analysis(
+                        requirement_id, self._requirement(requirement_id),
+                        layer=layer, iteration=used + 1, test_result=asdict(run), history=history)
+                except (OSError, ValueError, KeyError) as exc:
+                    result.failed_requirements.append(requirement_id)
+                    return self._fail(result, f"ANALYSIS_CONTEXT_REJECTED: {exc}")
+                analysis = self.analysis_agent.analyze(context)
+                history.append({"event": "analysis", "layer": layer, "iteration": used + 1,
+                                "decision": copy.deepcopy(analysis.output), "errors": list(analysis.errors)})
+                if not analysis.ok or analysis.output is None:
+                    result.failed_requirements.append(requirement_id)
+                    return self._fail(result, *analysis.errors)
+                decision = analysis.output
+                if decision["verdict"] == "PRECONDITION":
+                    result.failed_requirements.append(requirement_id)
+                    result.status = "PRECONDITION_BLOCKED"
+                    message = f"PRECONDITION_BLOCKED: {requirement_id} {layer}: {decision['reason']}"
+                    result.errors.append(message)
+                    self._trace_implementation(message)
+                    return result
+                if decision["verdict"] in {"DESIGN", "UNKNOWN"}:
+                    result.failed_requirements.append(requirement_id)
+                    return self._fail(result, f"ANALYSIS_BLOCKED: {decision['reason']}")
+                repair_context = self.repair_context.repair(context, decision, history)
+                repair_context["iteration_limit"] = self.policy.max_iterations_per_layer
+                budgets[budget_key] = used + 1
                 self._trace_implementation(
                     f"REPAIR_STARTED requirement={requirement_id} layer={layer} "
-                    f"iteration={repair_index + 1}/{self.policy.max_iterations_per_layer}")
-                agent = (
-                    self.frontend_implementation_agent
-                    if layer == "E2E" else self.implementation_agent
-                )
-                repair_id = requirement_id
-                target_ids: tuple[str, ...] = ()
-                requirement = self._requirement(requirement_id)
-                if aggregate_repairs:
-                    repair_id, target_ids, is_frontend = aggregate_repairs[repair_index % len(aggregate_repairs)]
-                    agent = (
-                        self.frontend_implementation_agent
-                        if is_frontend else self.implementation_agent
-                    )
-                    requirement = {
-                        **self._requirement(repair_id),
-                        "aggregate_requirement": requirement,
-                    }
+                    f"iteration={used + 1}/{self.policy.max_iterations_per_layer} "
+                    f"files={sorted(repair_context['editable_files'])}")
                 changed, error = self._apply_edit(
-                    repair_id,
-                    requirement,
-                    agent,
-                    result,
-                    target_ids=target_ids,
-                    test_output=self._raw_output(run),
-                    implementation_feedback=repair_feedback,
-                    iteration=repair_index + 1,
-                    test_layer=layer,
-                    test_files=tuple(run.selected_files),
+                    requirement_id, self._requirement(requirement_id), self.repair_agent, result,
+                    test_files=tuple(run.selected_files), iteration=used + 1, test_layer=layer,
+                    repair_context=repair_context,
                     commit_stage=f"6.{TEST_LAYERS.index(layer) + 3} {layer.lower()} repair {requirement_id}",
                 )
                 if not changed:
                     self._trace_implementation(
                         f"REPAIR_REJECTED requirement={requirement_id} layer={layer} "
-                        f"iteration={repair_index + 1}/{self.policy.max_iterations_per_layer} error={error}")
-                    if "PATCH_ROLLBACK_FAILED:" in error or "DIAGNOSIS_BLOCKED:" in error:
+                        f"iteration={used + 1}/{self.policy.max_iterations_per_layer} error={error}")
+                    if "PATCH_ROLLBACK_FAILED:" in error:
                         result.failed_requirements.append(requirement_id)
-                        return self._fail(result, self._raw_output(run), error)
-                    repair_feedback = error
-                    feedback = self._raw_output(run)
+                        return self._fail(result, error)
+                    # Code was restored. Analyze the same test result with the
+                    # rejected patch/feedback; do not invent another execution.
                     continue
                 run = self._run_tests(requirement_id, layer)
-                repair_feedback = ""
+                history.append({"event": "test", "layer": layer, "result": asdict(run)})
                 self._trace_implementation(
                     f"REPAIR_FINISHED requirement={requirement_id} layer={layer} "
-                    f"iteration={repair_index + 1}/{self.policy.max_iterations_per_layer} "
-                    f"status={'PASSED' if run.ok else 'FAILED'}")
-                if not run.commands:
-                    result.failed_requirements.append(requirement_id)
-                    return self._fail(result, *run.errors)
-                if self._has_infrastructure_error(run):
+                    f"iteration={used + 1}/{self.policy.max_iterations_per_layer} status={run.status}")
+                if not run.commands or self._has_infrastructure_error(run):
                     result.failed_requirements.append(requirement_id)
                     return self._fail(result, self._raw_output(run))
-                feedback = self._raw_output(run)
         return result
-
-    def _aggregate_repair_targets(self, requirement_id: str) -> list[tuple[str, tuple[str, ...], bool]]:
-        resolver = CodeTargetResolver(self.code_binding_registry)
-        related_ids = {
-            str(row["module_id"])
-            for row in resolver.resolve_requirement_targets(requirement_id)["dependency_targets"]
-        }
-        nodes = self.requirement_ir.get("nodes", {})
-        candidates: list[tuple[str, tuple[str, ...], bool]] = []
-        for atomic_id in self.requirement_ir.get("atomic_units", []):
-            current = nodes.get(atomic_id, {}).get("parent_id")
-            while current and current != requirement_id:
-                current = nodes.get(current, {}).get("parent_id")
-            if current != requirement_id:
-                continue
-            targets = [
-                row for row in self._owned_targets(atomic_id)
-                if str(row.get("module_id", "")) in related_ids
-            ]
-            for is_frontend, kinds in ((True, self._FRONTEND_KINDS), (False, self._BACKEND_KINDS)):
-                target_ids = tuple(
-                    str(row["module_id"]) for row in targets if row.get("kind") in kinds
-                )
-                if target_ids:
-                    candidates.append((atomic_id, target_ids, is_frontend))
-        candidates.sort(key=lambda row: (not row[2], row[0]))
-        return candidates
 
     def _apply_edit(
         self,
         requirement_id: str,
         requirement: dict[str, Any],
-        agent: ImplementationAgent,
+        agent: ImplementationAgent | TestRepairAgent,
         result: TDDStageResult,
         *,
         target_ids: tuple[str, ...] = (),
-        test_output: str = "",
-        implementation_feedback: str = "",
         test_files: tuple[str, ...] = (),
         commit_stage: str = "",
         iteration: int = 0,
         test_layer: str = "",
+        repair_context: dict[str, Any] | None = None,
     ) -> tuple[bool, str]:
         snapshot = self.file_patcher.snapshot([
             *self._checkpoint_files(requirement_id), *test_files,
@@ -533,23 +489,26 @@ class NodeTDDOrchestrator:
                 ]),
             ]
 
-        implementation = agent.implement(ImplementationRequest(
-            requirement_id=requirement_id,
-            requirement=requirement,
-            code_binding_registry=self.code_binding_registry,
-            target_module_ids=target_ids,
-            test_output=test_output,
-            test_files=test_files,
-            frontend_ir=self.frontend_ir if agent is self.frontend_implementation_agent else None,
-            iteration=iteration,
-            iteration_limit=self.policy.max_iterations_per_layer,
-            test_layer=test_layer,
-            implementation_feedback=implementation_feedback,
-            recent_changes=tuple(self._recent_changes.get(requirement_id, {}).values()),
-        ), accept_patch=accept_patch)
+        if repair_context is not None:
+            implementation = agent.repair(repair_context, accept_patch=accept_patch)
+        else:
+            implementation = agent.implement(ImplementationRequest(
+                requirement_id=requirement_id, requirement=requirement,
+                code_binding_registry=self.code_binding_registry,
+                target_module_ids=target_ids, test_files=test_files,
+                frontend_ir=self.frontend_ir if agent is self.frontend_implementation_agent else None,
+            ), accept_patch=accept_patch)
+        event = {
+            "event": "repair" if repair_context is not None else "initial_implementation",
+            "layer": test_layer, "iteration": iteration, "status": "REJECTED",
+            "changed_files": [],
+            "edits": [asdict(edit) for edit in implementation.patch.edits] if implementation.patch else [],
+            "implementation_feedback": list(implementation.errors),
+        }
+        self._history.setdefault(requirement_id, []).append(event)
+        if repair_context is not None and implementation.patch is None:
+            event["proposal"] = copy.deepcopy(implementation.proposal)
         if not implementation.ok or implementation.patch is None:
-            if implementation.status == "DIAGNOSIS_BLOCKED":
-                return False, "DIAGNOSIS_BLOCKED: " + "\n".join(implementation.errors)
             return False, "\n".join(implementation.errors)
         corrected_tests = sorted(set(changed_files) & set(test_files))
         if corrected_tests:
@@ -571,10 +530,11 @@ class NodeTDDOrchestrator:
                     self.test_manifest = manifest
             except (OSError, ValueError, KeyError) as exc:
                 _, restore_errors = self.file_patcher.restore(snapshot)
-                return False, "\n".join([
+                event["implementation_feedback"] = [
                     f"TEST_CORRECTION_MANIFEST_FAILED: {exc}",
                     *(f"PATCH_ROLLBACK_FAILED: {error}" for error in restore_errors),
-                ])
+                ]
+                return False, "\n".join(event["implementation_feedback"])
             self._trace_implementation(
                 f"TEST_CORRECTION_APPLIED requirement={requirement_id} layer={test_layer} "
                 f"iteration={iteration}/{self.policy.max_iterations_per_layer} files={corrected_tests}")
@@ -584,14 +544,8 @@ class NodeTDDOrchestrator:
                 *([".arc/tests/test_manifest.json"] if corrected_tests else []),
             ])
         result.changed_files = sorted(set(result.changed_files) | set(changed_files))
-        history = self._recent_changes.setdefault(requirement_id, {})
-        for relative in changed_files:
-            history[relative] = {
-                "requirement_id": requirement_id, "iteration": iteration,
-                "changed_files": [relative],
-                "edits": [{"file": edit.file, "search": edit.search, "replacement": edit.replacement}
-                          for edit in implementation.patch.edits if edit.file == relative],
-            }
+        event["status"] = "APPLIED"
+        event["changed_files"] = list(changed_files)
         return True, ""
 
     def _owned_targets(self, requirement_id: str) -> list[dict[str, Any]]:

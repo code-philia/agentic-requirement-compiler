@@ -57,8 +57,11 @@ source_files includes associated lowered modules for understanding signatures an
 contracts. layers.test_targets identifies the files and modules under test, not an
 import allowlist. UNIT may import its listed pure functions; INTEGRATION and E2E
 exercise public HTTP/browser behavior instead of importing application internals.
-Use vitest for UNIT/INTEGRATION and tests/support/e2e for E2E test/expect;
-tests/support/runtime supplies uniqueValue. Resolve local imports from output_file.
+Use vitest for UNIT/INTEGRATION. The compiler injects these fixed imports:
+E2E: import { test, expect } from "../support/e2e.js";
+all layers: import { uniqueValue } from "../support/runtime.js";
+Use those names directly; do not emit these imports or redeclare those bindings.
+Resolve other local imports from output_file with explicit .js extensions.
 Use the exact exports, helper signatures, database fields and routes in the supplied
 code. E2E controls may not exist in the unimplemented skeleton yet: choose accessible
 locators from the requirement, not from placeholder text. Start E2E at / and follow
@@ -80,8 +83,9 @@ api_contracts is authoritative for HTTP method, path and input_source. For a GET
 query contract use api.get(path).query(input); for a body contract use its declared
 method and .send(input). Never infer a POST from the presence of a request DTO.
 Reuse the declared prerequisite APIs and do not invent test-only endpoints.
-The test runner resets the database before every
-integration and E2E test. Prepare test-specific data through public API requests
+The test runner resets the database and restores all designed fixture baseline rows
+before every test, matching project initialization. The baseline is not an empty
+database. Prepare additional test-specific data through public API requests
 or test inputs, not application fixture declarations or /__arc/seed. Never import
 the Express app or backend modules directly in an integration test. Assert status, body, cookies,
 and observable persistence via API requests where the requirement calls for them.
@@ -737,6 +741,7 @@ class RequirementTestGenerationPass:
                 decision,
                 duration_ms=round((time.perf_counter() - started) * 1000),
             )
+            decision = _inject_test_support_imports(decision, validation_context)
             local_errors = _validate_test_decision(decision, validation_context)
             if local_errors:
                 last_errors = local_errors
@@ -1352,6 +1357,54 @@ def _pure_function_ids(design_ir: dict[str, Any]) -> set[str]:
         module_id for module_id, row in modules.items()
         if row.get("kind") == "FUNC" and is_pure_func(module_id)
     }
+
+
+def _inject_test_support_imports(decision: Any, context: dict[str, Any]) -> Any:
+    """Own support bindings and module specifiers before validating/freezing tests."""
+    decision = copy.deepcopy(decision)
+    if not isinstance(decision, dict) or not isinstance(decision.get("files"), list):
+        return decision
+    for row in decision["files"]:
+        if not isinstance(row, dict) or not isinstance(row.get("code"), str):
+            continue
+        layer = str(row.get("layer", "")).upper()
+        if layer not in context["output_files"]:
+            continue
+        fixed = {
+            _relative_import(context["output_files"][layer], "tests/support/runtime.ts"): {"uniqueValue"},
+        }
+        if layer == "E2E":
+            fixed[_relative_import(context["output_files"][layer], "tests/support/e2e.ts")] = {"test", "expect"}
+        bindings = {path: set(names) for path, names in fixed.items()}
+
+        def take_support_import(match: re.Match[str]) -> str:
+            specifier = match.group("path")
+            canonical = next((path for path in fixed if specifier in {path, path[:-3], path[:-3] + ".ts"}), None)
+            if canonical is None and not (layer == "E2E" and specifier == "@playwright/test"):
+                return match.group(0)
+            retained = []
+            for item in match.group("names").split(","):
+                item = item.strip()
+                if not item:
+                    continue
+                exported = item.split()[0]
+                target = next((path for path, names in fixed.items() if exported in names), None)
+                if target is not None:
+                    bindings[target].add(item)
+                else:
+                    retained.append(item)
+            if retained:
+                return f'import {{ {", ".join(retained)} }} from "{canonical or specifier}";'
+            return ""
+
+        code = re.sub(
+            r'''^[ \t]*import\s*\{(?P<names>[^}]+)\}\s*from\s*["'](?P<path>[^"']+)["'][ \t]*;?''',
+            take_support_import, row["code"], flags=re.MULTILINE,
+        )
+        imports = [f'import {{ {", ".join(sorted(names))} }} from "{path}";'
+                   for path, names in bindings.items()]
+        row["code"] = "\n".join(imports) + "\n\n" + code.lstrip()
+    return decision
 
 
 def _validate_test_decision(

@@ -24,11 +24,13 @@ class ARCWorkflowManager:
         web_port: int = 3000,
         log_cb: LogCallback | None = None,
         start_from: str = "zero",
+        resume: bool = False,
     ) -> None:
         self.workspace_path = Path(workspace_path).expanduser().resolve()
         self.requirement_path = Path(requirement_path).expanduser().resolve()
         self.web_port = int(web_port)
         self.start_from = start_from
+        self.resume = resume
         self.log_cb = log_cb or _default_log_cb
 
     async def start_compilation(self) -> dict[str, object]:
@@ -51,6 +53,7 @@ class ARCWorkflowManager:
                 output_dir=self.workspace_path,
                 web_port=self.web_port,
                 start_from=self.start_from,
+                resume=self.resume,
             )
         )
         if result.ok:

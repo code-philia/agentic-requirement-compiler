@@ -13,6 +13,7 @@ class CompilationRequest:
     output_dir: Path
     web_port: int = 3000
     start_from: str = "zero"
+    resume: bool = False
 
 
 @dataclass(slots=True)

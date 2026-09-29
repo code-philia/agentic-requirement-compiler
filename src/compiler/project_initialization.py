@@ -280,7 +280,7 @@ def test_workspace_spec(
                 f'export async function resetE2EState(page: Page): Promise<void> {{\n'
                 f'  const baseUrl = process.env.ARC_TEST_BASE_URL ?? "http://127.0.0.1:{port}";\n'
                 '  const response = await fetch(`${baseUrl}/__arc/reset`, { method: "POST" });\n'
-                '  if (!response.ok) throw new Error(`Reset request failed: ${response.status} ${await response.text()}`);\n'
+                '  if (!response.ok) throw new Error(`PRECONDITION: database reset/fixture restore failed: ${response.status} ${await response.text()}`);\n'
                 '  await page.context().clearCookies();\n'
                 '  await page.goto(`${baseUrl}/__arc/health`);\n'
                 '  await page.evaluate(() => { localStorage.clear(); sessionStorage.clear(); });\n'
@@ -324,7 +324,7 @@ def test_workspace_spec(
                 'if (!baseUrl) throw new Error("Integration tests require npm run test:integration.");\n\n'
                 "beforeEach(async () => {\n"
                 '  const response = await fetch(`${baseUrl}/__arc/reset`, { method: "POST" });\n'
-                '  if (!response.ok) throw new Error(`Reset request failed: ${response.status} ${await response.text()}`);\n'
+                '  if (!response.ok) throw new Error(`PRECONDITION: database reset/fixture restore failed: ${response.status} ${await response.text()}`);\n'
                 "});\n"
             ),
             "support/setup.ts": (
@@ -333,7 +333,9 @@ def test_workspace_spec(
                 'import { beforeEach } from "vitest";\n\n'
                 'beforeEach(async () => {\n'
                 '  const { resetDatabase } = await import("../../backend/src/db/client.js");\n'
+                '  const { restoreFixtures } = await import("../../backend/src/fixtures/index.js");\n'
                 '  resetDatabase();\n'
+                '  restoreFixtures();\n'
                 '});\n'
             ),
         },

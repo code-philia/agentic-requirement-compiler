@@ -37,12 +37,44 @@ from .project_initialization import (
 from .skeleton_lowering import TypeLowerer
 from .symbol_planning import GlobalSymbolPlanner
 from .tdd_orchestrator import NodeTDDOrchestrator
+from .tdd_progress import TDDProgress, load_tdd_manifest
 from .test_generation import RequirementTestGenerationPass, TestEnvironmentInitializer
 from .test_runner import TestRunner
 from .visual_reference import VisualReferenceResolver, VisualReferenceAnalyzer
 
 
 LogCallback = Callable[[str, str, str | None, str | None], Awaitable[None] | None]
+
+
+def _tdd_postorder(requirement_ir: dict[str, Any]) -> list[str]:
+    """Schedule the requirement tree in document order, without dependency waves."""
+    nodes = requirement_ir.get("nodes", {})
+    root = requirement_ir.get("root_id")
+    targets = set(requirement_ir.get("atomic_units", [])) | set(requirement_ir.get("folder_nodes", []))
+    visited: set[str] = set()
+    active: set[str] = set()
+    order: list[str] = []
+
+    def visit(node_id: str) -> None:
+        if node_id in active:
+            raise ValueError(f"Requirement tree cycle at {node_id}")
+        if node_id in visited:
+            return
+        node = nodes.get(node_id)
+        if not isinstance(node, dict):
+            raise ValueError(f"Unknown requirement tree node {node_id}")
+        active.add(node_id)
+        for child_id in node.get("children_ids", []):
+            visit(child_id)
+        active.remove(node_id)
+        visited.add(node_id)
+        if node_id in targets:
+            order.append(node_id)
+
+    visit(root)
+    if missing := targets - visited:
+        raise ValueError(f"Requirements unreachable from root: {sorted(missing)}")
+    return order
 
 
 class Compiler:
@@ -72,9 +104,11 @@ class Compiler:
         history = ProjectGitHistory(request.output_dir)
         if request.start_from not in START_FROM:
             raise GitStageError(f"Unknown start_from: {request.start_from}")
-        rank = START_FROM.index(request.start_from)
+        if request.resume and request.start_from != "zero":
+            raise GitStageError("resume and start_from are mutually exclusive")
+        rank = 5 if request.resume else START_FROM.index(request.start_from)
         checkpoints = CheckpointStore(request.output_dir, request.requirement_path, request.web_port)
-        saved = checkpoints.load(request.start_from) if rank else {}
+        saved = checkpoints.load("lowered" if request.resume else request.start_from, resume=request.resume) if rank else {}
         if rank:
             artifacts["checkpoint"] = str(request.output_dir / ".arc/checkpoints/current.json")
             for name, relative in {
@@ -86,7 +120,8 @@ class Compiler:
             }.items():
                 if (request.output_dir / relative).is_file():
                     artifacts[name] = str(request.output_dir / relative)
-            await self._log("Compiler", f"Starting after completed checkpoint: {request.start_from}")
+            await self._log("Compiler", "Resuming unstarted TDD requirements in the existing project."
+                            if request.resume else f"Starting after completed checkpoint: {request.start_from}")
 
         if rank == 0:
             self._runtime.events.mark_phase_started("PROJECT", "Initializing generated project.")
@@ -169,7 +204,7 @@ class Compiler:
             self._runtime.traceability.merge_frontend_design_links(frontend_ir_traceability(saved["frontend"]["frontend_ir"]))
             for rid in requirement_ids:
                 states[rid] = "FRONTEND_LOWERED"
-            failure = await self._build_gate(request, "Restart from lowered", root_id, states, artifacts)
+            failure = None if request.resume else await self._build_gate(request, "Restart from lowered", root_id, states, artifacts)
             if failure is not None:
                 return failure
             return await self._continue_after_lowering(
@@ -807,60 +842,56 @@ class Compiler:
         atomic_ids = {
             str(value) for value in requirement_ir.get("atomic_units", []) if str(value)
         }
-        order = [
-            str(requirement_id)
-            for wave in dependency_graph.get("atomic_implementation_waves", [])
-            if isinstance(wave, list)
-            for requirement_id in wave
-            if str(requirement_id) in atomic_ids
-        ]
-        if len(order) != len(set(order)) or set(order) != atomic_ids:
-            message = (
-                "ARC4548 TDD_ORDER_INVALID: atomic_implementation_waves must contain "
-                "every atomic requirement exactly once."
-            )
-            await self._log("Compiler", message, "error")
-            return CompilationResult(
-                ok=False, root_id=root_id, states=states,
-                failed_nodes=sorted(atomic_ids), artifacts=artifacts,
-            )
-
         folder_ids = {
             str(value) for value in requirement_ir.get("folder_nodes", []) if str(value)
         }
-        folder_order = [
-            str(requirement_id)
-            for wave in dependency_graph.get("implementation_waves", [])
-            if isinstance(wave, list)
-            for requirement_id in wave
-            if str(requirement_id) in folder_ids
-        ]
-        if len(folder_order) != len(set(folder_order)) or set(folder_order) != folder_ids:
-            message = (
-                "ARC4548 AGGREGATE_ORDER_INVALID: implementation_waves must contain "
-                "every folder requirement exactly once."
-            )
-            await self._log("Compiler", message, "error")
+        try:
+            order = _tdd_postorder(requirement_ir)
+        except ValueError as exc:
+            await self._log("Compiler", f"ARC4548 TDD_ORDER_INVALID: {exc}", "error")
             return CompilationResult(
                 ok=False, root_id=root_id, states=states,
-                failed_nodes=sorted(folder_ids), artifacts=artifacts,
+                artifacts=artifacts,
             )
+        await self._log("Compiler", f"TDD post-order DFS (dependency waves ignored): {order}")
 
         history = ProjectGitHistory(request.output_dir)
         test_generation = RequirementTestGenerationPass(
             model, request.output_dir, artifact_store,
         )
+        try:
+            existing_manifest = load_tdd_manifest(request.output_dir) if request.resume else None
+            progress = TDDProgress(request.output_dir, requirement_ir, order, resume=request.resume)
+        except (OSError, ValueError, TypeError, KeyError) as exc:
+            await self._log("Compiler", f"Cannot restore TDD progress: {exc}", "error")
+            return CompilationResult(ok=False, root_id=root_id, states=states, artifacts=artifacts)
+        artifacts["tdd_progress"] = str(progress.path)
+        if existing_manifest is not None:
+            artifacts["test_manifest"] = str(artifact_store.tests_root / "test_manifest.json")
+            self._runtime.traceability.merge_test_links(existing_manifest)
+        previous_nodes = dict(progress.nodes) if request.resume else {}
+        if request.resume:
+            if existing_manifest is None and any(row["status"] == "TESTS_PASSED" for row in previous_nodes.values()):
+                await self._log("Compiler", "Cannot resume: completed TDD nodes have no saved test manifest.", "error")
+                return CompilationResult(ok=False, root_id=root_id, states=states, artifacts=artifacts)
+            await self._log("Compiler", f"TDD resume: {len(previous_nodes)} already-started nodes retained; "
+                            f"{len(order) - len(previous_nodes)} unstarted nodes remain.")
         orchestrator = NodeTDDOrchestrator(
             model,
             request.output_dir,
             requirement_ir=requirement_ir,
             code_binding_registry=code_binding_registry,
             frontend_ir=frontend_ir,
+            test_manifest=existing_manifest,
         )
         self._runtime.events.mark_phase_started(
             "TDD", "ARC node-by-node test-driven implementation started.",
         )
         failed_requirements: set[str] = set()
+        for rid, row in previous_nodes.items():
+            states[rid] = row["status"]
+            if row["status"] in {"STARTED", "FAILED"}:
+                failed_requirements.add(rid)
 
         async def warn_node_failure(requirement_id, stage, result):
             failed = set(result.failed_requirements) if hasattr(result, "failed_requirements") else set()
@@ -868,6 +899,8 @@ class Compiler:
             failed_requirements.update(failed)
             for failed_id in failed:
                 states[failed_id] = "FAILED"
+                if failed_id in progress.data["order"]:
+                    progress.mark(failed_id, "FAILED", stage)
             await self._log(
                 "Compiler",
                 f"{requirement_id}: {stage} failed; continuing with remaining stages where possible. "
@@ -875,7 +908,12 @@ class Compiler:
                 "warning",
             )
 
-        for requirement_id in [*order, *folder_order]:
+        for requirement_id in order:
+            if requirement_id in previous_nodes:
+                await self._log("Compiler", f"Resume skips already-started requirement {requirement_id}: "
+                                f"{previous_nodes[requirement_id]['status']}")
+                continue
+            progress.mark(requirement_id, "STARTED", "test generation")
             if requirement_id in folder_ids:
                 targets = CodeTargetResolver(code_binding_registry).resolve_requirement_targets(
                     requirement_id,
@@ -887,6 +925,7 @@ class Compiler:
                 )
                 if not targets["owned_targets"] and not has_screen:
                     states[requirement_id] = "AGGREGATE_NO_UI"
+                    progress.mark(requirement_id, "AGGREGATE_NO_UI", "no owned UI")
                     await self._log(
                         "Compiler",
                         f"{requirement_id} has no owned targets or associated UI screen; "
@@ -930,14 +969,6 @@ class Compiler:
                         backend_implementation.changed_files,
                     )
 
-                backend_tests = orchestrator.run_test_layers(
-                    [requirement_id], layers=("UNIT", "INTEGRATION"),
-                )
-                for error in backend_tests.errors:
-                    await self._log("NodeTDDOrchestrator", error, "warning")
-                if not backend_tests.ok:
-                    await warn_node_failure(requirement_id, "backend tests", backend_tests)
-
             frontend_implementation = orchestrator.implement_frontend([requirement_id])
             for error in frontend_implementation.errors:
                 await self._log("NodeTDDOrchestrator", error, "warning")
@@ -951,11 +982,14 @@ class Compiler:
                     frontend_implementation.changed_files,
                 )
 
-            tests = orchestrator.run_test_layers([requirement_id], layers=("E2E",))
+            # Both initial implementations precede any behavioral test execution.
+            tests = orchestrator.run_test_layers([requirement_id])
             for error in tests.errors:
                 await self._log("NodeTDDOrchestrator", error, "warning")
             if not tests.ok:
-                await warn_node_failure(requirement_id, "E2E tests", tests)
+                await warn_node_failure(requirement_id, "test-driven repair", tests)
+                if tests.status == "PRECONDITION_BLOCKED":
+                    continue
             # Later layers can repair earlier failures, but an E2E pass alone
             # does not prove the earlier assertions now pass. Verify all layers
             # against the final code without resetting any repair budget.
@@ -968,6 +1002,7 @@ class Compiler:
                 continue
             failed_requirements.discard(requirement_id)
             states[requirement_id] = "TESTS_PASSED"
+            progress.mark(requirement_id, "TESTS_PASSED", "final test verification")
             await self._log("Compiler", f"TDD completed for {requirement_id}.")
 
         failed_nodes = sorted(failed_requirements)
