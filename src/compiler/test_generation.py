@@ -63,8 +63,13 @@ all layers: import { uniqueValue } from "../support/runtime.js";
 Use those names directly; do not emit these imports or redeclare those bindings.
 Resolve other local imports from output_file with explicit .js extensions.
 Use the exact exports, helper signatures, database fields and routes in the supplied
-code. E2E controls may not exist in the unimplemented skeleton yet: choose accessible
-locators from the requirement, not from placeholder text. Start E2E at / and follow
+code. For E2E prerequisite setup, use the current imported component source and
+previously passed E2E flows in prerequisite_flows as evidence of actual accessible
+names and required fields. Do not guess labels when that evidence exists. Reuse
+runPrerequisiteFlow from ../support/prerequisites.js for repeated prerequisite
+steps, including registration or search; keep the behavior under test in the test.
+E2E controls may not exist in the unimplemented skeleton yet: choose accessible
+locators from the requirement only when no implemented UI evidence exists. Start E2E at / and follow
 the requirement's user interactions; do not invent URLs from component names.
 Do not use compiler-only data-arc-page, data-arc-component, data-arc-layout,
 or data-arc-obligation attributes as E2E locators; the implemented UI removes them.
@@ -151,6 +156,16 @@ class TestEnvironmentInitializer:
             except OSError as exc:
                 errors.append(
                     f"ARC4401 TEST_ENVIRONMENT_INVALID: cannot create tests/{directory}: {exc}"
+                )
+        prerequisite_helper = self.tests_root / "support" / "prerequisites.ts"
+        if not prerequisite_helper.exists():
+            try:
+                prerequisite_helper.write_text(
+                    spec["text_files"]["support/prerequisites.ts"], encoding="utf-8"
+                )
+            except OSError as exc:
+                errors.append(
+                    f"ARC4401 TEST_ENVIRONMENT_INVALID: cannot create tests/support/prerequisites.ts: {exc}"
                 )
         try:
             root_package = _read_json_object(self.output_root / "package.json")
@@ -619,6 +634,9 @@ class RequirementTestGenerationPass:
             resolved_targets=resolved_targets,
             required_layers=required_layers,
             binding_rows=code_binding_registry.get("code_bindings", []),
+            prerequisite_flows=_passed_e2e_flows(
+                self._output_root, base_manifest, requirement_id,
+            ),
         )
         artifacts: dict[str, str] = {}
         from .file_context import file_selection_log
@@ -811,6 +829,7 @@ def _build_context_pack(
     resolved_targets: dict[str, Any],
     required_layers: list[str],
     binding_rows: list[dict[str, Any]] | None = None,
+    prerequisite_flows: dict[str, str] | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
 
     owned_targets = [
@@ -890,6 +909,10 @@ def _build_context_pack(
             })
         if layer == "E2E":
             imports.append({"specifier": "@playwright/test", "symbols": ["Page"], "type_only": True})
+            imports.append({
+                "specifier": _relative_import(test_file, "tests/support/prerequisites.ts"),
+                "symbols": ["runPrerequisiteFlow"],
+            })
         if layer == "UNIT":
             imports.extend(
                 {
@@ -949,12 +972,19 @@ def _build_context_pack(
         path = output_root / relative
         if relative and relative not in source_files and path.is_file():
             source_files[relative] = path.read_text(encoding="utf-8")
+    if "E2E" in required_layers:
+        _include_frontend_component_imports(output_root, source_files)
+        helper = "tests/support/prerequisites.ts"
+        if (output_root / helper).is_file():
+            source_files[helper] = (output_root / helper).read_text(encoding="utf-8")
     model_context = {
         "requirement": model_requirement,
         "source_files": source_files,
         "layers": model_layers,
         "api_contracts": api_contracts,
     }
+    if "E2E" in required_layers and prerequisite_flows:
+        model_context["prerequisite_flows"] = prerequisite_flows
     validation_context = {
         "requirement_id": requirement_id,
         "relevant_frontend_subgraph": relevant_frontend_subgraph,
@@ -983,6 +1013,55 @@ def _database_source_cards(
         if path.is_file():
             cards.append({"path": relative, "source": path.read_text(encoding="utf-8")})
     return cards
+
+
+def _passed_e2e_flows(
+    output_root: Path, manifest: dict[str, Any], current_requirement_id: str,
+) -> dict[str, str]:
+    """Only expose browser flows whose owning requirement already passed."""
+    progress_path = output_root / ".arc" / "tdd" / "progress.json"
+    if not progress_path.is_file():
+        return {}
+    try:
+        progress = json.loads(progress_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    passed = {rid for rid, row in progress.get("nodes", {}).items()
+              if isinstance(row, dict) and row.get("status") == "TESTS_PASSED"}
+    flows: dict[str, str] = {}
+    for row in manifest.get("files", []):
+        if not isinstance(row, dict) or row.get("layer") != "E2E":
+            continue
+        rid = str(row.get("requirement_id", ""))
+        if rid not in passed or rid == current_requirement_id:
+            continue
+        relative = str(row.get("test_file", ""))
+        if not relative.startswith("tests/e2e/"):
+            continue
+        path = (output_root / relative).resolve()
+        if output_root not in path.parents or not path.is_file():
+            continue
+        source = path.read_text(encoding="utf-8")
+        if hashlib.sha256(source.encode("utf-8")).hexdigest() == row.get("content_sha256"):
+            flows[relative] = source
+    return dict(list(flows.items())[-5:])
+
+
+def _include_frontend_component_imports(output_root: Path, sources: dict[str, str]) -> None:
+    """Expose one import hop so a composition root does not hide prerequisite UI."""
+    for relative, source in list(sources.items()):
+        if not relative.startswith("frontend/src/components/"):
+            continue
+        for specifier in re.findall(r'''\bfrom\s+["'](\.[^"']+)["']''', source):
+            stem = posixpath.normpath(posixpath.join(posixpath.dirname(relative), specifier))
+            if not stem.startswith("frontend/src/components/"):
+                continue
+            stem = re.sub(r"\.(?:js|ts|tsx)$", "", stem)
+            for candidate in (stem + ".tsx", stem + ".ts"):
+                path = (output_root / candidate).resolve()
+                if output_root in path.parents and path.is_file():
+                    sources.setdefault(candidate, path.read_text(encoding="utf-8"))
+                    break
 
 
 def _requirement_source_targets(

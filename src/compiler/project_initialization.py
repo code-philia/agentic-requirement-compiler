@@ -301,6 +301,26 @@ def test_workspace_spec(
                 "});\n"
                 "export { expect };\n"
             ),
+            "support/prerequisites.ts": (
+                'import { expect, type Page } from "@playwright/test";\n\n'
+                'type Step =\n'
+                '  | { action: "goto"; path: string }\n'
+                '  | { action: "click"; role: Parameters<Page["getByRole"]>[0]; name: string }\n'
+                '  | { action: "fill"; label: string; value: string }\n'
+                '  | { action: "select"; label: string; value: string }\n'
+                '  | { action: "check"; label: string }\n'
+                '  | { action: "visible"; role: Parameters<Page["getByRole"]>[0]; name: string };\n\n'
+                'export async function runPrerequisiteFlow(page: Page, steps: readonly Step[]): Promise<void> {\n'
+                '  for (const step of steps) {\n'
+                '    if (step.action === "goto") await page.goto(step.path);\n'
+                '    else if (step.action === "click") await page.getByRole(step.role, { name: step.name, exact: true }).click();\n'
+                '    else if (step.action === "fill") await page.getByLabel(step.label, { exact: true }).fill(step.value);\n'
+                '    else if (step.action === "select") await page.getByLabel(step.label, { exact: true }).selectOption(step.value);\n'
+                '    else if (step.action === "check") await page.getByLabel(step.label, { exact: true }).check();\n'
+                '    else await expect(page.getByRole(step.role, { name: step.name, exact: true })).toBeVisible();\n'
+                '  }\n'
+                '}\n'
+            ),
             "support/progress-reporter.ts": (
                 "import type { Reporter, TestCase, TestResult, TestStep } from \"@playwright/test/reporter\";\n"
                 "\n"
@@ -680,6 +700,7 @@ class ProjectInitializer:
             "tests/playwright.config.ts",
             "tests/support/runtime.ts",
             "tests/support/e2e.ts",
+            "tests/support/prerequisites.ts",
             "tests/support/progress-reporter.ts",
             "tests/support/run-integration.mjs",
             "tests/support/integration-setup.ts",
