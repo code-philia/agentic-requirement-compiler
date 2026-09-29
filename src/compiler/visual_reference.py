@@ -559,7 +559,8 @@ class VisualReferenceAnalyzer:
             records.append(reference.to_ir(analysis))
         return VisualReferenceAnalysisResult(references=records, errors=errors)
 
-    def analyze_cached(self, references: Sequence[ResolvedVisualReference], path: Path) -> VisualReferenceAnalysisResult:
+    def analyze_cached(self, references: Sequence[ResolvedVisualReference], path: Path,
+                       *, persist: bool = True) -> VisualReferenceAnalysisResult:
         """Persist reusable image observations by document-relative path, verified by content."""
         try:
             cached = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else {}
@@ -582,10 +583,25 @@ class VisualReferenceAnalyzer:
                     continue  # Failed analysis is not reusable cache content.
                 record = result.references[0]
             records.append(record)
-            for key in [reference.source_path, *reference.aliases]:
-                cached[key] = record
-            write_json_atomic(path, cached)
+            if persist:
+                for key in [reference.source_path, *reference.aliases]:
+                    cached[key] = record
+                write_json_atomic(path, cached)
         return VisualReferenceAnalysisResult(references=records, errors=errors)
+
+    @staticmethod
+    def persist_cached(references: Sequence[dict[str, Any]], path: Path) -> None:
+        try:
+            cached = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else {}
+        except (OSError, ValueError):
+            cached = {}
+        if not isinstance(cached, dict):
+            cached = {}
+        for record in references:
+            for key in [record["source_path"], *record.get("aliases", [])]:
+                cached[key] = record
+        if references:
+            write_json_atomic(path, cached)
 
     def _analyze_one(
         self,

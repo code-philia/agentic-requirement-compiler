@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import asyncio
 import inspect
 import json
+from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
 from typing import Any, Awaitable, Callable
 
@@ -40,7 +42,9 @@ from .tdd_orchestrator import NodeTDDOrchestrator
 from .tdd_progress import TDDProgress, load_tdd_manifest
 from .test_generation import RequirementTestGenerationPass, TestEnvironmentInitializer
 from .test_runner import TestRunner
-from .visual_reference import VisualReferenceResolver, VisualReferenceAnalyzer
+from .visual_reference import (
+    VisualReferenceAnalyzer, VisualReferenceAnalysisResult, VisualReferenceResolver,
+)
 
 
 LogCallback = Callable[[str, str, str | None, str | None], Awaitable[None] | None]
@@ -92,13 +96,17 @@ class Compiler:
         self._model = model
 
     async def compile(self, request: CompilationRequest) -> CompilationResult:
+        visual_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="arc-visual-analysis")
         try:
-            return await self._compile(request)
+            return await self._compile(request, visual_executor)
         except GitStageError as exc:
             await self._log("Compiler", str(exc), "error")
             return CompilationResult(ok=False)
+        finally:
+            await asyncio.to_thread(visual_executor.shutdown, wait=True)
 
-    async def _compile(self, request: CompilationRequest) -> CompilationResult:
+    async def _compile(self, request: CompilationRequest,
+                       visual_executor: ThreadPoolExecutor) -> CompilationResult:
         artifact_store = CompilerArtifactStore(request.output_dir)
         artifacts: dict[str, str] = {}
         history = ProjectGitHistory(request.output_dir)
@@ -198,6 +206,20 @@ class Compiler:
             )
         if rank <= 1:
             history.commit("1 preprocessing", [".arc"])
+        visuals = None
+        visual_future = None
+        if rank < 4:
+            visuals = VisualReferenceResolver().resolve(
+                request.requirement_path, preprocessing.requirement_ir,
+            )
+            if visuals.references:
+                visual_path = artifact_store.frontend_design_root / "visual_cache.json"
+                visual_future = visual_executor.submit(
+                    VisualReferenceAnalyzer.from_env(artifact_store.root).analyze_cached,
+                    visuals.references, visual_path,
+                    persist=False,
+                )
+                await self._log("Compiler", "Visual reference analysis started in the background.")
         if rank == 5:
             self._runtime.traceability.merge_database_schema_links(database_traceability(saved["database"]))
             self._runtime.traceability.merge_design_links(design_traceability(saved["design"]))
@@ -618,14 +640,14 @@ class Compiler:
         )
 
         if rank < 4:
-            await self._log("Compiler", "Resolving visual references for regional frontend design calls.")
-            visuals = VisualReferenceResolver().resolve(
-                request.requirement_path, preprocessing.requirement_ir,
-            )
+            assert visuals is not None
             visual_path = artifact_store.frontend_design_root / "visual_cache.json"
-            visual_analysis = VisualReferenceAnalyzer.from_env(artifact_store.root).analyze_cached(
-                visuals.references, visual_path,
-            )
+            if visual_future is not None:
+                await self._log("Compiler", "Waiting for visual reference analysis before frontend IR generation.")
+                visual_analysis = await asyncio.wrap_future(visual_future)
+                VisualReferenceAnalyzer.persist_cached(visual_analysis.references, visual_path)
+            else:
+                visual_analysis = VisualReferenceAnalysisResult()
             if visual_path.is_file():
                 artifacts["frontend_visual_references"] = str(visual_path)
             await self._log(
