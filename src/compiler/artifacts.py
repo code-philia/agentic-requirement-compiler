@@ -256,7 +256,14 @@ class CompilerArtifactStore:
                 or path.is_absolute()
                 or "." in path.parts
                 or ".." in path.parts
-                or not (normalized.endswith((".ts", ".tsx")) or normalized == "backend/init-db.mjs")
+                or not (
+                    normalized.endswith((".ts", ".tsx"))
+                    or normalized in {
+                        "backend/init-db.mjs",
+                        "backend/database-baseline.mjs",
+                        "backend/database-baseline.d.mts",
+                    }
+                )
             ):
                 raise ValueError(f"Invalid generated source path: {relative!r}")
             target = (output_root / Path(normalized)).resolve()
@@ -264,7 +271,11 @@ class CompilerArtifactStore:
                 raise ValueError(f"Generated source escapes output workspace: {relative!r}")
             if not (
                 normalized.startswith("backend/src/")
-                or normalized == "backend/init-db.mjs"
+                or normalized in {
+                    "backend/init-db.mjs",
+                    "backend/database-baseline.mjs",
+                    "backend/database-baseline.d.mts",
+                }
                 or normalized.startswith("shared/src/")
                 or normalized.startswith("frontend/src/")
                 or normalized == "frontend/vite.config.ts"

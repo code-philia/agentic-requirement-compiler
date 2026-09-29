@@ -1,11 +1,10 @@
-"""Compile requirement seed declarations into validated, compiler-owned Fixture IR."""
+"""Compile application baseline data from requirements into Fixture IR."""
 
 from __future__ import annotations
 
 import copy
 import hashlib
 import os
-import re
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -84,19 +83,21 @@ FIXTURE_DECISION_SCHEMA: dict[str, Any] = {
     },
 }
 
-FIXTURE_INSTRUCTIONS = """You are an application seed-data designer.
-Compile the declared application starting data into a validated fixture plan for one atomic requirement.
-Use only the supplied seed declarations and local Database Schema slice. Return semantic entity keys and field names
-exactly as supplied. Include every non-nullable field that has no default, except primary keys: the compiler owns
+FIXTURE_INSTRUCTIONS = """You are an application baseline-data designer.
+Read the requirement description and every scenario, especially Given/precondition steps. Identify records that
+must already exist when the application starts so the described flows can begin.
+Do not seed records that a scenario creates through its own actions, records used only as transient test inputs,
+or example values that do not imply pre-existing application data.
+If no pre-existing application records are required, return {"fixture_sets": []}.
+Use only facts in the supplied requirement and local Database Schema slice. Return semantic entity keys and field
+names exactly as supplied. Include every non-nullable field that has no default, except primary keys: the compiler owns
 primary keys, row ids, insert order, and timestamps/defaults. Use fixture_key to name a row. A field may reference a
 previous row with {"fixture_key":"...","field":"id"}. Do not emit SQL, TypeScript, table names, column names,
-routes, implementation behavior, or undeclared example records. Return exactly one JSON object and no prose.
-For a required foreign key, create a minimal supporting parent row before the declared row
+routes, implementation behavior, or invented business records. Return exactly one JSON object and no prose.
+For a required foreign key, create a minimal supporting parent row before the dependent row
 using the supplied relationship and parent entity, then reference its generated id by fixture_key.
-Supporting rows are permitted only to satisfy declared rows' required relationships.
-If a declared record cannot be mapped to the local schema, do not invent another entity
-or alter its values. The compiler will reject unmatched declarations. Return an empty
-fixture_sets array only for a declaration explicitly requesting an empty starting database.
+Supporting rows are permitted only to satisfy baseline rows' required relationships.
+If a required record cannot be mapped to the local schema, do not invent another entity or alter its values.
 """
 
 
@@ -126,38 +127,25 @@ class FixturePass:
         nodes = requirement_ir.get("nodes", {})
         for requirement_id in requirement_ir.get("atomic_units", []):
             node = nodes.get(requirement_id, {}) if isinstance(nodes, dict) else {}
-            declarations = node.get("seed_fixtures", []) if isinstance(node, dict) else []
-            if not declarations:
+            if not isinstance(node, dict) or not (node.get("description") or node.get("scenarios")):
                 continue
             local_schema = _fixture_schema_for_requirement(database_schema, str(requirement_id))
-            explicit = _explicit_decision(declarations)
-            prose = [
-                declaration for declaration in declarations
-                if not declaration.get("records") and not _is_empty_seed(declaration)
-            ]
-            decision = explicit or {"fixture_sets": []}
-            if prose:
-                inferred = self._decide(
-                    str(requirement_id), node, prose, local_schema, errors,
-                )
-                if inferred is None:
-                    continue
-                if not any(fixture_set.get("rows") for fixture_set in inferred["fixture_sets"]):
-                    errors.append(
-                        f"ARC2402 FIXTURE_INVALID: {requirement_id}: declared seed data produced no rows."
-                    )
-                decision["fixture_sets"].extend(inferred["fixture_sets"])
+            if not local_schema["entities"]:
+                # A scenario can require existing data owned by another requirement.
+                local_schema = {
+                    key: copy.deepcopy(database_schema.get(key, []))
+                    for key in ("entities", "relationships", "constraints")
+                }
+            if not local_schema["entities"]:
+                continue
+            decision = self._decide(str(requirement_id), node, local_schema, errors)
+            if decision is None:
+                continue
             compiled, local_errors = _compile_decision(
                 str(requirement_id), decision, local_schema
             )
             sets.extend(compiled)
             errors.extend(local_errors)
-            if not any(fixture_set["rows"] for fixture_set in compiled) and not all(
-                _is_empty_seed(declaration) for declaration in declarations
-            ):
-                errors.append(
-                    f"ARC2402 FIXTURE_INVALID: {requirement_id}: declared seed data produced no rows."
-                )
         fixture_ir = {
             "schema_version": FIXTURE_IR_SCHEMA_VERSION,
             "status": FIXTURE_STATUS if not errors else "FIXTURE_FAILED",
@@ -169,7 +157,6 @@ class FixturePass:
         self,
         requirement_id: str,
         node: dict[str, Any],
-        declarations: list[dict[str, Any]],
         local_schema: dict[str, Any],
         errors: list[str],
     ) -> dict[str, Any] | None:
@@ -180,7 +167,6 @@ class FixturePass:
                     key: copy.deepcopy(node.get(key))
                     for key in ("id", "name", "description", "scenarios")
                 },
-                "seed_declarations": copy.deepcopy(declarations),
                 "database_schema": copy.deepcopy(local_schema),
             }
             if feedback:
@@ -203,12 +189,7 @@ class FixturePass:
                 )
                 continue
             if not isinstance(decision, dict) or not isinstance(decision.get("fixture_sets"), list):
-                feedback = ["fixture_sets must be an array; do not omit unmatched declarations."]
-            elif not any(
-                isinstance(fixture_set, dict) and fixture_set.get("rows")
-                for fixture_set in decision["fixture_sets"]
-            ):
-                feedback = ["Declared application seed data must produce at least one row; do not return empty fixture_sets."]
+                feedback = ["fixture_sets must be an array."]
             else:
                 _, feedback = _compile_decision(requirement_id, decision, local_schema)
                 if not feedback:
@@ -385,52 +366,6 @@ def _compile_decision(
             }
         )
     return compiled, errors
-
-
-def _explicit_decision(declarations: list[dict[str, Any]]) -> dict[str, Any] | None:
-    records = [
-        record
-        for declaration in declarations
-        if isinstance(declaration, dict)
-        for record in declaration.get("records", [])
-        if isinstance(record, dict)
-    ]
-    if not records:
-        return None
-    rows = []
-    for index, record in enumerate(records, start=1):
-        raw_values = record.get("values", {})
-        values = (
-            [
-                {"field": str(key), "value": value}
-                for key, value in raw_values.items()
-            ]
-            if isinstance(raw_values, dict)
-            else [{"field": "", "value": raw_values}]
-        )
-        rows.append({
-            "entity_key": str(record.get("entity", "")),
-            "fixture_key": f"record_{index}",
-            "values": values,
-        })
-    return {
-        "fixture_sets": [
-            {
-                "name": "seed",
-                "rows": rows,
-            }
-        ]
-    }
-
-
-def _is_empty_seed(declaration: dict[str, Any]) -> bool:
-    description = str(declaration.get("description", "")).strip()
-    return not declaration.get("records") and bool(re.fullmatch(
-        r"(?:empty|empty (?:database|db|dataset|state)|no (?:seed|initial) data|"
-        r"空数据库|无(?:初始|种子)?数据|初始数据为空)[\s.!。！]*",
-        description,
-        re.IGNORECASE,
-    ))
 
 
 def _row_values(value: Any) -> dict[str, Any]:

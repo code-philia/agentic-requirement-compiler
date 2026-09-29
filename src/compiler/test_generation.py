@@ -90,13 +90,28 @@ method and .send(input). Never infer a POST from the presence of a request DTO.
 Reuse the declared prerequisite APIs and do not invent test-only endpoints.
 The test runner resets the database and restores all designed fixture baseline rows
 before every test, matching project initialization. The baseline is not an empty
-database. Prepare additional test-specific data through public API requests
+database when baseline_fixture_sets contains rows; an empty list means no baseline data.
+Read the requirement description, every scenario step, and baseline_fixture_sets when arranging data.
+Prepare additional test-specific data through public API requests
 or test inputs, not application fixture declarations or /__arc/seed. Never import
 the Express app or backend modules directly in an integration test. Assert status, body, cookies,
 and observable persistence via API requests where the requirement calls for them.
 Generate exactly one complete TypeScript file for each supplied layer, with
 real assertions over inputs, outputs and persisted data. Keep each test independent;
 use fresh unique values and arrange any prerequisite records through public APIs.
+For E2E, when requirement.scenarios is non-empty, generate exactly one independent
+test(...) for each scenario, in the same order. Begin each test title with
+"[scenario.id]" using that scenario's exact id; do not add unrelated E2E tests.
+Wrap each scenario step in an awaited test.step("[scenario.id:N] keyword content",
+async () => { ... }), where N is its one-based position in that scenario. Keep
+these steps in the same order as the scenario; the callback must execute the
+corresponding setup, browser action, or assertion, not be an empty marker.
+Follow its steps in order: Given establishes or checks preconditions using known
+baseline data or public user interactions, When performs the specified browser
+actions, and Then asserts every observable outcome. Preserve concrete values and
+negative cases from the scenario. Do not replace a stated scenario with a generic
+happy path or assert only that the page rendered. Shared prerequisites may use a
+helper, but the behavior under test and its assertions must stay in each test.
 Unit tests must import only the pure functions listed for the UNIT layer.
 Do not edit application code, invent paths, skip tests or weaken assertions to pass.
 Return only JSON: {"files":[{"layer":"UNIT|INTEGRATION|E2E","code":"..."}]}.
@@ -982,6 +997,9 @@ def _build_context_pack(
         "source_files": source_files,
         "layers": model_layers,
         "api_contracts": api_contracts,
+        "baseline_fixture_sets": _relevant_baseline_fixtures(
+            output_root, database_schema, requirement_id, requirement,
+        ),
     }
     if "E2E" in required_layers and prerequisite_flows:
         model_context["prerequisite_flows"] = prerequisite_flows
@@ -992,8 +1010,55 @@ def _build_context_pack(
         "required_layers": required_layers,
         "output_files": output_files,
         "allowed_imports": allowed_imports,
+        "e2e_scenarios": [
+            str(scenario.get("id", ""))
+            for scenario in requirement.get("scenarios", [])
+            if isinstance(scenario, dict) and str(scenario.get("id", ""))
+        ] if "E2E" in required_layers else [],
+        "e2e_steps": [
+            f"{scenario['id']}:{index}"
+            for scenario in requirement.get("scenarios", [])
+            if isinstance(scenario, dict) and str(scenario.get("id", ""))
+            for index, step in enumerate(scenario.get("steps", []), start=1)
+            if isinstance(step, dict)
+        ] if "E2E" in required_layers else [],
     }
     return model_context, validation_context
+
+
+def _relevant_baseline_fixtures(
+    output_root: Path,
+    database_schema: dict[str, Any],
+    requirement_id: str,
+    requirement: dict[str, Any],
+) -> list[dict[str, Any]]:
+    path = output_root / ".arc/design/database/fixture_ir.json"
+    if not path.is_file():
+        return []
+    fixture_ir = json.loads(path.read_text(encoding="utf-8"))
+    relevant_requirements = {requirement_id}
+    relevant_requirements.update(str(value) for value in requirement.get("dependencies", []))
+    relevant_requirements.update(
+        str(child.get("id", ""))
+        for child in requirement.get("children", [])
+        if isinstance(child, dict)
+    )
+    linked_entities = {
+        str(entity.get("key", ""))
+        for entity in schema_for_requirement(database_schema, requirement_id).get("entities", [])
+        if isinstance(entity, dict)
+    }
+    return [
+        copy.deepcopy(fixture_set)
+        for fixture_set in fixture_ir.get("fixture_sets", [])
+        if isinstance(fixture_set, dict) and (
+            str(fixture_set.get("requirement_id", "")) in relevant_requirements
+            or any(
+                isinstance(row, dict) and str(row.get("entity_key", "")) in linked_entities
+                for row in fixture_set.get("rows", [])
+            )
+        )
+    ]
 
 
 def _database_source_cards(
@@ -1579,6 +1644,25 @@ def _validate_test_code(
         )
     if layer == "E2E":
         runtime_import = required_package
+        scenario_ids = context_pack.get("e2e_scenarios", [])
+        if scenario_ids:
+            test_count = len(re.findall(r"\btest\s*\(", code))
+            covered_ids = re.findall(
+                r"\btest\s*\(\s*['\"`]\[([^\]]+)\]", code
+            )
+            if test_count != len(scenario_ids) or covered_ids != scenario_ids:
+                errors.append(
+                    "ARC4431 E2E_SCENARIO_COVERAGE_INVALID: expected exactly one "
+                    f"test per scenario in order, titled [scenario.id]: {scenario_ids}; "
+                    f"found {covered_ids} across {test_count} tests."
+                )
+            step_ids = re.findall(r"\btest\.step\s*\(\s*['\"`]\[([^\]]+)\]", code)
+            expected_steps = context_pack.get("e2e_steps", [])
+            if step_ids != expected_steps:
+                errors.append(
+                    "ARC4431 E2E_SCENARIO_STEPS_INVALID: expected test.step markers "
+                    f"in scenario order {expected_steps}; found {step_ids}."
+                )
         if re.search(r"data-arc-(?:page|component|layout|obligation)\b", code):
             errors.append(
                 "ARC4426 TEST_CODE_INVALID: E2E must not rely on temporary "
