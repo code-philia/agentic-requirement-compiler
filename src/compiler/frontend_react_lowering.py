@@ -235,6 +235,30 @@ class FrontendReactLowerer:
     def member(self, identifier: str) -> str:
         return self.members.get(identifier, self.symbol(identifier))
 
+    def _contract_value(self, value: Any) -> Any:
+        if isinstance(value, str) and value in self.rows:
+            return self.symbols.get(value, self.rows[value].get("name", value))
+        if isinstance(value, list):
+            return [self._contract_value(item) for item in value]
+        if isinstance(value, dict):
+            return {key: self._contract_value(item) for key, item in value.items()}
+        return value
+
+    def _contract_comment(self, row: dict[str, Any]) -> str:
+        """Preserve deterministic design facts beside the generated declaration."""
+        facts = {key: self._contract_value(row[key]) for key in (
+            "spec", "ui_root_id", "source_ui_id", "event_id", "handler_id", "handlers",
+            "reads", "writes", "invokes", "emits", "target", "dependencies", "activation",
+            "async_policy", "cleanup", "trigger", "ui_id", "handler_ids", "event_name", "arguments",
+        ) if key in row and row[key] is not None}
+        for direction in ("INPUT", "OUTPUT"):
+            data = self.data(row["id"], direction)
+            if data:
+                facts[direction.lower()] = [{"name": self.members.get(d["id"], self.symbols.get(d["id"], d["name"])), "type": d["type"],
+                                             "required": d["required"]} for d in data]
+        return "\n".join("// Contract " + key + ": " + js(value)
+                         for key, value in facts.items())
+
     def _placeholder(self, row: dict[str, Any], category: str) -> str:
         self.result.implementation_tasks.append({
             "entity_id": row["id"], "category": category, "name": row.get("name", ""),
@@ -243,7 +267,7 @@ class FrontendReactLowerer:
             "input_data": self.data(row["id"], "INPUT"), "output_data": self.data(row["id"], "OUTPUT"),
         })
         # Throwing fulfills every declared return type without fabricating successful business results.
-        return "throw new Error(" + js("Not implemented: " + row["id"] + " " + row.get("name", "")) + ");"
+        return self._contract_comment(row) + "\nthrow new Error(" + js("Not implemented: " + row["id"] + " " + row.get("name", "")) + ");"
 
     def _component(self, component: dict[str, Any]) -> None:
         cid = component["id"]
@@ -254,7 +278,8 @@ class FrontendReactLowerer:
         props = self.signature(cid, "INPUT")
         callbacks = [e for e in local["events"] if e["kind"] == "CUSTOM"]
         props += " & { " + "; ".join(f"{self.symbol(e['id'])}?: (payload: {self.signature(e['id'], 'OUTPUT')}) => void" for e in callbacks) + " }"
-        lines = [*imports, "", f"export function {name}(props: {props}) {{", "void [React, createEffectRunner, callApi, props];"]
+        lines = [*imports, "", self._contract_comment(component),
+                 f"export function {name}(props: {props}) {{", "void [React, createEffectRunner, callApi, props];"]
         for d in self.data(cid, "INPUT"):
             n = self.symbol(d["id"])
             if d.get("default") is not None:
@@ -282,6 +307,7 @@ class FrontendReactLowerer:
                     lines.append(f"const {n} = React.useMemo<{typ}>(() => ({self.expr(p['derive'])}), [{deps}]);")
                 pending.remove(p)
         for e in callbacks:
+            lines.append(self._contract_comment(e))
             lines.append(f"const {self.symbol(e['id'])} = (payload: {self.signature(e['id'], 'OUTPUT')}) => props.{self.symbol(e['id'])}?.(payload);")
         for effect in local["effects"]:
             n = self.symbol(effect["id"])
@@ -323,7 +349,12 @@ class FrontendReactLowerer:
         available.extend(self.symbol(e["id"]) for e in local["events"])
         if available:
             lines.append("void [\n" + ",\n".join(available) + "\n];")
-        lines.extend(["// TODO: Implement the component UI and bindings from the design IR.",
+        for ui in local["ui"]:
+            facts = {key: self._contract_value(ui[key]) for key in ("name", "kind", "element", "spec", "children", "component_ref",
+                     "arguments", "callbacks", "condition", "repeat", "attributes", "text", "slot_data_id", "presentation")
+                     if ui.get(key) not in (None, [], "")}
+            lines.append("// UI " + self.symbol(ui["id"]) + ": " + js(facts))
+        lines.extend(["// TODO: Implement the component UI and bindings from the contracts above.",
                       "return <React.Fragment />;", "}", ""])
         self.result.sources[path] = "\n".join(lines)
         ids = [component, *[r for rows in local.values() for r in rows]]

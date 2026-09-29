@@ -150,35 +150,8 @@ class CodeBindingLowerer:
         frontend_items: dict[str, dict[str, Any]] = {}
         if "root_component_id" in frontend_ir:
             locations = {row["entity_id"]: row for row in (frontend_lowering_report or {}).get("bindings", [])}
-            entities = [row for table in ("components", "ui", "properties", "events", "handlers", "effects")
-                        for row in frontend_ir.get(table, [])]
-            # A requirement may name a parent UI while the actual editable
-            # implementation lives in a reused child component (or vice versa).
-            # Compute the same composition ownership closure used by the
-            # implementation context so target resolution is consistent.
-            component_owners = {
-                str(component["id"]): set(component.get("requirement_ids", []))
-                for component in frontend_ir.get("components", [])
-            }
-            for row in entities:
-                component_id = row.get("component_id")
-                if component_id in component_owners:
-                    component_owners[component_id].update(row.get("requirement_ids", []))
-            changed = True
-            while changed:
-                changed = False
-                for row in frontend_ir.get("ui", []):
-                    if row.get("kind") != "COMPONENT":
-                        continue
-                    parent = str(row.get("component_id", ""))
-                    child = str(row.get("component_ref", ""))
-                    if parent not in component_owners or child not in component_owners:
-                        continue
-                    merged = component_owners[parent] | component_owners[child]
-                    if merged != component_owners[parent] or merged != component_owners[child]:
-                        component_owners[parent] = set(merged)
-                        component_owners[child] = set(merged)
-                        changed = True
+            from .frontend_context import component_requirement_owners
+            component_owners = component_requirement_owners(frontend_ir)
             for component in frontend_ir.get("components", []):
                 cid = component["id"]
                 frontend_items[cid] = component

@@ -103,6 +103,7 @@ class NodeTDDOrchestrator:
             model_log=self._write_implementation_model_log,
         )
         self.file_patcher = file_patcher or ExactFilePatcher(self.output_root)
+        self._recent_changes: dict[str, dict[str, dict[str, Any]]] = {}
 
     def _trace_frontend_implementation(self, message: str) -> None:
         self._trace_implementation(message, frontend=True)
@@ -268,7 +269,7 @@ class NodeTDDOrchestrator:
                             agent,
                             result,
                             target_ids=tuple(str(row["module_id"]) for row in pending),
-                            test_output=(
+                            implementation_feedback=(
                                 "FRONTEND_INCOMPLETE: finish every placeholder and compose "
                                 "shared children instead of duplicating them. CONTENT_SLOT "
                                 "form components must wrap the page form and render children. "
@@ -370,6 +371,7 @@ class NodeTDDOrchestrator:
             if layer == "E2E" and not has_editable_targets:
                 aggregate_repairs = self._aggregate_repair_targets(requirement_id)
             feedback = self._raw_output(run)
+            repair_feedback = ""
             while not run.ok:
                 budget_key = (requirement_id, layer)
                 if layer == "E2E" and not has_editable_targets and not aggregate_repairs and not run.selected_files:
@@ -415,7 +417,8 @@ class NodeTDDOrchestrator:
                     agent,
                     result,
                     target_ids=target_ids,
-                    test_output=feedback,
+                    test_output=self._raw_output(run),
+                    implementation_feedback=repair_feedback,
                     iteration=repair_index + 1,
                     test_layer=layer,
                     test_files=tuple(run.selected_files),
@@ -425,12 +428,14 @@ class NodeTDDOrchestrator:
                     self._trace_implementation(
                         f"REPAIR_REJECTED requirement={requirement_id} layer={layer} "
                         f"iteration={repair_index + 1}/{self.policy.max_iterations_per_layer} error={error}")
-                    if "PATCH_ROLLBACK_FAILED:" in error:
+                    if "PATCH_ROLLBACK_FAILED:" in error or "DIAGNOSIS_BLOCKED:" in error:
                         result.failed_requirements.append(requirement_id)
                         return self._fail(result, self._raw_output(run), error)
-                    feedback = "\n".join(part for part in (self._raw_output(run), error) if part)
+                    repair_feedback = error
+                    feedback = self._raw_output(run)
                     continue
                 run = self._run_tests(requirement_id, layer)
+                repair_feedback = ""
                 self._trace_implementation(
                     f"REPAIR_FINISHED requirement={requirement_id} layer={layer} "
                     f"iteration={repair_index + 1}/{self.policy.max_iterations_per_layer} "
@@ -480,6 +485,7 @@ class NodeTDDOrchestrator:
         *,
         target_ids: tuple[str, ...] = (),
         test_output: str = "",
+        implementation_feedback: str = "",
         test_files: tuple[str, ...] = (),
         commit_stage: str = "",
         iteration: int = 0,
@@ -491,6 +497,13 @@ class NodeTDDOrchestrator:
         changed_files: list[str] = []
 
         def accept_patch(patch: ProposedPatch) -> list[str]:
+            # Diagnosis may authorize an additional dependency file. Capture
+            # its original before applying so rejected builds roll it back too.
+            extra = sorted({edit.file for edit in patch.edits} - snapshot.keys())
+            captured = self.file_patcher.snapshot(extra)
+            if set(extra) - captured.keys():
+                return ["PATCH_SNAPSHOT_FAILED: cannot capture newly authorized files."]
+            snapshot.update(captured)
             applied = self.file_patcher.apply(patch)
             errors = list(applied.errors)
             if applied.ok:
@@ -531,8 +544,12 @@ class NodeTDDOrchestrator:
             iteration=iteration,
             iteration_limit=self.policy.max_iterations_per_layer,
             test_layer=test_layer,
+            implementation_feedback=implementation_feedback,
+            recent_changes=tuple(self._recent_changes.get(requirement_id, {}).values()),
         ), accept_patch=accept_patch)
         if not implementation.ok or implementation.patch is None:
+            if implementation.status == "DIAGNOSIS_BLOCKED":
+                return False, "DIAGNOSIS_BLOCKED: " + "\n".join(implementation.errors)
             return False, "\n".join(implementation.errors)
         corrected_tests = sorted(set(changed_files) & set(test_files))
         if corrected_tests:
@@ -567,6 +584,14 @@ class NodeTDDOrchestrator:
                 *([".arc/tests/test_manifest.json"] if corrected_tests else []),
             ])
         result.changed_files = sorted(set(result.changed_files) | set(changed_files))
+        history = self._recent_changes.setdefault(requirement_id, {})
+        for relative in changed_files:
+            history[relative] = {
+                "requirement_id": requirement_id, "iteration": iteration,
+                "changed_files": [relative],
+                "edits": [{"file": edit.file, "search": edit.search, "replacement": edit.replacement}
+                          for edit in implementation.patch.edits if edit.file == relative],
+            }
         return True, ""
 
     def _owned_targets(self, requirement_id: str) -> list[dict[str, Any]]:

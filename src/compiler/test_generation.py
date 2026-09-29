@@ -53,6 +53,12 @@ TEST_GENERATION_SCHEMA: dict[str, Any] = {
 TEST_GENERATION_INSTRUCTIONS = """Write executable requirement tests using the original requirement
 and the supplied source files. Assertions must come from the requirement and its
 scenarios, never from skeleton placeholders or current implementation behavior.
+source_files includes associated lowered modules for understanding signatures and
+contracts. layers.test_targets identifies the files and modules under test, not an
+import allowlist. UNIT may import its listed pure functions; INTEGRATION and E2E
+exercise public HTTP/browser behavior instead of importing application internals.
+Use vitest for UNIT/INTEGRATION and tests/support/e2e for E2E test/expect;
+tests/support/runtime supplies uniqueValue. Resolve local imports from output_file.
 Use the exact exports, helper signatures, database fields and routes in the supplied
 code. E2E controls may not exist in the unimplemented skeleton yet: choose accessible
 locators from the requirement, not from placeholder text. Start E2E at / and follow
@@ -608,10 +614,12 @@ class RequirementTestGenerationPass:
             frontend_ir=frontend_ir,
             resolved_targets=resolved_targets,
             required_layers=required_layers,
-            api_binding_rows=code_binding_registry.get("code_bindings", []),
-            include_read_only_frontend=requirement_id in requirement_ir.get("folder_nodes", []),
+            binding_rows=code_binding_registry.get("code_bindings", []),
         )
         artifacts: dict[str, str] = {}
+        from .file_context import file_selection_log
+        self._trace(file_selection_log(requirement_id, "test_generation", context_pack["source_files"],
+                                       "direct_requirement_and_child_modules_types_support_and_schema"))
         decision, sources, errors = self._generate_and_validate(
             requirement_id,
             context_pack,
@@ -797,54 +805,47 @@ def _build_context_pack(
     frontend_ir: dict[str, Any],
     resolved_targets: dict[str, Any],
     required_layers: list[str],
-    api_binding_rows: list[dict[str, Any]] | None = None,
-    include_read_only_frontend: bool = False,
+    binding_rows: list[dict[str, Any]] | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
 
-    all_target_rows = [
-        _project_test_target(row)
-        for row in [
-            *resolved_targets.get("owned_targets", []),
-            *resolved_targets.get("dependency_targets", []),
-        ]
-        if isinstance(row, dict)
-    ]
     owned_targets = [
         _project_test_target(row)
         for row in resolved_targets.get("owned_targets", [])
         if isinstance(row, dict) and _target_relevant_to_layers(row, required_layers)
     ]
-    context_targets = list(owned_targets)
-    if include_read_only_frontend:
-        context_targets.extend(
-            row for row in resolved_targets.get("dependency_targets", [])
-            if isinstance(row, dict)
-            and row.get("kind") in {"PAGE", "COMPONENT", "LAYOUT", "STORE", "API_CLIENT"}
-        )
-    test_targets = [
-        _project_test_target(row)
-        for row in context_targets
-        if isinstance(row, dict) and _target_relevant_to_layers(row, required_layers)
-    ]
+    associated_targets = _requirement_source_targets(
+        requirement_id, requirement, design_ir,
+        binding_rows if binding_rows is not None else [
+            *resolved_targets.get("owned_targets", []),
+            *resolved_targets.get("dependency_targets", []),
+        ],
+    )
+    api_contracts = [row for row in associated_targets if row.get("kind") == "API"]
     relevant_frontend_subgraph = _project_frontend_subgraph(
         requirement_id=requirement_id,
         frontend_ir=frontend_ir,
         owned_targets=owned_targets,
         required_layers=required_layers,
     )
-    one_hop_dependencies = _project_one_hop_dependencies(
-        owned_targets=test_targets,
-        all_target_rows=all_target_rows,
-        frontend_subgraph=relevant_frontend_subgraph,
-        required_layers=required_layers,
-    )
-    target_rows = [*test_targets, *one_hop_dependencies]
-    referenced_type_ids = _referenced_type_ids(target_rows)
+    # Direct test seams are separate from the associated source context below.
+    pure_function_ids = _pure_function_ids(design_ir)
+    target_rows = [row for row in associated_targets if row.get("kind") == "FUNC"
+                   and row["module_id"] in pure_function_ids and "UNIT" in required_layers]
+    if set(required_layers) & {"INTEGRATION", "E2E"}:
+        target_rows.extend(api_contracts)
+    referenced_type_ids = _referenced_type_ids(associated_targets)
     relevant_types = [
         copy.deepcopy(row)
         for row in resolved_targets.get("type_targets", [])
         if isinstance(row, dict) and str(row.get("type_id", "")) in referenced_type_ids
     ]
+    known_types = {row["type_id"] for row in relevant_types}
+    for target in associated_targets:
+        for key in ("input_type", "output_type", "props_type"):
+            reference = target.get(key)
+            if isinstance(reference, dict) and reference.get("file") and reference.get("type_id") not in known_types:
+                relevant_types.append(copy.deepcopy(reference))
+                known_types.add(reference.get("type_id"))
     shared_type_symbols = sorted({
         str(row["symbol"])
         for row in relevant_types
@@ -854,7 +855,6 @@ def _build_context_pack(
         layer: _test_file(requirement_id, layer)
         for layer in required_layers
     }
-    pure_function_ids = _pure_function_ids(design_ir)
     public_seams: dict[str, Any] = {}
     allowed_imports: dict[str, list[dict[str, Any]]] = {}
     for layer in required_layers:
@@ -933,19 +933,22 @@ def _build_context_pack(
         public_seams=public_seams,
         allowed_imports=allowed_imports,
         relevant_types=relevant_types,
+        test_targets=associated_targets,
+        pure_function_ids=pure_function_ids,
     )
     source_files.update((row["path"], row["source"]) for row in database_tables)
+    # Reading a lowered module is context, not permission to import it in a
+    # test. Keep source selection independent of the layer's public seams.
+    for target in associated_targets:
+        relative = str(target.get("file", ""))
+        path = output_root / relative
+        if relative and relative not in source_files and path.is_file():
+            source_files[relative] = path.read_text(encoding="utf-8")
     model_context = {
         "requirement": model_requirement,
         "source_files": source_files,
         "layers": model_layers,
-        "api_contracts": _requirement_api_contracts(
-            requirement_id, requirement, design_ir,
-            api_binding_rows if api_binding_rows is not None else [
-                *resolved_targets.get("owned_targets", []),
-                *resolved_targets.get("dependency_targets", []),
-            ],
-        ),
+        "api_contracts": api_contracts,
     }
     validation_context = {
         "requirement_id": requirement_id,
@@ -977,7 +980,7 @@ def _database_source_cards(
     return cards
 
 
-def _requirement_api_contracts(
+def _requirement_source_targets(
     requirement_id: str, requirement: dict[str, Any],
     design_ir: dict[str, Any], bindings: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
@@ -987,15 +990,15 @@ def _requirement_api_contracts(
         child["id"] for child in requirement.get("children", [])
         if isinstance(child, dict) and child.get("id")
     )
-    api_ids = {
+    module_ids = {
         row["id"] for row in design_ir.get("modules", [])
-        if row.get("kind") == "API" and row.get("owner_requirement") in requirement_ids
+        if row.get("owner_requirement") in requirement_ids
     }
     selected = {
         row["module_id"]: _project_test_target(row)
         for row in bindings
-        if row.get("kind") == "API" and (
-            row.get("module_id") in api_ids
+        if (
+            row.get("module_id") in module_ids
             or requirement_ids.intersection(row.get("owner_requirements", []))
         )
     }
@@ -1007,6 +1010,8 @@ def _build_model_layers(
     output_files: dict[str, str], public_seams: dict[str, Any],
     allowed_imports: dict[str, list[dict[str, Any]]],
     relevant_types: list[dict[str, Any]],
+    test_targets: list[dict[str, Any]],
+    pure_function_ids: set[str],
 ) -> tuple[dict[str, dict[str, Any]], dict[str, str]]:
     layers: dict[str, dict[str, Any]] = {}
     source_files: dict[str, str] = {}
@@ -1032,7 +1037,14 @@ def _build_model_layers(
                 source_files[relative] = path.read_text(encoding="utf-8")
         layers[layer] = {
             "output_file": output_files[layer],
-            "imports": allowed_imports[layer],
+            "test_targets": [
+                {key: copy.deepcopy(row.get(key)) for key in ("module_id", "file", "symbol", "kind")}
+                for row in test_targets
+                if (row.get("kind") == "FUNC" and row.get("module_id") in pure_function_ids
+                    if layer == "UNIT" else row.get("kind") == "API"
+                    if layer == "INTEGRATION" else row.get("kind") in
+                    {"COMPONENT", "PAGE", "LAYOUT", "STORE", "API_CLIENT", "API"})
+            ],
         }
     return layers, source_files
 
@@ -1619,8 +1631,8 @@ def _layer_source_cards(
 ) -> list[dict[str, Any]]:
     allowed_kinds = {
         "UNIT": {"FUNC"},
-        "INTEGRATION": {"API", "FUNC", "DB"},
-        "E2E": {"PAGE", "COMPONENT", "LAYOUT", "API", "API_CLIENT"},
+        "INTEGRATION": {"API"},
+        "E2E": set(),
     }[layer]
     rows: list[dict[str, Any]] = []
     for target in targets:

@@ -3,48 +3,102 @@ from __future__ import annotations
 
 import copy
 import json
+import posixpath
 from pathlib import Path
 from typing import Any
 
 
+def implementation_requirement(
+    requirement: dict[str, Any], project_root: Path, *, frontend: bool,
+) -> tuple[dict[str, Any], list[str]]:
+    """Project visual references for model input without mutating requirement IR."""
+    cache: dict[str, Any] = {}
+    if frontend:
+        path = project_root / ".arc/design/frontend/visual_cache.json"
+        if path.is_file():
+            loaded = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(loaded, dict):
+                cache = {posixpath.normpath(key.replace(chr(92), "/")): row
+                         for key, row in loaded.items()}
+    missing: list[str] = []
+
+    def project(value: Any) -> Any:
+        if isinstance(value, list):
+            return [project(item) for item in value]
+        if not isinstance(value, dict):
+            return copy.deepcopy(value)
+        result = {}
+        for key, item in value.items():
+            if key != "visual_references":
+                result[key] = project(item)
+                continue
+            if not frontend:
+                continue
+            analyses = []
+            seen: set[str] = set()
+            for reference in item:
+                normalized = posixpath.normpath(reference.replace(chr(92), "/"))
+                if normalized in seen:
+                    continue
+                seen.add(normalized)
+                record = cache.get(normalized)
+                if isinstance(record, dict) and isinstance(record.get("analysis"), dict):
+                    analyses.append(copy.deepcopy(record["analysis"]))
+                else:
+                    missing.append(reference)
+            result[key] = analyses
+        return result
+
+    return project(requirement), sorted(set(missing))
+
+
+def component_requirement_owners(ir: dict[str, Any]) -> dict[str, set[str]]:
+    """Resolve explicit entity ownership without spreading across composition edges."""
+    tables = ("components", "ui", "data", "properties", "events", "handlers", "effects")
+    rows = {row["id"]: row for table in tables for row in ir.get(table, [])}
+    owners = {row["id"]: set() for row in ir.get("components", [])}
+    for row in rows.values():
+        current = row
+        visited: set[str] = set()
+        while current["id"] not in owners and current["id"] not in visited:
+            visited.add(current["id"])
+            parent = current.get("component_id") or current.get("owner_id")
+            if parent not in rows:
+                break
+            current = rows[parent]
+        if current["id"] in owners:
+            owners[current["id"]].update(row.get("requirement_ids", []))
+        # An explicitly associated component use also associates its target,
+        # but does not propagate the containing component's other owners.
+        if row.get("kind") == "COMPONENT" and row.get("component_ref") in owners:
+            owners[row["component_ref"]].update(row.get("requirement_ids", []))
+    return owners
+
+
 def frontend_subgraph(ir: dict[str, Any], requirement_id: str, target_ids: set[str]) -> dict[str, Any]:
     tables = ("components", "ui", "properties", "events", "handlers", "effects")
-    selected = set(target_ids)
-    for table in (*tables, "data"):
-        for row in ir.get(table, []):
-            if requirement_id in row.get("requirement_ids", []):
-                selected.add(row.get("component_id") or row.get("owner_id") or row["id"])
-    # Include descendants, then ancestors; do not pull unrelated sibling pages in through App.
-    changed = True
-    while changed:
-        before = set(selected)
-        for row in ir.get("ui", []):
-            if row.get("kind") == "COMPONENT" and row.get("component_id") in selected:
-                selected.add(row["component_ref"])
-        changed = selected != before
-    changed = True
-    while changed:
-        before = set(selected)
-        for row in ir.get("ui", []):
-            if row.get("kind") == "COMPONENT" and row.get("component_ref") in selected:
-                selected.add(row["component_id"])
-        changed = selected != before
-    # Keep both component-owned records and records directly attributed to the
-    # requirement.  The latter matters for reused UI/behavior nodes whose
-    # owning component was discovered through a separate composition edge.
+    ownership = component_requirement_owners(ir)
+    selected = (set(target_ids) & ownership.keys()) or {
+        cid for cid, requirements in ownership.items() if requirement_id in requirements
+    }
+    selected |= {
+        row["component_ref"] for row in ir.get("ui", [])
+        if row.get("kind") == "COMPONENT" and row.get("component_id") in selected
+    }
+    # One composition hop supplies child contracts without pulling ancestors
+    # and their unrelated sibling pages into the context.
     result = {
         table: [
             copy.deepcopy(row)
             for row in ir.get(table, [])
             if row.get("component_id", row["id"]) in selected
-            or requirement_id in row.get("requirement_ids", [])
         ]
         for table in tables
     }
     owners = {row["id"] for rows in result.values() for row in rows}
     result["data"] = [
         copy.deepcopy(row) for row in ir.get("data", [])
-        if row.get("owner_id") in owners or requirement_id in row.get("requirement_ids", [])
+        if row.get("owner_id") in owners
     ]
     result["root_component_id"] = ir.get("root_component_id")
     result["entry_routes"] = ["/"] if result["components"] else []
