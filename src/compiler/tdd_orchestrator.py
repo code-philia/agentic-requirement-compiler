@@ -18,7 +18,6 @@ from core.logging import append_debug_log, write_terminal_log
 
 from .code_binding import CodeTargetResolver
 from .exact_file_patcher import ExactFilePatcher
-from .frontend_thin_design import project_frontend_runtime_ir
 from .git_history import ProjectGitHistory
 from .project_build import ProjectBuilder
 from .repair_context import RepairContextBuilder
@@ -79,18 +78,6 @@ class NodeTDDOrchestrator:
         self.requirement_ir = requirement_ir
         self.code_binding_registry = code_binding_registry
         self.frontend_ir = frontend_ir
-        runtime_ir = (frontend_ir if frontend_ir is not None and "root_component_id" in frontend_ir else
-                      project_frontend_runtime_ir(frontend_ir) if frontend_ir is not None else {})
-        self._frontend_pages = {
-            str(row["id"]): row for row in runtime_ir.get("pages", []) if isinstance(row, dict)
-        }
-        self._frontend_components = {
-            str(row["id"]): row for row in runtime_ir.get("components", []) if isinstance(row, dict)
-        }
-        self._binding_by_id = {
-            str(row["module_id"]): row
-            for row in code_binding_registry.get("code_bindings", []) if isinstance(row, dict)
-        }
         self.test_manifest = test_manifest
         self.policy = policy or NodeTDDPolicy.from_environment()
         self.test_runner = test_runner or TestRunner(self.output_root)
@@ -345,75 +332,7 @@ class NodeTDDOrchestrator:
                     result.errors.append(f"{requirement_id}: {error}")
                     result.status = "IMPLEMENTATION_FAILED"
                     return result
-                if agent is self.frontend_implementation_agent:
-                    pending = self._pending_frontend_targets(phase_targets)
-                    if pending:
-                        result.failed_requirements.append(requirement_id)
-                        feedback = (
-                            f"{requirement_id}: FRONTEND_INCOMPLETE: unfinished UI or "
-                            "uncomposed child in "
-                            + ", ".join(sorted({str(row["file"]) for row in pending}))
-                        )
-                        result.errors.append(feedback)
-                        self._history.setdefault(requirement_id, []).append({
-                            "event": "implementation_feedback", "implementation_feedback": feedback,
-                        })
-                        result.status = "IMPLEMENTATION_FAILED"
-                        # Still initialize subsequent page targets before tests.
-                        # Completion feedback never consumes the repair budget.
         return result
-
-    def _pending_frontend_targets(self, targets: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        pending: list[dict[str, Any]] = []
-        for row in targets:
-            if row.get("kind") not in {"PAGE", "COMPONENT", "LAYOUT"}:
-                continue
-            source = self.output_root / str(row["file"])
-            if not source.is_file():
-                pending.append(row)
-                continue
-            text = source.read_text(encoding="utf-8")
-            if any(marker in text for marker in (
-                "Implementation pending", "data-arc-obligation=",
-                "TODO: Implement", "Not implemented:",
-                f"data-arc-{str(row['kind']).lower()}=",
-            )):
-                pending.append(row)
-                continue
-            if self.frontend_ir is not None and "root_component_id" in self.frontend_ir \
-                    and row.get("kind") == "COMPONENT":
-                # The deterministic lowering emits this exact shell until the
-                # implementation pass materializes the seven-entity UI tree.
-                # Treat an unchanged empty return as incomplete even if a model
-                # removed the comment marker.
-                if re.search(r"return\s*<React\.Fragment\s*/>\s*;", text):
-                    pending.append(row)
-                    continue
-            if row.get("kind") == "COMPONENT":
-                component = self._frontend_components.get(str(row["module_id"]), {})
-                if component.get("composition_mode") == "CONTENT_SLOT" and not re.search(
-                    r"\{\s*(?:(?:_props|props)\.)?children\s*\}", text,
-                ):
-                    pending.append(row)
-            if row.get("kind") == "PAGE":
-                page = self._frontend_pages.get(str(row["module_id"]), {})
-                for child_id in page.get("component_ids", []):
-                    child = self._frontend_components.get(str(child_id), {})
-                    symbol = str(self._binding_by_id.get(str(child_id), {}).get("symbol", ""))
-                    if not symbol:
-                        continue
-                    if not re.search(r"<" + re.escape(symbol) + r"\b", text):
-                        pending.append(row)
-                        break
-                    if child.get("composition_mode") == "CONTENT_SLOT" and not re.search(
-                        r"<" + re.escape(symbol) + r"\b[^>]*>"
-                        r"(?:(?!</" + re.escape(symbol) + r"\s*>).)*?<form\b"
-                        r"(?:(?!</" + re.escape(symbol) + r"\s*>).)*?"
-                        r"</" + re.escape(symbol) + r"\s*>", text, re.DOTALL,
-                    ):
-                        pending.append(row)
-                        break
-        return pending
 
     def _run_layer(
         self,

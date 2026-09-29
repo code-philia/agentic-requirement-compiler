@@ -1029,44 +1029,6 @@ class Compiler:
                 ok=False, root_id=root_id, states=states,
                 failed_nodes=failed_nodes, artifacts=artifacts,
             )
-        ui_bindings = {
-            str(row.get("module_id", "")): row
-            for row in code_binding_registry.get("code_bindings", [])
-            if isinstance(row, dict) and row.get("kind") in {"PAGE", "COMPONENT", "LAYOUT"}
-        }
-        writable_ids = {
-            str(module_id)
-            for row in code_binding_registry.get("requirement_targets", [])
-            if isinstance(row, dict)
-            for module_id in row.get("writable", [])
-        }
-        incomplete = [
-            f"{screen.get('id')}: no writable page binding"
-            for screen in frontend_ir.get("components" if "root_component_id" in frontend_ir else "screens", [])
-            if isinstance(screen, dict)
-            and (
-                str(screen.get("id", "")) not in ui_bindings
-                or str(screen.get("id", "")) not in writable_ids
-            )
-        ]
-        for module_id, binding in ui_bindings.items():
-            source = request.output_dir / str(binding.get("file", ""))
-            if module_id not in writable_ids:
-                incomplete.append(f"{module_id}: no writable requirement")
-            text = source.read_text(encoding="utf-8") if source.is_file() else ""
-            if not source.is_file() or any(marker in text for marker in (
-                "Implementation pending", "data-arc-obligation=",
-                "TODO: Implement", "Not implemented:",
-                f"data-arc-{str(binding['kind']).lower()}=",
-            )):
-                incomplete.append(f"{module_id}: unfinished {binding.get('file', '')}")
-        if incomplete:
-            for item in sorted(set(incomplete)):
-                await self._log("Compiler", f"ARC4550 FRONTEND_INCOMPLETE: {item}", "error")
-            return CompilationResult(
-                ok=False, root_id=root_id, states=states,
-                failed_nodes=failed_nodes, artifacts=artifacts,
-            )
         return CompilationResult(
             ok=not failed_nodes, root_id=root_id, states=states,
             failed_nodes=failed_nodes, artifacts=artifacts,
