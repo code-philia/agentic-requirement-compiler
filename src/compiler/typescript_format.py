@@ -2,8 +2,11 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 from pathlib import Path
+
+from .process_utils import resolve_executable
 
 
 FORMAT_SCRIPT = r"""
@@ -47,8 +50,11 @@ process.stdout.write(JSON.stringify(output));
 
 
 def format_typescript(sources: dict[str, str], project_root: Path) -> dict[str, str]:
+    node = resolve_executable("node", os.environ)
+    if node is None:
+        raise ValueError("TypeScript source formatting failed: node is unavailable")
     result = subprocess.run(
-        ["node", "-e", FORMAT_SCRIPT], cwd=project_root, input=json.dumps(sources, ensure_ascii=False),
+        [node, "-e", FORMAT_SCRIPT], cwd=project_root, input=json.dumps(sources, ensure_ascii=False),
         text=True, encoding="utf-8", capture_output=True, check=False,
     )
     if result.returncode:

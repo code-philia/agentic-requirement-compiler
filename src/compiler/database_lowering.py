@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import subprocess
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -11,6 +12,7 @@ from .file_planning import GlobalFilePlanner
 from .fixture_lowering import FixtureLowerer, fixture_source_paths
 from .skeleton_lowering import DatabaseSchemaLowerer, TypeLowerer
 from .symbol_planning import GlobalSymbolPlanner
+from .process_utils import resolve_executable
 
 
 @dataclass(slots=True)
@@ -69,9 +71,13 @@ def lower_database(
     database.manifest["generated_files"] = schema_paths
     result.manifest = database.manifest
     result.artifacts.update(store.write_generated_sources(sources))
+    node = resolve_executable("node", os.environ)
+    if node is None:
+        result.errors.append("DATABASE_LOWERING_FAILED: Required command is unavailable: node")
+        return result
     try:
         seeded = subprocess.run(
-            ["node", "init-db.mjs"], cwd=output_root / "backend",
+            [node, "init-db.mjs"], cwd=output_root / "backend",
             capture_output=True, text=True, encoding="utf-8", errors="replace",
             timeout=120, check=False,
         )

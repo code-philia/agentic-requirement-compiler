@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import signal
 import socket
@@ -14,7 +15,12 @@ from typing import Any, Mapping
 def resolve_executable(name: str, environment: Mapping[str, str]) -> str | None:
     """Resolve a command using the child process environment's PATH."""
 
-    return shutil.which(name, path=environment.get("PATH"))
+    # Windows environment names are case-insensitive, even when callers pass
+    # an ordinary dict with the common spelling "Path". POSIX remains sensitive.
+    path = environment.get("PATH")
+    if path is None and os.name == "nt":
+        path = next((value for key, value in environment.items() if key.upper() == "PATH"), None)
+    return shutil.which(name, path=path if path is not None else os.defpath)
 
 
 def process_group_kwargs() -> dict[str, Any]:
@@ -213,11 +219,13 @@ def _posix_tcp_listener_pids(port: int) -> tuple[list[int], list[str]]:
         if completed.returncode in {0, 1}:
             return _integer_lines(completed.stdout), []
 
-    fuser = shutil.which("fuser")
-    if fuser is not None:
+    # Linux iproute2 provides ss even on many systems without lsof. Unlike
+    # fuser, it can select listeners rather than every socket using the port.
+    ss = shutil.which("ss")
+    if ss is not None:
         try:
             completed = subprocess.run(
-                [fuser, f"{port}/tcp"],
+                [ss, "-H", "-ltnp", f"sport = :{port}"],
                 capture_output=True,
                 text=True,
                 timeout=5.0,
@@ -225,13 +233,16 @@ def _posix_tcp_listener_pids(port: int) -> tuple[list[int], list[str]]:
             )
         except (OSError, subprocess.TimeoutExpired) as exc:
             return [], [f"cannot inspect TCP port {port}: {exc}"]
-        if completed.returncode in {0, 1}:
-            return _integer_lines(f"{completed.stdout} {completed.stderr}"), []
+        if completed.returncode == 0:
+            rows = [line for line in completed.stdout.splitlines() if line.strip()]
+            if any(not re.search(r"\bpid=(\d+)", line) for line in rows):
+                return [], [f"cannot identify all listeners on TCP port {port}: ss did not expose process IDs; check permissions"]
+            return sorted({int(pid) for pid in re.findall(r"\bpid=(\d+)", completed.stdout)}), []
 
     if not _tcp_port_accepts_connections(port):
         return [], []
     return [], [
-        f"cannot identify the process listening on TCP port {port}; install lsof or fuser"
+        f"cannot identify the process listening on TCP port {port}; install lsof or ss (iproute2)"
     ]
 
 
