@@ -307,7 +307,8 @@ class Compiler:
                     ok=False, root_id=root_id, states=states, artifacts=artifacts,
                 )
             history.commit("2.2 database schema lowering", [
-                ".arc", "backend/src/db", "backend/src/fixtures", "backend/init-db.mjs", "shared/src",
+                ".arc", "backend/src/db", "backend/src/fixtures", "backend/init-db.mjs",
+                "backend/database-baseline.mjs", "backend/database-baseline.d.mts", "shared/src",
             ])
             failed_gate = await self._build_gate(request, "2.2 database schema lowering", root_id, states, artifacts)
             if failed_gate is not None:

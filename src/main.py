@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import asyncio
 import os
 import shutil
@@ -97,6 +98,8 @@ def build_compile_parser(subparsers) -> None:
                         help="Resume after a completed stage in an isolated Git worktree")
     parser.add_argument("--checkpoint-ref", help="Exact checkpoint commit/tag; default: latest matching checkpoint")
     parser.add_argument("--restart-output", help="New worktree directory; default: sibling of the source project")
+    parser.add_argument("--resume", action="store_true",
+                        help="Continue only unstarted TDD requirements in the existing output project")
     parser.set_defaults(func=cmd_compile)
 
 
@@ -108,6 +111,20 @@ async def cmd_compile(args: argparse.Namespace) -> int:
     # Normalize paths
     requirement_path = _locate_requirement_file(args.requirement_path)
     output_dir = os.path.abspath(args.output_dir)
+    if args.resume:
+        if args.start_from != "zero" or args.clean or args.checkpoint_ref or args.restart_output:
+            raise ValueError("--resume cannot be combined with --start-from, --clean, --checkpoint-ref or --restart-output")
+        try:
+            snapshot = json.loads((Path(output_dir) / ".arc/checkpoints/current.json").read_text(encoding="utf-8"))
+            if not isinstance(snapshot, dict) or snapshot.get("stage") != "lowered":
+                raise ValueError("--resume requires a project that completed lowering")
+            saved_port = int(snapshot["web_port"])
+            if args.port is not None and web_port != saved_port:
+                raise ValueError(f"--resume requires --port {saved_port}")
+            web_port = saved_port
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            print(f"Resume error: {exc}", file=sys.stderr)
+            return 1
     
     if args.start_from == "zero" and (args.checkpoint_ref or args.restart_output):
         raise ValueError("--checkpoint-ref/--restart-output require a non-zero --start-from")
@@ -137,7 +154,7 @@ async def cmd_compile(args: argparse.Namespace) -> int:
     print_cli_banner()
     log_path = init_debug_logger(
         output_dir,
-        reset_existing=True,
+        reset_existing=not args.resume,
     )
     print_cli_startup(
         project_path=output_dir,
@@ -164,6 +181,7 @@ async def cmd_compile(args: argparse.Namespace) -> int:
         web_port=web_port,
         log_cb=cli_log,
         start_from=args.start_from,
+        resume=args.resume,
     )
     result = await workflow_manager.start_compilation()
     

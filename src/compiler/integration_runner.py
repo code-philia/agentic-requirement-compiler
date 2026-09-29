@@ -130,7 +130,7 @@ async function main() {
 
     const port = await freePort();
     const baseUrl = `http://127.0.0.1:${port}`;
-    const server = start([resolve(projectRoot, "backend/dist/server.js")], {
+    const server = start([resolve(testsRoot, "support/server.mjs")], {
       env: { ...process.env, NODE_ENV: "test", DATABASE_URL: ":memory:", PORT: String(port) },
     });
     let serverError;
