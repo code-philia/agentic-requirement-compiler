@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import os
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Protocol
 
 from dotenv import load_dotenv
@@ -84,6 +86,7 @@ class Model:
         base_url: str = "https://api.openai.com/v1",
         timeout_seconds: float = 120.0,
         transport_retries: int = 3,
+        usage_path: Path | None = None,
     ) -> None:
         if not model.strip():
             raise ModelConfigurationError("MODEL is required for semantic compiler passes.")
@@ -93,6 +96,7 @@ class Model:
         self.api_key = api_key.strip()
         self.base_url = base_url.rstrip("/")
         self.timeout_seconds = timeout_seconds
+        self._usage_path = usage_path.expanduser().resolve() if usage_path is not None else None
         self._structured_output_mode = "json_schema"
         self._client = OpenAI(
             api_key=self.api_key,
@@ -105,6 +109,10 @@ class Model:
     def structured_output_mode(self) -> str:
         """Actual negotiated transport mode, including provider fallback."""
         return getattr(self, "_last_output_mode", self._structured_output_mode)
+
+    def set_usage_path(self, path: Path | None) -> None:
+        """Route provider usage records to a project-owned JSONL file."""
+        self._usage_path = path.expanduser().resolve() if path is not None else None
 
     @classmethod
     def from_env(cls) -> "Model":
@@ -152,6 +160,7 @@ class Model:
                         },
                     )
                 )
+                self._record_usage(response, schema_name=schema_name, operation="generate_json")
             except Exception as exc:
                 if not response_format_unavailable(exc):
                     raise
@@ -178,6 +187,7 @@ class Model:
                         response_format={"type": "json_object"},
                     )
                 )
+                self._record_usage(response, schema_name=schema_name, operation="generate_json")
             except Exception as exc:
                 if not response_format_unavailable(exc):
                     raise
@@ -193,6 +203,7 @@ class Model:
                     messages=fallback_messages,
                 )
             )
+            self._record_usage(response, schema_name=schema_name, operation="generate_json")
         content = response.choices[0].message.content
         if content is None:
             raise ValueError("Structured model response is empty.")
@@ -201,6 +212,65 @@ class Model:
         if not isinstance(parsed, dict):
             raise ValueError("Structured model response must be a JSON object.")
         return parsed
+
+    def _record_usage(self, response: Any, *, schema_name: str, operation: str) -> None:
+        record_model_usage(self._usage_path, response, schema_name=schema_name,
+                           operation=operation, model=self.model)
+
+
+def record_model_usage(
+    path: Path | None,
+    response: Any,
+    *,
+    schema_name: str,
+    operation: str,
+    model: str | None = None,
+) -> None:
+    """Append provider token usage without making telemetry a compilation failure."""
+    if path is None:
+        return
+    usage = getattr(response, "usage", None)
+    if usage is None:
+        return
+    record = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "operation": operation,
+        "schema_name": schema_name,
+        "model": model or getattr(response, "model", None),
+        "response_id": getattr(response, "id", None),
+        "usage": _jsonable(usage),
+    }
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(record, ensure_ascii=False, separators=(",", ":")) + "\n")
+        summary = record["usage"] if isinstance(record["usage"], dict) else {}
+        print("MODEL_USAGE " + json.dumps({"schema_name": schema_name,
+              "operation": operation, "prompt_tokens": summary.get("prompt_tokens"),
+              "completion_tokens": summary.get("completion_tokens"),
+              "total_tokens": summary.get("total_tokens")}, ensure_ascii=False))
+    except OSError:
+        # Usage accounting must never mask a valid model response.
+        return
+
+
+def _jsonable(value: Any) -> Any:
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, dict):
+        return {str(key): _jsonable(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_jsonable(item) for item in value]
+    for method in ("model_dump", "dict"):
+        converter = getattr(value, method, None)
+        if callable(converter):
+            try:
+                return _jsonable(converter())
+            except Exception:
+                pass
+    if hasattr(value, "__dict__"):
+        return _jsonable(vars(value))
+    return str(value)
 
 
 def _parse_json_object(text: str) -> Any:

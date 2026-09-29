@@ -105,6 +105,9 @@ class FrontendIRGenerationPass:
     def __init__(self, model: StructuredModel, artifact_root: Path,
                  visual_model: VisualStructuredModel | None = None) -> None:
         self.model = model
+        self.artifact_root = artifact_root
+        if hasattr(model, "set_usage_path"):
+            model.set_usage_path(artifact_root / "model_usage.jsonl")
         self.traceability_path = artifact_root / "design" / "frontend" / "requirements.json"
         self.visual_model = visual_model
         self.log = SynchronousLog("FrontendIRGenerationPass", workspace_root=artifact_root.resolve().parent)
@@ -394,6 +397,8 @@ class FrontendIRGenerationPass:
                 if image is not None:
                     if self.visual_model is None:
                         self.visual_model = VisualModel.from_env()
+                        if hasattr(self.visual_model, "set_usage_path"):
+                            self.visual_model.set_usage_path(self.artifact_root / "model_usage.jsonl")
                     raw = self.visual_model.generate_visual_json(**kwargs, image_data_url=image)
                     client = self.visual_model
                 else:

@@ -226,6 +226,8 @@ class Compiler:
         await self._log("Compiler", "Running database schema design passes." if rank < 2 else "Restoring checkpoint database schema.")
         try:
             model = self._model or Model.from_env()
+            if hasattr(model, "set_usage_path"):
+                model.set_usage_path(artifact_store.root / "model_usage.jsonl")
         except ModelConfigurationError as exc:
             await self._log("Compiler", str(exc), "error")
             return CompilationResult(
@@ -732,6 +734,8 @@ class Compiler:
         await self._log("Compiler", "Preparing code bindings; continuing to test generation and TDD.")
         try:
             model = model or self._model or Model.from_env()
+            if hasattr(model, "set_usage_path"):
+                model.set_usage_path(artifact_store.root / "model_usage.jsonl")
             def checked(result):
                 if not result.ok:
                     raise ValueError("; ".join(result.errors))

@@ -28,6 +28,7 @@ from .trace_payload import format_payload_trace
 from .model_client import (
     completion_request_kwargs,
     describe_model_error,
+    record_model_usage,
     response_format_unavailable,
 )
 
@@ -88,6 +89,7 @@ class VisualModel:
         base_url: str = "https://api.openai.com/v1",
         timeout_seconds: float = 120.0,
         transport_retries: int = 3,
+        usage_path: Path | None = None,
     ) -> None:
         if not model.strip():
             raise VisualModelConfigurationError(
@@ -98,6 +100,7 @@ class VisualModel:
                 "VISUAL_API_KEY or OPENAI_API_KEY is required for visual-reference analysis."
             )
         self.model = model.strip()
+        self._usage_path = usage_path.expanduser().resolve() if usage_path is not None else None
         self._structured_output_mode = "json_schema"
         self._client = OpenAI(
             api_key=api_key.strip(),
@@ -110,6 +113,9 @@ class VisualModel:
     def structured_output_mode(self) -> str:
         """Expose provider fallback for generation attempt diagnostics."""
         return getattr(self, "_last_output_mode", self._structured_output_mode)
+
+    def set_usage_path(self, path: Path | None) -> None:
+        self._usage_path = path.expanduser().resolve() if path is not None else None
 
     @classmethod
     def from_env(cls) -> "VisualModel":
@@ -157,6 +163,8 @@ class VisualModel:
                         },
                     )
                 )
+                record_model_usage(self._usage_path, response, schema_name=schema_name,
+                                   operation="generate_visual_json", model=self.model)
             except Exception as exc:
                 if not response_format_unavailable(exc):
                     raise
@@ -187,6 +195,8 @@ class VisualModel:
                         response_format={"type": "json_object"},
                     )
                 )
+                record_model_usage(self._usage_path, response, schema_name=schema_name,
+                                   operation="generate_visual_json", model=self.model)
             except Exception as exc:
                 if not response_format_unavailable(exc):
                     raise
@@ -202,6 +212,8 @@ class VisualModel:
                     messages=fallback_messages,
                 )
             )
+            record_model_usage(self._usage_path, response, schema_name=schema_name,
+                               operation="generate_visual_json", model=self.model)
         content = response.choices[0].message.content
         if content is None:
             raise ValueError("Visual structured model response is empty.")
@@ -515,7 +527,10 @@ class VisualReferenceAnalyzer:
     @classmethod
     def from_env(cls, artifact_root: Path | None = None) -> "VisualReferenceAnalyzer":
         try:
-            return cls(VisualModel.from_env(), artifact_root=artifact_root)
+            model = VisualModel.from_env()
+            if artifact_root is not None:
+                model.set_usage_path(artifact_root / "model_usage.jsonl")
+            return cls(model, artifact_root=artifact_root)
         except VisualModelConfigurationError as exc:
             return cls(
                 None,
