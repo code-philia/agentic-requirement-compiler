@@ -70,6 +70,26 @@ Preserve compiler-injected imports from ../support/e2e.js and ../support/runtime
 Never remove their .js extensions or replace the E2E test fixture with Playwright's base test.
 """
 
+DIRECT_REPAIR_SCHEMA = {
+    "type": "object", "additionalProperties": False,
+    "required": ["verdict", "reason", "edits"],
+    "properties": {
+        "verdict": {"type": "string", "enum": ["CURRENT_IMPLEMENTATION", "NEEDS_DIAGNOSIS"]},
+        "reason": {"type": "string"},
+        "edits": {**IMPLEMENTATION_OUTPUT_SCHEMA["properties"]["edits"], "minItems": 0},
+    },
+}
+
+DIRECT_REPAIR_INSTRUCTIONS = """Inspect the failing test, requirement, current source and recent patches.
+If the failure is clearly in the current requirement's editable_files, return
+CURRENT_IMPLEMENTATION with a complete exact-search patch in edits. Only those
+files may be changed; tests and related_files are read-only. Preserve valid
+assertions, public contracts and unrelated behavior. If a test, dependency,
+design contract or environment might be at fault, return NEEDS_DIAGNOSIS with
+edits:[]; a separate analysis will determine the broader repair scope.
+Do not guess a current-file repair when evidence is insufficient. Return JSON only.
+"""
+
 
 class TestFailureAnalysisAgent:
     def __init__(self, model: JsonModel, *, trace=None, model_log=None) -> None:
@@ -141,6 +161,50 @@ class TestRepairAgent:
             model, schema_name="arc_test_repair_patch", instructions=REPAIR_INSTRUCTIONS,
             output_schema=IMPLEMENTATION_OUTPUT_SCHEMA, retries=0, trace=trace,
             model_log=model_log, agent_name="TestRepairAgent",
+        )
+        self._direct_agent = BaseStructuredAgent(
+            model, schema_name="arc_direct_test_repair", instructions=DIRECT_REPAIR_INSTRUCTIONS,
+            output_schema=DIRECT_REPAIR_SCHEMA, retries=0, trace=trace,
+            model_log=model_log, agent_name="DirectTestRepairAgent",
+        )
+
+    def repair_direct(self, context: dict[str, Any], *,
+                      accept_patch: Callable[[ProposedPatch], list[str]]) -> RepairResult:
+        hashes = {path: hashlib.sha256(source.encode("utf-8")).hexdigest()
+                  for path, source in context["editable_files"].items()}
+        proposed: ProposedPatch | None = None
+        proposal: Any = None
+
+        def validate(output: dict[str, Any]) -> list[str]:
+            nonlocal proposed, proposal
+            proposal = copy.deepcopy(output)
+            if not isinstance(output, dict) or set(output) != {"verdict", "reason", "edits"}:
+                return ["Return verdict, reason and edits."]
+            if not isinstance(output["reason"], str) or not output["reason"].strip():
+                return ["Explain the verdict using the supplied failure evidence."]
+            edits = output["edits"]
+            if output["verdict"] == "NEEDS_DIAGNOSIS":
+                return [] if edits == [] else ["NEEDS_DIAGNOSIS requires edits:[]."]
+            if output["verdict"] != "CURRENT_IMPLEMENTATION" or not isinstance(edits, list) or not edits:
+                return ["CURRENT_IMPLEMENTATION requires a non-empty edits array."]
+            for row in edits:
+                if not isinstance(row, dict) or set(row) != {"file", "search", "replacement"} or not all(
+                    isinstance(value, str) for value in row.values()
+                ) or row["file"] not in hashes or not row["search"]:
+                    return ["Edit only current editable_files with non-empty exact search text."]
+            proposed = ProposedPatch(requirement_id=context["requirement_id"], edits=tuple(
+                ProposedEdit(file=row["file"], expected_sha256=hashes[row["file"]],
+                             search=row["search"], replacement=row["replacement"])
+                for row in edits
+            ))
+            return accept_patch(proposed)
+
+        result = self._direct_agent.invoke(context, validate=validate)
+        if result.ok and result.output is not None and result.output["verdict"] == "NEEDS_DIAGNOSIS":
+            return RepairResult("DEFERRED", proposal=result.output)
+        return RepairResult(
+            "PATCH_PROPOSED" if result.ok else "REPAIR_REJECTED",
+            proposed if result.ok else None, result.errors, proposal,
         )
 
     def repair(self, context: dict[str, Any], *,

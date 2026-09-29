@@ -103,6 +103,26 @@ class RepairContextBuilder:
         }
 
     @staticmethod
+    def direct_repair(context: dict[str, Any], owned_files: set[str]) -> dict[str, Any] | None:
+        editable = {
+            path: source for path, source in context["source_files"].items()
+            if path in owned_files
+        }
+        if not editable:
+            return None
+        return {
+            key: value for key, value in context.items()
+            if key not in {"source_files", "file_catalog"}
+        } | {
+            "implementation_mode": "direct_repair",
+            "editable_files": editable,
+            "related_files": {
+                path: source for path, source in context["source_files"].items()
+                if path not in editable
+            },
+        }
+
+    @staticmethod
     def repair(context: dict[str, Any], decision: dict[str, Any],
                history: list[dict[str, Any]]) -> dict[str, Any]:
         suspects = {row["file"] for row in decision["suspected_files"]}

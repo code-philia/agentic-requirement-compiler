@@ -49,8 +49,8 @@ related_files are read-only context.
 The supplied router and related source files define the HTTP method, path and input source: use query for query inputs
 and body for body inputs in both handlers and test requests. Do not infer the method
 from a function name or change generated routes to accommodate an incorrect test.
-If a screen is only in related_files, implement its owned components now; the page
-will be handled in its own subsequent invocation.
+When a page and its owned components are both editable, implement their composition
+and behavior together in this invocation. Read-only screens remain in related_files.
 """
 
 FRONTEND_IMPLEMENTATION_INSTRUCTIONS = IMPLEMENTATION_INSTRUCTIONS + """

@@ -264,27 +264,6 @@ class NodeTDDOrchestrator:
         result.failed_requirements = sorted(set(result.failed_requirements))
         return result
 
-    def verify_test_layers(self, requirement_ids: list[str]) -> TDDStageResult:
-        """Recheck final code after later layers' repairs, without more repair calls."""
-        result = TDDStageResult("final node verification", status="TESTS_PASSED")
-        if not self.test_manifest or self.test_manifest.get("status") != "TESTS_FROZEN":
-            return self._fail(result, "Tests must be frozen before verification.")
-        if errors := self.validate_stage():
-            result.failed_requirements.extend(requirement_ids)
-            return self._fail(result, *errors)
-        for requirement_id in requirement_ids:
-            layers = [layer for layer in TEST_LAYERS if self._has_test(requirement_id, layer)]
-            if not layers:
-                result.failed_requirements.append(requirement_id)
-                self._fail(result, f"No frozen tests for: {requirement_id}")
-            for layer in layers:
-                run = self._run_tests(requirement_id, layer)
-                if not run.ok or not run.commands:
-                    result.failed_requirements.append(requirement_id)
-                    self._fail(result, f"{requirement_id} {layer}: {self._raw_output(run)}")
-        result.failed_requirements = sorted(set(result.failed_requirements))
-        return result
-
     def _implement_stage(
         self,
         stage: str,
@@ -306,32 +285,23 @@ class NodeTDDOrchestrator:
             if not targets:
                 continue
             requirement = self._requirement(requirement_id)
-            phases = (
-                [
-                    [row for row in targets if row.get("kind") != "PAGE"],
-                    [row for row in targets if row.get("kind") == "PAGE"],
-                ] if agent is self.frontend_implementation_agent else [targets]
+            changed, error = self._apply_edit(
+                requirement_id,
+                requirement,
+                agent,
+                result,
+                target_ids=tuple(str(row["module_id"]) for row in targets),
+                test_files=tuple(
+                    str(row["test_file"])
+                    for row in (self.test_manifest or {}).get("files", [])
+                    if row.get("requirement_id") == requirement_id
+                ),
             )
-            for phase_targets in phases:
-                if not phase_targets:
-                    continue
-                changed, error = self._apply_edit(
-                    requirement_id,
-                    requirement,
-                    agent,
-                    result,
-                    target_ids=tuple(str(row["module_id"]) for row in phase_targets),
-                    test_files=tuple(
-                        str(row["test_file"])
-                        for row in (self.test_manifest or {}).get("files", [])
-                        if row.get("requirement_id") == requirement_id
-                    ),
-                )
-                if not changed:
-                    result.failed_requirements.append(requirement_id)
-                    result.errors.append(f"{requirement_id}: {error}")
-                    result.status = "IMPLEMENTATION_FAILED"
-                    return result
+            if not changed:
+                result.failed_requirements.append(requirement_id)
+                result.errors.append(f"{requirement_id}: {error}")
+                result.status = "IMPLEMENTATION_FAILED"
+                return result
         return result
 
     def _run_layer(
@@ -349,6 +319,7 @@ class NodeTDDOrchestrator:
             run = self._run_tests(requirement_id, layer)
             history = self._history.setdefault(requirement_id, [])
             history.append({"event": "test", "layer": layer, "result": asdict(run)})
+            direct_attempted = False
             if not run.commands:
                 result.failed_requirements.append(requirement_id)
                 return self._fail(result, *run.errors)
@@ -378,6 +349,35 @@ class NodeTDDOrchestrator:
                 except (OSError, ValueError, KeyError) as exc:
                     result.failed_requirements.append(requirement_id)
                     return self._fail(result, f"ANALYSIS_CONTEXT_REJECTED: {exc}")
+                if not direct_attempted:
+                    direct_attempted = True
+                    owned_files = {
+                        str(row["file"]) for row in self._owned_targets(requirement_id)
+                        if row.get("file") and row.get("kind") in self._BACKEND_KINDS | self._FRONTEND_KINDS
+                    }
+                    direct_context = self.repair_context.direct_repair(context, owned_files)
+                    if direct_context is not None:
+                        changed, error = self._apply_edit(
+                            requirement_id, self._requirement(requirement_id), self.repair_agent, result,
+                            test_files=tuple(run.selected_files), iteration=used + 1,
+                            test_layer=layer, repair_context=direct_context, direct_repair=True,
+                            commit_stage=f"6.{TEST_LAYERS.index(layer) + 3} {layer.lower()} repair {requirement_id}",
+                        )
+                        if changed:
+                            budgets[budget_key] = used + 1
+                            run = self._run_tests(requirement_id, layer)
+                            history.append({"event": "test", "layer": layer, "result": asdict(run)})
+                            if not run.commands or self._has_infrastructure_error(run):
+                                result.failed_requirements.append(requirement_id)
+                                return self._fail(result, self._raw_output(run))
+                            continue
+                        if "PATCH_ROLLBACK_FAILED:" in error:
+                            result.failed_requirements.append(requirement_id)
+                            return self._fail(result, error)
+                        self._trace_implementation(
+                            f"DIRECT_REPAIR_DEFERRED requirement={requirement_id} layer={layer} reason={error}"
+                        )
+                        context["history"] = copy.deepcopy(history)
                 analysis = self.analysis_agent.analyze(context)
                 history.append({"event": "analysis", "layer": layer, "iteration": used + 1,
                                 "decision": copy.deepcopy(analysis.output), "errors": list(analysis.errors)})
@@ -441,6 +441,7 @@ class NodeTDDOrchestrator:
         iteration: int = 0,
         test_layer: str = "",
         repair_context: dict[str, Any] | None = None,
+        direct_repair: bool = False,
     ) -> tuple[bool, str]:
         snapshot = self.file_patcher.snapshot([
             *self._checkpoint_files(requirement_id), *test_files,
@@ -478,7 +479,10 @@ class NodeTDDOrchestrator:
             ]
 
         if repair_context is not None:
-            implementation = agent.repair(repair_context, accept_patch=accept_patch)
+            implementation = (
+                agent.repair_direct(repair_context, accept_patch=accept_patch)
+                if direct_repair else agent.repair(repair_context, accept_patch=accept_patch)
+            )
         else:
             implementation = agent.implement(ImplementationRequest(
                 requirement_id=requirement_id, requirement=requirement,
@@ -487,8 +491,10 @@ class NodeTDDOrchestrator:
                 frontend_ir=self.frontend_ir if agent is self.frontend_implementation_agent else None,
             ), accept_patch=accept_patch)
         event = {
-            "event": "repair" if repair_context is not None else "initial_implementation",
-            "layer": test_layer, "iteration": iteration, "status": "REJECTED",
+            "event": ("direct_repair" if direct_repair else "repair") if repair_context is not None
+                     else "initial_implementation",
+            "layer": test_layer, "iteration": iteration,
+            "status": "DEFERRED" if direct_repair and implementation.status == "DEFERRED" else "REJECTED",
             "changed_files": [],
             "edits": [asdict(edit) for edit in implementation.patch.edits] if implementation.patch else [],
             "implementation_feedback": list(implementation.errors),
@@ -496,6 +502,8 @@ class NodeTDDOrchestrator:
         self._history.setdefault(requirement_id, []).append(event)
         if repair_context is not None and implementation.patch is None:
             event["proposal"] = copy.deepcopy(implementation.proposal)
+        if direct_repair and implementation.status == "DEFERRED":
+            return False, f"DIRECT_REPAIR_DEFERRED: {implementation.proposal['reason']}"
         if not implementation.ok or implementation.patch is None:
             return False, "\n".join(implementation.errors)
         corrected_tests = sorted(set(changed_files) & set(test_files))

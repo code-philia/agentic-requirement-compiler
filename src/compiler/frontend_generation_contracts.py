@@ -163,7 +163,7 @@ def patch_schema(stage: str) -> dict[str, Any]:
     # Arbitrary JSON literals and omitted update fields intentionally use JSON mode.
     schema["x-arc-output-mode"] = "json_object"
     if stage == "ui":
-        schema["properties"]["requirement_mode"] = enum("DESIGN", "SUMMARY")
+        schema["properties"]["requirement_mode"] = enum("DESIGN", "SUMMARY", "NONE")
         schema["required"].append("requirement_mode")
     if stage == "assemble":
         schema["properties"]["components"] = array(obj({
@@ -248,9 +248,12 @@ UI_INSTRUCTIONS = PATCH_INSTRUCTIONS + """Visit the CURRENT REQUIREMENT and prod
 Return requirement_mode DESIGN for independent UI/data/behavior requirements. Return SUMMARY only when
 the parent merely summarizes supplied child requirements, has no reference image and no additional behavior.
 For SUMMARY return empty creates/updates and associate a few core child entities; do not design another page.
+Return NONE only when this requirement has no frontend UI, data, state or behavior to implement and no
+reference image. NONE must have empty creates, updates and associations. If behavior may still be needed,
+return DESIGN even when this pass creates no UI.
 Do not output observations or schedule per-element expansion.
 Reuse existing UI by ID when requirements describe the same interface. Backend-only requirements may return
-empty entity arrays/updates. Initially UI belongs to App; component extraction happens in the assembly pass.
+NONE. Initially UI belongs to App; component extraction happens in the assembly pass.
 Derive data FROM each UI's displayed content, input value, repeated items and visibility needs, not from an
 independent inventory. Determine each UI's concrete data association in this pass. Express it using REF/ITEM
 inside text, attributes, condition, repeat.source and arguments; never leave the association only in prose.

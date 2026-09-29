@@ -177,6 +177,8 @@ class FrontendIRGenerationPass:
                 rid = task["id"]
                 if stage == "behavior" and task.get("visual_supplement"):
                     continue
+                if self.traceability[rid]["mode"] == "NONE":
+                    continue
                 if rid in failed_ui:
                     self.warnings.append(f"{rid}: UI task failed; {stage} uses the committed IR where available.")
                 if stage == "behavior" and rid in failed_assemble:
@@ -192,10 +194,10 @@ class FrontendIRGenerationPass:
                             {"creates": [], "updates": [], "associations": [{"id": cid} for cid in sorted(components)[:8]]},
                             [rid], set(), stage)
                         self._refresh_traceability()
-                    continue
+                        continue
                 component_roots = {c["ui_root_id"] for c in self.workspace.tables["components"].values()}
-                if not any(rid in row["requirement_ids"] for table, rows in self.workspace.tables.items()
-                           for row in rows.values() if table != "components" and row["id"] not in component_roots):
+                linked_ui = set(self.traceability[rid].get("ui_ids", [])) - component_roots
+                if stage == "assemble" and not linked_ui:
                     continue
                 if not self._requirement_task(stage, task) and stage == "assemble":
                     failed_assemble.add(rid)
@@ -277,6 +279,10 @@ class FrontendIRGenerationPass:
                 task.get("has_visual") or batch["creates"] or batch["updates"] or not context["child_requirements"]
             ):
                 raise ValueError("SUMMARY requires a parent without images and empty creates/updates")
+            if stage == "ui" and mode == "NONE" and (
+                task.get("has_visual") or batch["creates"] or batch["updates"] or batch["associations"]
+            ):
+                raise ValueError("NONE requires no image and empty creates/updates/associations")
             result = self.workspace.apply_requirement_batch(batch, [rid], set(context["editable_ids"]), stage)
             if stage == "ui":
                 previous = self.traceability[rid].get("mode")

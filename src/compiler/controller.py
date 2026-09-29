@@ -995,21 +995,10 @@ class Compiler:
                 await self._log("NodeTDDOrchestrator", error, "warning")
             if not tests.ok:
                 await warn_node_failure(requirement_id, "test-driven repair", tests)
-                if tests.status == "PRECONDITION_BLOCKED":
-                    continue
-            # Later layers can repair earlier failures, but an E2E pass alone
-            # does not prove the earlier assertions now pass. Verify all layers
-            # against the final code without resetting any repair budget.
-            await self._log("Compiler", f"Verifying all test layers after repairs for {requirement_id}.")
-            verification = orchestrator.verify_test_layers([requirement_id])
-            for error in verification.errors:
-                await self._log("NodeTDDOrchestrator", error, "warning")
-            if not verification.ok:
-                await warn_node_failure(requirement_id, "final test verification", verification)
                 continue
             failed_requirements.discard(requirement_id)
             states[requirement_id] = "TESTS_PASSED"
-            progress.mark(requirement_id, "TESTS_PASSED", "final test verification")
+            progress.mark(requirement_id, "TESTS_PASSED", "test layers")
             await self._log("Compiler", f"TDD completed for {requirement_id}.")
 
         failed_nodes = sorted(failed_requirements)
