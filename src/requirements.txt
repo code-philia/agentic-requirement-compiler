@@ -2,3 +2,4 @@ openai>=2.44.0
 python-dotenv
 pyyaml
 colorama
+httpx[socks]
