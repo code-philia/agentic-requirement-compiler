@@ -786,7 +786,9 @@ class Compiler:
             return CompilationResult(
                 ok=False, root_id=root_id, states=states, artifacts=artifacts,
             )
-        typecheck = TestRunner(request.output_dir).run_workspace_typecheck()
+        # The build already type-checks shared, frontend and backend; tests are
+        # the only workspace omitted from the root build script.
+        typecheck = TestRunner(request.output_dir).run_workspace_typecheck("tests")
         if typecheck.status != "PASSED":
             for output in [typecheck.stdout, typecheck.stderr, typecheck.error or ""]:
                 if output:
@@ -794,7 +796,7 @@ class Compiler:
             return CompilationResult(
                 ok=False, root_id=root_id, states=states, artifacts=artifacts,
             )
-        await self._log("Compiler", f"{stage}: build and typecheck passed.")
+        await self._log("Compiler", f"{stage}: build and tests typecheck passed.")
         return None
 
     async def _run_tdd(
@@ -1019,10 +1021,10 @@ class Compiler:
                 "TDD traversal finished with failed requirements: " + ", ".join(failed_nodes),
                 "warning",
             )
-        final_build = ProjectBuilder(request.output_dir).build()
-        for error in final_build.errors:
-            await self._log("Compiler", error, "error")
-        if not final_build.ok:
+        final_validation_errors = orchestrator.validate_final()
+        if final_validation_errors:
+            for error in final_validation_errors:
+                await self._log("Compiler", f"Final validation: {error}", "error")
             return CompilationResult(
                 ok=False, root_id=root_id, states=states,
                 failed_nodes=failed_nodes, artifacts=artifacts,

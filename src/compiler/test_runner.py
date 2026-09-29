@@ -197,13 +197,26 @@ class TestRunner:
                 break
         return self._finish(result, started)
 
-    def run_workspace_typecheck(self) -> TestCommandResult:
-        """Type-check every generated workspace after any implementation patch."""
+    def run_changed_typechecks(self, changed_files: list[str]) -> list[TestCommandResult]:
+        """Check only workspaces touched by a source-only patch."""
+        paths = {str(path).replace("\\", "/").lstrip("./") for path in changed_files}
+        workspaces = [
+            name for name in ("frontend", "backend", "tests")
+            if any(path.startswith(f"{name}/") for path in paths)
+        ]
+        return [self.run_workspace_typecheck(workspace=name) for name in workspaces]
 
+    def run_workspace_typecheck(self, workspace: str | None = None) -> TestCommandResult:
+        """Type-check the whole project or one generated workspace."""
+        if workspace is not None and workspace not in {"frontend", "backend", "tests"}:
+            raise ValueError(f"Unsupported typecheck workspace: {workspace}")
+        command = ["npm", "run", "typecheck"]
+        if workspace is not None:
+            command.extend(["-w", f"@arc/{workspace}"])
         return self._execute(
             phase="TYPECHECK",
             layer=None,
-            command=["npm", "run", "typecheck"],
+            command=command,
             test_files=[],
             timeout=self._timeouts["TYPECHECK"],
         )

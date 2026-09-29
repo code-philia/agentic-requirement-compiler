@@ -111,6 +111,64 @@ class NodeTDDOrchestrator:
             model, trace=self._trace_implementation, model_log=self._write_implementation_model_log)
         self.repair_context = RepairContextBuilder(self.output_root, code_binding_registry, frontend_ir)
         self._history: dict[str, list[dict[str, Any]]] = {}
+        self._needs_full_validation = False
+        self._full_validation_passed = False
+
+    def validate_stage(self) -> list[str]:
+        """Run the complete acceptance gate once after accepted source changes."""
+        if not self._needs_full_validation:
+            return []
+        errors = self._full_validation_errors()
+        if not errors:
+            self._needs_full_validation = False
+            self._full_validation_passed = True
+        return errors
+
+    def validate_final(self) -> list[str]:
+        """Ensure one final full gate, reusing the latest unchanged stage gate."""
+        if self._full_validation_passed and not self._needs_full_validation:
+            return []
+        errors = self._full_validation_errors()
+        if not errors:
+            self._needs_full_validation = False
+            self._full_validation_passed = True
+        return errors
+
+    def _full_validation_errors(self) -> list[str]:
+        build = ProjectBuilder(self.output_root).build()
+        if not build.ok:
+            return list(build.errors) or ["PROJECT_BUILD_FAILED: build did not pass."]
+        return self._typecheck_errors(self.test_runner.run_workspace_typecheck("tests"))
+
+    @staticmethod
+    def _typecheck_errors(result: Any) -> list[str]:
+        if result.status == "PASSED":
+            return []
+        return [part for part in (
+            "PROJECT_TYPECHECK_FAILED: typecheck did not pass.",
+            result.stdout, result.stderr, result.error,
+        ) if part]
+
+    def _patch_validation_errors(self, changed_files: list[str]) -> tuple[list[str], bool]:
+        paths = [str(path).replace("\\", "/").lstrip("./") for path in changed_files]
+        source_suffixes = {".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".css", ".scss"}
+        source_roots = (
+            "frontend/src/", "backend/src/", "tests/unit/",
+            "tests/integration/", "tests/e2e/", "tests/support/",
+        )
+        source_only = bool(paths) and all(
+            Path(path).suffix in source_suffixes
+            and path.startswith(source_roots)
+            for path in paths
+        )
+        if not source_only:
+            return self._full_validation_errors(), True
+        errors: list[str] = []
+        for result in self.test_runner.run_changed_typechecks(paths):
+            errors.extend(self._typecheck_errors(result))
+            if errors:
+                break
+        return errors, False
 
     def _trace_frontend_implementation(self, message: str) -> None:
         self._trace_implementation(message, frontend=True)
@@ -156,16 +214,26 @@ class NodeTDDOrchestrator:
         path.write_text(text, encoding="utf-8")
 
     def implement_backend(self, requirement_ids: list[str]) -> TDDStageResult:
-        return self._implement_stage(
+        result = self._implement_stage(
             "6.1 backend implementation", requirement_ids, self._BACKEND_KINDS,
             self.implementation_agent,
         )
+        return self._finish_implementation(result, requirement_ids)
 
     def implement_frontend(self, requirement_ids: list[str]) -> TDDStageResult:
-        return self._implement_stage(
+        result = self._implement_stage(
             "6.2 frontend implementation", requirement_ids, self._FRONTEND_KINDS,
             self.frontend_implementation_agent,
         )
+        return self._finish_implementation(result, requirement_ids)
+
+    def _finish_implementation(self, result: TDDStageResult,
+                               requirement_ids: list[str]) -> TDDStageResult:
+        if errors := self.validate_stage():
+            result.status = "IMPLEMENTATION_FAILED"
+            result.failed_requirements.extend(requirement_ids)
+            result.errors.extend(errors)
+        return result
 
     def run_test_layers(
         self,
@@ -187,6 +255,11 @@ class NodeTDDOrchestrator:
         budgets: dict[tuple[str, str], int] = {}
         for layer in layers:
             layer_result = self._run_layer(layer, requirement_ids, budgets)
+            validation_errors = self.validate_stage()
+            if validation_errors:
+                layer_result.status = "FAILED"
+                layer_result.errors.extend(validation_errors)
+                layer_result.failed_requirements.extend(requirement_ids)
             result.changed_files = sorted(set(result.changed_files) | set(layer_result.changed_files))
             result.failed_requirements.extend(layer_result.failed_requirements)
             result.errors.extend(layer_result.errors)
@@ -209,6 +282,9 @@ class NodeTDDOrchestrator:
         result = TDDStageResult("final node verification", status="TESTS_PASSED")
         if not self.test_manifest or self.test_manifest.get("status") != "TESTS_FROZEN":
             return self._fail(result, "Tests must be frozen before verification.")
+        if errors := self.validate_stage():
+            result.failed_requirements.extend(requirement_ids)
+            return self._fail(result, *errors)
         for requirement_id in requirement_ids:
             layers = [layer for layer in TEST_LAYERS if self._has_test(requirement_id, layer)]
             if not layers:
@@ -463,18 +539,11 @@ class NodeTDDOrchestrator:
             applied = self.file_patcher.apply(patch)
             errors = list(applied.errors)
             if applied.ok:
-                build = ProjectBuilder(self.output_root).build()
-                errors = list(build.errors) if not build.ok else []
-                if not build.ok and not errors:
-                    errors = ["PROJECT_BUILD_FAILED: build did not pass."]
+                errors, complete = self._patch_validation_errors(applied.changed_files)
                 if not errors:
-                    typecheck = self.test_runner.run_workspace_typecheck()
-                    if typecheck.status != "PASSED":
-                        errors = [part for part in (
-                            "PROJECT_TYPECHECK_FAILED: typecheck did not pass.",
-                            typecheck.stdout, typecheck.stderr, typecheck.error,
-                        ) if part]
-                if not errors:
+                    if applied.changed_files:
+                        self._needs_full_validation = not complete
+                        self._full_validation_passed = complete
                     changed_files[:] = applied.changed_files
                     return []
             elif not errors:
