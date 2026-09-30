@@ -228,6 +228,27 @@ class GlobalSymbolPlanner:
                 f"{_camel_case(key)}Table",
                 qualifier=entity_name,
             )
+            # Database fields participate in the global semantic registry too.
+            # Their namespace is explicit so an API projection named ``id``
+            # cannot collide with the persistent ``id`` field.
+            for field_item in entity.get("fields", []):
+                if not isinstance(field_item, dict):
+                    continue
+                field_name = str(field_item.get("name", "")).strip()
+                field_type = str(field_item.get("type", "")).strip()
+                if not field_name or not field_type:
+                    continue
+                self._record_semantic_value(
+                    {
+                        "semantic_id": field_name,
+                        "name": field_name,
+                        "type": field_type,
+                        "required": not bool(field_item.get("nullable")),
+                    },
+                    source_id=key,
+                    source_kind="DB",
+                    direction="FIELD",
+                )
 
     def _plan_modules(self, modules: Any) -> None:
         if not isinstance(modules, list):
@@ -418,7 +439,9 @@ class GlobalSymbolPlanner:
                 f"ARC3109 MODULE_INTERFACE_INVALID: {source_id} contains a non-object field."
             )
             return None
-        semantic_id = str(value.get("semantic_id", "")).strip()
+        semantic_id = self._scope_semantic_id(
+            str(value.get("semantic_id", "")).strip(), source_kind="MODULE", source_id=source_id
+        )
         name = str(value.get("name", "")).strip()
         field_type = str(value.get("type", "")).strip()
         required = bool(value.get("required", True))
@@ -486,7 +509,10 @@ class GlobalSymbolPlanner:
         source_kind: str,
         direction: str,
     ) -> None:
-        semantic_id = str(field_item["semantic_id"])
+        raw_semantic_id = str(field_item["semantic_id"])
+        semantic_id = self._scope_semantic_id(raw_semantic_id, source_kind=source_kind, source_id=source_id)
+        field_item["source_semantic_id"] = raw_semantic_id
+        field_item["semantic_id"] = semantic_id
         field_type = str(field_item["type"])
         existing = self._semantic_values.get(semantic_id)
         if existing is None:
@@ -511,6 +537,24 @@ class GlobalSymbolPlanner:
         }
         if occurrence not in existing["occurrences"]:
             existing["occurrences"].append(occurrence)
+
+    @staticmethod
+    def _scope_semantic_id(raw_id: str, *, source_kind: str, source_id: str) -> str:
+        """Keep equal field names from unrelated sources in separate namespaces."""
+        raw = raw_id.strip()
+        if not raw:
+            return raw
+        if raw.startswith(("REQ.", "API.", "FUNC.", "DB.", "MODULE.")):
+            return raw
+        if source_kind == "REQUIREMENT":
+            return f"REQ.{source_id}.{raw}"
+        if source_kind == "MODULE":
+            parsed = _parse_module_id(source_id)
+            if parsed:
+                _, module_kind, local_name = parsed
+                return f"{module_kind}.{local_name}.{raw}"
+            return f"MODULE.{source_id}.{raw}"
+        return f"{source_kind}.{source_id}.{raw}"
 
     def _validate_call_edges(self, modules: Any) -> None:
         if not isinstance(modules, list):

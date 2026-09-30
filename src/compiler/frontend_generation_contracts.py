@@ -225,6 +225,13 @@ You may edit multiple components in ONE response, but update only IDs provided i
 Return associations: references to existing or newly created entities directly relevant to this requirement.
 Reuse without modification by returning associations only; do not copy or update a record just to associate it.
 Reference validity is global; editable_ids restricts mutations, not reads or retained references.
+The supplied entities form a closed slice for the CURRENT REQUIREMENT. Do not expand context by walking
+children, owner_id, component_ref, ui_root_id, parent use-sites, or any other relationship. Do not rebuild
+omitted entities from names. An omitted entity may be referenced only by its exact supplied ID, and only when
+that ID is explicitly present in the global catalog or API contracts. New references must resolve to an entity
+in the supplied entities, component_catalog, api_contracts, or a same-batch local key. Never create an orphan UI.
+Do not mutate any record outside editable_ids, even if it is visible in a catalog. Treat every identifier as an
+opaque compiler-owned ID; names are descriptive only and must not be used to infer identity or ownership.
 Preserve existing references even when the referenced full record is omitted from this local context.
 Types: {kind:string|number|integer|boolean|null|ui}, array with items, object with fields[{name,type,required}],
 or union with variants. Pure expressions: LITERAL with native JSON value (string, number, boolean, null, array or object),

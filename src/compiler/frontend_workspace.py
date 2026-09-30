@@ -272,6 +272,32 @@ class FrontendWorkspace:
             table, row = candidate.find(eid)
             row["requirement_ids"] = list(dict.fromkeys(row["requirement_ids"] + requirements))
             touched[eid] = table
+        # A committed batch must not leave newly-created render nodes detached.
+        # Validate this on the candidate so failed batches leave no partial UI.
+        render_graph: dict[str, list[str]] = {
+            cid: [component["ui_root_id"]]
+            for cid, component in candidate.tables["components"].items()
+        }
+        for uid, ui in candidate.tables["ui"].items():
+            targets = list(ui.get("children", []))
+            if ui.get("kind") == "COMPONENT" and ui.get("component_ref"):
+                targets.append(ui["component_ref"])
+            render_graph[uid] = targets
+        reachable: set[str] = set()
+        pending_nodes = [candidate.root_component_id]
+        while pending_nodes:
+            node = pending_nodes.pop()
+            if not node or node in reachable:
+                continue
+            reachable.add(node)
+            pending_nodes.extend(render_graph.get(node, []))
+        newly_created_ui = {
+            entity_id for key, entity_id in aliases.items()
+            if "." not in key and entity_id in candidate.tables["ui"] and entity_id not in self.tables["ui"]
+        }
+        detached = sorted(entity_id for entity_id in newly_created_ui if entity_id not in reachable)
+        if detached:
+            raise ValueError("New UI nodes are not connected to the application render root: " + ", ".join(detached))
         changes = [{"before": before[eid], "after": copy.deepcopy(candidate.find(eid)[1])}
                    for eid in touched if eid in before and before[eid] != candidate.find(eid)[1]]
         self.__dict__.update(candidate.__dict__)

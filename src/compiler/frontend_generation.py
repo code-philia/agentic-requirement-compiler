@@ -301,44 +301,14 @@ class FrontendIRGenerationPass:
         owned = [row for row in all_rows.values() if row["id"] in linked_ids
                  and row["id"] not in roots and row["id"] not in ws.tables["components"]]
         focus = [row["id"] for row in owned]
+        # The task context is deliberately a closed, requirement-owned slice.
+        # Do not walk children/owner/component references here: those traversals
+        # turn a root task into an application-wide prompt and make the model
+        # edit records it was never asked to reason about. Reuse is represented
+        # by the bounded component_catalog and explicit traceability links.
         selected = set(focus)
-        # Existing matching UI/state is reusable. Retrieval does not schedule extra model calls.
-        related = [row for row in all_rows.values()
-                   if row["id"] not in selected and row["id"] not in roots]
-        selected.update(row["id"] for row in ranked(related, query, 8))
-        # Extracted subtrees keep their identity; include descendants and data/behavior contracts.
-        pending = list(selected)
-        while pending:
-            eid = pending.pop()
-            row = all_rows.get(eid)
-            if row is None:
-                continue
-            for field, target in references(row):
-                if field in {"component_id", "owner_id", "component_ref", "ui_root_id"}:
-                    continue
-                if not focus and field == "children":
-                    continue
-                if target in all_rows and target not in selected:
-                    selected.add(target)
-                    pending.append(target)
-        owners = {ws.owner(eid) for eid in selected} | {ws.root_component_id}
-        for cid in owners:
-            if cid in ws.tables["components"]:
-                selected.add(cid)
-                selected.add(ws.tables["components"][cid]["ui_root_id"])
-        # Parent use-sites and child inputs/events allow same-response cross-component wiring.
-        for row in ws.tables["ui"].values():
-            if row["kind"] == "COMPONENT" and (row["id"] in selected or row["component_ref"] in owners):
-                selected.add(row["id"])
-                selected.add(row["component_id"])
-                selected.add(row["component_ref"])
-                selected.add(ws.tables["components"][row["component_id"]]["ui_root_id"])
-        for row in ws.tables["events"].values():
-            if row["component_id"] in selected and row["kind"] == "CUSTOM":
-                selected.add(row["id"])
-        for row in ws.tables["data"].values():
-            if row["owner_id"] in selected:
-                selected.add(row["id"])
+        selected.update(row["id"] for row in all_rows.values()
+                        if row["id"] in linked_ids)
         # Root/aggregate behavior tasks can otherwise expose the entire
         # application tree (hundreds of UI descendants) and exceed provider
         # context limits. Keep complete records for behavior-bearing entities,

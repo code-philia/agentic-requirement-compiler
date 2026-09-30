@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import copy
+import datetime as dt
 import hashlib
 import os
+import re
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -168,6 +170,7 @@ class FixturePass:
                     for key in ("id", "name", "description", "scenarios")
                 },
                 "database_schema": copy.deepcopy(local_schema),
+                "constraint_guidance": _fixture_constraint_guidance(local_schema),
             }
             if feedback:
                 payload["validation_feedback"] = feedback
@@ -321,6 +324,11 @@ def _compile_decision(
                         f"ARC2402 FIXTURE_INVALID: {requirement_id}: "
                         f"{entity_key}.{field_name} expects {field.get('type')}."
                     )
+                for violation in _field_constraint_violations(field, value):
+                    errors.append(
+                        f"ARC2402 FIXTURE_INVALID: {requirement_id}: "
+                        f"{entity_key}.{field_name} {violation}."
+                    )
                 parent = required_parents.get((entity_key, field_name))
                 if parent and field_name in values and not any(
                     row_entity == parent and row_values.get("id") == values[field_name]
@@ -365,7 +373,106 @@ def _compile_decision(
                 "rows": rows,
             }
         )
+    # Check uniqueness deterministically before handing fixtures to the database.
+    for constraint in local_schema.get("constraints", []):
+        if not isinstance(constraint, dict) or constraint.get("type") not in {"UNIQUE", "COMPOSITE_UNIQUE"}:
+            continue
+        raw_fields = constraint.get("fields") or []
+        qualified: list[tuple[str, str]] = []
+        for raw_field in raw_fields:
+            text = str(raw_field)
+            if "." in text:
+                entity_key, field_name = text.split(".", 1)
+            else:
+                entity_key, field_name = "", text
+            qualified.append((entity_key, field_name))
+        seen_values: dict[tuple[Any, ...], str] = {}
+        for fixture_key, (entity_key, row_values) in known_rows.items():
+            parts = tuple(row_values.get(field_name) for owner, field_name in qualified if not owner or owner == entity_key)
+            if len(parts) != len(qualified) or any(value is None for value in parts):
+                continue
+            if parts in seen_values:
+                errors.append(
+                    f"ARC2402 FIXTURE_INVALID: {requirement_id}: "
+                    f"{constraint.get('type')} fields {raw_fields} duplicate in "
+                    f"{seen_values[parts]!r} and {fixture_key!r}."
+                )
+            else:
+                seen_values[parts] = fixture_key
     return compiled, errors
+
+
+def _fixture_constraint_guidance(local_schema: dict[str, Any]) -> list[dict[str, Any]]:
+    """Expose database rules as short, model-readable fixture obligations."""
+    guidance: list[dict[str, Any]] = []
+    for entity in local_schema.get("entities", []):
+        if not isinstance(entity, dict):
+            continue
+        entity_key = str(entity.get("key", ""))
+        for field in entity.get("fields", []):
+            if not isinstance(field, dict):
+                continue
+            props = field.get("properties") if isinstance(field.get("properties"), dict) else {}
+            rules: list[str] = []
+            if field.get("nullable") is False:
+                rules.append("required and not null")
+            if props.get("min_length") is not None:
+                rules.append(f"length >= {props['min_length']}")
+            if props.get("max_length") is not None:
+                rules.append(f"length <= {props['max_length']}")
+            if props.get("pattern"):
+                rules.append(f"must match /{props['pattern']}/")
+            if props.get("enum"):
+                rules.append("must be one of " + ", ".join(map(str, props["enum"])))
+            if props.get("minimum") is not None:
+                rules.append(f">= {props['minimum']}")
+            if props.get("maximum") is not None:
+                rules.append(f"<= {props['maximum']}")
+            if props.get("date_future"):
+                rules.append("date/time must be in the future")
+            if props.get("date_past"):
+                rules.append("date/time must be in the past")
+            if rules:
+                guidance.append({"field": f"{entity_key}.{field.get('name')}", "type": field.get("type"), "rules": rules})
+    for constraint in local_schema.get("constraints", []):
+        if not isinstance(constraint, dict):
+            continue
+        fields = constraint.get("fields") or []
+        if constraint.get("type") in {"UNIQUE", "COMPOSITE_UNIQUE", "PRIMARY_KEY"}:
+            guidance.append({"constraint": constraint.get("type"), "fields": copy.deepcopy(fields), "rules": ["values must be unique across fixture rows"]})
+    return guidance
+
+
+def _field_constraint_violations(field: dict[str, Any], value: Any) -> list[str]:
+    if value is None:
+        return []
+    props = field.get("properties") if isinstance(field.get("properties"), dict) else {}
+    violations: list[str] = []
+    if isinstance(value, str):
+        if props.get("min_length") is not None and len(value) < int(props["min_length"]):
+            violations.append(f"length must be at least {props['min_length']}")
+        if props.get("max_length") is not None and len(value) > int(props["max_length"]):
+            violations.append(f"length must be at most {props['max_length']}")
+        if props.get("pattern") and re.search(str(props["pattern"]), value) is None:
+            violations.append("does not match the required pattern")
+        if props.get("enum") and value not in props["enum"]:
+            violations.append("must be one of " + ", ".join(map(str, props["enum"])))
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        if props.get("minimum") is not None and value < props["minimum"]:
+            violations.append(f"must be >= {props['minimum']}")
+        if props.get("maximum") is not None and value > props["maximum"]:
+            violations.append(f"must be <= {props['maximum']}")
+    if props.get("date_future") or props.get("date_past"):
+        try:
+            parsed = dt.datetime.fromisoformat(value.replace("Z", "+00:00")) if field.get("type") == "datetime" else dt.date.fromisoformat(value)
+            now = dt.datetime.now(dt.timezone.utc) if field.get("type") == "datetime" else dt.date.today()
+            if props.get("date_future") and parsed <= now:
+                violations.append("must be in the future")
+            if props.get("date_past") and parsed >= now:
+                violations.append("must be in the past")
+        except (TypeError, ValueError):
+            violations.append("must be a valid ISO date/time")
+    return violations
 
 
 def _row_values(value: Any) -> dict[str, Any]:

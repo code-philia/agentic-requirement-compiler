@@ -66,6 +66,11 @@ class FrontendReactLowerer:
         self.result = ReactLoweringResult()
         self.ir = ir
         self.rows: dict[str, dict[str, Any]] = {}
+        self._expr_scope: set[str] = set()
+        self._known_runtime_symbols = {
+            "React", "createEffectRunner", "callApi", "props", "input",
+            "signal", "onCleanup", "isCurrent", "event", "payload",
+        }
         self.apis = {r["id"]: r for r in project_api_contracts(backend_design)}
         self.routes = {r["module_id"]: r for r in backend_routes.get("routes", [])}
         try:
@@ -175,8 +180,18 @@ class FrontendReactLowerer:
             return js(value["value"])
         if kind in {"REF", "ITEM"}:
             key = value["ref_id"] if kind == "REF" else value["ui_id"]
+            if key not in self.rows:
+                self.result.warnings.append(f"Expression reference {key!r} is unknown; emitted undefined placeholder.")
+                return "undefined"
+            if key not in self._expr_scope:
+                self.result.warnings.append(f"Expression reference {key!r} is outside the current scope; emitted undefined placeholder.")
+                return "undefined"
             row = self.rows[key]
-            base = self.symbol(key) if kind == "REF" else "item_" + self.symbol(key)
+            try:
+                base = self.symbol(key) if kind == "REF" else "item_" + self.symbol(key)
+            except KeyError:
+                self.result.warnings.append(f"Expression reference {key!r} has no local symbol; emitted undefined placeholder.")
+                return "undefined"
             if kind == "REF" and row.get("kind") == "REF":
                 base += ".current"
             return base + "".join("[" + js(p) + "]" for p in value.get("path", []))
@@ -196,6 +211,9 @@ class FrontendReactLowerer:
         if op == "CONCAT":
             return "(" + " + ".join(f"String({a})" for a in args) + ")"
         operators = {"AND": "&&", "OR": "||", "EQ": "===", "NE": "!==", "GT": ">", "GE": ">=", "LT": "<", "LE": "<=", "ADD": "+", "SUB": "-", "MUL": "*", "DIV": "/", "COALESCE": "??"}
+        if op not in operators:
+            self.result.warnings.append(f"Expression operator {op!r} is unsupported; emitted undefined placeholder.")
+            return "undefined"
         return "(" + f" {operators[op]} ".join(args) + ")"
 
     @staticmethod
@@ -341,6 +359,20 @@ class FrontendReactLowerer:
         name = self.component_names[cid]
         path = f"frontend/src/components/{name}.tsx"
         local = {table: [r for r in self.ir[table] if r.get("component_id") == cid] for table in ("properties", "ui", "events", "handlers", "effects")}
+        previous_scope = self._expr_scope
+        self._expr_scope = {
+            row["id"] for rows in local.values() for row in rows
+        } | {row["id"] for row in self.data(cid, "INPUT")}
+        for owner_rows in (local["events"], local["handlers"], local["effects"]):
+            for owner in owner_rows:
+                self._expr_scope.update(d["id"] for direction in ("INPUT", "OUTPUT") for d in self.data(owner["id"], direction))
+        try:
+            self._component_body(component, cid, name, path, local)
+        finally:
+            self._expr_scope = previous_scope
+
+    def _component_body(self, component: dict[str, Any], cid: str, name: str, path: str,
+                        local: dict[str, list[dict[str, Any]]]) -> None:
         imports = ['import * as React from "react";', 'import { createEffectRunner } from "../runtime/effects";', 'import { callApi } from "../api/client";']
         props = self.signature(cid, "INPUT")
         callbacks = [e for e in local["events"] if e["kind"] == "CUSTOM"]
