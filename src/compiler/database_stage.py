@@ -550,7 +550,7 @@ class DatabaseSchemaPass:
                 if not isinstance(node, dict):
                     errors.append(_format_error("ARC2101", "Atomic requirement is missing from Requirement IR.", node_id=node_id))
                     states[node_id] = "FAILED"
-                    break
+                    continue
                 if phase == "pass3_relationships" and len(state.related_entity_keys(node_id)) < 2:
                     states[node_id] = "RELATIONSHIPS_RESOLVED"
                     continue
@@ -568,12 +568,12 @@ class DatabaseSchemaPass:
                 )
                 if decision is None:
                     states[node_id] = "FAILED"
-                    break
+                    continue
                 before = len(errors)
                 apply_decision(node_id, decision, errors)
                 if len(errors) != before:
                     states[node_id] = "FAILED"
-                    break
+                    continue
                 states[node_id] = {
                     "pass1_entities": "ENTITIES_DISCOVERED",
                     "pass2_fields": "FIELDS_DISCOVERED",
@@ -584,10 +584,10 @@ class DatabaseSchemaPass:
                     f"state={states[node_id]}"
                 )
             self._trace(f"PASS_COMPLETED phase={phase} requirements={len(requirements)}")
-            if errors:
-                return DatabasePassResult(
-                    state.to_schema(status="PROPOSED"), states, errors, state.warnings
-                )
+            # Design diagnostics are accumulated across all three passes. Do
+            # not stop after an invalid entity/field/relationship decision;
+            # later passes may still recover usable schema information and the
+            # controller will continue with the partial result.
 
         # Structural constraints are derived from fields and relationships.
         state.add_static_constraints()

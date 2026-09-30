@@ -545,7 +545,9 @@ class DesignPass:
             if contract_result.value is None:
                 states[requirement_id] = "FAILED"
                 all_issues.extend(contract_result.issues)
-                break
+                # Keep compiling independent requirements; the controller
+                # will retain this diagnostic and continue with partial IR.
+                continue
 
             base = state.clone()
             contract = _normalize_requirement_contract(contract_result.value)
@@ -584,7 +586,7 @@ class DesignPass:
             if compiled is None:
                 states[requirement_id] = "FAILED"
                 all_issues.extend(issues)
-                break
+                continue
             state = compiled
             collapsed, collapse_warnings = _collapse_passthrough_modules(state, requirement_id)
             state = collapsed

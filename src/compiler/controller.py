@@ -328,10 +328,12 @@ class Compiler:
             for warning in lowered_database.warnings:
                 await self._log("Compiler", warning, "warning")
             for error in lowered_database.errors:
-                await self._log("Compiler", error, "error")
+                await self._log("Compiler", error, "warning")
             if not lowered_database.ok:
-                return CompilationResult(
-                    ok=False, root_id=root_id, states=states, artifacts=artifacts,
+                await self._log(
+                    "Compiler",
+                    "Database lowering is incomplete; continuing with available generated files.",
+                    "warning",
                 )
             history.commit("2.2 database schema lowering", [
                 ".arc", "backend/src/db", "backend/src/fixtures", "backend/init-db.mjs",
@@ -702,10 +704,10 @@ class Compiler:
                 states[rid] = "FRONTEND_IR_GENERATED"
 
         if not frontend.ok:
-            await self._log("Compiler", "Frontend design produced no usable requirement input; React lowering cannot start.", "error")
-            return CompilationResult(
-                ok=False, root_id=root_id, states=states,
-                failed_nodes=sorted(failed_requirements), artifacts=artifacts,
+            await self._log(
+                "Compiler",
+                "Frontend design produced incomplete requirement input; continuing with partial IR and lowering placeholders.",
+                "warning",
             )
         if rank < 4:
             checkpoints.save("frontend-ir", backend_routes=backend_glue.route_registry,
