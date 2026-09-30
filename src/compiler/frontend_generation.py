@@ -162,11 +162,8 @@ class FrontendIRGenerationPass:
             for index, fragment in enumerate(fragments):
                 tasks.append({"id": rid, "name": node.get("name", ""), "fragment": fragment,
                               "part": index + 1, "parts": len(fragments), "has_visual": bool(visuals),
-                              "visual": visuals[0] if visuals else None})
-            # The visual interface accepts one image. Extra images remain supplements of this requirement.
-            for visual in visuals[1:]:
-                tasks.append({"id": rid, "name": node.get("name", ""), "fragment": source,
-                              "visual": visual, "has_visual": True, "visual_supplement": True})
+                              "visual": visuals[0] if visuals else None,
+                              "visuals": visuals})
         failed_ui: set[str] = set()
         for task in tasks:
             if not self._requirement_task("ui", task):
@@ -175,8 +172,6 @@ class FrontendIRGenerationPass:
         for stage in ("assemble", "behavior"):
             for task in tasks:
                 rid = task["id"]
-                if stage == "behavior" and task.get("visual_supplement"):
-                    continue
                 if self.traceability[rid]["mode"] == "NONE":
                     continue
                 if rid in failed_ui:
@@ -195,9 +190,17 @@ class FrontendIRGenerationPass:
                             [rid], set(), stage)
                         self._refresh_traceability()
                         continue
+                    # A summary requirement only records the result of its
+                    # children. It has no component-local behavior to design
+                    # unless the committed IR already contains behavior
+                    # entities attributed directly to the summary.
+                    if stage == "behavior" and not self._has_behavior_scope(rid):
+                        continue
                 component_roots = {c["ui_root_id"] for c in self.workspace.tables["components"].values()}
                 linked_ui = set(self.traceability[rid].get("ui_ids", [])) - component_roots
                 if stage == "assemble" and not linked_ui:
+                    continue
+                if stage == "behavior" and not self._has_behavior_scope(rid):
                     continue
                 if not self._requirement_task(stage, task) and stage == "assemble":
                     failed_assemble.add(rid)
@@ -221,6 +224,43 @@ class FrontendIRGenerationPass:
         self._refresh_traceability(status)
         return FrontendIRGenerationResult(self.workspace.export(), report, self.batches, self.traceability)
 
+    def _has_behavior_scope(self, rid: str) -> bool:
+        """Return true only when the committed IR gives behavior a real target.
+
+        A parent summary or an empty requirement must not trigger a model call
+        merely because its prose mentions an action. UI behavior is designed
+        against committed UI/data entities; without one there is no bounded
+        component scope to edit.
+        """
+        links = self.traceability.get(rid, {})
+        if any(links.get(key) for key in ("event_ids", "handler_ids", "effect_ids")):
+            return True
+        ui_ids = set(links.get("ui_ids", []))
+        root_ids = {row["ui_root_id"] for row in self.workspace.tables["components"].values()}
+        return bool(ui_ids - root_ids)
+
+    def _likely_frontend_requirement(self, task: dict[str, Any]) -> bool:
+        """Conservative signal used only to reject an empty UI decision.
+
+        The model still decides reuse versus creation. This guard prevents a
+        transient protocol success (DESIGN/NONE with an empty patch) from
+        silently erasing the requirement's UI contribution.
+        """
+        if task.get("has_visual"):
+            return True
+        rid = task["id"]
+        if set(self.traceability.get(rid, {}).get("ui_ids", [])) - {
+            row["ui_root_id"] for row in self.workspace.tables["components"].values()
+        }:
+            return True
+        node = self.nodes.get(rid, {})
+        if str(node.get("type", "")).upper() != "ATOMIC":
+            return False
+        text = (str(node.get("name", "")) + " " + str(node.get("description", ""))).lower()
+        backend_only = ("database", "backend", "server-side", "schema", "api contract",
+                        "persistence layer", "internal service")
+        return not any(term in text for term in backend_only)
+
     def _refresh_traceability(self, status: str = "IN_PROGRESS") -> None:
         links = frontend_ir_traceability(self.workspace.export())
         for rid in self.nodes:
@@ -233,7 +273,9 @@ class FrontendIRGenerationPass:
 
     def _requirement_task(self, stage: str, task: dict[str, Any]) -> bool:
         rid = task["id"]
-        requirement = {k: v for k, v in task.items() if k != "visual"}
+        # Binary/reference objects are passed through dedicated visual fields;
+        # never place dataclass instances in the JSON requirement payload.
+        requirement = {k: v for k, v in task.items() if k not in {"visual", "visuals"}}
         local = self._requirement_context(rid, {**requirement, "_phase": stage})
         context = {**local, "requirement": requirement,
                    "child_requirements": [{"id": child, "name": node.get("name", ""),
@@ -247,9 +289,15 @@ class FrontendIRGenerationPass:
             context["ui_data"] = {row["id"]: ui_data[row["id"]] for row in local["entities"] if row["id"] in ui_data}
         example = protocol_examples("C.EXAMPLE", "U.EXAMPLE")
         example["associations"] = []
+        # Inventory examples must not teach root mutation or early containment.
+        example["updates"] = []
         if stage == "ui":
             example["requirement_mode"] = "DESIGN"
         if stage == "assemble":
+            # Assembly has no entity design authority. The only model-owned
+            # output is the component declaration plus optional UI rewiring.
+            example["creates"] = {}
+            example["updates"] = []
             example["components"] = []
         if stage == "behavior":
             example["creates"].update(events=[], handlers=[], effects=[])
@@ -271,18 +319,38 @@ class FrontendIRGenerationPass:
                 context["visual_analysis"] = self.visual_analyses.get(visual.id, {}).get("analysis", {})
             except (OSError, ValueError) as exc:
                 self.warnings.append(f"Visual {visual.id} unavailable: {exc}")
+        # A requirement is one scheduling unit even when it has several
+        # screenshots. Keep all analyses available without issuing duplicate
+        # UI tasks; the binary image remains the first reference for providers
+        # that accept only one image payload.
+        visuals = task.get("visuals", [])
+        if len(visuals) > 1:
+            analyses = []
+            for item in visuals:
+                if isinstance(item, dict):
+                    analyses.append({"id": item.get("id"), "path": item.get("source_path"),
+                                     "analysis": item.get("analysis", {})})
+                else:
+                    analyses.append({"id": item.id, "path": item.source_path,
+                                     "analysis": self.visual_analyses.get(item.id, {}).get("analysis", {})})
+            context["visual_references"] = analyses
         instructions = {"ui": UI_INSTRUCTIONS, "assemble": REQUIREMENT_ASSEMBLY_INSTRUCTIONS,
                         "behavior": BEHAVIOR_INSTRUCTIONS}[stage]
         def apply(batch: dict[str, Any]) -> dict[str, Any]:
             mode = batch.get("requirement_mode", "DESIGN")
+            frontend_required = self._likely_frontend_requirement(task)
             if stage == "ui" and mode == "SUMMARY" and (
                 task.get("has_visual") or batch["creates"] or batch["updates"] or not context["child_requirements"]
             ):
                 raise ValueError("SUMMARY requires a parent without images and empty creates/updates")
             if stage == "ui" and mode == "NONE" and (
-                task.get("has_visual") or batch["creates"] or batch["updates"] or batch["associations"]
+                frontend_required or batch["creates"] or batch["updates"] or batch["associations"]
             ):
-                raise ValueError("NONE requires no image and empty creates/updates/associations")
+                raise ValueError("NONE is not allowed for this requirement; return DESIGN and create or associate its UI")
+            if stage == "ui" and mode == "DESIGN" and frontend_required and not (
+                batch["creates"] or batch["updates"] or batch["associations"]
+            ):
+                raise ValueError("DESIGN must create or associate at least one requirement-specific UI/data record")
             result = self.workspace.apply_requirement_batch(batch, [rid], set(context["editable_ids"]), stage)
             if stage == "ui":
                 previous = self.traceability[rid].get("mode")
@@ -309,28 +377,40 @@ class FrontendIRGenerationPass:
         selected = set(focus)
         selected.update(row["id"] for row in all_rows.values()
                         if row["id"] in linked_ids)
-        # Root/aggregate behavior tasks can otherwise expose the entire
-        # application tree (hundreds of UI descendants) and exceed provider
-        # context limits. Keep complete records for behavior-bearing entities,
-        # component roots and direct use-sites; retain a bounded ranked sample
-        # of deep render nodes. This is retrieval compaction, not a semantic
-        # validation or model output budget.
-        if query.get("_phase") == "behavior" and len(selected) > 180:
-            keep: set[str] = set(focus)
-            for table in ("components", "data", "properties", "events", "handlers", "effects"):
-                keep.update(row["id"] for row in ws.tables[table].values() if row["id"] in selected)
-            keep.update(
-                row["id"] for row in ws.tables["ui"].values()
-                if row["id"] in selected and row.get("kind") in {"COMPONENT", "FRAGMENT"}
-            )
-            remainder = [all_rows[eid] for eid in selected - keep if eid in all_rows]
-            keep.update(row["id"] for row in ranked(remainder, query, max(0, 180 - len(keep))))
-            selected = keep
-        return {"default_component_id": ws.root_component_id, "focus_ids": focus,
+        # The root is supplied as a read-only anchor so assemble can establish
+        # final containment. Pass one may leave newly-created atomic UI staged.
+        if query.get("_phase") in {"ui", "assemble", "behavior"} and ws.root_component_id:
+            root = ws.tables["components"][ws.root_component_id]
+            selected.add(root["ui_root_id"])
+        root_id = ws.tables["components"][ws.root_component_id]["ui_root_id"] if ws.root_component_id else None
+        read_only_roots = {row["ui_root_id"] for row in ws.tables["components"].values()}
+        return {"default_component_id": ws.root_component_id, "render_root_id": root_id,
+                "focus_ids": focus,
                 "entities": [copy.deepcopy(all_rows[eid]) for eid in sorted(selected) if eid in all_rows],
-                "editable_ids": sorted(eid for eid in selected if eid in all_rows),
+                "editable_ids": sorted(eid for eid in selected
+                                        if eid in all_rows and eid not in read_only_roots),
                 "component_catalog": [self._component_summary(row) for row in ranked(
-                    list(ws.tables["components"].values()), query, CATALOG_SIZE)]}
+                    list(ws.tables["components"].values()), query, CATALOG_SIZE)],
+                "ui_catalog": self._ui_catalog(query, rid)}
+
+    def _ui_catalog(self, query: Any, rid: str) -> list[dict[str, Any]]:
+        """Bounded reuse index for pass one; no ownership traversal is added."""
+        rows = []
+        associations = ui_data_associations(self.workspace.export())
+        mounted = {child for parent in self.workspace.tables["ui"].values()
+                   for child in parent.get("children", [])}
+        for row in self.workspace.tables["ui"].values():
+            if row["id"] == self.workspace.tables["components"][self.workspace.root_component_id]["ui_root_id"]:
+                continue
+            rows.append({
+                "id": row["id"], "name": row["name"], "kind": row["kind"],
+                "spec": str(row.get("spec", ""))[:220],
+                "component_id": row.get("component_id"),
+                "mounted": row["id"] in mounted,
+                "requirement_ids": row.get("requirement_ids", [])[:8],
+                "data": associations.get(row["id"], {}),
+            })
+        return ranked(rows, {"requirement": rid, **query}, 12)
 
     def _component_summary(self, component: dict[str, Any]) -> dict[str, Any]:
         """Bounded reuse index; full records and mutation rights stay in the local context."""
@@ -421,7 +501,8 @@ class FrontendIRGenerationPass:
                     "return a complete replacement batch in the SAME schema, not repair operations.")
                 # Error details stay in memory for the next attempt.
                 label = "MODEL_RETRY" if attempt < MODEL_RETRIES else "MODEL_SKIPPED"
-                self.log.info(f"{label} phase=frontend_{phase} task={task_id}")
+                self.log.info(f"{label} phase=frontend_{phase} task={task_id} "
+                              f"error={describe_model_error(exc)}")
         self._fail(phase, requirements, "Retries exhausted; continuing with committed IR.", task_id)
         return False
 

@@ -272,7 +272,19 @@ class FrontendWorkspace:
             table, row = candidate.find(eid)
             row["requirement_ids"] = list(dict.fromkeys(row["requirement_ids"] + requirements))
             touched[eid] = table
-        # A committed batch must not leave newly-created render nodes detached.
+        # Reused UI retains its concrete value contracts in requirement traceability.
+        # Only direct expression references are included, not render/ownership traversal.
+        for eid, table in list(touched.items()):
+            if table != "ui":
+                continue
+            for field, target in references(candidate.tables["ui"][eid]):
+                if field != "ref_id":
+                    continue
+                target_table, row = candidate.find(target)
+                if target_table in {"data", "properties"}:
+                    row["requirement_ids"] = list(dict.fromkeys(row["requirement_ids"] + requirements))
+                    touched[target] = target_table
+        # After inventory, newly-created render nodes must be connected.
         # Validate this on the candidate so failed batches leave no partial UI.
         render_graph: dict[str, list[str]] = {
             cid: [component["ui_root_id"]]
@@ -296,7 +308,10 @@ class FrontendWorkspace:
             if "." not in key and entity_id in candidate.tables["ui"] and entity_id not in self.tables["ui"]
         }
         detached = sorted(entity_id for entity_id in newly_created_ui if entity_id not in reachable)
-        if detached:
+        # Pass 1 is an inventory pass. Its atomic UI records are deliberately
+        # allowed to remain staged until assemble establishes containment and
+        # component boundaries. Later passes must leave a reachable tree.
+        if detached and stage != "ui":
             raise ValueError("New UI nodes are not connected to the application render root: " + ", ".join(detached))
         changes = [{"before": before[eid], "after": copy.deepcopy(candidate.find(eid)[1])}
                    for eid in touched if eid in before and before[eid] != candidate.find(eid)[1]]
@@ -337,9 +352,14 @@ class FrontendWorkspace:
         # Preserve the first extracted position, not an unrelated append at the application end.
         containers = [(u, u["children"].index(roots[0])) for u in self.tables["ui"].values()
                       if roots[0] in u["children"] and u["id"] not in subtree]
-        if not containers:
-            raise ValueError("Extraction UI must already be connected")
-        host, position = containers[0]
+        if containers:
+            host, position = containers[0]
+        else:
+            # Staged pass-1 atoms have an owner but no layout parent yet.
+            # Assemble may promote them into a component at the application
+            # root; this is the first point at which containment is decided.
+            host = self.tables["ui"][self.tables["components"][parent]["ui_root_id"]]
+            position = len(host["children"])
         touched = {}
         for ui in self.tables["ui"].values():
             if ui["id"] not in subtree and any(uid in ui["children"] for uid in roots):

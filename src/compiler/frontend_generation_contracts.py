@@ -146,13 +146,15 @@ def create_schema(table: str) -> dict[str, Any]:
 
 
 def patch_schema(stage: str) -> dict[str, Any]:
-    allowed = ["data", "properties", "ui"] if stage in {"ui", "assemble"} else [
+    create_allowed = ["data", "properties", "ui"] if stage == "ui" else ([
         "data", "properties", "ui", "events", "handlers", "effects",
-    ]
+    ] if stage == "behavior" else [])
+    update_allowed = ["ui"] if stage == "assemble" else create_allowed
+    allowed = create_allowed if stage != "assemble" else []
     # Both creates and updates select an entity-specific schema. No shared union of fields.
     definitions = dict(DEFS)
     update_variants = []
-    for table in [*allowed, "components"]:
+    for table in update_allowed:
         update_variants.append(obj({"table": enum(table), "record": record_schema(table, create=False)}))
     schema = obj({
         "creates": obj({table: array(create_schema(table)) for table in allowed}),
@@ -229,7 +231,9 @@ The supplied entities form a closed slice for the CURRENT REQUIREMENT. Do not ex
 children, owner_id, component_ref, ui_root_id, parent use-sites, or any other relationship. Do not rebuild
 omitted entities from names. An omitted entity may be referenced only by its exact supplied ID, and only when
 that ID is explicitly present in the global catalog or API contracts. New references must resolve to an entity
-in the supplied entities, component_catalog, api_contracts, or a same-batch local key. Never create an orphan UI.
+in the supplied entities, component_catalog, api_contracts, or a same-batch local key. Pass-one UI may remain
+staged and is attached only by assemble; do not manufacture a root or copy root children just to establish
+reachability.
 Do not mutate any record outside editable_ids, even if it is visible in a catalog. Treat every identifier as an
 opaque compiler-owned ID; names are descriptive only and must not be used to infer identity or ownership.
 Preserve existing references even when the referenced full record is omitted from this local context.
@@ -248,10 +252,27 @@ ELEMENT includes text:null: create a TEXT child for a caption. FRAGMENT includes
 Every UI has element, component_ref, slot_data_id, attributes, text, children, condition, repeat, arguments,
 callbacks and presentation, regardless of kind. CUSTOM Event has ui_id:null, handler_id:null, arguments:[].
 Include name/spec on every new entity. In UI variants condition/repeat may be null, presentation may be empty.
-Every new UI must be connected to its component root or used through UI_REF. Keep compiler-created roots
-as FRAGMENT; place actual layout inside them. Render conditions and repeat{source,item_name,key} live on UI.
+Pass one may return staged atomic UI without a layout parent. Do not invent containment merely to make it
+reachable. Keep compiler-created roots as FRAGMENT; layout containment is established only by assemble.
+Render conditions and repeat{source,item_name,key} live on UI.
 """
-UI_INSTRUCTIONS = PATCH_INSTRUCTIONS + """Visit the CURRENT REQUIREMENT and produce its UI/data as a small increment.
+UI_INSTRUCTIONS = PATCH_INSTRUCTIONS + """This is PASS 1 (UI/DATA INVENTORY), not component assembly and not behavior design.
+Visit only the CURRENT REQUIREMENT and maintain the global UI set, Data set and their requirement associations.
+Produce the smallest complete UI fragment that expresses this requirement. Do not describe every element visible
+in a reference screenshot: the screenshot is evidence for this requirement's fragment only.
+When visual_references contains multiple images, treat them as views of the same requirement and merge their
+evidence into one local UI decision. Do not create a separate page or duplicate UI subtree per image.
+New UI records are staged in the global inventory and do not need a parent in this pass. Do not update the root,
+invent a page container, or copy existing children. Nested children are allowed only when intrinsic to the same
+atomic UI decision; cross-UI layout and grouping belong to assemble. render_root_id is read-only in this pass;
+never create a second application root.
+Use ui_catalog to decide reuse before creating a node. Reuse means return an association to the exact existing UI
+ID; do not copy it and do not infer identity from a similar name. If the requirement adds a new occurrence of an
+existing role, create only the occurrence needed by this requirement.
+For every displayed value, input value, repeated item or visibility condition, explicitly bind the UI expression
+to the corresponding existing/new Data or Property reference. A text input's mutable typed value is a STATE
+Property; a value supplied across a future component boundary is INPUT Data. Do not invent Data for static labels,
+and do not leave a value-to-UI relationship only in prose.
 Return requirement_mode DESIGN for independent UI/data/behavior requirements. Return SUMMARY only when
 the parent merely summarizes supplied child requirements, has no reference image and no additional behavior.
 For SUMMARY return empty creates/updates and associate a few core child entities; do not design another page.
@@ -260,7 +281,9 @@ reference image. NONE must have empty creates, updates and associations. If beha
 return DESIGN even when this pass creates no UI.
 Do not output observations or schedule per-element expansion.
 Reuse existing UI by ID when requirements describe the same interface. Backend-only requirements may return
-NONE. Initially UI belongs to App; component extraction happens in the assembly pass.
+NONE. New UI has temporary compiler ownership by App for reference resolution, but is not mounted under App.
+Component extraction and render containment happen only in the assembly pass. This pass never creates
+components, events, handlers or effects.
 Derive data FROM each UI's displayed content, input value, repeated items and visibility needs, not from an
 independent inventory. Determine each UI's concrete data association in this pass. Express it using REF/ITEM
 inside text, attributes, condition, repeat.source and arguments; never leave the association only in prose.
@@ -289,12 +312,16 @@ Before creating anything, inspect component_catalog: requirement summaries, rend
 and existing use-sites. Reuse by responsibility and compatible contracts, not just names or visual similarity.
 Catalogs are bounded (counts show omissions), referenceable summaries, NOT grants of edit permission.
 If an existing component already covers the requirement, associate it and reuse its use-site; no extraction is needed.
-For another occurrence, create a COMPONENT UI referencing the existing component and connect its arguments;
-do not create a second component definition or move unrelated UI into an existing component merely to reuse it.
+For an existing occurrence, return associations to its component/use-site. Do not manufacture new occurrences
+in this pass: COMPONENT use-sites are allocated by extraction, not by creates.ui.
 Do not assume omitted input/event contracts are absent. Prefer existing use-sites when full contracts are unavailable.
 For nested extraction in one batch, use child key.use in the outer declaration when it is the subtree being moved.
-Later image supplements refine this same requirement's existing components; do not create one page per screenshot.
+Multiple reference images inform one assembly decision; do not create one page per screenshot.
 Return components plus creates/updates. components may be empty when existing ownership is appropriate.
+For this pass, creates.data, creates.properties and creates.ui must all be empty arrays (the schema may expose
+no create entity fields). Do not create or modify Data/Property semantics; pass and ownership wiring are handled
+by the compiler's component extraction operation. UI updates are limited to boundary rewiring needed by an
+extraction and must preserve the existing UI record.
 Each component entry has key, existing_component_id (null for new), name, spec, ui_ids (existing subtree roots),
 property_ids and data_ids (existing component inputs). Extraction moves complete UI subtrees, only the explicitly
 listed state/inputs, and preserves entity IDs. The compiler connects the extracted component at the old location.
@@ -304,11 +331,14 @@ Reference this component as {local:key}, its FRAGMENT root as {local:"key.root"}
 These root/use records are CREATED BY THE COMPILER. Never add creates.ui records with key.root or key.use keys.
 Only reference those symbols. The compiler also preserves the extracted UI's position; do not duplicate that wiring.
 All local symbols are registered before creates are materialized; extraction follows its use-site dependencies.
-data_ids/property_ids may also name same-batch creates owned by this component; these are already bound, not moved.
+List existing Data/Property consumed exclusively by the extracted UI in data_ids/property_ids so their ownership
+moves with the UI. Inspect ui_data; do not omit the state bound to an extracted input. Keep shared state with its
+current owner and describe any unresolved boundary wiring in spec for pass three.
 The .use symbol exists only for a declaration extracting a nonempty UI subtree from another component.
-Use creates/updates only for structural wrappers/use-sites and the parameter/reference wiring required by extraction.
+Use updates only to order/group existing non-root UI children while preserving every existing UI record.
+The compiler owns component roots and use-site insertion; do not update root children or create wrappers/use-sites.
 Preserve existing conditions and data expressions except for necessary boundary reference rewiring.
-State shared with UI remaining in the parent stays in the parent; declare child inputs and rewire REF expressions.
+New child input contracts and forwarding for state remaining in the parent belong to pass three.
 Keep all existing siblings connected. Do not display mutually exclusive pages simultaneously.
 """
 BEHAVIOR_INSTRUCTIONS = PATCH_INSTRUCTIONS + """Visit the CURRENT REQUIREMENT and complete its behaviors across
