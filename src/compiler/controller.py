@@ -29,6 +29,7 @@ from .fixture_stage import (
 from .fixture_lowering import fixture_source_paths
 from .preprocessing_stage import RequirementPreprocessor, PreprocessingResult
 from .model_client import Model, ModelConfigurationError, StructuredModel
+from .cost_tracking import stage_checkpoint
 from .models import CompilationRequest, CompilationResult
 from .module_lowering import ModuleSkeletonLowerer
 from .project_build import ProjectBuilder
@@ -287,6 +288,7 @@ class Compiler:
             artifacts["database_schema"] = artifact_store.write_database_schema(database.schema)
             self._runtime.traceability.merge_database_schema_links(links)
             history.commit("2.1 database schema design", [".arc"])
+            stage_checkpoint(request.output_dir, "database")
 
         else:
             database = SimpleNamespace(schema=saved["database"])
@@ -335,6 +337,7 @@ class Compiler:
                 ".arc", "backend/src/db", "backend/src/fixtures", "backend/init-db.mjs",
                 "backend/database-baseline.mjs", "backend/database-baseline.d.mts", "shared/src",
             ])
+            stage_checkpoint(request.output_dir, "database-lowering")
             failed_gate = await self._build_gate(request, "2.2 database schema lowering", root_id, states, artifacts)
 
         else:
@@ -376,6 +379,7 @@ class Compiler:
 
             self._runtime.traceability.merge_design_links(design_traceability(design.design_ir))
             history.commit("3.1 backend design", [".arc"])
+            stage_checkpoint(request.output_dir, "backend-design")
 
         else:
             design = SimpleNamespace(design_ir=saved["design"])
@@ -618,6 +622,7 @@ class Compiler:
                 "Global Glue Code, Route Registration, Barrel Export, Import Plan, and Backend Manifest generated.",
             )
             history.commit("3.2 backend lowering", [".arc/lowering/backend", "backend/src", "shared/src"])
+            stage_checkpoint(request.output_dir, "backend-lowering")
             failed_gate = await self._build_gate(request, "3.2 backend lowering", root_id, states, artifacts)
 
         else:
@@ -687,6 +692,7 @@ class Compiler:
             for failure in frontend.report["failed_tasks"]:
                 await self._log("Compiler", f"{failure['phase']}: {failure['message']}", "warning")
             history.commit("4.1 frontend IR generation", [".arc"])
+            stage_checkpoint(request.output_dir, "frontend-design")
         else:
             frontend = SimpleNamespace(frontend_ir=saved["frontend"]["frontend_ir"],
                                        report=saved["frontend"]["report"], ok=True)
@@ -745,6 +751,7 @@ class Compiler:
                 "warning",
             )
         history.commit("4.3 frontend build accepted", [".arc/lowering/frontend"])
+        stage_checkpoint(request.output_dir, "lowered")
         checkpoints.save("lowered")
         await self._log(
             "Compiler",
@@ -1036,6 +1043,8 @@ class Compiler:
             states[requirement_id] = "TESTS_PASSED"
             progress.mark(requirement_id, "TESTS_PASSED", "test layers")
             await self._log("Compiler", f"TDD completed for {requirement_id}.")
+            if "." not in requirement_id:
+                stage_checkpoint(request.output_dir, requirement_id)
 
         failed_nodes = sorted(failed_requirements)
         for failed_id in failed_nodes:

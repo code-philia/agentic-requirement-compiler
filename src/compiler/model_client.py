@@ -8,6 +8,7 @@ from typing import Any, Protocol
 
 from dotenv import load_dotenv
 from openai import OpenAI
+from .cost_tracking import record_usage as record_cost_usage
 
 
 CONTEXT_SEGMENTS_KEY = "context_segments"
@@ -244,6 +245,7 @@ def record_model_usage(
         path.parent.mkdir(parents=True, exist_ok=True)
         with path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(record, ensure_ascii=False, separators=(",", ":")) + "\n")
+        record_cost_usage(path.parent, model or getattr(response, "model", None) or "", record["usage"])
         summary = record["usage"] if isinstance(record["usage"], dict) else {}
         print("MODEL_USAGE " + json.dumps({"schema_name": schema_name,
               "operation": operation, "prompt_tokens": summary.get("prompt_tokens"),
