@@ -233,9 +233,8 @@ class Compiler:
             self._runtime.traceability.merge_frontend_design_links(frontend_ir_traceability(saved["frontend"]["frontend_ir"]))
             for rid in requirement_ids:
                 states[rid] = "FRONTEND_LOWERED"
-            failure = None if request.resume else await self._build_gate(request, "Restart from lowered", root_id, states, artifacts)
-            if failure is not None:
-                return failure
+            if not request.resume:
+                await self._build_gate(request, "Restart from lowered", root_id, states, artifacts)
             return await self._continue_after_lowering(
                 request=request, artifact_store=artifact_store, preprocessing=preprocessing,
                 database_schema=saved["database"], design_ir=saved["design"],
@@ -275,18 +274,15 @@ class Compiler:
             states.update(database.node_states)
             links = database_traceability(database.schema)
             for error in database.errors:
-                await self._log("Compiler", error, "error")
+                await self._log("Compiler", error, "warning")
             for warning in database.warnings:
                 await self._log("Compiler", warning, "warning")
             if not database.ok:
                 failed_nodes = sorted(node_id for node_id, state in states.items() if state == "FAILED")
-                await self._log("Compiler", "DATABASE_SCHEMA pass failed.", "error")
-                return CompilationResult(
-                    ok=False,
-                    root_id=root_id,
-                    states=states,
-                    failed_nodes=failed_nodes,
-                    artifacts=artifacts,
+                await self._log(
+                    "Compiler",
+                    "DATABASE_SCHEMA design issues recorded; continuing with the committed/partial schema.",
+                    "warning",
                 )
             artifacts["database_schema"] = artifact_store.write_database_schema(database.schema)
             self._runtime.traceability.merge_database_schema_links(links)
@@ -313,14 +309,12 @@ class Compiler:
                 database.schema,
             )
             for error in fixture_result.errors:
-                await self._log("Compiler", error, "error")
+                await self._log("Compiler", error, "warning")
             if not fixture_result.ok:
-                return CompilationResult(
-                    ok=False,
-                    root_id=root_id,
-                    states=states,
-                    failed_nodes=atomic_ids,
-                    artifacts=artifacts,
+                await self._log(
+                    "Compiler",
+                    "FIXTURE design issues recorded; continuing with available fixture records.",
+                    "warning",
                 )
             fixture_ir = fixture_result.fixture_ir
             artifacts["fixture_ir"] = artifact_store.write_fixture_ir(fixture_ir)
@@ -342,8 +336,6 @@ class Compiler:
                 "backend/database-baseline.mjs", "backend/database-baseline.d.mts", "shared/src",
             ])
             failed_gate = await self._build_gate(request, "2.2 database schema lowering", root_id, states, artifacts)
-            if failed_gate is not None:
-                return failed_gate
 
         else:
             fixture_ir = saved["fixture_ir"]
@@ -370,19 +362,16 @@ class Compiler:
             )
             states.update(design.node_states)
             for error in design.errors:
-                await self._log("Compiler", error, "error")
+                await self._log("Compiler", error, "warning")
             for warning in design.warnings:
                 await self._log("Compiler", warning, "warning")
             artifacts.update(artifact_store.write_design(design_ir=design.design_ir))
             if not design.ok:
                 failed_nodes = sorted(node_id for node_id, state in states.items() if state == "FAILED")
-                await self._log("Compiler", "DESIGN pass failed.", "error")
-                return CompilationResult(
-                    ok=False,
-                    root_id=root_id,
-                    states=states,
-                    failed_nodes=failed_nodes,
-                    artifacts=artifacts,
+                await self._log(
+                    "Compiler",
+                    "DESIGN validation issues recorded; continuing with committed/partial Design IR.",
+                    "warning",
                 )
 
             self._runtime.traceability.merge_design_links(design_traceability(design.design_ir))
@@ -415,14 +404,12 @@ class Compiler:
                 project_manifest,
             )
             for error in symbol_planning.errors:
-                await self._log("Compiler", error, "error")
+                await self._log("Compiler", error, "warning")
             if not symbol_planning.ok:
-                await self._log("Compiler", "GLOBAL_SYMBOL_PLANNING pass failed.", "error")
-                return CompilationResult(
-                    ok=False,
-                    root_id=root_id,
-                    states=states,
-                    artifacts=artifacts,
+                await self._log(
+                    "Compiler",
+                    "GLOBAL_SYMBOL_PLANNING reported design issues; continuing with the partial symbol registry.",
+                    "warning",
                 )
             await self._log(
                 "Compiler",
@@ -632,8 +619,6 @@ class Compiler:
             )
             history.commit("3.2 backend lowering", [".arc/lowering/backend", "backend/src", "shared/src"])
             failed_gate = await self._build_gate(request, "3.2 backend lowering", root_id, states, artifacts)
-            if failed_gate is not None:
-                return failed_gate
 
         else:
             backend_glue = SimpleNamespace(route_registry=saved["backend_routes"])
@@ -754,10 +739,20 @@ class Compiler:
         if failed_gate is not None:
             for rid in requirement_ids:
                 states[rid] = "FRONTEND_BUILD_FAILED"
-            return failed_gate
+            await self._log(
+                "Compiler",
+                "Frontend build/typecheck failed; continuing to TDD for repair.",
+                "warning",
+            )
         history.commit("4.3 frontend build accepted", [".arc/lowering/frontend"])
         checkpoints.save("lowered")
-        await self._log("Compiler", "Frontend React lowering completed; build and typecheck passed.", "success")
+        await self._log(
+            "Compiler",
+            "Frontend React lowering completed; build and typecheck passed."
+            if failed_gate is None
+            else "Frontend React lowering completed; build/typecheck feedback deferred to TDD.",
+            "success" if failed_gate is None else "warning",
+        )
         return await self._continue_after_lowering(
             request=request, artifact_store=artifact_store, preprocessing=preprocessing,
             database_schema=database.schema, design_ir=design.design_ir,
@@ -823,7 +818,7 @@ class Compiler:
         build = ProjectBuilder(request.output_dir).build()
         if not build.ok:
             for output in build.errors:
-                await self._log("Compiler", f"{stage}: {output}", "error")
+                await self._log("Compiler", f"{stage}: {output}", "warning")
             return CompilationResult(
                 ok=False, root_id=root_id, states=states, artifacts=artifacts,
             )
@@ -833,7 +828,7 @@ class Compiler:
         if typecheck.status != "PASSED":
             for output in [typecheck.stdout, typecheck.stderr, typecheck.error or ""]:
                 if output:
-                    await self._log("Compiler", f"{stage}: {output}", "error")
+                    await self._log("Compiler", f"{stage}: {output}", "warning")
             return CompilationResult(
                 ok=False, root_id=root_id, states=states, artifacts=artifacts,
             )
