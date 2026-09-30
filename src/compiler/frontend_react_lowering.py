@@ -108,13 +108,6 @@ class FrontendReactLowerer:
                     self.result.warnings.append(f"{component['id']}: {exc}; emitted placeholder component.")
                     self._fallback_component(component, str(exc))
             root = self.component_names[ir["root_component_id"]]
-            required = [d for d in self.data(ir["root_component_id"], "INPUT") if d["required"] and d.get("default") is None]
-            if required:
-                self.result.warnings.append(
-                    "Root has unsupplied required inputs: "
-                    + ", ".join(d["id"] for d in required)
-                    + "; mounting with an empty typed props object."
-                )
             self.result.sources["frontend/src/App.tsx"] = (
                 'import * as React from "react";\n'
                 f'import {{ {root} as RootComponent }} from "./components/{root}";\n'

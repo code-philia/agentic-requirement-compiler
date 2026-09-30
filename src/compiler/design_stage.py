@@ -129,7 +129,10 @@ DECOMPOSED_MODULE_SCHEMA: dict[str, Any] = {
     "required": ["kind", "name", "spec", "inputs", "outputs", "effects", "obligation_ids"],
     "properties": {
         "kind": {"type": "string", "enum": ["FUNC", "DB"]},
-        "name": {"type": "string", "pattern": r"^[A-Za-z][A-Za-z0-9]*$"},
+        # Module names are semantic source names. Snake_case is valid and is
+        # common in model output; the compiler will sanitize only characters
+        # that cannot participate in a qualified module id.
+        "name": {"type": "string", "pattern": r"^[A-Za-z][A-Za-z0-9_]*$"},
         "spec": {"type": "string"},
         "inputs": {"type": "array", "items": MODULE_INTERFACE_FIELD_SCHEMA},
         "outputs": {"type": "array", "items": MODULE_INTERFACE_FIELD_SCHEMA},
@@ -1808,7 +1811,10 @@ def _materialize_simple_decomposition(
             or str(item.get("kind", "")).upper() not in {"FUNC", "DB"}
         ):
             continue
-        kind = str(item["kind"])
+        # The schema is intentionally tolerant at this boundary.  Qualified
+        # module ids are compiler-owned and always use the canonical kind
+        # spelling, regardless of the model's casing.
+        kind = str(item["kind"]).strip().upper()
         child_inputs = [_expand_interface_field(field_item, field_catalog) for field_item in item.get("inputs", [])]
         child_outputs = [_expand_interface_field(field_item, field_catalog) for field_item in item.get("outputs", [])]
         for field_item in [*child_inputs, *child_outputs]:
@@ -2332,7 +2338,17 @@ def _allocate_local_module_id(state: DesignState, requirement_id: str, kind: str
 
 
 def _qualified_module_id(requirement_id: str, kind: str, name: str) -> str:
-    return f"{requirement_id}::{kind}.{name}"
+    # Module names are model-authored semantic labels.  Keep the label
+    # readable, but make the compiler-owned qualified id deterministic even
+    # when tolerant validation accepted whitespace or punctuation.
+    raw_name = str(name or "").strip()
+    safe_name = re.sub(r"[^A-Za-z0-9_]", "_", raw_name)
+    safe_name = re.sub(r"_+", "_", safe_name).strip("_")
+    if not safe_name:
+        safe_name = "generated_module"
+    if not re.match(r"^[A-Za-z_]", safe_name):
+        safe_name = f"generated_{safe_name}"
+    return f"{requirement_id}::{kind}.{safe_name}"
 
 
 def _module_decomposition_markdown(

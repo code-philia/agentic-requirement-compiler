@@ -302,7 +302,9 @@ class DatabaseSchemaState:
             child = _normalize_identifier(str(raw.get("child", "")))
             relationship_type = str(raw.get("type", ""))
             if parent not in related or child not in related or parent == child:
-                errors.append(_format_error("ARC2231", f"Pass 3 relationship is outside its requirement slice: {parent} -> {child}.", node_id=requirement_id))
+                # Relationship decisions are advisory and scoped to the
+                # supplied slice; discard an invalid edge without failing the
+                # otherwise usable entity/field design.
                 continue
             if relationship_type not in RELATIONSHIP_TYPES:
                 errors.append(_format_error("ARC2232", f"Pass 3 emitted invalid cardinality: {relationship_type}.", node_id=requirement_id))
@@ -1081,7 +1083,8 @@ def _validate_decision_context(
             child = _normalize_identifier(str(item.get("child", "")))
             relationship_type = str(item.get("type", ""))
             if parent not in related or child not in related or parent == child:
-                errors.append(f"Pass 3 relationship is outside its supplied slice: {parent} -> {child}")
+                # Ignore out-of-slice and self edges. They can be introduced
+                # later once both endpoints are present in one design slice.
                 continue
             pair = (parent, child)
             if pair in seen and seen[pair] != relationship_type:

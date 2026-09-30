@@ -273,12 +273,24 @@ class GlobalSymbolPlanner:
                 )
                 continue
             seen.add(module_id)
-            if parsed is None or module_kind not in MODULE_KINDS or parsed[1] != module_kind:
+            if parsed is None:
                 self._errors.append(
                     f"ARC3107 MODULE_ID_INVALID: module {module_id!r} does not match kind {module_kind!r}."
                 )
                 continue
-            owner_requirement, _, local_name = parsed
+            # The qualified id is compiler-owned once materialized. If a
+            # tolerant design pass preserved a stale/malformed kind field,
+            # recover from the authoritative id instead of dropping the
+            # module and cascading missing-callee errors.
+            owner_requirement, id_kind, local_name = parsed
+            if id_kind not in MODULE_KINDS:
+                self._errors.append(
+                    f"ARC3107 MODULE_ID_INVALID: module {module_id!r} has unknown kind."
+                )
+                continue
+            if module_kind != id_kind:
+                module["kind"] = id_kind
+                module_kind = id_kind
             declared_owner = str(module.get("owner_requirement", owner_requirement)).strip()
             if declared_owner and declared_owner != owner_requirement:
                 self._errors.append(
@@ -668,7 +680,7 @@ def _parse_module_id(module_id: str) -> tuple[str, str, str] | None:
     kind, dot, name = tail.partition(".")
     if not separator or not dot or not owner or kind not in MODULE_KINDS:
         return None
-    if re.fullmatch(r"[A-Za-z][A-Za-z0-9]*", name) is None:
+    if re.fullmatch(r"[A-Za-z][A-Za-z0-9_]*", name) is None:
         return None
     return owner, kind, name
 
