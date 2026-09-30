@@ -53,10 +53,23 @@ def completion_request_kwargs(
     }
     if response_format is not None:
         request["response_format"] = response_format
-    if is_deepseek_model(model):
+    if _thinking_disabled():
+        # Provider-compatible switch for deployments that expose both
+        # reasoning_effort and DeepSeek-style thinking controls.
+        request["reasoning_effort"] = "none"
+        request["extra_body"] = {"thinking": {"type": "disabled"}}
+    elif is_deepseek_model(model):
         request["reasoning_effort"] = "low"
         request["extra_body"] = {"thinking": {"type": "enabled"}}
     return request
+
+
+def _thinking_disabled() -> bool:
+    """Whether model reasoning/thinking should be disabled for this run."""
+
+    return os.environ.get("ARC_DISABLE_THINKING", "0").strip().lower() in {
+        "1", "true", "yes", "on",
+    }
 
 
 def describe_model_error(error: BaseException) -> str:
@@ -245,7 +258,10 @@ def record_model_usage(
         path.parent.mkdir(parents=True, exist_ok=True)
         with path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(record, ensure_ascii=False, separators=(",", ":")) + "\n")
-        record_cost_usage(path.parent, model or getattr(response, "model", None) or "", record["usage"])
+        # Usage files live at <workspace>/.arc/model_usage.jsonl; cost
+        # accounting is rooted at <workspace> so its artifacts share the
+        # same .arc directory rather than becoming .arc/.arc/...
+        record_cost_usage(path.parent.parent, model or getattr(response, "model", None) or "", record["usage"])
         summary = record["usage"] if isinstance(record["usage"], dict) else {}
         print("MODEL_USAGE " + json.dumps({"schema_name": schema_name,
               "operation": operation, "prompt_tokens": summary.get("prompt_tokens"),
