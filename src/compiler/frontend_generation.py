@@ -234,7 +234,7 @@ class FrontendIRGenerationPass:
     def _requirement_task(self, stage: str, task: dict[str, Any]) -> bool:
         rid = task["id"]
         requirement = {k: v for k, v in task.items() if k != "visual"}
-        local = self._requirement_context(rid, requirement)
+        local = self._requirement_context(rid, {**requirement, "_phase": stage})
         context = {**local, "requirement": requirement,
                    "child_requirements": [{"id": child, "name": node.get("name", ""),
                                             "description": str(node.get("description", ""))[:500],
@@ -339,6 +339,23 @@ class FrontendIRGenerationPass:
         for row in ws.tables["data"].values():
             if row["owner_id"] in selected:
                 selected.add(row["id"])
+        # Root/aggregate behavior tasks can otherwise expose the entire
+        # application tree (hundreds of UI descendants) and exceed provider
+        # context limits. Keep complete records for behavior-bearing entities,
+        # component roots and direct use-sites; retain a bounded ranked sample
+        # of deep render nodes. This is retrieval compaction, not a semantic
+        # validation or model output budget.
+        if query.get("_phase") == "behavior" and len(selected) > 180:
+            keep: set[str] = set(focus)
+            for table in ("components", "data", "properties", "events", "handlers", "effects"):
+                keep.update(row["id"] for row in ws.tables[table].values() if row["id"] in selected)
+            keep.update(
+                row["id"] for row in ws.tables["ui"].values()
+                if row["id"] in selected and row.get("kind") in {"COMPONENT", "FRAGMENT"}
+            )
+            remainder = [all_rows[eid] for eid in selected - keep if eid in all_rows]
+            keep.update(row["id"] for row in ranked(remainder, query, max(0, 180 - len(keep))))
+            selected = keep
         return {"default_component_id": ws.root_component_id, "focus_ids": focus,
                 "entities": [copy.deepcopy(all_rows[eid]) for eid in sorted(selected) if eid in all_rows],
                 "editable_ids": sorted(eid for eid in selected if eid in all_rows),

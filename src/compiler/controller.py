@@ -102,6 +102,13 @@ class Compiler:
         except GitStageError as exc:
             await self._log("Compiler", str(exc), "error")
             return CompilationResult(ok=False)
+        except Exception as exc:
+            # A malformed model result, optional visual analysis failure, or an
+            # unexpected design-pass exception must become a compilation result,
+            # not an uncaught process-level exception.
+            detail = f"{type(exc).__name__}: {exc}" or type(exc).__name__
+            await self._log("Compiler", f"ARC1000 COMPILATION_UNHANDLED: {detail}", "error")
+            return CompilationResult(ok=False)
         finally:
             await asyncio.to_thread(visual_executor.shutdown, wait=True)
 
@@ -644,8 +651,18 @@ class Compiler:
             visual_path = artifact_store.frontend_design_root / "visual_cache.json"
             if visual_future is not None:
                 await self._log("Compiler", "Waiting for visual reference analysis before frontend IR generation.")
-                visual_analysis = await asyncio.wrap_future(visual_future)
-                VisualReferenceAnalyzer.persist_cached(visual_analysis.references, visual_path)
+                try:
+                    visual_analysis = await asyncio.wrap_future(visual_future)
+                    VisualReferenceAnalyzer.persist_cached(visual_analysis.references, visual_path)
+                except Exception as exc:
+                    await self._log(
+                        "Compiler",
+                        f"ARC4115 VISUAL_ANALYSIS_FAILED: {type(exc).__name__}: {exc}; continuing without image analysis.",
+                        "warning",
+                    )
+                    visual_analysis = VisualReferenceAnalysisResult(
+                        references=[], errors=[],
+                    )
             else:
                 visual_analysis = VisualReferenceAnalysisResult()
             if visual_path.is_file():
@@ -713,6 +730,8 @@ class Compiler:
         ))
         for error in lowered_frontend.errors:
             await self._log("Compiler", error, "error")
+        for warning in lowered_frontend.warnings:
+            await self._log("Compiler", warning, "warning")
         if not lowered_frontend.ok:
             for rid in requirement_ids:
                 states[rid] = "FRONTEND_LOWERING_FAILED"

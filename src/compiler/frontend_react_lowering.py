@@ -95,12 +95,29 @@ class FrontendReactLowerer:
                 try:
                     self._component(component)
                 except (ValueError, KeyError, TypeError, RecursionError) as exc:
-                    self.result.errors.append(f"{component['id']}: {exc}")
+                    # A local design defect must not discard the rest of the
+                    # committed frontend IR. Emit a compilable shell for this
+                    # component and retain the diagnostic for the implementation
+                    # stage. Structural IR errors are still handled by the
+                    # outer validation above.
+                    self.result.warnings.append(f"{component['id']}: {exc}; emitted placeholder component.")
+                    self._fallback_component(component, str(exc))
             root = self.component_names[ir["root_component_id"]]
             required = [d for d in self.data(ir["root_component_id"], "INPUT") if d["required"] and d.get("default") is None]
             if required:
-                raise ValueError("Root has unsupplied required inputs: " + ", ".join(d["id"] for d in required))
-            self.result.sources["frontend/src/App.tsx"] = f'import {{ {root} as RootComponent }} from "./components/{root}";\nexport default function App() {{ return <RootComponent />; }}\n'
+                self.result.warnings.append(
+                    "Root has unsupplied required inputs: "
+                    + ", ".join(d["id"] for d in required)
+                    + "; mounting with an empty typed props object."
+                )
+            self.result.sources["frontend/src/App.tsx"] = (
+                'import * as React from "react";\n'
+                f'import {{ {root} as RootComponent }} from "./components/{root}";\n'
+                'export default function App() {\n'
+                '  const rootProps = {} as React.ComponentProps<typeof RootComponent>;\n'
+                '  return <RootComponent {...rootProps} />;\n'
+                '}\n'
+            )
             self.result.sources["frontend/src/runtime/effects.ts"] = EFFECT_RUNTIME
             self.result.sources["frontend/vite.config.ts"] = (
                 'import { defineConfig } from "vite";\nimport react from "@vitejs/plugin-react";\n'
@@ -116,6 +133,33 @@ class FrontendReactLowerer:
             except (OSError, ValueError) as exc:
                 self.result.errors.append(str(exc))
         return self.result
+
+    def _fallback_component(self, component: dict[str, Any], reason: str) -> None:
+        """Write a minimal typed component when one local record is unusable."""
+        cid = component["id"]
+        name = self.component_names[cid]
+        path = f"frontend/src/components/{name}.tsx"
+        props = self.signature(cid, "INPUT")
+        self.result.sources[path] = (
+            'import * as React from "react";\n\n'
+            f"// Lowering placeholder for {cid}: {reason}\n"
+            f"export function {name}(props: {props}) {{\n"
+            "  void props;\n"
+            "  return <React.Fragment />;\n"
+            "}\n"
+        )
+        self.result.implementation_tasks.append({
+            "entity_id": cid,
+            "category": "component_render",
+            "name": component.get("name", name),
+            "file": path,
+            "contract": component,
+            "input_data": self.data(cid, "INPUT"),
+            "ui": [],
+            "events": [],
+            "effects": [],
+            "description": "Replace the lowering placeholder using the component contract.",
+        })
 
     def data(self, owner: str, direction: str) -> list[dict[str, Any]]:
         return [r for r in self.ir["data"] if r["owner_id"] == owner and r["direction"] == direction]
