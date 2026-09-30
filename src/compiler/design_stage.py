@@ -222,7 +222,10 @@ Example shape:
 API_DECOMPOSITION_INSTRUCTIONS = """You are a senior backend API architect.
 Turn one Requirement Contract into API modules. Keep one user action in one API
 unless the requirement explicitly defines multiple operations. Every API contains exactly kind, name, spec, inputs,
-outputs, effects, and obligation_ids. Set kind to API. Copy interface fields and effects from the supplied contract without changing
+outputs, effects, and obligation_ids. API names must be unique within this requirement, start with a letter, and contain
+only ASCII letters, digits, or underscores (snake_case is valid). The compiler derives the qualified module id; do not
+return or invent module ids, caller/callee ids, or references to unregistered targets.
+Set kind to API. Copy interface fields and effects from the supplied contract without changing
 their semantic identifiers, types, or required flags. Field names are local parameter labels and may be made clearer
 without changing the represented data. A module whose spec describes a database read or write must own the
 corresponding effect from the supplied contract; never describe hidden database access on a module with an empty
@@ -242,6 +245,11 @@ Read the layered Markdown context and decompose the current module from the top 
 Silently plan how the parent responsibility is completed, then return only its direct child modules in execution order.
 
 Every child contains exactly seven top-level fields: kind, name, spec, inputs, outputs, effects, and obligation_ids. Each interface field
+Names are semantic identifiers, not prose: use one unique name per direct child, beginning with a letter and containing only
+ASCII letters, digits, or underscores (snake_case is valid). Never emit the same name twice under one parent. The compiler
+derives each qualified module id as `<owner_requirement>::<KIND>.<name>`; do not invent ids, prefixes, or numeric ids.
+The compiler derives caller/callee edges from the returned child list. Never reference a short name, a guessed id, a parent id,
+or a module that is not returned or already registered.
 contains semantic_id, name, type, and required. Preserve required exactly when reusing a parent field; mark newly
 introduced values required only when the child cannot complete without them. An API may call FUNC only. A
 FUNC may contain its own logic and may call FUNC or DB modules. The compiler-provided schema is authoritative: below an
@@ -1746,9 +1754,7 @@ def _materialize_apis(state: DesignState, requirement_id: str, contract: dict[st
                 *reuse_target.get("inputs", []),
                 *reuse_target.get("outputs", []),
             ])
-        module_id = _qualified_module_id(requirement_id, "API", item["name"])
-        if module_id in state.modules:
-            return [], [_issue("MODULE_ID_CONFLICT", f"Module id already exists: {module_id}", "REQUIREMENT_API", module_id)]
+        module_id = _allocate_local_module_id(state, requirement_id, "API", item["name"])
         module = {
             "id": module_id,
             "kind": "API",

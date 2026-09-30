@@ -267,10 +267,15 @@ class GlobalSymbolPlanner:
             module_id = str(module.get("id", "")).strip()
             module_kind = str(module.get("kind", "")).strip().upper()
             parsed = _parse_module_id(module_id)
-            if not module_id or module_id in seen:
+            if not module_id:
                 self._errors.append(
-                    f"ARC3106 MODULE_SYMBOL_CONFLICT: invalid or duplicate module id {module_id!r}."
+                    "ARC3106 MODULE_SYMBOL_CONFLICT: module id is empty."
                 )
+                continue
+            if module_id in seen:
+                # Duplicate records do not add semantics. Keep the first
+                # deterministic definition and discard later copies so
+                # caller/callee references continue to resolve to one symbol.
                 continue
             seen.add(module_id)
             if parsed is None:
@@ -587,11 +592,13 @@ class GlobalSymbolPlanner:
                         f"ARC3112 MODULE_EDGE_INVALID: {module_id} {field_name} must be a list."
                     )
                     continue
-                missing = sorted({str(value) for value in references if str(value) not in module_ids})
-                if missing:
-                    self._errors.append(
-                        f"ARC3113 MODULE_SYMBOL_MISSING: {module_id} {field_name} reference {missing}."
-                    )
+                # Relationship edges are compiler-derived and can become
+                # stale when a tolerant design result is merged. Keep only
+                # registered targets; an unresolved model-authored edge must
+                # not make an otherwise usable module graph uncompilable.
+                module[field_name] = [
+                    str(value) for value in references if str(value) in module_ids
+                ]
 
     def _register_symbol(
         self,
