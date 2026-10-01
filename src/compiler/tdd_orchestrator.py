@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from arc_agents import FrontendImplementationAgent, ImplementationAgent, ImplementationRequest, JsonModel
+from arc_agents.implementation import DirectImplementationAgent
 from arc_agents.contracts import ProposedPatch
 from arc_agents.test_repair import TestFailureAnalysisAgent, TestRepairAgent
 from arcbench_agent_runtime.jsonio import write_json_atomic
@@ -56,7 +57,10 @@ class TDDStageResult:
 class NodeTDDOrchestrator:
     """Implement and verify a node, allowing diagnosed test corrections."""
 
-    _BACKEND_KINDS = {"DB", "FUNC", "API"}
+    # The IR pipeline names backend targets DB/FUNC/API.  Direct planning also
+    # uses explicit file-level units so the same resolver can drive the
+    # without-IR ablation.
+    _BACKEND_KINDS = {"DB", "FUNC", "API", "SERVICE", "HANDLER", "TYPE"}
     _FRONTEND_KINDS = {"API_CLIENT", "STORE", "COMPONENT", "PAGE", "LAYOUT"}
 
     def __init__(
@@ -72,12 +76,14 @@ class NodeTDDOrchestrator:
         test_runner: TestRunner | None = None,
         implementation_agent: ImplementationAgent | None = None,
         frontend_implementation_agent: FrontendImplementationAgent | None = None,
+        direct_implementation_agent: DirectImplementationAgent | None = None,
         file_patcher: ExactFilePatcher | None = None,
     ) -> None:
         self.output_root = output_root.expanduser().resolve()
         self.requirement_ir = requirement_ir
         self.code_binding_registry = code_binding_registry
         self.frontend_ir = frontend_ir
+        self.direct_mode = frontend_ir == {}
         self.test_manifest = test_manifest
         self.policy = policy or NodeTDDPolicy.from_environment()
         self.test_runner = test_runner or TestRunner(self.output_root)
@@ -90,6 +96,11 @@ class NodeTDDOrchestrator:
             model, self.output_root,
             trace=self._trace_frontend_implementation,
             model_log=self._write_implementation_model_log,
+        )
+        self.direct_implementation_agent = direct_implementation_agent or DirectImplementationAgent(
+            model, self.output_root, trace=self._trace_implementation,
+            model_log=self._write_implementation_model_log,
+            max_context_characters=1_200_000,
         )
         self.file_patcher = file_patcher or ExactFilePatcher(self.output_root)
         self.analysis_agent = TestFailureAnalysisAgent(
@@ -221,6 +232,83 @@ class NodeTDDOrchestrator:
             result.failed_requirements.extend(requirement_ids)
             result.errors.extend(errors)
         return result
+
+    def implement_node_with_build_feedback(
+        self,
+        requirement_id: str,
+        *,
+        include_backend: bool = True,
+        include_frontend: bool = True,
+        test_files: tuple[str, ...] = (),
+        max_iterations: int = 3,
+    ) -> TDDStageResult:
+        """Implement one requirement directly, without tests or design IR.
+
+        Each iteration gives the implementation agents the current source and
+        the previous project-build diagnostics. At most one project build is
+        run after both backend and frontend edits, so this is the small
+        without-IR ablation loop rather than the normal TDD loop.
+        """
+        result = TDDStageResult("direct implementation", status="IMPLEMENTATION_FAILED")
+        requirement = self._requirement(requirement_id)
+        targets = [] if self.direct_mode else self._owned_targets(requirement_id)
+        backend_ids = tuple(
+            str(row["module_id"])
+            for row in targets
+            if row.get("kind") in self._BACKEND_KINDS
+        )
+        frontend_ids = tuple(
+            str(row["module_id"])
+            for row in targets
+            if row.get("kind") in self._FRONTEND_KINDS
+        )
+        feedback = ""
+        for iteration in range(1, max(1, max_iterations) + 1):
+            before = set(result.changed_files)
+            changed, error = self._apply_edit(
+                requirement_id, requirement, self.direct_implementation_agent, result,
+                target_ids=(), iteration=iteration,
+                test_files=test_files,
+                implementation_feedback=feedback, validate_patch=False,
+                direct_mode=True,
+            )
+            if not changed:
+                feedback = error
+                result.errors.append(f"implementation iteration {iteration}: {error}")
+
+            build = ProjectBuilder(self.output_root).build()
+            if build.ok:
+                result.status = "IMPLEMENTED"
+                result.errors = []
+                return result
+            feedback = "\n".join(error for error in build.errors if error)
+            result.errors = [feedback or "PROJECT_BUILD_FAILED: build did not pass."]
+            self._trace_implementation(
+                f"DIRECT_BUILD_FAILED requirement={requirement_id} "
+                f"iteration={iteration}/{max(1, max_iterations)}"
+            )
+
+            # If the agents made no source change and the build did not provide
+            # new information, stop retrying this node rather than duplicating
+            # identical model calls.
+            if set(result.changed_files) == before and not feedback:
+                break
+        result.failed_requirements.append(requirement_id)
+        return result
+
+    def implement_direct(
+        self,
+        requirement_id: str,
+        *,
+        test_files: tuple[str, ...] = (),
+        max_iterations: int = 3,
+    ) -> TDDStageResult:
+        """Run the direct full-stack implementation loop for one TDD node."""
+        return self.implement_node_with_build_feedback(
+            requirement_id, include_backend=True, include_frontend=True,
+            test_files=test_files,
+            max_iterations=max_iterations,
+        )
 
     def run_test_layers(
         self,
@@ -442,6 +530,9 @@ class NodeTDDOrchestrator:
         test_layer: str = "",
         repair_context: dict[str, Any] | None = None,
         direct_repair: bool = False,
+        implementation_feedback: str = "",
+        validate_patch: bool = True,
+        direct_mode: bool = False,
     ) -> tuple[bool, str]:
         snapshot = self.file_patcher.snapshot([
             *self._checkpoint_files(requirement_id), *test_files,
@@ -451,15 +542,21 @@ class NodeTDDOrchestrator:
         def accept_patch(patch: ProposedPatch) -> list[str]:
             # Diagnosis may authorize an additional dependency file. Capture
             # its original before applying so rejected builds roll it back too.
-            extra = sorted({edit.file for edit in patch.edits} - snapshot.keys())
-            captured = self.file_patcher.snapshot(extra)
-            if set(extra) - captured.keys():
+            edit_files = {str(edit.file).replace(chr(92), "/") for edit in patch.edits}
+            create_files = {str(path).replace(chr(92), "/") for path, _ in patch.create_files}
+            extra_edit_files = sorted(edit_files - snapshot.keys())
+            captured = self.file_patcher.snapshot(extra_edit_files)
+            if set(extra_edit_files) - captured.keys():
                 return ["PATCH_SNAPSHOT_FAILED: cannot capture newly authorized files."]
             snapshot.update(captured)
+            created_paths = create_files
             applied = self.file_patcher.apply(patch)
             errors = list(applied.errors)
             if applied.ok:
-                errors, complete = self._patch_validation_errors(applied.changed_files)
+                errors, complete = (
+                    self._patch_validation_errors(applied.changed_files)
+                    if validate_patch else ([], False)
+                )
                 if not errors:
                     if applied.changed_files:
                         self._needs_full_validation = not complete
@@ -469,6 +566,13 @@ class NodeTDDOrchestrator:
             elif not errors:
                 errors = ["PATCH_APPLY_FAILED: patch was not applied."]
             _, restore_errors = self.file_patcher.restore(snapshot)
+            for relative in created_paths:
+                target = (self.output_root / relative).resolve()
+                if self.output_root in target.parents and target.is_file() and relative not in snapshot:
+                    try:
+                        target.unlink()
+                    except OSError as exc:
+                        restore_errors.append(f"{relative}: {exc}")
             return [
                 *errors,
                 *(f"PATCH_ROLLBACK_FAILED: {error}" for error in restore_errors),
@@ -488,7 +592,14 @@ class NodeTDDOrchestrator:
                 requirement_id=requirement_id, requirement=requirement,
                 code_binding_registry=self.code_binding_registry,
                 target_module_ids=target_ids, test_files=test_files,
-                frontend_ir=self.frontend_ir if agent is self.frontend_implementation_agent else None,
+                # In without-IR mode an empty marker still selects the
+                # frontend implementation protocol; it is intentionally not
+                # a frontend design IR and is never persisted or consumed as
+                # one by the compiler.
+                frontend_ir=(self.frontend_ir if self.frontend_ir is not None else {})
+                if agent is self.frontend_implementation_agent else None,
+                implementation_feedback=implementation_feedback,
+                direct_mode=direct_mode,
             ), accept_patch=accept_patch)
         event = {
             "event": ("direct_repair" if direct_repair else "repair") if repair_context is not None
@@ -497,6 +608,10 @@ class NodeTDDOrchestrator:
             "status": "DEFERRED" if direct_repair and implementation.status == "DEFERRED" else "REJECTED",
             "changed_files": [],
             "edits": [asdict(edit) for edit in implementation.patch.edits] if implementation.patch else [],
+            "create_files": [
+                {"file": file, "bytes": len(content.encode("utf-8"))}
+                for file, content in (implementation.patch.create_files if implementation.patch else ())
+            ],
             "implementation_feedback": list(implementation.errors),
         }
         self._history.setdefault(requirement_id, []).append(event)
@@ -547,8 +662,9 @@ class NodeTDDOrchestrator:
     def _owned_targets(self, requirement_id: str) -> list[dict[str, Any]]:
         resolved = CodeTargetResolver(self.code_binding_registry).resolve_requirement_targets(requirement_id)
         priority = {
-            "DB": 0, "FUNC": 1, "API": 2, "API_CLIENT": 3, "STORE": 4,
-            "COMPONENT": 5, "PAGE": 6, "LAYOUT": 7,
+            "DB": 0, "FUNC": 1, "SERVICE": 1, "HANDLER": 2, "API": 3,
+            "TYPE": 4, "API_CLIENT": 5, "STORE": 6,
+            "COMPONENT": 7, "PAGE": 8, "LAYOUT": 9,
         }
         return sorted(
             resolved["owned_targets"],
@@ -556,6 +672,13 @@ class NodeTDDOrchestrator:
         )
 
     def _checkpoint_files(self, requirement_id: str) -> list[str]:
+        if self.direct_mode:
+            paths: list[str] = []
+            for root in ("backend/src", "frontend/src", "shared/src"):
+                base = self.output_root / root
+                if base.is_dir():
+                    paths.extend(path.relative_to(self.output_root).as_posix() for path in base.rglob("*") if path.is_file())
+            return sorted(paths)
         resolved = CodeTargetResolver(self.code_binding_registry).resolve_requirement_targets(requirement_id)
         return sorted({
             str(row["file"])

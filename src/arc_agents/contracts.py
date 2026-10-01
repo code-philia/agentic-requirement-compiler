@@ -17,3 +17,6 @@ class ProposedEdit:
 class ProposedPatch:
     requirement_id: str
     edits: tuple[ProposedEdit, ...]
+    # Direct without-IR implementation may materialize a new source module.
+    # Normal IR/TDD agents leave this empty.
+    create_files: tuple[tuple[str, str], ...] = ()

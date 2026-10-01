@@ -19,6 +19,7 @@ from .database_stage import (
 )
 from .database_lowering import lower_database
 from .design_stage import DesignPass, design_traceability
+from .direct_implementation import ensure_direct_test_runtime, direct_source_registry
 from .file_planning import GlobalFilePlanner
 from .frontend_generation import FrontendIRGenerationPass, frontend_ir_traceability
 from .frontend_react_lowering import FrontendReactLowerer
@@ -39,7 +40,7 @@ from .project_initialization import (
 )
 from .skeleton_lowering import TypeLowerer
 from .symbol_planning import GlobalSymbolPlanner
-from .tdd_orchestrator import NodeTDDOrchestrator
+from .tdd_orchestrator import NodeTDDOrchestrator, TDDStageResult
 from .tdd_progress import TDDProgress, load_tdd_manifest
 from .test_generation import RequirementTestGenerationPass, TestEnvironmentInitializer
 from .test_runner import TestRunner
@@ -123,6 +124,11 @@ class Compiler:
         if request.resume and request.start_from != "zero":
             raise GitStageError("resume and start_from are mutually exclusive")
         rank = 5 if request.resume else START_FROM.index(request.start_from)
+        if rank > 1:
+            raise GitStageError(
+                "The without-IR ablation supports start_from='zero' or "
+                "'initialized'; later checkpoints belong to the IR pipeline."
+            )
         checkpoints = CheckpointStore(request.output_dir, request.requirement_path, request.web_port)
         saved = checkpoints.load("lowered" if request.resume else request.start_from, resume=request.resume) if rank else {}
         if rank:
@@ -225,9 +231,35 @@ class Compiler:
                 visual_future = visual_executor.submit(
                     VisualReferenceAnalyzer.from_env(artifact_store.root).analyze_cached,
                     visuals.references, visual_path,
-                    persist=False,
+                    persist=True,
                 )
                 await self._log("Compiler", "Visual reference analysis started in the background.")
+
+        # without-IR ablation: after initialization and requirement
+        # preprocessing, associate each requirement with existing source files
+        # and implement directly. Backend/frontend design IR and lowering are
+        # intentionally not produced on this branch.
+        if rank <= 1:
+            try:
+                model = self._model or Model.from_env()
+                if hasattr(model, "set_usage_path"):
+                    model.set_usage_path(artifact_store.root / "model_usage.jsonl")
+                if visual_future is not None:
+                    await asyncio.to_thread(visual_future.result)
+                return await self._run_without_ir(
+                    request=request,
+                    artifact_store=artifact_store,
+                    requirement_ir=preprocessing.requirement_ir,
+                    dependency_graph=preprocessing.dependency_graph,
+                    model=model,
+                    project_manifest=project_manifest,
+                    root_id=root_id,
+                    states=states,
+                    artifacts=artifacts,
+                )
+            except (ModelConfigurationError, OSError, ValueError, KeyError) as exc:
+                await self._log("Compiler", f"Direct without-IR handoff failed: {exc}", "error")
+                return CompilationResult(ok=False, root_id=root_id, states=states, artifacts=artifacts)
         if rank == 5:
             self._runtime.traceability.merge_database_schema_links(database_traceability(saved["database"]))
             self._runtime.traceability.merge_design_links(design_traceability(saved["design"]))
@@ -844,6 +876,55 @@ class Compiler:
         await self._log("Compiler", f"{stage}: build and tests typecheck passed.")
         return None
 
+    async def _run_without_ir(
+        self,
+        *,
+        request: CompilationRequest,
+        artifact_store: CompilerArtifactStore,
+        requirement_ir: dict[str, Any],
+        dependency_graph: dict[str, Any],
+        model: StructuredModel,
+        project_manifest: dict[str, Any],
+        root_id: str | None,
+        states: dict[str, str],
+        artifacts: dict[str, str],
+    ) -> CompilationResult:
+        """Direct implementation ablation: requirements map straight to source."""
+        await self._log("Compiler", "without-IR mode: requirements go directly into node-level TDD implementation.")
+        runtime_files = ensure_direct_test_runtime(request.output_dir)
+        if runtime_files:
+            await self._log("Compiler", f"without-IR test runtime stubs: {runtime_files}", "warning")
+        registry = direct_source_registry(
+            request.output_dir,
+            [str(value) for value in requirement_ir.get("node_order", []) if str(value)],
+        )
+        order = _tdd_postorder(requirement_ir)
+        orchestrator = NodeTDDOrchestrator(
+            model,
+            request.output_dir,
+            requirement_ir=requirement_ir,
+            code_binding_registry=registry,
+            frontend_ir=None,
+            test_manifest=None,
+        )
+        # The ablation deliberately has no backend/frontend design IR. The
+        # existing TDD pipeline receives empty design contexts and invokes the
+        # direct full-stack agent after each node's tests are generated.
+        return await self._run_tdd(
+            request=request,
+            artifact_store=artifact_store,
+            requirement_ir=requirement_ir,
+            dependency_graph=dependency_graph,
+            database_schema={},
+            design_ir={},
+            frontend_ir={},
+            code_binding_registry=registry,
+            model=model,
+            root_id=root_id,
+            states=states,
+            artifacts=artifacts,
+        )
+
     async def _run_tdd(
         self,
         *,
@@ -1007,7 +1088,29 @@ class Compiler:
             self._runtime.traceability.merge_test_links(generated_tests.manifest)
             history.commit(f"5 test generation {requirement_id}", [".arc", "tests"])
 
-            if requirement_id in atomic_ids:
+            if frontend_ir == {}:
+                direct_test_files = tuple(
+                    str(row["test_file"])
+                    for row in generated_tests.manifest.get("files", [])
+                    if isinstance(row, dict)
+                    and str(row.get("requirement_id", "")) == requirement_id
+                    and row.get("test_file")
+                )
+                direct_implementation = orchestrator.implement_direct(
+                    requirement_id,
+                    test_files=direct_test_files,
+                    max_iterations=3,
+                )
+                for error in direct_implementation.errors:
+                    await self._log("NodeTDDOrchestrator", error, "warning")
+                if not direct_implementation.ok:
+                    await warn_node_failure(requirement_id, "direct implementation", direct_implementation)
+                if direct_implementation.changed_files:
+                    history.commit(
+                        f"6 direct implementation {requirement_id}",
+                        direct_implementation.changed_files,
+                    )
+            elif requirement_id in atomic_ids:
                 backend_implementation = orchestrator.implement_backend([requirement_id])
                 for error in backend_implementation.errors:
                     await self._log("NodeTDDOrchestrator", error, "warning")
@@ -1021,7 +1124,12 @@ class Compiler:
                         backend_implementation.changed_files,
                     )
 
-            frontend_implementation = orchestrator.implement_frontend([requirement_id])
+            if frontend_ir == {}:
+                frontend_implementation = None
+            else:
+                frontend_implementation = orchestrator.implement_frontend([requirement_id])
+            if frontend_implementation is None:
+                frontend_implementation = TDDStageResult("direct implementation", status="IMPLEMENTED")
             for error in frontend_implementation.errors:
                 await self._log("NodeTDDOrchestrator", error, "warning")
             if not frontend_implementation.ok:

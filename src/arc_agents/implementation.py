@@ -33,6 +33,19 @@ IMPLEMENTATION_OUTPUT_SCHEMA: dict[str, Any] = {
     },
 }
 
+DIRECT_IMPLEMENTATION_OUTPUT_SCHEMA: dict[str, Any] = {
+    "type": "object", "additionalProperties": False,
+    "required": ["edits", "create_files"],
+    "properties": {
+        "edits": IMPLEMENTATION_OUTPUT_SCHEMA["properties"]["edits"],
+        "create_files": {"type": "array", "maxItems": 12, "items": {
+            "type": "object", "additionalProperties": False,
+            "required": ["file", "content"],
+            "properties": {"file": {"type": "string"}, "content": {"type": "string"}},
+        }},
+    },
+}
+
 
 IMPLEMENTATION_INSTRUCTIONS = """Implement the supplied requirement in the editable source files.
 Dependencies are read-only unless explicitly included in editable_files for this task.
@@ -46,11 +59,22 @@ interfaces, routes and generated glue. Return only JSON with exact file/search/r
 edits. Copy search verbatim from a unique fragment of the current editable file.
 The keys of editable_files are the complete write allowlist for this invocation.
 related_files are read-only context.
+If planned_units is supplied, implement each unit in its declared file and export
+the declared export_name. Do not move a unit to another file or merge units into
+one file. Update only the relevant entry-point imports/exports and route wiring.
 The supplied router and related source files define the HTTP method, path and input source: use query for query inputs
 and body for body inputs in both handlers and test requests. Do not infer the method
 from a function name or change generated routes to accommodate an incorrect test.
 When a page and its owned components are both editable, implement their composition
 and behavior together in this invocation. Read-only screens remain in related_files.
+Maintain a one-file-per-unit source layout. Each independent backend module,
+service, API handler, or interface belongs in its own source file. Each React
+component or page belongs in its own .tsx/.jsx file. Do not append unrelated
+components, pages, handlers, or modules to an existing file. Entry points,
+barrel files, app files, and routers may only import/export units and compose
+routes; put the implementation in the unit file itself. Preserve named exports,
+default exports, and relative import paths, and update imports/exports whenever
+you split or reuse a unit. Never create duplicate symbols in the same module.
 """
 
 FRONTEND_IMPLEMENTATION_INSTRUCTIONS = IMPLEMENTATION_INSTRUCTIONS + """
@@ -76,6 +100,10 @@ Passing behavioral tests alone does not establish visual completion.
 
 Implement every supplied editable frontend screen and component, including their layout,
 navigation, accessible controls, empty/loading/error states, and shared visual language.
+Keep every page and component in its own file. A router, app shell, or barrel file
+must contain only imports, exports, and composition; it must not contain the body
+of a page or an unrelated component. Keep each frontend hook/store/service unit
+in its own file when it has an independent responsibility.
 Do not leave any 'Implementation pending' skeletons, even if E2E tests do not visit them.
 Replace the compiler's default slate shell and remove data-arc-page,
 data-arc-component, data-arc-layout, and data-arc-obligation skeleton markers.
@@ -99,6 +127,7 @@ class ImplementationRequest:
     frontend_ir: dict[str, Any] | None = None
     iteration: int = 0
     implementation_feedback: str = ""
+    direct_mode: bool = False
 
 
 @dataclass(slots=True)
@@ -127,7 +156,13 @@ class ImplementationAgent:
     ) -> None:
         self.output_root = output_root.expanduser().resolve()
         self._max_context_characters = max_context_characters
-        self._allowed_kinds: set[str] | None = {"DB", "FUNC", "API"}
+        # The regular IR pipeline uses DB/FUNC/API.  The without-IR planner
+        # additionally names source units explicitly (SERVICE/HANDLER/STORE/
+        # TYPE), so those kinds must remain writable when the direct registry
+        # is supplied.  The file allowlist is still enforced below.
+        self._allowed_kinds: set[str] | None = {
+            "DB", "FUNC", "API", "SERVICE", "HANDLER", "STORE", "TYPE",
+        }
         self._agent = BaseStructuredAgent(
             model,
             schema_name="arc_implementation_patch",
@@ -163,6 +198,9 @@ class ImplementationAgent:
                     file=row["file"], expected_sha256=hashes[row["file"]],
                     search=row["search"], replacement=row["replacement"],
                 ) for row in output["edits"]
+            ), create_files=tuple(
+                (str(row["file"]), str(row["content"]))
+                for row in output.get("create_files", [])
             ))
             if accept_patch is not None:
                 errors = accept_patch(patch)
@@ -187,6 +225,8 @@ class ImplementationAgent:
         from compiler.code_binding import CodeTargetResolver
         from compiler.file_context import requirement_dependencies, file_selection_log
 
+        if request.direct_mode:
+            return self._direct_context(request)
         resolved = CodeTargetResolver(request.code_binding_registry).resolve_requirement_targets(
             request.requirement_id
         )
@@ -286,6 +326,9 @@ class ImplementationAgent:
             "editable_files": editable_files,
             "related_files": related_files,
         }
+        direct_units = request.code_binding_registry.get("direct_units", {}).get(request.requirement_id)
+        if direct_units:
+            context["planned_units"] = direct_units
         if request.implementation_feedback:
             context["implementation_feedback"] = request.implementation_feedback
         context_chars = len(str(context))
@@ -296,6 +339,55 @@ class ImplementationAgent:
             raise ValueError(
                 f"Implementation context exceeds its size limit: {context_chars} > "
                 f"{self._max_context_characters} characters; largest files={largest!r}.")
+        return context, hashes
+
+    def _direct_context(self, request: ImplementationRequest) -> tuple[dict[str, Any], dict[str, str]]:
+        """Expose all application source to the without-IR full-stack agent."""
+        roots = ("backend/src/", "frontend/src/", "shared/src/")
+        files: dict[str, str] = {}
+        for root in roots:
+            base = self.output_root / root
+            if not base.is_dir():
+                continue
+            for path in sorted(base.rglob("*")):
+                if path.is_file() and path.suffix.lower() in {".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".css"}:
+                    relative = path.relative_to(self.output_root).as_posix()
+                    files[relative] = path.read_text(encoding="utf-8")
+        hashes = {path: hashlib.sha256(source.encode("utf-8")).hexdigest() for path, source in files.items()}
+        source_index = []
+        for path, source in files.items():
+            imports = sorted(set(re.findall(r'(?:from|import)\s+["\']([^"\']+)["\']', source)))[:20]
+            symbols = sorted(set(re.findall(r'\b(?:export\s+)?(?:async\s+)?(?:function|class|const|type|interface)\s+([A-Za-z_$][\w$]*)', source)))[:40]
+            source_index.append({"path": path, "symbols": symbols, "imports": imports,
+                                 "summary": " ".join(line.strip() for line in source.splitlines()
+                                                     if line.strip() and not line.lstrip().startswith(("//", "/*", "*")))[:500]})
+        test_sources: dict[str, str] = {}
+        for value in request.test_files:
+            relative = str(value).replace(chr(92), "/").strip()
+            parts = relative.split("/")
+            if not relative or relative.startswith("/") or "." in parts or ".." in parts:
+                continue
+            path = (self.output_root / Path(*parts)).resolve()
+            if self.output_root not in path.parents or not path.is_file():
+                continue
+            try:
+                test_sources[relative] = path.read_text(encoding="utf-8")
+            except (OSError, UnicodeError):
+                continue
+        context = {
+            "requirement_id": request.requirement_id,
+            "iteration": request.iteration,
+            "implementation_mode": "direct_full_stack",
+            "requirement": request.requirement,
+            "editable_files": files,
+            "related_files": {},
+            "source_index": source_index,
+            "test_files": list(request.test_files),
+            "test_sources": test_sources,
+            "file_creation_allowed": True,
+        }
+        if request.implementation_feedback:
+            context["implementation_feedback"] = request.implementation_feedback
         return context, hashes
 
     def _read_file(self, relative: str) -> str:
@@ -310,11 +402,12 @@ class ImplementationAgent:
 
     @staticmethod
     def _validate(output: dict[str, Any], hashes: dict[str, str]) -> list[str]:
-        if not isinstance(output, dict) or set(output) != {"edits"}:
-            return ["Return only an edits array."]
+        if not isinstance(output, dict) or set(output) not in ({"edits"}, {"edits", "create_files"}):
+            return ["Return edits and create_files only."]
         edits = output["edits"]
-        if not isinstance(edits, list) or not edits:
-            return ["Return at least one exact edit."]
+        creates = output.get("create_files", [])
+        if not isinstance(edits, list) or not isinstance(creates, list) or (not edits and not creates):
+            return ["Return at least one edit or created source file."]
         errors: list[str] = []
         for row in edits:
             if not isinstance(row, dict) or set(row) != {"file", "search", "replacement"}:
@@ -329,7 +422,40 @@ class ImplementationAgent:
                 errors.append("Search must contain an exact source fragment.")
             elif not isinstance(row["replacement"], str):
                 errors.append("Replacement must be text.")
+        for row in creates:
+            if not isinstance(row, dict) or set(row) != {"file", "content"}:
+                errors.append("Each create_files item needs file and content.")
+            elif not isinstance(row["file"], str) or not isinstance(row["content"], str) or not row["content"].strip():
+                errors.append("Created source files need a non-empty file and content.")
         return errors
+
+
+class DirectImplementationAgent(ImplementationAgent):
+    """Single full-stack implementation call used by the without-IR ablation."""
+
+    def __init__(self, model: JsonModel, output_root: Path, **kwargs: Any) -> None:
+        super().__init__(model, output_root, **kwargs)
+        self._allowed_kinds = None
+        self._agent = BaseStructuredAgent(
+            model, schema_name="arc_direct_implementation_patch",
+            instructions=(IMPLEMENTATION_INSTRUCTIONS + """
+This is a direct full-stack task. You may modify any application source file under
+backend/src, frontend/src, or shared/src, and may create new source modules using
+create_files. Keep one independent module, service, handler, page, or component per
+file. Update imports, exports, server registration, and route composition in the
+same response. Tests, node_modules, lockfiles, and package metadata are read-only.
+Use `requirement`, `test_files`, and `source_index` to select files: first identify
+the public API, route, component, or symbol exercised by the current requirement's
+tests, then inspect the corresponding test source in `test_sources` and full source in `editable_files`. Do not edit
+unrelated files merely because they are visible. If no existing file owns the
+behavior, create the smallest new module and update the relevant entry point.
+Return create_files for new files and edits for existing files; do not put file
+contents in an edit replacement when creating a file.
+"""),
+            output_schema=DIRECT_IMPLEMENTATION_OUTPUT_SCHEMA,
+            retries=2, trace=kwargs.get("trace"), model_log=kwargs.get("model_log"),
+            agent_name="DirectImplementationAgent",
+        )
 
 
 class FrontendImplementationAgent(ImplementationAgent):

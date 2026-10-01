@@ -45,7 +45,7 @@ class ExactFilePatcher:
 
     def apply(self, patch: ProposedPatch) -> FilePatchResult:
         requirement_id = str(patch.requirement_id).strip()
-        if not patch.edits:
+        if not patch.edits and not patch.create_files:
             return self._failed(requirement_id, ["PATCH_EMPTY: no edits were proposed."])
 
         edits_by_file: dict[str, list[ProposedEdit]] = {}
@@ -59,6 +59,19 @@ class ExactFilePatcher:
             edits_by_file.setdefault(relative, []).append(edit)
 
         pending: list[_PendingFile] = []
+
+        for value, content in patch.create_files:
+            relative = _safe_relative_file(str(value))
+            if relative is None:
+                return self._failed(requirement_id, [f"PATCH_PATH_INVALID: unsafe new source path {value!r}."])
+            target = (self.output_root / relative).resolve()
+            if self.output_root not in target.parents:
+                return self._failed(requirement_id, [f"PATCH_PATH_INVALID: new source path escapes workspace: {relative}."])
+            if target.exists():
+                return self._failed(requirement_id, [f"PATCH_CREATE_EXISTS: source file already exists: {relative}."])
+            if not isinstance(content, str) or not content.strip():
+                return self._failed(requirement_id, [f"PATCH_CREATE_EMPTY: new source file is empty: {relative}."])
+            pending.append(_PendingFile(relative=relative, target=target, original="", updated=content))
 
         for relative, edits in edits_by_file.items():
             target = (self.output_root / relative).resolve()
@@ -119,13 +132,17 @@ class ExactFilePatcher:
         written: list[_PendingFile] = []
         try:
             for row in pending:
+                row.target.parent.mkdir(parents=True, exist_ok=True)
                 _write_source_atomic(row.target, row.updated)
                 written.append(row)
         except OSError as exc:
             rollback_errors: list[str] = []
             for row in reversed(written):
                 try:
-                    _write_source_atomic(row.target, row.original)
+                    if row.original == "" and row.target.exists():
+                        row.target.unlink()
+                    else:
+                        _write_source_atomic(row.target, row.original)
                 except OSError as rollback_exc:
                     rollback_errors.append(f"{row.relative}: {rollback_exc}")
             message = f"PATCH_WRITE_FAILED: {exc}"
@@ -202,6 +219,7 @@ def _safe_relative_file(value: str) -> str | None:
         # snapshot and restore so authorized corrections can also roll back.
         or not normalized.startswith((
             "backend/src/", "frontend/src/",
+            "shared/src/",
             "tests/unit/", "tests/integration/", "tests/e2e/",
         ))
     ):
