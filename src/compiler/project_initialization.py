@@ -253,10 +253,12 @@ def test_workspace_spec(
                 '  testDir: "./e2e",\n'
                 "  fullyParallel: false,\n"
                 "  workers: 1,\n"
-                "  timeout: 10_000,\n"
-                "  expect: { timeout: 10_000 },\n"
+                "  timeout: 30_000,\n"
+                "  expect: { timeout: 5_000 },\n"
                 "  use: {\n"
                 '    baseURL,\n'
+                "    actionTimeout: 5_000,\n"
+                "    navigationTimeout: 5_000,\n"
                 '    trace: "retain-on-failure",\n'
                 '    screenshot: "only-on-failure",\n'
                 "  },\n"
@@ -266,7 +268,7 @@ def test_workspace_spec(
                 '      url: "http://127.0.0.1:" + e2ePort + "/__arc/health",\n'
                 '      env: { DATABASE_URL: ":memory:", NODE_ENV: "test", PORT: e2ePort },\n'
                 "      reuseExistingServer: false,\n"
-                "      timeout: 60_000,\n"
+                "      timeout: 300_000,\n"
                 '      stdout: "pipe",\n'
                 '      stderr: "pipe",\n'
                 "    },\n"

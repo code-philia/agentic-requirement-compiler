@@ -88,6 +88,10 @@ FIXTURE_DECISION_SCHEMA: dict[str, Any] = {
 FIXTURE_INSTRUCTIONS = """You are an application baseline-data designer.
 Read the requirement description and every scenario, especially Given/precondition steps. Identify records that
 must already exist when the application starts so the described flows can begin.
+The current requirement may be an ATOMIC requirement or a FOLDER (parent) requirement. A FOLDER is not merely
+organizational: if its own description or scenarios require records to exist before its aggregate flow starts,
+design those baseline records as well. Do not infer fixture data from child requirements unless the supplied
+requirement text or scenarios explicitly require it.
 Do not seed records that a scenario creates through its own actions, records used only as transient test inputs,
 or example values that do not imply pre-existing application data.
 If no pre-existing application records are required, return {"fixture_sets": []}.
@@ -127,7 +131,7 @@ class FixturePass:
         sets: list[dict[str, Any]] = []
         errors: list[str] = []
         nodes = requirement_ir.get("nodes", {})
-        for requirement_id in requirement_ir.get("atomic_units", []):
+        for requirement_id in _fixture_requirement_ids(requirement_ir):
             node = nodes.get(requirement_id, {}) if isinstance(nodes, dict) else {}
             if not isinstance(node, dict) or not (node.get("description") or node.get("scenarios")):
                 continue
@@ -167,7 +171,7 @@ class FixturePass:
             payload = {
                 "requirement": {
                     key: copy.deepcopy(node.get(key))
-                    for key in ("id", "name", "description", "scenarios")
+                    for key in ("id", "name", "type", "parent_id", "description", "scenarios")
                 },
                 "database_schema": copy.deepcopy(local_schema),
                 "constraint_guidance": _fixture_constraint_guidance(local_schema),
@@ -205,6 +209,76 @@ class FixturePass:
         prefix = f"ARC2402 FIXTURE_INVALID: {requirement_id}: "
         errors.append(detail if detail.startswith(prefix) else prefix + detail)
         return None
+
+
+def _fixture_requirement_ids(requirement_ir: dict[str, Any]) -> list[str]:
+    """Return fixture tasks for atomic requirements and their parent chains.
+
+    Fixture design historically ran only for leaves.  Parent requirements can
+    carry their own Given/precondition data, however, so they must be scheduled
+    too.  A small parent-first DFS keeps the order deterministic, de-duplicates
+    shared ancestors, and tolerates malformed/cyclic parent links without
+    preventing the remaining fixture tasks from running.
+    """
+
+    nodes = requirement_ir.get("nodes", {})
+    if not isinstance(nodes, dict):
+        return []
+    known_nodes = {
+        str(node_id): node
+        for node_id, node in nodes.items()
+        if isinstance(node, dict) and str(node_id)
+    }
+    atomic_ids = [
+        str(value)
+        for value in requirement_ir.get("atomic_units", [])
+        if str(value) in known_nodes
+    ]
+    if not atomic_ids:
+        return []
+
+    targets: set[str] = set(atomic_ids)
+    for atomic_id in atomic_ids:
+        current = atomic_id
+        visited: set[str] = set()
+        while current in known_nodes and current not in visited:
+            visited.add(current)
+            parent_id = known_nodes[current].get("parent_id")
+            parent = str(parent_id).strip() if parent_id is not None else ""
+            if not parent or parent not in known_nodes:
+                break
+            targets.add(parent)
+            current = parent
+
+    ordered_nodes = [
+        str(value)
+        for value in requirement_ir.get("node_order", [])
+        if str(value) in targets
+    ]
+    ordered_nodes.extend(sorted(targets - set(ordered_nodes)))
+    result: list[str] = []
+    visited: set[str] = set()
+    visiting: set[str] = set()
+
+    def visit(requirement_id: str) -> None:
+        if requirement_id in visited:
+            return
+        if requirement_id in visiting:
+            # The preprocessor reports cycles separately; keep fixture
+            # generation best-effort if one reaches this pass.
+            return
+        visiting.add(requirement_id)
+        parent_id = known_nodes[requirement_id].get("parent_id")
+        parent = str(parent_id).strip() if parent_id is not None else ""
+        if parent in targets:
+            visit(parent)
+        visiting.discard(requirement_id)
+        visited.add(requirement_id)
+        result.append(requirement_id)
+
+    for requirement_id in ordered_nodes:
+        visit(requirement_id)
+    return result
 
 
 def _fixture_schema_for_requirement(
