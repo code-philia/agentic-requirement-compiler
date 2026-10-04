@@ -29,7 +29,6 @@ class TestManifestItem(BaseModel):
 
 
 class TestGenerationResponse(BaseModel):
-    summary: str = Field(default="", description="Short test-design summary.")
     tests: list[TestManifestItem] = Field(default_factory=list, description="Generated test manifest.")
     files_written: list[str] = Field(default_factory=list, description="Workspace-relative files written or edited.")
 

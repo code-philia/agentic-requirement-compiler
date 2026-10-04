@@ -256,9 +256,6 @@ class TestDrivenDeveloper:
 
     @staticmethod
     def _payload_to_final_text(payload: dict[str, Any]) -> str:
-        summary = str(payload.get("summary", "") or "").strip()
-        if summary:
-            return summary
         for key in ("final", "result", "text", "content"):
             value = payload.get(key)
             if isinstance(value, str) and value.strip():

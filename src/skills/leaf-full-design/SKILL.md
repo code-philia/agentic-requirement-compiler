@@ -14,6 +14,6 @@ description: Complete a leaf requirement's frontend and request wiring, then cre
 6. DB operation functions use the shared prepared schema/runtime. Use prepared table records without redefining their global contracts. Do not generate schema or seeds.
 7. Keep other nodes' backend business modules intact. Reuse shared runtime/auth infrastructure and extend only central registration as necessary.
 8. Preserve working backend implementation and stable file paths on retry. Never replace an implemented function with a stub.
-9. Return summary and files grouped as frontend/API/FUNC/DB/shared. Include reused current-node files. Shared registration/infrastructure is touched, not owned. Keep signatures, routes, inputs/outputs and comments in code; do not return interface ids or call graphs. Do not model UI or frontend clients as interfaces or separate nodes.
+9. Return only files grouped as frontend/API/FUNC/DB/shared, without a summary or closing narrative. Include reused current-node files. Shared registration/infrastructure is touched, not owned. Keep signatures, routes, inputs/outputs and comments in code; do not return interface ids or call graphs. Do not model UI or frontend clients as interfaces or separate nodes.
 10. For auth/session work, wire shared session state and consumers in the frontend and use the auth-session-consistency skill.
 11. For CLI/Android, complete the command/UI entrypoint and local call wiring with service/persistence skeletons; do not invent an HTTP backend.

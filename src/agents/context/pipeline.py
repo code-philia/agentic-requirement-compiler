@@ -393,8 +393,6 @@ class ContextPipeline:
                 {"layer": item.get("type"), "file_path": item.get("file_path")}
                 for item in interfaces
             ]) + "\n</code_files>")
-        if session.get("design_summary"):
-            parts.append("<design_summary>\n" + str(session["design_summary"]) + "\n</design_summary>")
         return "\n\n".join(parts)
 
     def _get_materialized_files(self, node_id: str) -> str:
@@ -506,7 +504,6 @@ class ContextPipeline:
             "<current_code_files>\n"
             + self._compact_json({
                 "files": session.get("file_groups") or [{"layer": item.get("type"), "file_path": item.get("file_path")} for item in interfaces],
-                "summary": session.get("design_summary", ""),
                 "instruction": "Read these source files for signatures, routes, request/response shapes and operation details.",
             })
             + "\n</current_code_files>"

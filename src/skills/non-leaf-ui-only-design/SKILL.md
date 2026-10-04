@@ -10,5 +10,5 @@ description: Improve a parent requirement's real layout and navigation without m
 2. Complete the parent layout and navigation in application code. Do not create UI interface records, UI nodes, attachment plans, or backend contracts.
 3. Leave executable child feature behavior to its leaf DESIGN/TDD. Do not replace child UI with placeholders or pre-implement child business behavior.
 4. Do not copy screenshot business data or fabricate runtime state.
-5. Return summary and files with frontend/shared paths and empty API/FUNC/DB lists. These paths are the handoff to child nodes.
+5. Return only files with frontend/shared paths and empty API/FUNC/DB lists, without a summary or closing narrative. These paths are the handoff to child nodes.
 6. Inspect only relevant frontend entrypoints, components, and styles. Do not explore backend or database files for layout work.

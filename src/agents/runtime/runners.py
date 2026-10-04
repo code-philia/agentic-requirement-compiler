@@ -100,7 +100,7 @@ def extract_payload(result: dict[str, Any]) -> dict[str, Any]:
     parsed = parse_json_payload(final_text)
     if parsed is not None:
         return parsed
-    return {"summary": final_text, "_raw_final_message": _stringify_final_message(result)}
+    return {"text": final_text, "_raw_final_message": _stringify_final_message(result)}
 
 
 def parse_json_payload(text: str) -> dict[str, Any] | None:

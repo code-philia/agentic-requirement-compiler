@@ -56,7 +56,6 @@ def get_system_prompt() -> str:
                     "Do not create a new test when an existing current-node test already covers the same scenario, interface ids, type, and runtime path.",
                     "Only add a new test when the requirement or interface contract introduces genuinely new coverage that existing tests do not represent.",
                     "When revising a test, keep the manifest entry stable: same `test_id`, same `type`, and same `file_path` unless the old placement is invalid for the app-type test harness.",
-                    "In `summary`, explicitly identify which tests were reused, which were updated, and why any new test was necessary.",
                 ],
             ),
             section(
@@ -113,7 +112,7 @@ def get_user_prompt(
         section(
             "Task",
             [
-                "Generate tests for the current node ownership. If no layer is appropriate for this node, return an empty `tests` list with a clear `summary`.",
+                "Generate tests for the current node ownership. If no layer is appropriate for this node, return an empty `tests` list without a summary.",
                 "This is a generation-only pass: create tests and the returned manifest, then stop. Do not run, reread, or self-repair files written in this pass; TestDrivenDeveloper receives all test repair work.",
                 "Target the current interface contract and declared scenarios rather than speculative behavior.",
                 "Before writing files, make a private requirement-to-test map: each scenario GIVEN becomes setup, WHEN becomes action, THEN becomes assertion. Do not output the map, but use it to reject contradictory tests.",
@@ -126,12 +125,11 @@ def get_user_prompt(
                 "For E2E tests, choose selectors, prompts, command arguments, and observable outcomes from requirement-stated user-facing behavior first. If the requirement does not specify exact selectors or flags, define stable executable hooks in the test contract so implementation can align to them.",
                 "For frontend tests containing JSX, the actual manifest `file_path` must end in `.test.tsx` or `.spec.tsx`; do not use a `.ts` bridge file that imports a `.tsx` test.",
                 "Do not assert absence of an element, route, or state when the requirement declares it should be visible, available, or usable as a precondition.",
-                "Return `summary`, `tests`, and `files_written`.",
+                "Return only `tests` and `files_written`, without a summary or closing narrative.",
                 "Each test manifest item needs only test_id, type, and file_path. Read source for interface details; do not duplicate code contracts in the manifest.",
                 "Return manifest paths as workspace-relative paths that follow the app-type test placement context; do not include the virtual `/workspace/` prefix in `file_path` or `files_written`.",
                 "Every `test_id` must be globally stable and include the current node id.",
                 "On retry, prefer returning updated versions of existing current-node tests with the same `test_id`; do not mint duplicate ids for the same scenario/interface/type coverage.",
-                "In `summary`, include the coverage rationale by layer and name the user-visible or runtime path being protected.",
             ],
         )
     )

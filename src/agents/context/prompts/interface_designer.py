@@ -28,7 +28,7 @@ def get_system_prompt() -> str:
             "Return only a grouped code file list. Keep signatures, method/path, request/response shapes, and necessary comments in the source skeletons. Do not return interface ids, descriptions, inputs/outputs, first lines, or callers/callees. Use the prepared database records directly.",
             "For non-leaf nodes, improve only the actual shell/layout/navigation implied by the requirement and visual reference, preserving child behavior. Return only frontend/shared file paths; do not create backend or child business behavior. Nodes without visuals are normally skipped by the workflow.",
             "For CLI/Android, apply the same split to the command/UI entrypoint and its local service/persistence skeleton; introduce HTTP only when required by the application.",
-            "Finish with summary and files={frontend:[],API:[],FUNC:[],DB:[],shared:[]}. Include changed or reused frontend pages/components/clients and node-owned backend modules so tests and TDD can locate the code without UI modeling.",
+            "Finish with only files={frontend:[],API:[],FUNC:[],DB:[],shared:[]}. Include changed or reused frontend pages/components/clients and node-owned backend modules so tests and TDD can locate the code without UI modeling.",
         ]),
         app_runtime_contract(), code_task_exploration_policy(), workspace_tool_policy(), response_contract(),
     ])
@@ -44,6 +44,6 @@ def get_user_prompt(*, node_id: str, requirement_data: dict[str, Any], dynamic_c
             "For non-leaf or frontend-only requirements, leave API/FUNC/DB groups empty.",
             "Return files with workspace-relative paths grouped as frontend, API, FUNC, DB, and shared. shared contains touched route registration/auth infrastructure, not node-owned business modules. Keep interface details in source only.",
             "List backend business files owned by this node. Do not claim another node's modules or compiler-generated database files.",
-            "Return a concise summary and grouped files only. The compiler derives requirement ownership, record ids, status, and history. It does not require a model-generated call graph.",
+            "Return grouped files only, without a summary or closing narrative. The compiler derives requirement ownership, record ids, status, and history. It does not require a model-generated call graph.",
         ])],
     )

@@ -30,7 +30,6 @@ class DesignFiles(BaseModel):
 
 
 class InterfaceDesignResponse(BaseModel):
-    summary: str = Field(default="", description="Short summary of frontend integration and backend skeletons.")
     files: DesignFiles = Field(description="Code paths grouped by layer, including reused current-node files.")
 
 
@@ -124,7 +123,6 @@ class InterfaceDesigner:
     def _normalize_design_payload(self, payload: dict[str, Any]) -> dict[str, Any]:
         files = DesignFiles.model_validate(payload.get("files")).model_dump()
         return {
-            "summary": str(payload.get("summary", "") or "").strip(),
             "files": files,
         }
 

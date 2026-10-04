@@ -48,7 +48,7 @@ def reasoning_reflection_policy() -> str:
             "A private final consistency check must use evidence already collected; it must never trigger a post-write re-read or rewrite merely to review your own work.",
             "Hard rule: after a successful write, do not read or write that same path again unless a file tool or a system validation tool reports an error for it. Continue to the next concrete action or return the required artifact.",
             "Do not emit conversational self-review narration such as `let me review`, `let me check`, or `I will verify`. Keep intermediate output to tool calls; return only the required final JSON or stage final text.",
-            "Report only concise conclusions in `summary` fields or final text; summaries should explain the chosen direction and remaining evidence without dumping step-by-step private reasoning.",
+            "Return only the artifacts or completion signal required by the current stage. Do not add a `summary`, closing narrative, or private reasoning.",
         ],
     )
 
@@ -172,9 +172,9 @@ def response_contract() -> str:
         [
             "Your final assistant message must be a single valid JSON object and nothing else.",
             "Do not wrap the final JSON in Markdown fences, prose, labels, or tool-call narration.",
-            "Use the keys requested by the current stage, such as `summary`, `interfaces`, `tests`, and `files_written`.",
+            "Use only the keys requested by the current stage, such as `files`, `tests`, and `files_written`. Do not return a `summary` field.",
             "Keep outputs deterministic, scoped to the current node, and suitable for system-side validation.",
-            "If blocked, return JSON with a precise `summary`, empty artifact arrays, and the evidence gathered; do not fabricate artifacts.",
+            "If blocked, do not fabricate artifacts. Return only actual artifacts using the current stage's required keys; keep failure evidence in tool results rather than adding a final summary.",
         ],
     )
 

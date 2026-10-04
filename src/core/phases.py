@@ -89,7 +89,6 @@ class WorkflowPhaseRunner:
                     "interfaces": [],
                     "file_groups": {"frontend": [], "API": [], "FUNC": [], "DB": [], "shared": []},
                     "materialized_files": [],
-                    "design_summary": "",
                     "test_artifacts": [],
                     "phase_status": {"design": "skipped", "test": "skipped"},
                 },
@@ -138,7 +137,6 @@ class WorkflowPhaseRunner:
                 "interfaces": prepared_interfaces,
                 "file_groups": file_groups,
                 "materialized_files": files_written,
-                "design_summary": interface_result.get("summary", ""),
                 "phase_status": {"design": "prepared"},
             },
         )
