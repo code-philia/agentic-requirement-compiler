@@ -303,6 +303,11 @@ class ContextPipeline:
             if not file_path:
                 continue
             content = self._decode_interface_content(iface)
+            if content.get("kind") == "code_file":
+                cards.append({"file_path": file_path, "layer": iface.get("type"),
+                              "implemented": bool(iface.get("implemented")),
+                              "instruction": "Read source for interface details."})
+                continue
             cards.append(
                 {
                     "file_path": file_path,
@@ -376,7 +381,10 @@ class ContextPipeline:
         interfaces = [item for item in session.get("interfaces") or [] if item.get("type") != "UI"]
         parts = []
         if interfaces:
-            parts.append("<interfaces>\n" + self._compact_json(interfaces) + "\n</interfaces>")
+            parts.append("<code_files>\n" + self._compact_json([
+                {"layer": item.get("type"), "file_path": item.get("file_path")}
+                for item in interfaces
+            ]) + "\n</code_files>")
         if session.get("design_summary"):
             parts.append("<design_summary>\n" + str(session["design_summary"]) + "\n</design_summary>")
         return "\n\n".join(parts)
@@ -454,6 +462,13 @@ class ContextPipeline:
             else:
                 relation = "existing"
             content = self._decode_interface_content(iface)
+            if content.get("kind") == "code_file":
+                cards.append({"req_ids": req_ids, "relation": relation,
+                              "layer": iface.get("type"), "file_path": iface.get("file_path"),
+                              "implemented": bool(iface.get("implemented"))})
+                if len(cards) >= self.max_related_interfaces:
+                    break
+                continue
             cards.append(
                 {
                     "interface_id": str(iface.get("interface_id", "") or "").strip(),
@@ -477,12 +492,16 @@ class ContextPipeline:
     def get_interface_contract_context(self, node_id: str) -> str:
         session = self._load_node_session(node_id)
         interfaces = [item for item in session.get("interfaces") or [] if item.get("type") != "UI"]
-        if not interfaces:
+        if not interfaces and not session.get("file_groups"):
             return ""
         return (
-            "<current_interface_contract>\n"
-            + self._compact_json(interfaces)
-            + "\n</current_interface_contract>"
+            "<current_code_files>\n"
+            + self._compact_json({
+                "files": session.get("file_groups") or [{"layer": item.get("type"), "file_path": item.get("file_path")} for item in interfaces],
+                "summary": session.get("design_summary", ""),
+                "instruction": "Read these source files for signatures, routes, request/response shapes and operation details.",
+            })
+            + "\n</current_code_files>"
         )
 
     def _get_recent_failure_summary(self, node_id: str) -> str:

@@ -32,9 +32,9 @@ def get_system_prompt() -> str:
             section(
                 "Execution Flow",
                 [
-                    "Read the current test manifest, current interface contract, generated tests, nearest implementation files, and relevant build/test configuration before editing.",
-                    "Before the first `run_tests` call, complete backend behavior and repair any frontend integration gap using the requirement, backend contracts, materialized_files, and generated tests.",
-                    "Start from materialized_files and backend contracts. Complete node-owned API/service/repository behavior on the shared prepared database, then repair the existing frontend/client path as needed. Do not redesign or model UI, rewrite other nodes' backend modules, or replace implemented frontend with a new shell.",
+                    "Read the current test manifest, current code file mapping, generated tests, nearest implementation files, and relevant build/test configuration before editing.",
+                    "Before the first `run_tests` call, complete backend behavior and repair any frontend integration gap using the requirement, backend file groups and source signatures, materialized_files, and generated tests.",
+                    "Start from materialized_files and backend file groups and source signatures. Complete node-owned API/service/repository behavior on the shared prepared database, then repair the existing frontend/client path as needed. Do not redesign or model UI, rewrite other nodes' backend modules, or replace implemented frontend with a new shell.",
                     "For auth/session requirements, the initial pass should connect durable session creation/loading, a current-session API or equivalent boundary, shared auth/session state, shared consumers, and post-action state updates when these are part of the interface contract or scenario.",
                     "For cart, checkout, account, product, order, catalog, or inventory requirements, the initial pass should connect visible UI, API/client boundary, service logic, and persistence/runtime state when those interfaces exist or are implied by the requirement.",
                     "For seed-data requirements, wire the initial implementation to the compiler-prepared database runtime, including the normal CLI/Android entrypoint when relevant. A frontend array, test-only setup, or hidden bypass is not an implementation.",
@@ -111,7 +111,7 @@ def get_user_prompt(
         section(
             "Task",
             [
-                "First perform an initial full-chain implementation pass: read the requirement context, current interface contract, all generated test files in the manifest, nearest product files, and relevant config; then implement the required behavior and interface wiring before the first test run.",
+                "First perform an initial full-chain implementation pass: read the requirement context, current code file mapping, all generated test files in the manifest, nearest product files, and relevant config; then implement the required behavior and interface wiring before the first test run.",
                 "The initial pass should satisfy the requirement and generated tests as far as can be inferred statically; it should include multiple cohesive edits when a UI/API/FUNC/DB or command/runtime chain needs to be connected.",
                 "If the requirement or interface contract mentions auth/session/authenticated state/current user/account state, implement the global session path in the first pass: durable session creation, session loading/current-user API, shared auth/session state, shared consumers, and post-action state transition. Do not satisfy this with only a local success message.",
                 "If the requirement or interface contract mentions cart, checkout, account, products, orders, catalog, inventory, or persisted user-owned data, implement the connected domain path in the first pass: UI wiring, API/client boundary, service/function logic, and persistence/runtime state as required. Do not satisfy this with only local component state.",
@@ -123,7 +123,7 @@ def get_user_prompt(
                 "You may call `run_tests(test_files=[...])` to run specific current-node test files from the manifest.",
                 "Each test layer has a fixed `run_tests` budget of 10 calls. Use each failed run to inspect the named files, make a concrete repair, and only then spend the next call.",
                 "Do not use `run_tests` as the first action unless this batch has a previous failure handoff and the implementation has already had an initial pass.",
-                "Use the current interface contract, generated tests, and latest raw failure output to localize the problem before searching beyond the failing layer.",
+                "Use the current code file mapping, generated tests, and latest raw failure output to localize the problem before searching beyond the failing layer.",
                 "After a failed `run_tests`, inspect the failing test file and the nearest owner file named or implied by the error before any broader search.",
                 "If the same failure fingerprint repeats, change the hypothesis or move one layer across the UI/API/FUNC/DB chain instead of retrying adjacent edits.",
                 "If a generated test is invalid, contradictory, brittle, or incompatible with the installed runner, edit the test to preserve the requirement intent and make it executable.",

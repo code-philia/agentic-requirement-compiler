@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
@@ -86,6 +87,7 @@ class WorkflowPhaseRunner:
                 node_id,
                 {
                     "interfaces": [],
+                    "file_groups": {"frontend": [], "API": [], "FUNC": [], "DB": [], "shared": []},
                     "materialized_files": [],
                     "design_summary": "",
                     "test_artifacts": [],
@@ -111,42 +113,30 @@ class WorkflowPhaseRunner:
             node_id=node_id,
             requirement_data=requirement_data,
         )
-        interfaces = []
-        for item in interface_result.get("interfaces", []):
-            if not isinstance(item, dict):
-                continue
-            normalized = dict(item)
-            normalized["file_path"] = normalize_workspace_relative_path(normalized.get("file_path"), self.workspace_path)
-            interfaces.append(normalized)
-        files_written = []
-        for path in interface_result.get("files_written") or []:
-            normalized_path = normalize_workspace_relative_path(path, self.workspace_path)
-            if normalized_path:
-                files_written.append(normalized_path)
+        try:
+            file_groups, prepared_interfaces = self._prepare_design_files(node_id, interface_result.get("files"), is_non_leaf)
+        except ValueError as exc:
+            await self._log("InterfaceDesigner", str(exc), status="error", node_id=node_id)
+            return False
+        files_written = [path for paths in file_groups.values() for path in paths]
         # A retry may reuse working UI without rewriting it; keep its code locations.
         previous_files = sessions.load_node_session(node_id).get("materialized_files") or []
         files_written = list(dict.fromkeys([*previous_files, *files_written]))
-        if not interfaces and not files_written and not is_non_leaf:
+        if not prepared_interfaces and not files_written and not is_non_leaf:
             await self._log(
                 "InterfaceDesigner",
-                "Node design returned neither backend contracts nor materialized files.",
+                "Node design returned no code files.",
                 status="warning",
                 node_id=node_id,
             )
 
-        try:
-            if is_non_leaf and interfaces:
-                raise ValueError("Parent DESIGN edits layout directly and must return interfaces=[].")
-            prepared_interfaces = self._prepare_interfaces(node_id, interfaces)
-        except ValueError as exc:
-            await self._log("InterfaceDesigner", str(exc), status="error", node_id=node_id)
-            return False
         context_pipeline.cache.invalidate_file_layers(node_id)
         context_pipeline.cache.invalidate_db_layers(node_id)
         self._update_node_session(
             node_id,
             {
                 "interfaces": prepared_interfaces,
+                "file_groups": file_groups,
                 "materialized_files": files_written,
                 "design_summary": interface_result.get("summary", ""),
                 "phase_status": {"design": "prepared"},
@@ -698,71 +688,64 @@ class WorkflowPhaseRunner:
 
         return True
 
-    def _prepare_interfaces(self, node_id: str, interfaces: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    def _prepare_design_files(self, node_id: str, groups: Any, is_non_leaf: bool) -> tuple[dict[str, list[str]], list[dict[str, Any]]]:
+        if not isinstance(groups, dict):
+            raise ValueError("DESIGN must return files grouped as frontend/API/FUNC/DB/shared.")
+        if set(groups) - {"frontend", "API", "FUNC", "DB", "shared"}:
+            raise ValueError("Unknown DESIGN file group.")
+        root = Path(self.workspace_path).resolve()
+        normalized: dict[str, list[str]] = {}
         prepared: list[dict[str, Any]] = []
-        for interface in interfaces:
-            interface_id = str(interface.get("interface_id", "")).strip()
-            if not interface_id:
-                continue
-            existing = self.traceability.get_interface(interface_id)
-            if interface_id.startswith("GLOBAL:DB:"):
-                raise ValueError("Node DB interfaces describe operation functions; reference GLOBAL:DB tables in callees/specification instead of returning them.")
-            if existing and node_id not in existing.get("req_ids", []):
-                raise ValueError(f"Backend interface {interface_id} belongs to another requirement; define a node-owned operation contract instead.")
-            if existing:
-                try:
-                    existing_content = json.loads(str(existing.get("content") or "{}"))
-                except json.JSONDecodeError:
-                    existing_content = {}
-                if isinstance(existing_content, dict):
-                    interface = {**existing_content, **interface}
-            interface_type = str(interface.get("type") or (existing or {}).get("type") or "").strip().upper()
-            if interface_type not in ALLOWED_INTERFACE_TYPES:
-                raise ValueError(
-                    f"Generated interface `{interface_id}` has invalid `type` {interface.get('type')!r}. "
-                    "Only backend API, FUNC, or DB operation interfaces are modeled; UI is edited directly."
-                )
-            file_path = (
-                normalize_workspace_relative_path(interface.get("file_path"), self.workspace_path)
-                or ((existing or {}).get("file_path") if existing else "")
-            )
-            if self.app_type == "web" and file_path.startswith("frontend/"):
-                raise ValueError(f"Frontend file {file_path} belongs in files_written, not the backend interface manifest.")
-            normalized = {
-                **interface,
-                "interface_id": interface_id,
-                "req_id": node_id,
-                "type": interface_type,
-                "file_path": file_path,
-                "first_line": str(interface.get("first_line") or (existing or {}).get("first_line") or "").strip(),
-                "callers": normalize_string_list(interface.get("callers")) or normalize_string_list((existing or {}).get("callers")),
-                "callees": normalize_string_list(interface.get("callees")) or normalize_string_list((existing or {}).get("callees")),
-                "_existing_req_ids": list(existing.get("req_ids", [])) if existing else [],
-                "_existing_implemented": bool(existing.get("implemented")) if existing else False,
-            }
-            prepared.append(normalized)
-        return prepared
+        owners = self.traceability.list_interfaces()
+        for layer in ("frontend", "API", "FUNC", "DB", "shared"):
+            paths = groups.get(layer, [])
+            if not isinstance(paths, list) or any(not isinstance(path, str) for path in paths):
+                raise ValueError(f"DESIGN files.{layer} must be a list of paths.")
+            normalized[layer] = []
+            for value in paths:
+                path = normalize_workspace_relative_path(value, self.workspace_path)
+                target = root / path
+                if not path or not target.resolve().is_relative_to(root) or not target.is_file():
+                    raise ValueError(f"DESIGN returned a missing or unsafe file: {value}")
+                if path.split("/")[0] in {".arc", ".git", "requirements"}:
+                    raise ValueError(f"Compiler control files cannot be DESIGN artifacts: {path}")
+                path = target.resolve().relative_to(root).as_posix()
+                if path.split("/")[0] in {".arc", ".git", "requirements"}:
+                    raise ValueError(f"Compiler control files cannot be DESIGN artifacts: {path}")
+                if path in normalized[layer]:
+                    continue
+                normalized[layer].append(path)
+                if layer not in ALLOWED_INTERFACE_TYPES:
+                    continue
+                if is_non_leaf:
+                    raise ValueError("Parent layout DESIGN cannot own backend files.")
+                if self.app_type == "web" and not path.startswith("backend/"):
+                    raise ValueError(f"Backend file groups require backend paths: {path}")
+                for record in owners:
+                    if record.get("file_path") == path and (
+                        str(record.get("interface_id", "")).startswith("GLOBAL:DB:")
+                        or node_id not in record.get("req_ids", [])
+                    ):
+                        raise ValueError(f"Backend file belongs to another requirement or global database: {path}; list shared infrastructure under shared.")
+                digest = hashlib.sha256(path.encode("utf-8")).hexdigest()[:16]
+                record_id = f"{node_id}:FILE:{layer}:{digest}"
+                existing = self.traceability.get_interface(record_id) or {}
+                prepared.append({
+                    "interface_id": record_id, "req_id": node_id,
+                    "type": layer, "file_path": path,
+                    "_existing_implemented": bool(existing.get("implemented")),
+                })
+        return normalized, prepared
 
     def _store_prepared_interfaces(self, node_id: str, interfaces: list[dict[str, Any]]) -> None:
-        for interface in interfaces:
-            interface_id = str(interface.get("interface_id", "")).strip()
-            if not interface_id:
-                continue
-            req_ids = normalize_string_list(interface.get("_existing_req_ids"))
-            if node_id not in req_ids:
-                req_ids.append(node_id)
+        # Retain the existing traceability table/API for consumers; its rows are now
+        # file mappings, not duplicated source contracts or inferred call graphs.
+        for item in interfaces:
             self.traceability.upsert_interface(
-                interface_id=interface_id,
-                req_ids=req_ids,
-                type=str(interface.get("type", "") or "").strip().upper(),
-                content=json.dumps(_strip_internal_fields(interface), ensure_ascii=False),
-                file_path=str(interface.get("file_path", "") or "").strip() or None,
-                first_line=str(interface.get("first_line", "") or "").strip() or None,
-                implemented=bool(interface.get("_existing_implemented")),
-                callers=normalize_string_list(interface.get("callers")),
-                callees=normalize_string_list(interface.get("callees")),
+                interface_id=item["interface_id"], req_ids=[node_id], type=item["type"],
+                content=json.dumps({"kind": "code_file", "file_path": item["file_path"]}),
+                file_path=item["file_path"], implemented=bool(item.get("_existing_implemented")),
             )
-            self._register_interface_edges(node_id, interface_id, interface)
 
     def _prepare_tests(
         self,
@@ -796,8 +779,8 @@ class WorkflowPhaseRunner:
                 "req_id": node_id,
                 "type": test_type,
                 "file_path": file_path,
-                "interface_ids": normalize_string_list(test.get("interface_ids")),
-                "first_line": str(test.get("first_line", "")).strip(),
+                "interface_ids": [],
+                "first_line": "",
             }
             stored.append(stored_item)
         return stored
@@ -814,33 +797,6 @@ class WorkflowPhaseRunner:
                 passed=None,
             )
 
-    def _register_interface_edges(self, node_id: str, interface_id: str, interface: dict[str, Any]) -> None:
-        for caller_id in normalize_string_list(interface.get("callers")):
-            caller = self.traceability.get_interface(caller_id)
-            if not caller:
-                continue
-            for source_req_id in caller.get("req_ids", []):
-                if source_req_id and source_req_id != node_id:
-                    self.traceability.insert_call_edge(
-                        source_req_id=source_req_id,
-                        target_req_id=node_id,
-                        from_interface_id=caller_id,
-                        to_interface_id=interface_id,
-                        edge_type="cross_req",
-                    )
-        for callee_id in normalize_string_list(interface.get("callees")):
-            callee = self.traceability.get_interface(callee_id)
-            if not callee:
-                continue
-            for target_req_id in callee.get("req_ids", []):
-                if target_req_id and target_req_id != node_id:
-                    self.traceability.insert_call_edge(
-                        source_req_id=node_id,
-                        target_req_id=target_req_id,
-                        from_interface_id=interface_id,
-                        to_interface_id=callee_id,
-                        edge_type="cross_req",
-                    )
 
     def _mark_interfaces_implemented(self, interfaces: list[dict[str, Any]]) -> None:
         for interface in interfaces:
@@ -951,7 +907,3 @@ def normalize_string_list(value: Any) -> list[str]:
         if text and text not in result:
             result.append(text)
     return result
-
-
-def _strip_internal_fields(value: dict[str, Any]) -> dict[str, Any]:
-    return {key: item for key, item in value.items() if not str(key).startswith("_")}

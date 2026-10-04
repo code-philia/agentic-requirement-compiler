@@ -17,7 +17,7 @@ arc compile requirements.yaml -o workspace/demo --resume
 
 节点 DESIGN 直接完善现有页面/组件、挂载新增 UI、实现前端请求函数及事件/状态逻辑，再生成并注册该节点独立的后端 API → FUNC → DB 操作函数调用骨架。接口清单只记录后端契约，DB 指对共享数据库的操作函数；UI 和前端请求函数不建模为接口或节点。
 
-前端代码位置通过 `files_written` 保存为节点会话的 `materialized_files`，并提供给后续测试生成、TDD 和相关子节点。父节点有视觉参考时直接完善布局并返回空接口清单。纯前端叶节点也可返回空接口清单，仍按场景生成测试。TDD 完成后端业务并修复前端接通；骨架阶段不得伪造成功结果。
+DESIGN 只返回 `summary` 和按 `frontend/API/FUNC/DB/shared` 分组的 `files`，不返回接口描述、签名副本、调用图或模型生成的追踪 ID。系统校验文件并生成稳定的后端文件追踪记录，前端/共享注册文件仅记录触及关系。节点会话保存 `file_groups` 和 `materialized_files`，供测试生成、TDD 和相关节点按路径读取源码。父节点或纯前端需求的后端分组为空。测试清单每项只需 `test_id/type/file_path`，需求归属由系统填写。TDD 完成后端业务并修复前端接通；骨架阶段不得伪造成功结果。
 
 ## 重试节点
 

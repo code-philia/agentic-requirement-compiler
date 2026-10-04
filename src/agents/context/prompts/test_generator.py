@@ -17,7 +17,7 @@ def get_system_prompt() -> str:
                 "TestGenerator Role",
                 [
                     "Position: second agent stage for a requirement node after interface design.",
-                    "Input: leaf requirement, backend API/FUNC/DB operation contracts, materialized frontend/backend file paths, test harness rules, and scenarios. There are no modeled UI interfaces.",
+                    "Input: leaf requirement, backend API/FUNC/DB file groups and source skeletons, materialized frontend/backend file paths, test harness rules, and scenarios. There are no modeled UI interfaces.",
                     "Goal: generate targeted executable tests for the current leaf node's interface specifications and scenarios.",
                     "Hard boundary: write verification assets and the returned manifest only. Do not implement or edit product code, run tests/builds, reread tests you just wrote, or repair generated tests in the same pass. TestDrivenDeveloper owns all implementation and test repair.",
                     "Only leaf nodes reach this stage; non-leaf nodes are design-only and skip test generation entirely.",
@@ -34,7 +34,7 @@ def get_system_prompt() -> str:
             section(
                 "Execution Flow",
                 [
-                    "Read the interface specifications and decide the minimal coverage matrix from node ownership and scenarios.",
+                    "Read the backend source signatures and comments and decide the minimal coverage matrix from node ownership and scenarios.",
                     "When retrying a node, treat existing current-node tests and test manifests as the baseline verification design. Read and reconcile them before writing replacement tests.",
                     "Read the relevant frontend page/component/client from materialized_files to derive actual routes, accessible controls, imports, and request wiring. UI is implemented directly in DESIGN, not described by UI interface records. Read nearby test patterns only when needed.",
                     "Use the current interface contract and requirement scenarios as the primary design input; do not broaden exploration beyond direct dependencies unless a path issue or project convention requires it.",
@@ -45,7 +45,7 @@ def get_system_prompt() -> str:
                     "Generate focused Unit, Integration, and/or E2E tests when they add executable value; return an empty manifest when the node should not own local tests.",
                     "Before returning, assess from the evidence already gathered whether the tests would fail for a disconnected implementation, a local-only fake state patch, or a placeholder response. Do not read back or repair tests written in this pass.",
                     "Before writing each test, compare its setup, action, and assertion against the requirement description and each GIVEN/WHEN/THEN scenario step. Once written, leave correction to a later system validation handoff and TestDrivenDeveloper.",
-                    "Return a manifest mapping tests to the requirement and relevant backend interface ids. Frontend-only tests may have interface_ids=[]; do not invent UI ids. Assert final scenario outcomes, never a backend stub's failure response as success.",
+                    "Return test_id, type, and file_path for each test. The compiler assigns requirement ownership; no interface_ids, req_id, or first_line are needed. Assert final scenario outcomes, never a backend stub's failure response as success.",
                     "If a later system validation reports an error, the next invocation may repair only the rejected manifest/files without broadening scope. Do not create a self-validation loop in this invocation.",
                 ],
             ),
@@ -127,7 +127,7 @@ def get_user_prompt(
                 "For frontend tests containing JSX, the actual manifest `file_path` must end in `.test.tsx` or `.spec.tsx`; do not use a `.ts` bridge file that imports a `.tsx` test.",
                 "Do not assert absence of an element, route, or state when the requirement declares it should be visible, available, or usable as a precondition.",
                 "Return `summary`, `tests`, and `files_written`.",
-                "Each test manifest item must include `test_id`, `req_id`, `interface_ids`, `type`, `file_path`, and `first_line`.",
+                "Each test manifest item needs only test_id, type, and file_path. Read source for interface details; do not duplicate code contracts in the manifest.",
                 "Return manifest paths as workspace-relative paths that follow the app-type test placement context; do not include the virtual `/workspace/` prefix in `file_path` or `files_written`.",
                 "Every `test_id` must be globally stable and include the current node id.",
                 "On retry, prefer returning updated versions of existing current-node tests with the same `test_id`; do not mint duplicate ids for the same scenario/interface/type coverage.",

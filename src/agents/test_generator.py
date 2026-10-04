@@ -24,11 +24,8 @@ LogCallback = Callable[[str, str, str | None, str | None], Awaitable[None] | Non
 
 class TestManifestItem(BaseModel):
     test_id: str = Field(description="Stable test artifact id.")
-    req_id: str = Field(description="Requirement node id covered by this test.")
-    interface_ids: list[str] = Field(default_factory=list, description="Covered interface ids.")
     type: str = Field(description="Unit, Integration, or E2E.")
     file_path: str = Field(description="Workspace-relative test file path.")
-    first_line: str = Field(default="", description="Exact first line in the written test file.")
 
 
 class TestGenerationResponse(BaseModel):

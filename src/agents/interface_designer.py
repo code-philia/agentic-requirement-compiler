@@ -20,10 +20,18 @@ from agents.tools.traceability import build_traceability_tools
 LogCallback = Callable[[str, str, str | None, str | None], Awaitable[None] | None]
 
 
+class DesignFiles(BaseModel):
+    model_config = {"extra": "forbid"}
+    frontend: list[str] = Field(default_factory=list)
+    API: list[str] = Field(default_factory=list)
+    FUNC: list[str] = Field(default_factory=list)
+    DB: list[str] = Field(default_factory=list)
+    shared: list[str] = Field(default_factory=list, description="Touched infrastructure/registration files, not owned modules.")
+
+
 class InterfaceDesignResponse(BaseModel):
     summary: str = Field(default="", description="Short summary of frontend integration and backend skeletons.")
-    interfaces: list[dict[str, Any]] = Field(default_factory=list, description="Node-owned backend API/FUNC/DB operation contracts only; no UI or frontend-client records.")
-    files_written: list[str] = Field(default_factory=list, description="Workspace-relative files written or edited.")
+    files: DesignFiles = Field(description="Code paths grouped by layer, including reused current-node files.")
 
 
 class InterfaceDesigner:
@@ -108,25 +116,16 @@ class InterfaceDesigner:
         )
         bundle = self._normalize_design_payload(payload)
         await self._log(
-            f"Interface design returned {len(bundle.get('interfaces', []))} interface(s).",
+            f"Node design returned {sum(len(paths) for paths in bundle['files'].values())} code file(s).",
             node_id=node_id,
         )
         return bundle
 
     def _normalize_design_payload(self, payload: dict[str, Any]) -> dict[str, Any]:
-        interfaces = payload.get("interfaces")
-        if interfaces is None and isinstance(payload.get("items"), list):
-            interfaces = payload["items"]
-        if not isinstance(interfaces, list):
-            interfaces = []
-        normalized_interfaces = [item for item in interfaces if isinstance(item, dict)]
-        files_written = payload.get("files_written") or payload.get("files") or []
-        if not isinstance(files_written, list):
-            files_written = []
+        files = DesignFiles.model_validate(payload.get("files")).model_dump()
         return {
             "summary": str(payload.get("summary", "") or "").strip(),
-            "interfaces": normalized_interfaces,
-            "files_written": [str(path).strip() for path in files_written if str(path).strip()],
+            "files": files,
         }
 
     async def _log(self, message: str, status: str | None = None, node_id: str | None = None) -> None:
