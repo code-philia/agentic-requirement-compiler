@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import hashlib
+import json
 import mimetypes
 import os
 import re
@@ -10,6 +11,7 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable
 
 from openai import OpenAI
+from jsonschema import ValidationError, validate
 
 from core import files
 from core.service import get_runtime
@@ -17,66 +19,55 @@ from core.service import get_runtime
 
 LogCallback = Callable[[str, str, str | None, str | None], Awaitable[None] | None]
 
-VISUAL_ANALYSIS_PROMPT_VERSION = "frontend-style-requirements"
+VISUAL_ANALYSIS_PROMPT_VERSION = "observable-visual-json-v1"
+VISUAL_OBSERVATION_FIELDS = (
+    "regions", "visible_controls", "layout_cues", "style_cues", "text_cues",
+)
+VISUAL_ANALYSIS_SCHEMA = {
+    "type": "object", "additionalProperties": False,
+    "required": ["reference_id", *VISUAL_OBSERVATION_FIELDS],
+    "properties": {
+        "reference_id": {"type": "string", "pattern": r"^VISUAL\.[0-9a-f]{16}$"},
+        **{field: {"type": "array", "items": {"type": "string", "minLength": 1},
+                   "maxItems": 64} for field in VISUAL_OBSERVATION_FIELDS},
+    },
+}
 
 
 def build_visual_analysis_prompt() -> str:
-    return """
-**ROLE:** You extract frontend style requirements from an input UI image.
-**SCENARIO:** Your output will be used as the visual requirement for frontend implementation. Focus on layout, composition, component styling, interaction surfaces, and data presentation patterns. Do NOT treat the image as a source of mock business data.
+    return """You are a senior visual-design analyst.
+Analyze one UI reference image and return only directly observable evidence that
+can guide a production frontend implementation. Capture the whole visual system, not only controls and text.
 
-**PRIMARY GOAL**
-Convert the image into implementation-oriented frontend style requirements that define:
-- page layout hierarchy
-- section composition
-- component appearance
-- typography and color usage
-- spacing and alignment patterns
-- how future runtime data should be displayed visually
+- regions: ordered page regions and their content purpose from top to bottom.
+- visible_controls: control type, visible label, placement, and important visual state.
+- layout_cues: composition, container proportions, grid/columns, alignment, grouping, whitespace rhythm, density,
+  hierarchy, and relationships between regions. Use relative measurements such as narrow/wide or compact/generous.
+- style_cues: concrete reusable observations. Prefix each cue with the most fitting category among Color,
+  Typography, Spacing, Surface, Border, Shape, Elevation, Iconography, or Imagery. Include approximate visible color
+  values when reliable, font character/weight/scale relationships, corner treatment, border weight, and shadows.
+- text_cues: meaningful visible copy in reading order, preserving valid Unicode only when confidently legible.
 
-**CORE DIRECTIVES**
-1. **STYLE REQUIREMENTS OVER OCR:** Focus on structure, hierarchy, spacing rhythm, grouping, visual emphasis, and component roles. Do not perform exhaustive OCR transcription.
-2. **NO BUSINESS-DATA EXTRACTION:** Do NOT copy screenshot-specific records, names, phone numbers, emails, IDs, dates, prices, counts, table rows, chart values, or other instance data as future mock content.
-3. **EXTRACT DATA DISPLAY PATTERNS:** If the image shows lists, tables, cards, charts, schedules, dashboards, or other data regions, describe the container structure, field types, visual encoding, density, and alignment. Do NOT reproduce actual row values.
-4. **CAPTURE ONLY STRUCTURAL COPY:** Keep visible text only when it defines page chrome or interaction structure, such as navigation labels, section titles, field labels, button labels, tab names, or status categories.
-5. **STRICT STRUCTURAL HIERARCHY:** Describe the page as a tree structure (Parent -> Child -> Sibling).
-6. **PRECISE VISUAL SPECS:** Estimate layout mode, proportions, spacing, emphasis, colors, border treatment, shadows, and typography scale. Use approximate values where helpful.
-7. **REQUIREMENT LANGUAGE:** Write as frontend style requirements, not as an image caption and not as a pixel-perfect forensic report.
-
-**OUTPUT FORMAT (Strict Markdown)**
-
-### 1. Frontend Style Direction
-* **Colors:** Primary, secondary, surfaces, borders, emphasis states (approximate hex allowed).
-* **Typography:** Font style, size scale, weight pattern.
-* **Spacing Rhythm:** Dense / medium / spacious, notable gaps/padding.
-* **Overall Tone:** e.g. enterprise dashboard, lightweight consumer portal, dense admin console, etc.
-
-### 2. Page Skeleton (Top to Bottom)
-For each major section:
-* **Section Name**
-* **Purpose**
-* **Container:** width behavior, layout mode, background, border/shadow, spacing.
-* **Children:** ordered structural elements and their relationships.
-* **Style Notes:** corner radius, dividers, emphasis, icon usage, visual weight.
-
-### 3. Data Presentation Style
-For each data-bearing area:
-* **Pattern Type:** table / cards / timeline / schedule grid / chart / etc.
-* **Visual Structure:** columns, lanes, cards, badges, legends, filters, pagination, empty/loading states.
-* **Field Types:** what kinds of values appear there in the future.
-* **Styling Rules:** alignment, emphasis, truncation, badge colors, density.
-* **Do Not Copy Actual Values:** summarize the shape only.
-
-### 4. Interaction Surfaces
-* Main forms, filters, selectors, buttons, tabs, pagination, dialogs, and feedback areas.
-* Note which controls appear primary vs secondary.
-* Describe the expected visual style of controls rather than concrete values shown in the image.
-
-### 5. Frontend Requirements Summary
-* **Must Preserve:** structural and style traits that should be kept in implementation.
-* **Runtime-Driven Areas:** regions that must stay data-driven instead of hardcoded from the image.
-* **Avoid:** screenshot-specific business content being turned into seeded UI data.
+Describe what should be referenced, not everything that happens to appear in the image. The generated product must
+retain its own requirement data and behavior, so do not infer hidden behavior or copy unrelated names, records, or
+decorative content. Do not emit corrupted OCR text; omit uncertain text instead. Do not generate JSX, DOM, CSS,
+Tailwind classes, source code, routes, API contracts, or component names. Copy reference_id exactly from the supplied
+metadata. Use concise, implementation-useful strings and [] when a category has no reliable observation. Return only
+the structured JSON object required by the supplied schema.
 """
+
+
+def validate_visual_analysis(payload: Any, reference_id: str | None = None) -> dict[str, Any]:
+    if isinstance(payload, str):
+        payload = json.loads(payload)
+    validate(instance=payload, schema=VISUAL_ANALYSIS_SCHEMA)
+    if reference_id is not None and payload["reference_id"] != reference_id:
+        raise ValueError("Visual analysis reference_id does not match the supplied image")
+    for field in VISUAL_OBSERVATION_FIELDS:
+        for cue in payload[field]:
+            if not cue.strip() or "\ufffd" in cue or any(0xD800 <= ord(char) <= 0xDFFF for char in cue):
+                raise ValueError(f"Invalid or corrupted visual observation in {field}")
+    return payload
 
 
 async def analyze_and_attach_visual_references(
@@ -104,21 +95,33 @@ async def analyze_and_attach_visual_references(
         image_path = str(item.get("image_path") or "").strip()
         if not image_path:
             continue
-        existing_analysis = str(item.get("analysis") or "").strip()
-        if existing_analysis:
-            visual_references.append(_reference_payload(image_path, existing_analysis, item.get("resolved_image_path")))
-            continue
-
         full_path = _resolve_image_path(image_path, workspace_path, requirements_dir)
         if not full_path.exists():
             await _log(log_cb, "System", f"Image not found: {full_path}", "warning", req_id)
+            visual_references.append({"image_path": image_path})
             continue
 
         try:
+            reference_id = _image_reference_id(full_path)
+            existing_analysis = item.get("analysis")
+            if existing_analysis:
+                try:
+                    analysis = validate_visual_analysis(existing_analysis, reference_id)
+                except (ValueError, ValidationError):
+                    await _log(log_cb, "System", f"Refreshing outdated visual analysis: {image_path}", None, req_id)
+                else:
+                    visual_references.append(_reference_payload(image_path, analysis, str(full_path)))
+                    continue
             cache_key = _build_visual_cache_key(full_path)
             cached_entry = cache.get(cache_key)
-            if isinstance(cached_entry, dict) and cached_entry.get("analysis"):
-                visual_references.append(_reference_payload(image_path, str(cached_entry["analysis"]), str(full_path)))
+            cached_analysis = None
+            if isinstance(cached_entry, dict) and cached_entry.get("prompt_version") == VISUAL_ANALYSIS_PROMPT_VERSION:
+                try:
+                    cached_analysis = validate_visual_analysis(cached_entry.get("analysis"), reference_id)
+                except (ValueError, ValidationError):
+                    pass
+            if cached_analysis is not None:
+                visual_references.append(_reference_payload(image_path, cached_analysis, str(full_path)))
                 await _log(log_cb, "System", f"Reusing cached visual analysis: {image_path}", None, req_id)
                 continue
 
@@ -134,6 +137,7 @@ async def analyze_and_attach_visual_references(
             visual_references.append(_reference_payload(image_path, analysis, str(full_path)))
         except Exception as exc:
             await _log(log_cb, "System", f"Failed to analyze image {image_path}: {exc}", "error", req_id)
+            visual_references.append({"image_path": image_path})
 
     if cache_updated:
         _save_visual_cache(workspace_path, cache)
@@ -152,6 +156,8 @@ def _collect_visual_candidates(requirement_data: dict[str, Any]) -> list[dict[st
     visual_reference = requirement_data.get("visual_reference") or []
     if isinstance(visual_reference, list):
         for item in visual_reference:
+            if isinstance(item, str):
+                item = {"image_path": item}
             if not isinstance(item, dict):
                 continue
             image_path = str(item.get("image_path") or "").strip()
@@ -169,14 +175,15 @@ def _collect_visual_candidates(requirement_data: dict[str, Any]) -> list[dict[st
 
 
 def _resolve_image_path(image_path: str, workspace_path: str, requirements_dir: str) -> Path:
-    normalized = os.path.normpath(image_path)
-    normalized = normalized.lstrip(os.sep)
+    normalized = Path(os.path.normpath(image_path))
+    if normalized.is_absolute():
+        return normalized.resolve()
     base_dir = Path(requirements_dir or workspace_path)
     return (base_dir / normalized).resolve()
 
 
-def _reference_payload(image_path: str, analysis: str, resolved_image_path: Any = None) -> dict[str, Any]:
-    payload = {"image_path": image_path, "analysis": analysis}
+def _reference_payload(image_path: str, analysis: dict[str, Any], resolved_image_path: Any = None) -> dict[str, Any]:
+    payload = {"image_path": image_path, "reference_id": analysis["reference_id"], "analysis": analysis}
     if resolved_image_path:
         payload["resolved_image_path"] = str(resolved_image_path)
     return payload
@@ -200,7 +207,11 @@ def _build_visual_cache_key(full_path: Path) -> str:
     return hashlib.sha256(raw_key.encode("utf-8")).hexdigest()
 
 
-async def _request_visual_analysis(full_path: Path) -> str:
+def _image_reference_id(full_path: Path) -> str:
+    return "VISUAL." + hashlib.sha256(full_path.read_bytes()).hexdigest()[:16]
+
+
+async def _request_visual_analysis(full_path: Path) -> dict[str, Any]:
     visual_base_url = _resolve_visual_base_url()
     visual_api_key = _resolve_visual_api_key()
     if not visual_base_url:
@@ -211,13 +222,12 @@ async def _request_visual_analysis(full_path: Path) -> str:
     mime_type, _ = mimetypes.guess_type(str(full_path))
     if not mime_type:
         mime_type = "image/png"
-    base64_image = base64.b64encode(full_path.read_bytes()).decode("utf-8")
+    image_bytes = full_path.read_bytes()
+    reference_id = "VISUAL." + hashlib.sha256(image_bytes).hexdigest()[:16]
+    base64_image = base64.b64encode(image_bytes).decode("utf-8")
     data_url = f"data:{mime_type};base64,{base64_image}"
     client = OpenAI(api_key=visual_api_key, base_url=visual_base_url)
-    response = await asyncio.to_thread(
-        client.chat.completions.create,
-        model=_normalize_openai_model_name(os.environ.get("VISUAL_MODEL") or os.environ.get("MODEL", "")),
-        messages=[
+    messages = [
             {
                 "role": "system",
                 "content": build_visual_analysis_prompt(),
@@ -225,13 +235,37 @@ async def _request_visual_analysis(full_path: Path) -> str:
             {
                 "role": "user",
                 "content": [
-                    {"type": "text", "text": "Analyze this UI image."},
+                    {"type": "text", "text": json.dumps({
+                        "reference_id": reference_id, "image_path": full_path.name,
+                        "record_schema": VISUAL_ANALYSIS_SCHEMA,
+                    }, ensure_ascii=False)},
                     {"type": "image_url", "image_url": {"url": data_url}},
                 ],
             },
-        ],
-    )
-    return _extract_visual_chat_completion_text(response)
+        ]
+    try:
+        for attempt in range(3):
+            response = await asyncio.to_thread(
+                client.chat.completions.create,
+                model=_normalize_openai_model_name(os.environ.get("VISUAL_MODEL") or os.environ.get("MODEL", "")),
+                messages=messages,
+                response_format={"type": "json_schema", "json_schema": {
+                    "name": "visual_analysis", "strict": True, "schema": VISUAL_ANALYSIS_SCHEMA,
+                }},
+            )
+            text = _extract_visual_chat_completion_text(response)
+            try:
+                return validate_visual_analysis(text, reference_id)
+            except (ValueError, ValidationError) as exc:
+                if attempt == 2:
+                    raise
+                messages.extend([
+                    {"role": "assistant", "content": text},
+                    {"role": "user", "content": f"Correct the rejected JSON: {exc}. "
+                     f"Use reference_id {reference_id} and the exact supplied schema."},
+                ])
+    finally:
+        await asyncio.to_thread(client.close)
 
 
 def _resolve_visual_api_key() -> str:

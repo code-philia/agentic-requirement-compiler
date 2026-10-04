@@ -81,7 +81,9 @@ def literal(value: Scalar) -> str:
     return "'" + value.replace("'", "''") + "'"
 
 
-def validate_plan(payload: dict[str, Any], requirement_ids: set[str]) -> dict[str, Any]:
+def validate_plan(
+    payload: dict[str, Any], requirement_ids: set[str], *, defer_references: bool = False,
+) -> dict[str, Any]:
     plan = DatabasePlan.model_validate(payload).model_dump()
     tables = {table["name"]: table for table in plan["tables"]}
     names = [table["name"].casefold() for table in plan["tables"]]
@@ -99,7 +101,13 @@ def validate_plan(payload: dict[str, Any], requirement_ids: set[str]) -> dict[st
             literal(column["default"])
             ref = column["references"]
             if ref:
+                identifier(ref["table"])
+                identifier(ref["column"])
+                if ref["on_delete"] == "SET NULL" and not column["nullable"]:
+                    raise ValueError("SET NULL foreign keys require nullable columns")
                 target = tables.get(ref["table"])
+                if defer_references:
+                    continue
                 if not target or ref["column"] not in {item["name"] for item in target["columns"]}:
                     raise ValueError(f"Unknown foreign key target: {ref}")
                 if [ref["column"]] not in unique_keys(target):

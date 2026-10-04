@@ -187,7 +187,7 @@ class DatabasePreparation:
                     "previous_plan": previous, "database_path": str(db_path.relative_to(self.workspace)),
                     "existing_schema": inspect_database(db_path),
                     "previous_failure": previous_error,
-                })
+                }, revision=revision, requirement_ids=sources)
                 plan = validate_plan(payload, sources)
             ensure_additive(previous, plan)
             state.update({"requirements_revision": revision, "plan": plan, "analysis_validated": False})

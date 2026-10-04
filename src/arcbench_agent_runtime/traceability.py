@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import ast
+import json
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -31,6 +33,26 @@ def _as_list(value: Any) -> list[Any]:
 
 def _as_str_list(value: Any) -> list[str]:
     return [str(item).strip() for item in _as_list(value) if str(item).strip()]
+
+
+def _as_visual_references(value: Any) -> list[dict[str, Any]]:
+    references = []
+    for item in _as_list(value):
+        if isinstance(item, str) and item.lstrip().startswith("{"):
+            # Older storage stringified dictionaries; recover their image paths and
+            # let the visual analyzer replace obsolete Markdown observations.
+            try:
+                item = json.loads(item)
+            except ValueError:
+                try:
+                    item = ast.literal_eval(item)
+                except (ValueError, SyntaxError):
+                    continue
+        if isinstance(item, dict):
+            references.append(dict(item))
+        elif isinstance(item, str) and item.strip():
+            references.append({"image_path": item.strip()})
+    return references
 
 
 def _as_optional_str(value: Any) -> str | None:
@@ -67,7 +89,7 @@ class RequirementRecord:
     req_id: str
     name: str = ""
     description: str = ""
-    visual_reference: list[str] | None = None
+    visual_reference: list[dict[str, Any] | str] | None = None
     scenarios: list[dict[str, Any]] | None = None
     parent_id: str | None = None
     children_ids: list[str] | None = None
@@ -185,7 +207,7 @@ class TraceabilityStore:
                 "id": req_id,
                 "name": str(node.get("name") or "").strip(),
                 "description": str(node.get("description") or "").strip(),
-                "visual_reference": _as_str_list(node.get("visual_reference")),
+                "visual_reference": _as_visual_references(node.get("visual_reference")),
                 "scenarios": node_scenarios,
                 "parent_id": _as_optional_str(parent_id),
                 "children_ids": children_ids,
@@ -228,7 +250,10 @@ class TraceabilityStore:
         self._write_table(table_name, rows)
 
     def get_requirement(self, req_id: str) -> dict[str, Any] | None:
-        return self._get_row("requirements", req_id)
+        row = self._get_row("requirements", req_id)
+        if row is not None:
+            row = {**row, "visual_reference": _as_visual_references(row.get("visual_reference"))}
+        return row
 
     def list_requirements(self) -> list[dict[str, Any]]:
         return list(self._read_table("requirements").values())
@@ -239,7 +264,7 @@ class TraceabilityStore:
         req_id: str,
         name: str = "",
         description: str = "",
-        visual_reference: list[str] | None = None,
+        visual_reference: list[dict[str, Any] | str] | None = None,
         scenarios: list[dict[str, Any]] | None = None,
         parent_id: str | None = None,
         children_ids: list[str] | None = None,
@@ -256,7 +281,7 @@ class TraceabilityStore:
                 "req_id": normalized_req_id,
                 "name": str(name or "").strip(),
                 "description": str(description or "").strip(),
-                "visual_reference": _as_str_list(visual_reference),
+                "visual_reference": _as_visual_references(visual_reference),
                 "scenarios": normalized_scenarios,
                 "parent_id": _as_optional_str(parent_id),
                 "children_ids": _as_str_list(children_ids),
@@ -289,7 +314,7 @@ class TraceabilityStore:
             req_id=req_id,
             name=str(merged.get("name") or "").strip(),
             description=str(merged.get("description") or "").strip(),
-            visual_reference=_as_str_list(merged.get("visual_reference")),
+            visual_reference=_as_visual_references(merged.get("visual_reference")),
             scenarios=_as_list(merged.get("scenarios")),
             parent_id=merged.get("parent_id"),
             children_ids=_as_str_list(merged.get("children_ids")),

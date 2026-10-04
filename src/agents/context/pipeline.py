@@ -143,14 +143,22 @@ class ContextPipeline:
 
     @staticmethod
     def _build_visual_digest(visual_reference: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        return [
-            {
-                "image_path": item.get("image_path", ""),
-                "analysis": str(item.get("analysis", "") or ""),
-            }
-            for item in visual_reference
-            if isinstance(item, dict)
-        ]
+        from core.visual_analysis import validate_visual_analysis
+        from jsonschema import ValidationError
+
+        references = []
+        for item in visual_reference:
+            if not isinstance(item, dict):
+                continue
+            reference = {"image_path": item.get("image_path", "")}
+            try:
+                analysis = validate_visual_analysis(item.get("analysis"), item.get("reference_id"))
+            except (ValueError, ValidationError):
+                reference["analysis_status"] = "unavailable"
+            else:
+                reference.update({"reference_id": analysis["reference_id"], "analysis": analysis})
+            references.append(reference)
+        return references
 
     def _build_acceptance_gate(self, node_id: str, req_data: dict[str, Any]) -> str:
         scenarios = req_data.get("scenarios") or []
