@@ -164,6 +164,8 @@ Node DESIGN directly extends existing frontend pages/components, implements the 
 
 The compiler derives stable backend file mapping IDs from requirement, layer, and canonical path, validates file existence/ownership, and stores lightweight rows in the existing interfaces table. Frontend and shared registration files are touched paths, not exclusive backend ownership. Function signatures, endpoint shapes, and comments live only in source; tests and TDD read those files. No model-generated interface descriptions or caller/callee graph are required. Test manifest items contain only `test_id`, `type`, and `file_path`; requirement ownership is system-assigned. Global database records, node states, tests, and Git checkpoints remain traceable. TDD completes the registered backend call skeletons and repairs frontend integration.
 
+TDD receives an `implementation_scope` resolved from DESIGN's file groups. Backend edits are restricted to the node's exact API/FUNC/DB files and explicitly listed shared integration files; current test files can be repaired. Backend-wide discovery is blocked, while exact dependency reads remain available. Frontend discovery and edits are allowed within the frontend source area, starting from tracked pages/components/clients. Legacy workspaces recover backend targets from their traceability records; a missing tracked skeleton requires a DESIGN retry rather than a codebase search.
+
 ### CLI Usage
 
 ARC expects a requirement directory containing `requirements.yaml`.

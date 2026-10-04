@@ -90,6 +90,7 @@ def build_stage_agent(
     permitted_skill_names: list[str] | None = None,
     memory: list[str] | None = None,
     tools: list[object] | None = None,
+    implementation_scope: dict[str, Any] | None = None,
 ):
     """Create an agent instance with ARC's first-batch filesystem policy."""
 
@@ -120,7 +121,7 @@ def build_stage_agent(
         backend=backend,
         system_prompt=system_prompt,
         middleware=[
-            StageDisciplineMiddleware(stage=stage),
+            StageDisciplineMiddleware(stage=stage, implementation_scope=implementation_scope),
             DisableToolsMiddleware(disabled=DISABLED_BUILTIN_TOOLS),
         ],
         tools=tools or [],

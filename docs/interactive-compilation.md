@@ -19,6 +19,8 @@ arc compile requirements.yaml -o workspace/demo --resume
 
 DESIGN 只返回 `summary` 和按 `frontend/API/FUNC/DB/shared` 分组的 `files`，不返回接口描述、签名副本、调用图或模型生成的追踪 ID。系统校验文件并生成稳定的后端文件追踪记录，前端/共享注册文件仅记录触及关系。节点会话保存 `file_groups` 和 `materialized_files`，供测试生成、TDD 和相关节点按路径读取源码。父节点或纯前端需求的后端分组为空。测试清单每项只需 `test_id/type/file_path`，需求归属由系统填写。TDD 完成后端业务并修复前端接通；骨架阶段不得伪造成功结果。
 
+TDD 从 DESIGN 的文件分组确定 `implementation_scope`，直接实现已登记的 API/FUNC/DB 文件。后端只允许修改这些文件和明确登记的 shared 接入文件，禁止全库搜索或新建替代后端模块；当前节点测试文件可修复。前端仍允许在前端范围内定位页面/组件/请求逻辑。其他依赖可以按精确路径读取。旧工作区从 traceability 恢复后端位置；骨架文件缺失时应重跑 DESIGN。
+
 ## 重试节点
 
 ```powershell

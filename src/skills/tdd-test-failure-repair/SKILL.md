@@ -10,6 +10,7 @@ Use this skill after `run_tests` reports a failing current batch.
 ## Instructions
 
 1. Treat the latest `run_tests` output as the source of truth.
+   When implementation_scope is supplied, it is the edit boundary: implement its exact API/FUNC/DB files, modify only listed backend/shared/test paths, and locate frontend changes within frontend_roots. Do not search for backend owners or create new backend modules. Read other dependencies only by exact path; scope takes precedence over generic repair/extraction guidance below.
 2. Classify the failure before editing: implementation logic, boundary wiring, selector/render state, persistence/test database, framework/config, generated test defect, or test content.
 3. Re-read the failing test file and the nearest owner implementation file before making another edit.
 4. Compare the failure against the current UI/API/FUNC/DB interface chain; if a downstream layer is missing or disconnected, repair the chain rather than patching only the surface assertion.

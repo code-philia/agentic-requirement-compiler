@@ -27,8 +27,9 @@ class StageDisciplineMiddleware(AgentMiddleware[StageDisciplineState, Any, Any])
 
     state_schema = StageDisciplineState
 
-    def __init__(self, *, stage: Literal["database_analysis", "interface_design", "test_generation", "implementation"]) -> None:
+    def __init__(self, *, stage: Literal["database_analysis", "interface_design", "test_generation", "implementation"], implementation_scope: dict[str, Any] | None = None) -> None:
         self._stage = stage
+        self._implementation_scope = implementation_scope
         self._read_ranges: dict[str, list[tuple[int, int]]] = {}
         self._written_paths: set[str] = set()
         self._failed_paths: set[str] = set()
@@ -56,6 +57,13 @@ class StageDisciplineMiddleware(AgentMiddleware[StageDisciplineState, Any, Any])
     def _validate_tool_call(self, request: ToolCallRequest) -> str | None:
         name = str(request.tool_call.get("name", ""))
         args = request.tool_call.get("args", {}) or {}
+        if self._implementation_scope is not None and name in {"glob", "grep", "ls"}:
+            path = str(args.get("path") or "").replace("\\", "/").removeprefix("/workspace/").strip("/")
+            pattern = str(args.get("pattern") or "").replace("\\", "/")
+            if name == "glob" and (pattern.startswith("/") or ".." in pattern.split("/")):
+                return "Use a relative frontend glob under an explicit frontend path; backend files are already listed in implementation_scope."
+            if not self._within_frontend(path) and path not in self._implementation_scope["allowed_files"]:
+                return "Backend discovery is unnecessary: read the exact API/FUNC/DB paths in implementation_scope. Only frontend-scoped discovery or searches in listed files are permitted."
         if self._stage == "database_analysis" and name in _FILE_WRITE_TOOLS | _VALIDATION_TOOLS:
             return "DatabaseDesigner only returns structured JSON records; code materialization and execution belong to the compiler."
         if name in {"execute", "delete"}:
@@ -93,6 +101,12 @@ class StageDisciplineMiddleware(AgentMiddleware[StageDisciplineState, Any, Any])
         path = _discipline_path(args)
         if not path:
             return None
+        if self._implementation_scope is not None:
+            relative = path.removeprefix("/workspace/").lstrip("/")
+            if ".." in relative.split("/") or (
+                relative not in self._implementation_scope["allowed_files"] and not self._within_frontend(relative)
+            ):
+                return "Write outside this node's implementation_scope: use tracked backend/shared/test files or locate changes within frontend roots. Restore missing backend skeletons through DESIGN."
         if os.environ.get("ARC_DATABASE_READY") == "1":
             generated = (
                 "/backend/src/database/arc_database.js", "/backend/src/database/init_db.js",
@@ -166,6 +180,12 @@ class StageDisciplineMiddleware(AgentMiddleware[StageDisciplineState, Any, Any])
 
     def _path_unlocked(self, path: str) -> bool:
         return self._validation_failed or path in self._failed_paths
+
+    def _within_frontend(self, path: str) -> bool:
+        return bool(self._implementation_scope) and ".." not in path.split("/") and any(
+            path == root or path.startswith(root + "/")
+            for root in self._implementation_scope["frontend_roots"]
+        )
 
     @staticmethod
     def _cache_read_summary(request: ToolCallRequest, path: str, offset: int, limit: int, result: ToolMessage | Any) -> None:

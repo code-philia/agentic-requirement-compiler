@@ -11,6 +11,8 @@ from agents.context.prompts.common import stage_skill_activation_policy
 from agents.context.prompts.test_driven_developer import get_system_prompt, get_user_prompt
 from agents.runtime.contracts import AgentRuntimeContext
 from agents.runtime.factory import build_stage_agent
+from agents.runtime.implementation_scope import implementation_scope
+from core.service import get_runtime
 from agents.runtime.runners import ainvoke_stage_agent
 from agents.skills.selection import SKILLS_SOURCE, implementation_skills
 from agents.tools.build import build_run_build_tool as build_system_run_build_tool
@@ -76,6 +78,15 @@ class TestDrivenDeveloper:
             or os.getcwd()
         ).expanduser().resolve())
         app_type = (self.app_type or context_pipeline.config.app_type or os.environ.get("ARC_APP_TYPE") or "web").strip().lower()
+        try:
+            scope = implementation_scope(
+                workspace_root, node_id, app_type, self._current_test_files,
+                get_runtime().traceability.list_interfaces(),
+            )
+        except ValueError as exc:
+            await self._log(str(exc), status="error", node_id=node_id)
+            self._last_verifier_report_text = str(exc)
+            return f"Implementation scope invalid: {exc}"
 
         def normalize_requested_path(value: Any) -> str:
             path = str(value or "").strip().replace("\\", "/")
@@ -97,6 +108,7 @@ class TestDrivenDeveloper:
         )
         interface_contract = context_pipeline.get_interface_contract_context(node_id)
         context_text = "\n\n".join(part.strip() for part in (static_context, dynamic_context) if part.strip())
+        context_text += "\n\n<implementation_scope>\n" + json.dumps(scope, ensure_ascii=False) + "\n</implementation_scope>"
         selected_skill_names = implementation_skills(
             interface_contract=interface_contract,
             previous_failure_summary=previous_failure_summary,
@@ -191,7 +203,9 @@ class TestDrivenDeveloper:
             ),
             response_format=None,
             workspace_root=workspace_root,
-            writable_roots=[workspace_root],
+            writable_roots=[str(Path(workspace_root) / path)
+                            for path in scope["allowed_files"] + scope["frontend_roots"]],
+            implementation_scope=scope,
             skills=[SKILLS_SOURCE] if selected_skill_names else [],
             permitted_skill_names=selected_skill_names,
             memory=[],
