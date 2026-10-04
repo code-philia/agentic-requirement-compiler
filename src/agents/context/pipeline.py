@@ -292,7 +292,7 @@ class ContextPipeline:
         store = self._store()
         if store is None:
             return ""
-        interfaces = store.list_interfaces(req_id=node_id)
+        interfaces = [item for item in store.list_interfaces(req_id=node_id) if item.get("type") != "UI"]
         if not interfaces:
             return ""
         interfaces = self._dedupe_records_by_file_path_keep_latest(interfaces)
@@ -373,10 +373,45 @@ class ContextPipeline:
 
     def _get_node_session_layers(self, node_id: str) -> str:
         session = self._load_node_session(node_id)
-        interfaces = session.get("interfaces")
-        if not interfaces:
+        interfaces = [item for item in session.get("interfaces") or [] if item.get("type") != "UI"]
+        parts = []
+        if interfaces:
+            parts.append("<interfaces>\n" + self._compact_json(interfaces) + "\n</interfaces>")
+        if session.get("design_summary"):
+            parts.append("<design_summary>\n" + str(session["design_summary"]) + "\n</design_summary>")
+        return "\n\n".join(parts)
+
+    def _get_materialized_files(self, node_id: str) -> str:
+        """Pass code locations across stages/requirements without modeling UI contracts."""
+        store = self._store()
+        if store is None:
             return ""
-        return "<interfaces>\n" + self._compact_json(interfaces) + "\n</interfaces>"
+        requirement = store.get_requirement(node_id) or {}
+        relations = {node_id: "current"}
+        for dependency in requirement.get("dependencies") or []:
+            relations.setdefault(str(dependency), "dependency")
+        parent_id = str(requirement.get("parent_id") or "")
+        seen = {node_id}
+        while parent_id and parent_id not in seen:
+            seen.add(parent_id)
+            relations[parent_id] = "ancestor"
+            parent_id = str((store.get_requirement(parent_id) or {}).get("parent_id") or "")
+        root = Path(self.config.workspace_dir).resolve()
+        files = []
+        for req_id, relation in relations.items():
+            locations = list(self._load_node_session(req_id).get("materialized_files") or [])
+            # Older workspaces may have UI records instead of materialized paths.
+            # Use their locations only, without creating new UI contracts.
+            locations.extend(record.get("file_path") for record in store.list_interfaces(req_id=req_id)
+                             if record.get("type") == "UI")
+            for value in dict.fromkeys(locations):
+                relative = str(value or "").strip().replace("\\", "/")
+                path = root / relative
+                if relative and path.resolve().is_relative_to(root) and path.is_file():
+                    files.append({"file_path": relative, "req_id": req_id, "relation": relation})
+        if not files:
+            return ""
+        return "<materialized_files>\n" + self._compact_json(files) + "\n</materialized_files>"
 
     def _get_resume_context(self, node_id: str) -> str:
         session = self._load_node_session(node_id)
@@ -398,6 +433,8 @@ class ContextPipeline:
         }
         cards: list[dict[str, Any]] = []
         for iface in store.list_interfaces():
+            if iface.get("type") == "UI":
+                continue
             req_ids = [
                 str(item or "").strip()
                 for item in (iface.get("req_ids") or [])
@@ -439,7 +476,7 @@ class ContextPipeline:
 
     def get_interface_contract_context(self, node_id: str) -> str:
         session = self._load_node_session(node_id)
-        interfaces = session.get("interfaces") or []
+        interfaces = [item for item in session.get("interfaces") or [] if item.get("type") != "UI"]
         if not interfaces:
             return ""
         return (
@@ -498,6 +535,9 @@ class ContextPipeline:
         )
         if node_session_layers:
             context_parts.append(node_session_layers)
+        materialized_files = self._get_materialized_files(node_id)
+        if materialized_files:
+            context_parts.append(materialized_files)
 
         resume_context = self.cache.get_or_compute(
             node_id,

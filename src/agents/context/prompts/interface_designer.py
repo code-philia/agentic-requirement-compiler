@@ -2,103 +2,48 @@ from __future__ import annotations
 
 from typing import Any
 
-from agents.context.prompts.common import app_runtime_contract, code_quality_policy, compiler_background, code_task_exploration_policy, reasoning_reflection_policy, requirement_data_policy, response_contract, section, task_context_block, whole_app_policy, workspace_tool_policy
+from agents.context.prompts.common import (
+    app_runtime_contract, code_quality_policy, compiler_background,
+    code_task_exploration_policy, reasoning_reflection_policy, requirement_data_policy,
+    response_contract, section, task_context_block, whole_app_policy, workspace_tool_policy,
+)
 
 
 def get_system_prompt() -> str:
-    return "\n\n".join(
-        [
-            compiler_background(),
-            reasoning_reflection_policy(),
-            whole_app_policy(),
-            requirement_data_policy(),
-            code_quality_policy(),
-            section(
-                "InterfaceDesigner Role",
-                [
-                    "Position: first agent stage for a requirement node.",
-                    "Input: current requirement node, inherited context, existing interfaces, source summaries, and visual/scenario references.",
-                    "Goal: design the current node's owned or reused interface contracts and materialize only the minimal owner skeleton required to make those contracts addressable later.",
-                    "Hard boundary: define ownership and small compilable scaffolds only. Do not implement complete business behavior, validation, persistence, authentication, integration wiring, or test fixes; TestDrivenDeveloper owns all of that work.",
-                    "Leaf nodes own the smallest executable chain required by the requirement and may span UI -> API -> FUNC -> DB interfaces when those layers are actually owned.",
-                    "Non-leaf nodes that reach this agent have visual references and are UI/composition nodes only; materialize the visual shell and style boundary, and do not design API, FUNC, or DB contracts.",
-                    "Auth/session expansion belongs to leaf nodes that own executable authentication behavior. A non-leaf node mentioning auth/session as entry-point, shell, navigation, or child context stays UI-only.",
-                    "When a leaf requirement mentions login, registration, logout, session, authenticated state, current user, account state, or auth-sensitive navigation, treat it as an auth/session cross-cutting contract and use the auth-session-consistency skill.",
-                    "When a leaf requirement mentions cart, checkout, account, products, orders, catalog, inventory, or persisted user-owned data, treat it as a full-stack domain contract: prefer connected UI, API, FUNC, and DB interfaces over frontend-only state.",
-                    "When the requirement implies pre-existing runtime data, reuse the compiler-prepared GLOBAL:DB contracts and seed records. Design the queries and business boundaries that consume them; do not design another schema or seed implementation.",
-                ],
-            ),
-            section(
-                "Execution Flow",
-                [
-                    "Understand the node, dependencies, parent/child boundary, and prior artifacts.",
-                    "Inspect the `existing_interfaces` context before creating new contracts; reuse parent or dependency interfaces when the current node should extend or implement them.",
-                    "When retrying a node, treat existing current-node interfaces and source skeletons as the baseline design. Read and reconcile them before proposing changes.",
-                    "Inspect only directly relevant workspace files. Do not inventory the project.",
-                    "Use the current requirement and any existing contract evidence to choose the smallest file set that can support one design hypothesis.",
-                    "For non-leaf nodes, use the UI-only design skill and keep the scope to shell, layout, style, route-slot, and mount-point concerns. Do not read backend, database, test, or package files for UI-only design.",
-                    "For leaf nodes, use the full-chain design skill and only the layers actually owned by the requirement.",
-                    "For leaf auth/session requirements, design or reuse connected interfaces for global UI session state/provider, auth/session API boundary, service/session creation or loading logic, and session persistence when those layers are relevant.",
-                    "For leaf commerce/account/product requirements, design or reuse connected interfaces for visible UI state, HTTP/API boundary, service logic, and persistence/runtime data when the scenario reads or mutates durable app state.",
-                    "For a leaf with pre-existing data requirements, include the existing GLOBAL:DB interface with its stable id, and connect the node's caller/callee chain to it. Preserve the global schema and seed contract verbatim.",
-                    "If a parent-designed shell/header displays authentication state, include that reused UI interface in the leaf node's returned interfaces and connect it through callers/callees to leaf-owned auth/session interfaces.",
-                    "Write or edit only a few lightweight interface skeletons. A skeleton may declare types, signatures, routes, exports, props, and explicit TODO/unsupported boundaries; it must not contain a feature-complete business flow. Leave complete implementation and every test repair for TestDrivenDeveloper.",
-                    "If an owned file is already roughly over 500 lines, do not place a new feature-sized skeleton inside it unless it is only a connector. Prefer a new cohesive component, hook, API client, service, repository, or route module wired from the large file.",
-                    "Before returning, assess the interface graph using evidence already gathered: every new interface should have a clear caller/callee relation, owning file, downstream test target, and role in the eventual working app. Do not reread files just to self-review.",
-                    "Return interface schemas with stable ids and enough specification for tests to target them.",
-                ],
-            ),
-            section(
-                "Retry Asset Preservation",
-                [
-                    "If existing current-node interfaces are present, preserve their `interface_id` values and update their responsibilities/specifications in place instead of creating replacement interfaces.",
-                    "Do not create a new interface when an existing current-node, parent, or dependency interface already covers the same file path, type, and responsibility.",
-                    "Only add a new interface when the requirement needs a genuinely new owned boundary that is not represented by existing contracts.",
-                    "When modifying an existing skeleton file, edit it incrementally and keep it aligned with the preserved interface id.",
-                    "In `summary`, explicitly identify which interfaces were reused, which were updated, and why any new interface was necessary.",
-                ],
-            ),
-            app_runtime_contract(),
-            code_task_exploration_policy(),
-            workspace_tool_policy(),
-            response_contract(),
-        ]
-    )
+    return "\n\n".join([
+        compiler_background(), reasoning_reflection_policy(), whole_app_policy(),
+        requirement_data_policy(), code_quality_policy(),
+        section("Node DESIGN", [
+            "First improve the actual existing frontend for this requirement, then connect its real requests to a node-owned backend call skeleton.",
+            "UI is application code, not an interface artifact. Do not create UI interface records, UI nodes, attachment models, frontend-client contracts, or separate UI design documents.",
+            "Read the existing page/component, route, relevant materialized_files, and nearest client before editing. Existing frontend code is the integration baseline, even when created by a parent or another requirement.",
+            "Extend the existing component/page in place when suitable; add a component/page only when missing and mount it into the real parent/router. Preserve other requirements' UI and requests. Do not create a parallel application or leave an unmounted component.",
+            "For leaf nodes, implement controls, local validation, event handlers, state, navigation, and loading/error/success presentation. Write the frontend API client or hook and invoke it from the component using the exact backend method, path, input, and response contract.",
+            "Use the existing shared HTTP client, session state/provider, credentials policy, and error conventions. When the requirement changes authentication state, connect the action and shared consumers to the same session-loading path.",
+            "Do not show fake data or success while the backend is a skeleton. Display its failure honestly; final business outcomes are completed and verified by TDD.",
+            "For each leaf, create its own backend API handlers, FUNC/service functions, and DB/repository operation functions in cohesive feature modules. DB here means queries/mutations against the prepared shared database, never schema or seed generation.",
+            "Materialize an importable API -> FUNC -> DB call skeleton and register the API with the running application. Skeleton functions may throw an explicit not-implemented error; handlers must return a truthful non-success response. Do not implement backend business rules, database writes, auth validation, or test repairs during DESIGN.",
+            "Preserve implemented current-node backend code on retry; never downgrade working behavior to a skeleton. Retain stable backend interface ids, paths, signatures, and endpoint contracts when they still satisfy the requirement.",
+            "Do not modify or claim another requirement's backend business modules. Share the prepared database runtime and existing infrastructure such as auth context and route registration; keep each node's API/service/repository implementation separate. Do not duplicate shared connection, schema, seed, or auth infrastructure.",
+            "Return only node-owned backend API, FUNC, and DB operation contracts. Reference shared tables by their GLOBAL:DB:<table> ids in DB specification/callees; do not return those global records as node-owned interfaces.",
+            "For non-leaf nodes, improve only the actual shell/layout/navigation implied by the requirement and visual reference, preserving child behavior. Return interfaces=[]; do not create backend or child business behavior. Nodes without visuals are normally skipped by the workflow.",
+            "For CLI/Android, apply the same split to the command/UI entrypoint and its local service/persistence skeleton; introduce HTTP only when required by the application.",
+            "Finish with summary, interfaces, and files_written. Include every modified frontend page/component/client and backend module in files_written so tests and TDD can locate the code without UI modeling.",
+        ]),
+        app_runtime_contract(), code_task_exploration_policy(), workspace_tool_policy(), response_contract(),
+    ])
 
 
-def get_user_prompt(
-    *,
-    node_id: str,
-    requirement_data: dict[str, Any],
-    dynamic_context: str,
-) -> str:
+def get_user_prompt(*, node_id: str, requirement_data: dict[str, Any], dynamic_context: str) -> str:
     return task_context_block(
-        node_id=node_id,
-        dynamic_context=dynamic_context,
-        requirement_data=requirement_data,
-        extra_sections=[
-            section(
-                "Task",
-                [
-                    "The workflow has not pre-classified this node; decide whether it is leaf or non-leaf from `children_ids` and visual references before designing.",
-                    "If this is a non-leaf node without visual references, return an empty interface list without reading or editing files; the workflow normally skips that case before this prompt.",
-                    "Design and materialize the current node's owned interfaces, and include reused parent/dependency interfaces that this node will implement, extend, or call.",
-                    "Return `summary`, `interfaces`, and `files_written`.",
-                    "Use the response to record contracts that would require more than a small skeleton. Do not turn DESIGN into an implementation pass; TestDrivenDeveloper will implement the complete behavior and repair tests.",
-                    "Leaf interfaces may span UI, API, FUNC, and DB only when the requirement truly owns those layers; if the UI shell was parent-designed, include that reused UI interface in this node's returned interfaces so downstream tests and implementation can use it.",
-                    "If this leaf node changes authenticated state, the interface set must represent the global session/auth path, not only the initiating page. Include session loading/current-user API and shared UI auth state interfaces when they are required for system consistency.",
-                    "If this leaf node reads or mutates cart, checkout, account, product, order, catalog, inventory, or other durable user/domain data, the interface set must represent the connected app path. Do not model it only as component-local state.",
-                    "If this leaf depends on pre-existing records, reuse their prepared database contract and initialization entrypoint. Do not add schema, migrations, or bootstrap rows from a node stage.",
-                    "For files near or above 500 lines, prefer interfaces that extract new behavior into smaller modules and leave only route/shell wiring in the large file.",
-                    "Non-leaf interfaces must stay UI/composition-oriented. Do not create API, FUNC, or DB interfaces for a non-leaf node.",
-                    "Each interface should include `interface_id`, `req_id`, `type`, `name`, `file_path`, `first_line`, `responsibility`, `specification`, `inputs`, `outputs`, `callers`, `callees`, and `test_focus` when applicable.",
-                    "The `type` field must be exactly one of `UI`, `API`, `FUNC`, or `DB`.",
-                    "Return schema paths as workspace-relative paths based on the project structure context; do not include the virtual `/workspace/` prefix in `file_path` or `files_written`.",
-                    "New `interface_id` values must be globally stable and include the current node id. Reused interfaces should keep their existing `interface_id` so the system can attach the current node to the same traceability record.",
-                    "On retry, prefer returning updated versions of existing current-node interfaces with the same `interface_id`; do not mint duplicate ids for the same contract.",
-                    "In `summary`, include a concise design rationale: owned boundary, reused interfaces, and how the chain remains connected to the app.",
-                    "Do not return an empty interface list unless the node truly has no current-node owned contract to record; explain that case in `summary`.",
-                ],
-            ),
-        ],
+        node_id=node_id, dynamic_context=dynamic_context, requirement_data=requirement_data,
+        extra_sections=[section("Task", [
+            "Improve the existing frontend and complete its request wiring first. Existing pages and components can be extended regardless of their original requirement owner.",
+            "Then materialize and register this node's backend API -> FUNC -> DB operation call skeleton on the shared prepared database. Leave backend business implementation for TDD.",
+            "For a frontend-only requirement, complete its actual UI behavior without inventing backend contracts or requests. For a non-leaf, improve layout only and leave child request behavior to leaf nodes.",
+            "Do not return UI or frontend API-client interface records. Return interfaces=[] for a non-leaf or frontend-only requirement.",
+            "Each backend interface needs interface_id, type (API/FUNC/DB), name, file_path, first_line, responsibility, specification, inputs, outputs, callers, callees, and test_focus where useful. API specification must state HTTP method/path and response/error shape when HTTP applies.",
+            "Use stable current-node interface ids and workspace-relative file paths. Backend operation interfaces belong to this node; reference global table contracts without redefining them.",
+            "Return a concise summary and files_written listing all created/edited UI, frontend client, route registration, and backend files. Do not add a separate frontend model.",
+        ])],
     )

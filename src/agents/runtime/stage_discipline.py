@@ -114,17 +114,19 @@ class StageDisciplineMiddleware(AgentMiddleware[StageDisciplineState, Any, Any])
                 "TestGenerator may write only test files, test helpers/configuration, and the returned manifest; "
                 f"{path} is not a test asset."
             )
-        if self._stage == "interface_design":
+        if self._stage == "interface_design" and _is_test_asset(path):
+            return "DESIGN completes frontend integration and backend call skeletons; test assets belong to TestGenerator/TDD."
+        if self._stage == "interface_design" and not _is_frontend_asset(path):
             if path not in self._written_paths and self._design_write_count >= _MAX_DESIGN_WRITES:
                 return (
-                    f"InterfaceDesigner may materialize at most {_MAX_DESIGN_WRITES} small skeleton files. "
+                    f"InterfaceDesigner may materialize at most {_MAX_DESIGN_WRITES} small backend skeleton files. "
                     "Record remaining interfaces in the response for TDD."
                 )
             content = str(args.get("content", args.get("new_string", "")) or "")
             if content.count("\n") + 1 > _MAX_SKELETON_LINES:
                 return (
-                    f"InterfaceDesigner may only materialize small skeletons (at most {_MAX_SKELETON_LINES} lines per write). "
-                    "Record the complete business contract for TDD instead of implementing it now."
+                    f"Backend DESIGN writes must be small call skeletons (at most {_MAX_SKELETON_LINES} lines per write). "
+                    "Complete frontend code is allowed; backend business implementation belongs to TDD."
                 )
         return None
 
@@ -157,7 +159,7 @@ class StageDisciplineMiddleware(AgentMiddleware[StageDisciplineState, Any, Any])
             self._read_ranges.setdefault(path, []).append((offset, offset + limit))
             self._cache_read_summary(request, path, offset, limit, result)
         if name in _FILE_WRITE_TOOLS and path:
-            if path not in self._written_paths and self._stage == "interface_design":
+            if path not in self._written_paths and self._stage == "interface_design" and not _is_frontend_asset(path):
                 self._design_write_count += 1
             self._written_paths.add(path)
             self._cache_written_path(request, path)
@@ -195,6 +197,18 @@ class StageDisciplineMiddleware(AgentMiddleware[StageDisciplineState, Any, Any])
 def _discipline_path(args: dict[str, Any]) -> str:
     raw = str(args.get("file_path", "") or "").replace("\\", "/").strip()
     return raw if raw.startswith("/") else f"/{raw}" if raw else ""
+
+
+def _is_frontend_asset(path: str) -> bool:
+    """Full UI and request wiring are DESIGN work; backend writes stay skeletons."""
+    relative = path.removeprefix("/workspace/").lstrip("/")
+    if relative.startswith("frontend/"):
+        return True
+    # Android presentation code is the frontend of a native application.
+    return relative.startswith("app/src/main/res/") or (
+        relative.startswith("app/src/main/java/")
+        and ("/ui/" in relative or relative.endswith(("Activity.java", "Fragment.java")))
+    )
 
 
 def _as_nonnegative_int(value: Any, *, default: int) -> int:

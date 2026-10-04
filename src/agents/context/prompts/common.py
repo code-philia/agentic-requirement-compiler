@@ -19,7 +19,8 @@ def compiler_background() -> str:
             "The requirement node is the source of truth. Preserve parent/child ownership, dependency links, and declared scenario constraints.",
             "Treat the codebase as one connected system: every artifact should fit existing routes, handlers, tests, persistence, and ownership boundaries instead of becoming an isolated fragment.",
             "The final product is a usable application, not a collection of files that individually satisfy prompts. Local node work must preserve end-to-end runtime coherence.",
-            "Compilation starts with whole-application DATABASE_PREPARE: structured JSON records are compiled into shared schema and bootstrap code, then the database is initialized. InterfaceDesigner defines node contracts, TestGenerator creates verification assets, TestDrivenDeveloper implements through feedback.",
+            "Compilation starts with whole-application DATABASE_PREPARE. Node DESIGN then completes frontend changes and real request wiring, materializes backend call skeletons, and records only backend API/FUNC/DB operation contracts. TestGenerator creates verification assets; TDD completes backend business behavior and repairs the connected application.",
+            "UI and frontend clients are application code, never modeled as UI nodes or interface records. materialized_files provides current, ancestor, and dependency code locations; inspect the existing frontend and improve it in place, preserving other requirements' behavior.",
             "When prepared_database is present, it is the authoritative shared data contract. Reuse GLOBAL:DB:<table> interfaces and the generated database runtime. Node stages must not redefine tables, seeds, generated files, or the initialization hook. Query get_database_tables(table_names) for full records of tables listed in table_catalog when needed.",
             "The system, not the agent, owns queue state, traceability persistence, workspace initialization, Git checkpoints, and app-type-specific build/test execution.",
     ]
@@ -42,7 +43,7 @@ def reasoning_reflection_policy() -> str:
         [
             "Think privately before acting; do not expose raw chain-of-thought in final responses or generated artifacts.",
             "Before the first tool call, identify the current node's goal, ownership boundary, known evidence, missing evidence, and the next smallest useful action.",
-            "Before editing, check that the edit target is owned by the current requirement or is a reused dependency/interface that must be connected for the current requirement.",
+            "Before editing, verify scope: shared frontend pages/components may be extended directly for this requirement; backend business edits belong to this node's modules, with narrow shared infrastructure wiring when necessary.",
             "After each tool result, update the hypothesis. If the result disproves the current hypothesis, change direction instead of repeating the same search or edit pattern.",
             "A private final consistency check must use evidence already collected; it must never trigger a post-write re-read or rewrite merely to review your own work.",
             "Hard rule: after a successful write, do not read or write that same path again unless a file tool or a system validation tool reports an error for it. Continue to the next concrete action or return the required artifact.",
@@ -60,7 +61,7 @@ def whole_app_policy() -> str:
             "A local feature is not complete if it only changes the visible surface while leaving API, command flow, state, persistence, routing, or shared runtime behavior disconnected.",
             "Prefer integrating with existing app structure over creating parallel files, duplicate state containers, duplicate route trees, duplicate command registries, or isolated helper modules.",
             "When touching cross-cutting concerns such as auth/session, search state, selected booking context, or current user state, keep the shared source of truth explicit and consumed by all affected surfaces.",
-            "When a leaf requirement involves auth, cart, checkout, account, products, orders, catalog, inventory, or persisted user-owned data, prefer a connected UI -> API -> FUNC -> DB chain over page-local state unless the requirement explicitly says it is visual-only.",
+            "For durable behavior, connect the actual frontend -> frontend request client -> node-owned backend API -> FUNC/service -> DB operation functions -> shared prepared database. Share database structure/runtime and infrastructure; keep each requirement's backend business modules independent.",
             "Do not implement commerce, account, auth, or product behavior as static frontend-only state when the app has or needs backend/runtime persistence for that concept.",
             "Do not make tests pass by weakening the application path: avoid hardcoded runtime data, local-only fake state, fallback arrays, or test-only behavior unless the requirement explicitly asks for a mock boundary.",
             "For web apps, remember that the user will experience the backend-hosted built frontend; implementation choices must work through that hosted runtime.",

@@ -50,7 +50,8 @@ ARC is designed as a requirement-to-system compiler with a staged pipeline:
 | Stage | What ARC does |
 | --- | --- |
 | **Structured requirement modeling** | Consumes a hierarchical requirement tree with dependencies, scenarios, and optional multimodal references such as screenshots or design assets. |
-| **Interface design** | Derives explicit interfaces and implementation boundaries before broad code generation begins. |
+| **Global database preparation** | Analyzes the complete requirement tree into validated JSON table and bootstrap records; deterministically generates database code and initializes SQLite before any node design or TDD. |
+| **Node design** | Improves existing frontend pages/components and wires real client requests, then materializes node-owned backend call skeletons with API/FUNC/DB operation contracts. UI is not modeled as interface nodes. |
 | **Test-first generation** | Produces unit, integration, and end-to-end tests from requirement scenarios before implementation. |
 | **Traceability by default** | Records the requirement-to-interface-to-test-to-code chain instead of treating generation as a black box. |
 
@@ -152,6 +153,16 @@ Conceptually, ARC produces three layers of output:
 - **Audit trail**: traceability records and git history that explain how requirements became code
 
 This is one of the main differences between ARC and prompt-only code generation: the result is not just an output directory, but a recoverable compilation process.
+
+Database preparation is automatic and requires no additional CLI flags. The analyzer returns structured records for columns, primary/unique keys, foreign keys, indexes, seed rows, and their source requirement IDs. It does not write SQL, application code, or schema documentation. The compiler stores these intermediate records and stage status in `.arc/database/state.json`, generates runtime files, and initializes the application database. A failed database stage prevents node execution and can be resumed with `--resume`.
+
+For web applications, generated `backend/src/database/arc_database.js` is connected to the existing `init_db.js` scaffold. Runtime startup and isolated E2E databases use the same schema and default rows. CLI applications use generated `app/arc_database.py`, bootstrapped by `app/__main__.py`. Android applications receive a generated `database/ArcDatabase.java` helper and `assets/arc_database.json`, bootstrapped by the manifest-declared Java Application; the compiler prepares a host SQLite database before node compilation, while the device database is initialized on open. Existing web/CLI/Android bootstrap files are extended at recognized anchors rather than replaced; an unsupported existing bootstrap fails with a specific message.
+
+Node agents receive the relevant database records and reuse stable `GLOBAL:DB:<table>` interfaces. Schema and bootstrap code are compiler-owned. `--sync-requirements` reanalyzes the complete tree and supports additive tables, safe columns, indexes, and seed rows while preserving existing data. Destructive or incompatible schema changes are rejected. User inputs and records created by registration, login, or ordering are not default seed data.
+
+Node DESIGN directly extends existing frontend pages/components, implements the request client and event/state wiring, and mounts any new UI in the real application. It returns no UI or frontend-client interface records: `files_written` (persisted as node-session `materialized_files`) carries code locations into test generation and TDD, including ancestor/dependency files. Parent nodes with visual references edit layout directly and return an empty interface manifest.
+
+Leaf interface manifests contain only node-owned backend `API`, `FUNC` (service), and `DB` (shared-database operation functions) contracts. These skeletons form a registered API-to-service-to-repository call chain; unfinished behavior must fail honestly. Global schema/seed contracts are referenced rather than redefined. TDD completes backend behavior and repairs frontend integration while preserving other requirements' backend modules and the existing frontend. Frontend-only requirements can have an empty interface manifest and still generate scenario tests.
 
 ### CLI Usage
 

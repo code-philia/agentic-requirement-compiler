@@ -15,7 +15,7 @@ from app_type_handler.test_results import parse_test_results
 
 LogCallback = Callable[[str, str, str | None, str | None], Awaitable[None] | None]
 TDD_RUN_TESTS_BUDGET = 5
-ALLOWED_INTERFACE_TYPES = {"UI", "API", "FUNC", "DB"}
+ALLOWED_INTERFACE_TYPES = {"API", "FUNC", "DB"}
 TDD_BATCH_ORDER = ("Unit", "Integration", "E2E")
 
 class WorkflowPhaseRunner:
@@ -87,13 +87,14 @@ class WorkflowPhaseRunner:
                 {
                     "interfaces": [],
                     "materialized_files": [],
+                    "design_summary": "",
                     "test_artifacts": [],
                     "phase_status": {"design": "skipped", "test": "skipped"},
                 },
             )
             await self._log(
                 "InterfaceDesigner",
-                "Skipping non-leaf DESIGN because this node has no visual reference; no UI/API/FUNC/DB interfaces are owned here.",
+                "Skipping parent layout work because this node has no visual reference.",
                 status="info",
                 node_id=node_id,
             )
@@ -122,15 +123,20 @@ class WorkflowPhaseRunner:
             normalized_path = normalize_workspace_relative_path(path, self.workspace_path)
             if normalized_path:
                 files_written.append(normalized_path)
-        if not interfaces:
+        # A retry may reuse working UI without rewriting it; keep its code locations.
+        previous_files = sessions.load_node_session(node_id).get("materialized_files") or []
+        files_written = list(dict.fromkeys([*previous_files, *files_written]))
+        if not interfaces and not files_written and not is_non_leaf:
             await self._log(
                 "InterfaceDesigner",
-                "Interface design returned no current-node owned interface definitions.",
+                "Node design returned neither backend contracts nor materialized files.",
                 status="warning",
                 node_id=node_id,
             )
 
         try:
+            if is_non_leaf and interfaces:
+                raise ValueError("Parent DESIGN edits layout directly and must return interfaces=[].")
             prepared_interfaces = self._prepare_interfaces(node_id, interfaces)
         except ValueError as exc:
             await self._log("InterfaceDesigner", str(exc), status="error", node_id=node_id)
@@ -142,6 +148,7 @@ class WorkflowPhaseRunner:
             {
                 "interfaces": prepared_interfaces,
                 "materialized_files": files_written,
+                "design_summary": interface_result.get("summary", ""),
                 "phase_status": {"design": "prepared"},
             },
         )
@@ -173,7 +180,7 @@ class WorkflowPhaseRunner:
             )
             await self._log(
                 "TestGenerator",
-                "Skipping test generation for non-leaf node; composition nodes only define interfaces.",
+                "Skipping test generation for parent layout work; no UI interfaces are modeled.",
                 status="info",
                 node_id=node_id,
             )
@@ -367,7 +374,7 @@ class WorkflowPhaseRunner:
             )
             await self._log(
                 "TestDrivenDeveloper",
-                "Non-leaf node completed directly after interface materialization; no TDD batch was scheduled.",
+                "Parent layout work completed directly after DESIGN; no TDD batch was scheduled.",
                 node_id=node_id,
             )
             return True
@@ -699,11 +706,9 @@ class WorkflowPhaseRunner:
                 continue
             existing = self.traceability.get_interface(interface_id)
             if interface_id.startswith("GLOBAL:DB:"):
-                if not existing:
-                    raise ValueError(f"Unknown compiler-owned database interface: {interface_id}")
-                # Reuse the prepared contract verbatim; local design cannot redefine it.
-                preserved = json.loads(str(existing.get("content") or "{}"))
-                interface = {**preserved, "interface_id": interface_id}
+                raise ValueError("Node DB interfaces describe operation functions; reference GLOBAL:DB tables in callees/specification instead of returning them.")
+            if existing and node_id not in existing.get("req_ids", []):
+                raise ValueError(f"Backend interface {interface_id} belongs to another requirement; define a node-owned operation contract instead.")
             if existing:
                 try:
                     existing_content = json.loads(str(existing.get("content") or "{}"))
@@ -715,17 +720,20 @@ class WorkflowPhaseRunner:
             if interface_type not in ALLOWED_INTERFACE_TYPES:
                 raise ValueError(
                     f"Generated interface `{interface_id}` has invalid `type` {interface.get('type')!r}. "
-                    "Interface type must be one of UI, API, FUNC, or DB."
+                    "Only backend API, FUNC, or DB operation interfaces are modeled; UI is edited directly."
                 )
+            file_path = (
+                normalize_workspace_relative_path(interface.get("file_path"), self.workspace_path)
+                or ((existing or {}).get("file_path") if existing else "")
+            )
+            if self.app_type == "web" and file_path.startswith("frontend/"):
+                raise ValueError(f"Frontend file {file_path} belongs in files_written, not the backend interface manifest.")
             normalized = {
                 **interface,
                 "interface_id": interface_id,
                 "req_id": node_id,
                 "type": interface_type,
-                "file_path": (
-                    normalize_workspace_relative_path(interface.get("file_path"), self.workspace_path)
-                    or ((existing or {}).get("file_path") if existing else "")
-                ),
+                "file_path": file_path,
                 "first_line": str(interface.get("first_line") or (existing or {}).get("first_line") or "").strip(),
                 "callers": normalize_string_list(interface.get("callers")) or normalize_string_list((existing or {}).get("callers")),
                 "callees": normalize_string_list(interface.get("callees")) or normalize_string_list((existing or {}).get("callees")),

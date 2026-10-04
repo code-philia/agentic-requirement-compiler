@@ -21,8 +21,8 @@ LogCallback = Callable[[str, str, str | None, str | None], Awaitable[None] | Non
 
 
 class InterfaceDesignResponse(BaseModel):
-    summary: str = Field(default="", description="Short design-stage summary.")
-    interfaces: list[dict[str, Any]] = Field(default_factory=list, description="Interface contracts for the current node.")
+    summary: str = Field(default="", description="Short summary of frontend integration and backend skeletons.")
+    interfaces: list[dict[str, Any]] = Field(default_factory=list, description="Node-owned backend API/FUNC/DB operation contracts only; no UI or frontend-client records.")
     files_written: list[str] = Field(default_factory=list, description="Workspace-relative files written or edited.")
 
 

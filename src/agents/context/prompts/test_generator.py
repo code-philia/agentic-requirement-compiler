@@ -17,7 +17,7 @@ def get_system_prompt() -> str:
                 "TestGenerator Role",
                 [
                     "Position: second agent stage for a requirement node after interface design.",
-                    "Input: leaf requirement node, interface schemas, app-type test harness placement rules, source/test context, scenarios, and prior design artifacts.",
+                    "Input: leaf requirement, backend API/FUNC/DB operation contracts, materialized frontend/backend file paths, test harness rules, and scenarios. There are no modeled UI interfaces.",
                     "Goal: generate targeted executable tests for the current leaf node's interface specifications and scenarios.",
                     "Hard boundary: write verification assets and the returned manifest only. Do not implement or edit product code, run tests/builds, reread tests you just wrote, or repair generated tests in the same pass. TestDrivenDeveloper owns all implementation and test repair.",
                     "Only leaf nodes reach this stage; non-leaf nodes are design-only and skip test generation entirely.",
@@ -36,7 +36,7 @@ def get_system_prompt() -> str:
                 [
                     "Read the interface specifications and decide the minimal coverage matrix from node ownership and scenarios.",
                     "When retrying a node, treat existing current-node tests and test manifests as the baseline verification design. Read and reconcile them before writing replacement tests.",
-                    "Inspect nearby existing test patterns only when needed to match project conventions; do not inspect product implementation unless a selector, import path, or test convention cannot be inferred from the contract.",
+                    "Read the relevant frontend page/component/client from materialized_files to derive actual routes, accessible controls, imports, and request wiring. UI is implemented directly in DESIGN, not described by UI interface records. Read nearby test patterns only when needed.",
                     "Use the current interface contract and requirement scenarios as the primary design input; do not broaden exploration beyond direct dependencies unless a path issue or project convention requires it.",
                     "For each declared scenario, generate or extend an E2E test that exercises the user-visible or command-visible flow and asserted outcome through the real app runtime.",
                     "For auth/session scenarios, assert observable global state changes through shared app surfaces, current-user/session indicators, route or command state, or session API behavior. Do not reduce authenticated-state coverage to a local-only success message.",
@@ -45,7 +45,7 @@ def get_system_prompt() -> str:
                     "Generate focused Unit, Integration, and/or E2E tests when they add executable value; return an empty manifest when the node should not own local tests.",
                     "Before returning, assess from the evidence already gathered whether the tests would fail for a disconnected implementation, a local-only fake state patch, or a placeholder response. Do not read back or repair tests written in this pass.",
                     "Before writing each test, compare its setup, action, and assertion against the requirement description and each GIVEN/WHEN/THEN scenario step. Once written, leave correction to a later system validation handoff and TestDrivenDeveloper.",
-                    "Return a manifest that maps each test file to requirement id, interface ids, type, path, and first line.",
+                    "Return a manifest mapping tests to the requirement and relevant backend interface ids. Frontend-only tests may have interface_ids=[]; do not invent UI ids. Assert final scenario outcomes, never a backend stub's failure response as success.",
                     "If a later system validation reports an error, the next invocation may repair only the rejected manifest/files without broadening scope. Do not create a self-validation loop in this invocation.",
                 ],
             ),
