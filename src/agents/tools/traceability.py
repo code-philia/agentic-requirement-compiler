@@ -67,7 +67,22 @@ def build_traceability_tools(
                 break
         return _json_records(matches)
 
-    return [get_interfaces_for_requirement, get_interface, search_interfaces]
+    async def get_database_tables(table_names: list[str]) -> str:
+        """Return prepared global table/seed JSON records for exact names from table_catalog."""
+        path = get_runtime().paths.project_dir / ".arc/database/state.json"
+        if not path.exists():
+            return json.dumps({"error": "Global database records are not available"})
+        state = json.loads(path.read_text(encoding="utf-8"))
+        if state.get("status") != "COMPLETED":
+            return json.dumps({"error": "Global database preparation is incomplete"})
+        requested = set(table_names)
+        plan = state.get("applied_plan") or {}
+        return json.dumps({
+            "tables": [table for table in plan.get("tables", []) if table["name"] in requested],
+            "seeds": [seed for seed in plan.get("seeds", []) if seed["table"] in requested],
+        }, ensure_ascii=False)
+
+    return [get_interfaces_for_requirement, get_interface, search_interfaces, get_database_tables]
 
 
 def _json_records(records: list[dict[str, Any]]) -> str:

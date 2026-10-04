@@ -11,6 +11,10 @@ arc compile requirements.yaml -o workspace/demo --resume
 
 `--clean` 会重建输出目录，不能与 `--resume` 同用。
 
+逐节点 DESIGN/TDD 之前，ARC 自动执行全局 `DATABASE_PREPARE`：分析完整需求树，返回表、字段、约束、索引、预置行及需求来源的 JSON 中间记录，系统确定性生成数据库代码并初始化数据库，不生成 schema 文档。
+
+中间记录和阶段状态保存在 `.arc/database/state.json`。数据库准备失败时不会执行节点；修正原因后使用 `--resume` 恢复。已通过校验的分析记录会被复用，数据库初始化可重复执行而不覆盖已有业务数据。Web 运行库和 E2E 隔离库使用同一套生成代码。
+
 ## 重试节点
 
 ```powershell
@@ -57,6 +61,8 @@ arc compile requirements.yaml -o workspace/demo --resume --sync-requirements
 ```
 
 ARC 会追加新增/变更节点、其祖先及显式反向依赖节点的标准 DESIGN 和 IMPLEMENT 任务。删除节点、移动节点、更改父节点或更改节点 ID 暂不支持增量处理，应使用完整编译。
+
+同步需求时会重新分析全局数据库记录，并将变化的共享表消费者及其反向依赖、祖先纳入重编译。数据库只允许保留数据的追加式演进；删除/重命名表字段、修改已有键或预置行等不兼容变化会阻止编译。节点智能体复用全局 DB 契约，不自行修改生成的建库与预置数据代码。
 
 ## 规则
 

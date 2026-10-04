@@ -80,7 +80,7 @@ class DisableToolsMiddleware(AgentMiddleware[Any, Any, Any]):
 def build_stage_agent(
     *,
     name: str,
-    stage: Literal["interface_design", "test_generation", "implementation"],
+    stage: Literal["database_analysis", "interface_design", "test_generation", "implementation"],
     model: str | object,
     system_prompt: str,
     response_format: object | None,
@@ -210,6 +210,19 @@ def _build_filesystem_permissions(
             mode="allow",
         ),
     ]
+
+    if os.environ.get("ARC_DATABASE_READY") == "1":
+        permissions.insert(0, FilesystemPermission(
+            operations=["write"], mode="deny",
+            paths=[
+                f"{WORKSPACE_PREFIX}/backend/src/database/arc_database.js",
+                f"{WORKSPACE_PREFIX}/backend/src/database/init_db.js",
+                f"{WORKSPACE_PREFIX}/backend/src/database/seed_db.js",
+                f"{WORKSPACE_PREFIX}/app/arc_database.py",
+                f"{WORKSPACE_PREFIX}/app/src/main/assets/arc_database.json",
+                f"{WORKSPACE_PREFIX}/app/src/main/java/**/database/ArcDatabase.java",
+            ],
+        ))
 
     if skill_instruction_paths:
         permissions.append(

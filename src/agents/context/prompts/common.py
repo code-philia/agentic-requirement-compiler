@@ -19,7 +19,8 @@ def compiler_background() -> str:
             "The requirement node is the source of truth. Preserve parent/child ownership, dependency links, and declared scenario constraints.",
             "Treat the codebase as one connected system: every artifact should fit existing routes, handlers, tests, persistence, and ownership boundaries instead of becoming an isolated fragment.",
             "The final product is a usable application, not a collection of files that individually satisfy prompts. Local node work must preserve end-to-end runtime coherence.",
-            "Compilation is staged: InterfaceDesigner defines and materializes contracts, TestGenerator creates executable verification assets, TestDrivenDeveloper implements through feedback.",
+            "Compilation starts with whole-application DATABASE_PREPARE: structured JSON records are compiled into shared schema and bootstrap code, then the database is initialized. InterfaceDesigner defines node contracts, TestGenerator creates verification assets, TestDrivenDeveloper implements through feedback.",
+            "When prepared_database is present, it is the authoritative shared data contract. Reuse GLOBAL:DB:<table> interfaces and the generated database runtime. Node stages must not redefine tables, seeds, generated files, or the initialization hook. Query get_database_tables(table_names) for full records of tables listed in table_catalog when needed.",
             "The system, not the agent, owns queue state, traceability persistence, workspace initialization, Git checkpoints, and app-type-specific build/test execution.",
     ]
     if os.environ.get("ARC_WORKSPACE_MODE", "").strip().lower() == "evolution":
@@ -74,7 +75,7 @@ def requirement_data_policy() -> str:
             "Natural-language requirement descriptions and GIVEN steps may declare pre-existing records, users, relationships, permissions, catalog entries, histories, statuses, or other runtime data even when there is no `data` field or fixture DSL. Treat those statements as product requirements.",
             "Distinguish persistent preconditions from transient user input: records that must already exist belong in the application's normal database, migration, seed, bootstrap, or persistent-runtime path; values entered during the scenario must not be pre-seeded unless the requirement explicitly says they already exist.",
             "When a requirement needs pre-existing data, preserve the required entity identity, parent relationship, ownership, visibility, permissions, status, ordering, and cross-record references so the normal UI -> API -> FUNC -> DB path can read it.",
-            "Seed data must be deterministic and idempotent, available after normal application startup or reset, and reachable through the real repository/service/API path. Do not satisfy a data precondition with frontend constants, fallback arrays, hidden test-only setup, or a test-only endpoint.",
+            "DATABASE_PREPARE has already materialized deterministic idempotent seed data. Consume it through the normal initialized database and repository/service/API path; do not recreate seeds in leaf nodes. Do not satisfy a data precondition with frontend constants, fallback arrays, hidden test-only setup, or a test-only endpoint.",
             "Do not infer or copy hidden evaluator fixtures. Use only data requirements visible in the requirement snapshot, scenarios, interfaces, and permitted project context; keep seeded records ordinary product state rather than a test-specific DSL.",
         ],
     )

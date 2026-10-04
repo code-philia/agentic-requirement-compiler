@@ -160,7 +160,7 @@ class ContextPipeline:
             "primary_outcomes": [
                 "Implement the current node's owned behavior, not just a renderable shell.",
                 "Use real owned runtime wiring for fetched or persisted data when this node owns that chain.",
-                "When the requirement or GIVEN steps describe pre-existing data, provide deterministic idempotent database or persistent-runtime seed/bootstrap records with the required relationships and make them reachable through the normal application path.",
+                "Consume compiler-prepared database schema and seed records through the normal application path, preserving their relationships and ownership.",
                 "If runtime data is not owned here, render explicit loading, empty, or error states instead of fake records.",
             ],
             "scenario_targets": [
@@ -478,6 +478,9 @@ class ContextPipeline:
             self._build_acceptance_gate(node_id, req_data),
             self.cache.get_or_compute(node_id, "tech_stack_context", self._get_tech_stack_context),
         ]
+        database_context = self._get_database_context(node_id)
+        if database_context:
+            context_parts.append(database_context)
         project_structure = self.cache.get_or_compute(
             node_id,
             f"project_structure::{agent_type}",
@@ -557,6 +560,41 @@ class ContextPipeline:
             context_parts.append(recent_failure_summary)
 
         return "\n\n".join(part for part in context_parts if part)
+
+    def _get_database_context(self, node_id: str) -> str:
+        path = Path(self.config.workspace_dir) / ".arc/database/state.json"
+        if not path.exists():
+            return ""
+        state = json.loads(path.read_text(encoding="utf-8"))
+        if state.get("status") != "COMPLETED":
+            return ""
+        plan = state.get("applied_plan") or {}
+        tables = plan.get("tables") or []
+        related = {table["name"] for table in tables if node_id in table["req_ids"]}
+        # Include referenced tables so a node has the actual join/ownership contract.
+        while True:
+            expanded = related | {
+                column["references"]["table"]
+                for table in tables if table["name"] in related
+                for column in table["columns"] if column.get("references")
+            }
+            if expanded == related:
+                break
+            related = expanded
+        context = {
+            "status": "PREPARED",
+            "tables": [table for table in tables if table["name"] in related],
+            "table_catalog": [{"name": table["name"], "req_ids": table["req_ids"]} for table in tables],
+            "seeds": [seed for seed in plan.get("seeds", []) if seed["table"] in related],
+            "generated_files": state.get("generated_files", []),
+            "runtime": {
+                "web": "Use backend/src/database/index.js and db_runtime.js. initializeDatabase automatically applies the compiled schema and seeds to ARC_DB_FILE, including isolated E2E databases.",
+                "cli": "Use app.arc_database.connect_database(db_path). It applies the compiled schema and seeds to ARC_DB_FILE (or an explicit isolated test database). app/__main__.py bootstraps it before the command runtime.",
+                "android": "Use the generated database.ArcDatabase SQLiteOpenHelper; getWritableDatabase applies assets/arc_database.json on open. The Application bootstraps it at startup. Use a separate database name for isolated tests. This is the authoritative new domain database; do not create parallel Room entities/schema for these tables. The compiler prepares the same program on the host; device creation occurs on open.",
+            }.get(self.config.app_type, ""),
+            "ownership": "Global DATABASE_PREPARE owns schema, bootstrap rows, and generated files. Reuse these DB contracts; node design/TDD owns queries and business behavior. Do not redefine tables, seed rows, or the bootstrap hook. A missing structure requires requirement synchronization.",
+        }
+        return "<prepared_database>\n" + self._compact_json(context) + "\n</prepared_database>"
 
     def get_static_context(self, node_id: str, agent_type: str = "") -> str:
         parts = [

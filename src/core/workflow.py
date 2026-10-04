@@ -15,6 +15,7 @@ from app_type_handler import create_app_type_handler, normalize_app_type
 from agents.context.pipeline import context_pipeline
 from core import commits, config, files, sessions
 from core.phases import WorkflowPhaseRunner
+from core.database import DatabasePreparation
 from core.service import configure_runtime
 from core.commits import build_commit_message
 from core.config import load_project_env, set_app_type, set_web_port, set_workspace_root
@@ -95,6 +96,12 @@ class ARCWorkflowManager:
         self.queue_path = os.path.join(self.arc_dir, QUEUE_FILENAME)
         self.project_metadata_path = os.path.join(self.arc_dir, PROJECT_METADATA_FILENAME)
         self.runtime = None
+        self.database_preparation = DatabasePreparation(
+            workspace_path=self.workspace_path,
+            requirement_path=self.requirement_path,
+            app_type=self.app_type,
+            log_cb=self.log_cb,
+        )
         self.workspace_mode = WORKSPACE_MODE_SCAFFOLD
 
         set_web_port(self.web_port)
@@ -282,6 +289,7 @@ class ARCWorkflowManager:
         sync_requirements: bool = False,
     ) -> dict[str, Any]:
         await self._log("Compiler", "ARC compilation started.")
+        os.environ["ARC_DATABASE_READY"] = "0"
         if rerun_tdd_node_id and not resume_from_queue:
             raise ValueError("Selected-test TDD requires resuming an existing ARC compilation workspace.")
         if rerun_tdd_node_id and (retry_failed or retry_node_ids):
@@ -364,6 +372,16 @@ class ARCWorkflowManager:
             require_compatible_existing_queue=retry_requested,
             allow_requirement_tree_change=sync_requirements,
         )
+        pending_sync = queue_state.get("pending_requirement_sync")
+        if pending_sync:
+            if sync_plan is None:
+                sync_plan = pending_sync
+            else:
+                sync_plan["affected_node_ids"] = sorted(
+                    set(sync_plan["affected_node_ids"]) | set(pending_sync["affected_node_ids"])
+                )
+        if sync_plan is not None:
+            queue_state["pending_requirement_sync"] = sync_plan
         self._sync_queue_node_states(queue_state)
         recovered_tasks = self._recover_interrupted_queue(queue_state)
         retry_plan = self._apply_retry_plan(
@@ -385,12 +403,48 @@ class ARCWorkflowManager:
             replace_intent=bool(regenerate_tests_node_id),
             replace_test_id=regenerate_test_id,
         )
+        # Persist the node queue first so a failed global stage is resumable without
+        # losing retry/interactive operations. No node may run until this gate passes.
+        self._save_processing_queue(queue_state)
+        database_state = await self.database_preparation.prepare(
+            requirement_tree, self._requirement_tree_revision(requirement_tree), self.runtime,
+        )
+        queue_state["database"] = {
+            key: database_state.get(key) for key in ("status", "requirements_revision", "error")
+        }
+        self._save_processing_queue(queue_state)
+        context_pipeline.cache.clear()
+        if database_state.get("status") != TASK_COMPLETED:
+            return {**self._build_compile_result(queue_state), "ok": False,
+                    "failed_stage": "DATABASE_PREPARE", "error": database_state.get("error", "")}
+        if sync_plan is not None:
+            affected = set(sync_plan["affected_node_ids"])
+            affected.update(database_state.get("affected_node_ids") or [])
+            # A shared table change can affect any consumer, its reverse dependencies,
+            # and their composition ancestors. Propagate until a fixed point.
+            records = self._flatten_requirement_tree(requirement_tree)
+            known_ids = {record["req_id"] for record in records}
+            affected &= known_ids
+            while True:
+                before = set(affected)
+                for record in records:
+                    if set(record["dependencies"]) & affected:
+                        affected.add(record["req_id"])
+                    if record["req_id"] in affected and record["parent_id"]:
+                        affected.add(record["parent_id"])
+                if affected == before:
+                    break
+            sync_plan["affected_node_ids"] = sorted(affected)
         incremental_tasks = self._append_incremental_requirement_tasks(
             queue_state,
             requirement_tree=requirement_tree,
             affected_node_ids=sync_plan["affected_node_ids"] if sync_plan else [],
         )
+        queue_state.pop("pending_requirement_sync", None)
         self._save_processing_queue(queue_state)
+        # Only clear schema impact after the incremental tasks are durably queued.
+        database_state["affected_node_ids"] = []
+        write_json_file(self.database_preparation.state_path, database_state)
         for recovered in recovered_tasks:
             await self._log(
                 "Compiler",
@@ -1187,7 +1241,8 @@ class ARCWorkflowManager:
             if isinstance(operation, dict) and operation.get("status") == TASK_FAILED
         )
         return {
-            "ok": base_compilation_completed and last_operation_completed and not failed_nodes,
+            "ok": base_compilation_completed and last_operation_completed and not failed_nodes
+            and queue_state.get("database", {}).get("status", TASK_COMPLETED) == TASK_COMPLETED,
             "failed_nodes": failed_nodes,
             "failed_operations": failed_operations,
             "visit_order": completed_tasks,

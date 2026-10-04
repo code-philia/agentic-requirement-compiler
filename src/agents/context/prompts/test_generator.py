@@ -21,6 +21,7 @@ def get_system_prompt() -> str:
                     "Goal: generate targeted executable tests for the current leaf node's interface specifications and scenarios.",
                     "Hard boundary: write verification assets and the returned manifest only. Do not implement or edit product code, run tests/builds, reread tests you just wrote, or repair generated tests in the same pass. TestDrivenDeveloper owns all implementation and test repair.",
                     "Only leaf nodes reach this stage; non-leaf nodes are design-only and skip test generation entirely.",
+                    "Use the prepared_database schema and bootstrap rows as existing application facts. Isolated test databases must initialize through the same generated runtime; do not duplicate global seed fixtures. Web initializeDatabase already loads the prepared default data, including the E2E reset path.",
                     "Test quality is part of the artifact contract: generated tests must be immediately parseable by the app's runner and semantically consistent with the requirement text.",
                     "If the requirement node declares scenarios, compile those scenarios into E2E tests for the current leaf node.",
                     "Leaf-node tests must assert the requirement's target behavior, not the temporary DESIGN scaffold. Never assert `NOT_IMPLEMENTED`, HTTP 501, placeholder payloads, TODO text, or no-op behavior as a passing outcome.",

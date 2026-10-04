@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from typing import Any, Literal, NotRequired, TypedDict
 
 from langchain.agents.middleware.types import AgentMiddleware, ToolCallRequest
@@ -26,7 +27,7 @@ class StageDisciplineMiddleware(AgentMiddleware[StageDisciplineState, Any, Any])
 
     state_schema = StageDisciplineState
 
-    def __init__(self, *, stage: Literal["interface_design", "test_generation", "implementation"]) -> None:
+    def __init__(self, *, stage: Literal["database_analysis", "interface_design", "test_generation", "implementation"]) -> None:
         self._stage = stage
         self._read_ranges: dict[str, list[tuple[int, int]]] = {}
         self._written_paths: set[str] = set()
@@ -55,6 +56,8 @@ class StageDisciplineMiddleware(AgentMiddleware[StageDisciplineState, Any, Any])
     def _validate_tool_call(self, request: ToolCallRequest) -> str | None:
         name = str(request.tool_call.get("name", ""))
         args = request.tool_call.get("args", {}) or {}
+        if self._stage == "database_analysis" and name in _FILE_WRITE_TOOLS | _VALIDATION_TOOLS:
+            return "DatabaseDesigner only returns structured JSON records; code materialization and execution belong to the compiler."
         if name in {"execute", "delete"}:
             return f"`{name}` is disabled in ARC's staged file workflow."
         if self._stage == "test_generation" and name in _VALIDATION_TOOLS:
@@ -90,6 +93,17 @@ class StageDisciplineMiddleware(AgentMiddleware[StageDisciplineState, Any, Any])
         path = _discipline_path(args)
         if not path:
             return None
+        if os.environ.get("ARC_DATABASE_READY") == "1":
+            generated = (
+                "/backend/src/database/arc_database.js", "/backend/src/database/init_db.js",
+                "/backend/src/database/seed_db.js",
+                "/app/arc_database.py", "/app/src/main/assets/arc_database.json", "/database/ArcDatabase.java",
+            )
+            if any(path.endswith(suffix) for suffix in generated):
+                return "This file is owned by DATABASE_PREPARE; reuse its data contract and runtime."
+            old = str(args.get("old_string", ""))
+            if "ARC_DATABASE_PREPARE" in old or (path.endswith("/app/__main__.py") and "content" in args):
+                return "Preserve the compiler-owned database bootstrap hook; edit feature code around it."
         if path in self._written_paths and not self._path_unlocked(path):
             return (
                 f"Repeated write blocked: {path} was already changed in this stage. "

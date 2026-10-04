@@ -672,6 +672,8 @@ class TraceabilityStore:
     def clear_node_design_artifacts(self, req_id: str) -> None:
         interfaces = self._read_table("interfaces")
         for key, row in list(interfaces.items()):
+            if key.startswith("GLOBAL:DB:"):
+                continue  # Global schema contracts are owned by DATABASE_PREPARE.
             if not isinstance(row, dict):
                 continue
             remaining_req_ids = [value for value in _as_str_list(row.get("req_ids")) if value != req_id]

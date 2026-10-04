@@ -698,6 +698,12 @@ class WorkflowPhaseRunner:
             if not interface_id:
                 continue
             existing = self.traceability.get_interface(interface_id)
+            if interface_id.startswith("GLOBAL:DB:"):
+                if not existing:
+                    raise ValueError(f"Unknown compiler-owned database interface: {interface_id}")
+                # Reuse the prepared contract verbatim; local design cannot redefine it.
+                preserved = json.loads(str(existing.get("content") or "{}"))
+                interface = {**preserved, "interface_id": interface_id}
             if existing:
                 try:
                     existing_content = json.loads(str(existing.get("content") or "{}"))
