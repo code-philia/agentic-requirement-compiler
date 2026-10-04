@@ -79,6 +79,9 @@ Additional requirements for Android generation:
 git clone --recurse-submodules https://github.com/code-philia/agentic-requirement-compiler.git
 cd agentic-requirement-compiler
 
+# Initialize and update submodules if you didn't use --recurse-submodules
+git submodule update --init --recursive
+
 # Create and activate virtual environment
 uv venv
 source .venv/bin/activate  # On Linux/macOS
