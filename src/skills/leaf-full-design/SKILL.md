@@ -7,6 +7,7 @@ description: Complete a leaf requirement's frontend and request wiring, then cre
 
 1. Start from the actual page/component, its router/parent, and the nearest API client. Use materialized_files as code locations, not as UI contracts.
 2. Extend an existing UI in place; create and mount new components/pages only when needed. Preserve unrelated UI and behavior.
+   For web UI, use Tailwind CSS v4 utility classes directly in JSX/TSX className. Keep index.css as the Tailwind import/global theme entrypoint, not a destination for feature CSS. Preserve the CSS entry import and Vite plugin. Use complete literal class names for conditional styles.
 3. Complete controls, events, frontend state/validation, and loading/error/success handling. Implement the real frontend request function and call it from the component or hook.
 4. Match the backend endpoint method/path and request/response shapes. Use existing HTTP, auth/session, and error infrastructure. Do not fake successful responses or records.
 5. Generate independent node-owned backend API -> FUNC/service -> DB/repository operation skeletons and register the route. Leave backend business behavior and database queries/mutations to TDD; an unfinished skeleton must fail honestly.

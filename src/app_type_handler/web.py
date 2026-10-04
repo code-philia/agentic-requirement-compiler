@@ -706,6 +706,9 @@ class WebAppType(AppTypeHandler):
             "For web apps, the hosted runtime is backend-led: enter `frontend` and run `npm run build`, then enter `backend` and run `npm run start` to serve the built frontend dist.",
             f"The backend process is responsible for hosting `frontend/dist` on the single web port `{resolved_port}`; do not assume a separate frontend dev server is part of the runtime.",
             "E2E and runtime verification should target the backend-hosted origin after the frontend build completes.",
+            "Style web pages/components with Tailwind CSS v4 utility classes in JSX/TSX className. Do not add page/component selectors or feature styling to frontend/src/index.css or create separate feature CSS files.",
+            "Keep frontend/src/index.css as the Tailwind entrypoint with @import \"tailwindcss\"; preserve its import from frontend/src/main.tsx. Reserve global CSS for required theme tokens, fonts, or base rules that utilities cannot express.",
+            "Use complete literal Tailwind class names, including conditional alternatives and arbitrary values. Do not construct class names such as bg-${color}-500 dynamically; Tailwind's source scanner cannot discover them.",
         ]
 
     @classmethod
@@ -723,6 +726,8 @@ class WebAppType(AppTypeHandler):
             "  - Web runtime sequence: frontend/npm run build -> backend/npm run start",
             "  - Backend runtime root: backend/",
             "  - Frontend source root: frontend/src/",
+            "  - Tailwind v4: tailwindcss + @tailwindcss/vite dependencies; vite.config.js registers tailwindcss().",
+            "  - CSS entrypoint: frontend/src/index.css imports tailwindcss; frontend/src/main.tsx imports ./index.css. Put feature styles in component className utilities.",
             "  - Frontend shared test setup: frontend/test/setup.ts",
             "  - Backend source root: backend/src/",
             "  - Shared database scaffold: backend/src/database/",
@@ -1072,7 +1077,10 @@ class WebAppType(AppTypeHandler):
             "### Frontend\n"
             "* **Framework**: React 18+ (Vite)\n"
             "* **Language**: TypeScript + TSX (preferred default for frontend source files)\n"
-            "* **Styling**: Tailwind CSS v4 via utility classes in component markup, not only bare CSS imports\n"
+            "* **Styling**: Tailwind CSS v4 utility classes in JSX/TSX `className`; do not put page/component styling in `index.css` or separate feature CSS files.\n"
+            "  * Infrastructure: `tailwindcss` and `@tailwindcss/vite` v4; `frontend/vite.config.js` registers `tailwindcss()`.\n"
+            "  * Preserve `@import \"tailwindcss\";` in `frontend/src/index.css` and its `./index.css` import in `frontend/src/main.tsx`. Global CSS is only for required theme tokens, fonts, or base rules.\n"
+            "  * Use full literal utility class names; express conditional styles with explicit complete alternatives instead of dynamically concatenating class fragments. Tailwind v4 uses this CSS import, not v3 `@tailwind` directives.\n"
             "* **HTTP**: Axios (Must use Interceptors for global error handling)\n"
             "* **Testing**: Vitest for frontend unit/integration tests in `frontend/tests/...`.\n"
             "* **Frontend Test Infrastructure**: `vitest` + `jsdom` + `@testing-library/react` + `@testing-library/jest-dom` + `@testing-library/user-event` are preinstalled and configured through `frontend/vite.config.js` and `frontend/test/setup.ts`.\n"
