@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import hashlib
+import re
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
@@ -15,7 +16,7 @@ from app_type_handler.test_results import parse_test_results
 
 
 LogCallback = Callable[[str, str, str | None, str | None], Awaitable[None] | None]
-TDD_RUN_TESTS_BUDGET = 5
+TDD_MAX_CALLS = 4  # One initial generation plus at most three repair calls per invocation.
 ALLOWED_INTERFACE_TYPES = {"API", "FUNC", "DB"}
 TDD_BATCH_ORDER = ("Unit", "Integration", "E2E")
 
@@ -48,6 +49,7 @@ class WorkflowPhaseRunner:
             log_cb=self._log,
         )
         self.test_driven_developer.app_handler = self.app_handler
+        self.interface_designer.validate_files = self._prepare_design_files
 
     @property
     def traceability(self):
@@ -108,13 +110,14 @@ class WorkflowPhaseRunner:
             return True
 
         await self._log("InterfaceDesigner", "Running interface design.", node_id=node_id)
-        interface_result = await self.interface_designer.run(
-            node_id=node_id,
-            requirement_data=requirement_data,
-        )
         try:
+            interface_result = await self.interface_designer.run(
+                node_id=node_id,
+                requirement_data=requirement_data,
+            )
             file_groups, prepared_interfaces = self._prepare_design_files(node_id, interface_result.get("files"), is_non_leaf)
         except ValueError as exc:
+            self._update_node_session(node_id, {"phase_status": {"design": "failed"}})
             await self._log("InterfaceDesigner", str(exc), status="error", node_id=node_id)
             return False
         files_written = [path for paths in file_groups.values() for path in paths]
@@ -413,278 +416,82 @@ class WorkflowPhaseRunner:
         return final_ok
 
     async def _run_tdd_for_node(
-        self,
-        *,
-        node_id: str,
-        tests: list[dict[str, Any]],
+        self, *, node_id: str, tests: list[dict[str, Any]],
     ) -> bool:
-        previous_failure_summary = str(sessions.load_node_session(node_id).get("recent_failure_summary", "") or "")
+        """One generation call per round; validate every layer on current code."""
         groups: dict[str, list[dict[str, Any]]] = {}
         for test in tests:
-            test_type = str(test.get("type", "") or "").strip()
-            if not test_type:
-                continue
-            normalized_type = test_type.lower()
-            groups.setdefault(normalized_type, []).append(test)
-
-        ordered_types = [test_type for test_type in TDD_BATCH_ORDER if groups.get(test_type.lower())]
-        if not ordered_types:
+            test_type = canonical_test_type(str(test.get("type", "")))
+            if test_type is None:
+                await self._log("TestDrivenDeveloper", "Unsupported registered test type.",
+                                status="error", node_id=node_id)
+                return False
+            groups.setdefault(test_type, []).append(test)
+        ordered = [kind for kind in TDD_BATCH_ORDER if kind in groups]
+        if not ordered:
             return True
-
-        usage_by_type = {test_type: 0 for test_type in ordered_types}
-        result_by_type: dict[str, str] = {}
-        await self._log(
-            "TestDrivenDeveloper",
-            "Running leaf TDD sessions in ordered layers with independent budgets: " + " -> ".join(ordered_types) + ".",
-            node_id=node_id,
-        )
-        active_test_type: str | None = None
-
-        async def run_requested_tests(requested_type: str | None = None, requested_files: list[str] | None = None) -> str:
-            requested = str(requested_type or "").strip()
-            if active_test_type is None:
-                return (
-                    "Exit Code: 1\n"
-                    "STDERR:\n"
-                    "No active TDD test layer is currently scheduled.\n"
+        feedback = str(sessions.load_node_session(node_id).get("recent_failure_summary") or "")
+        final_ok = False
+        modified: list[str] = []
+        for attempt in range(1, TDD_MAX_CALLS + 1):
+            # Never reuse a passing layer from an earlier code revision.
+            results: dict[str, str] = {}
+            build_output = ""
+            failures: list[str] = []
+            await self._log("TestDrivenDeveloper", f"Plain TDD round {attempt}/{TDD_MAX_CALLS}.",
+                            node_id=node_id)
+            self._update_node_session(node_id, {"tdd_codegen": {
+                "round": attempt, "max_calls": TDD_MAX_CALLS, "status": "running"}})
+            try:
+                await self.test_driven_developer.run(
+                    node_id=node_id, test_files=collect_test_files(tests),
+                    test_type="all", node_tests=tests, previous_failure_summary=feedback,
                 )
-            if requested.lower() in {"", "all", "current", "next"}:
-                selected_type = active_test_type
-            else:
-                selected_type = canonical_test_type(requested)
-                if selected_type is None or selected_type not in ordered_types:
-                    return (
-                        "Exit Code: 1\n"
-                        "STDERR:\n"
-                        f"Unsupported current-node test_type={requested!r}. "
-                        f"Available ordered layers: {', '.join(ordered_types)}.\n"
-                    )
-                if selected_type != active_test_type:
-                    return (
-                        "Exit Code: 1\n"
-                        "STDERR:\n"
-                        f"The active TDD layer is `{active_test_type}`, but run_tests requested `{selected_type}`. "
-                        "The system attempts layers in Unit -> Integration -> E2E order with independent budgets.\n"
-                    )
+                modified.extend(self.test_driven_developer.modified_files)
+                context_pipeline.cache.invalidate_file_layers(node_id)
+                build_output = await self.app_handler.run_build()
+                await self._log("TestDrivenDeveloper", "Build output\n" + build_output,
+                                status="debug", node_id=node_id)
+                # Web returns one exit code per sub-build, rather than an aggregate.
+                build_codes = re.findall(r"^\s*Exit Code:\s*(-?\d+)\s*$", build_output, re.MULTILINE)
+                if not build_codes or any(int(code) != 0 for code in build_codes):
+                    failures.append("Build: " + summarize_batch_output(build_output))
+                else:
+                    for kind in ordered:
+                        output = await self.app_handler.run_test_group(kind, collect_test_files(groups[kind]))
+                        results[kind] = output
+                        await self._log("TestDrivenDeveloper", f"{kind} output\n{output}",
+                                        status="debug", node_id=node_id)
+                        if parse_test_results(output).get("exit_code") != 0:
+                            failures.append(kind + ": " + summarize_batch_output(output))
+            except Exception as exc:
+                failures.append("Generation/application/validation: " + str(exc)[:8000])
+                await self._log("TestDrivenDeveloper", failures[-1], status="error", node_id=node_id)
 
-            selected_files = [
-                path
-                for value in (requested_files or collect_test_files(groups[selected_type.lower()]))
-                if (path := normalize_workspace_relative_path(value, self.workspace_path))
-            ]
-            registered_files = {
-                str(item.get("file_path", "") or "").strip()
-                for item in groups[selected_type.lower()]
-                if str(item.get("file_path", "") or "").strip()
-            }
-            unknown = [path for path in selected_files if path not in registered_files]
-            if unknown:
-                return (
-                    "Exit Code: 1\n"
-                    "STDERR:\n"
-                    f"run_tests({selected_type}) may only execute registered {selected_type} tests for the current node. "
-                    f"Unknown files: {', '.join(unknown)}\n"
-                )
-            used = usage_by_type[selected_type]
-            if used >= TDD_RUN_TESTS_BUDGET:
-                await self._log(
-                    "TestDrivenDeveloper",
-                    f"`run_tests` {selected_type} budget exhausted at {used}/{TDD_RUN_TESTS_BUDGET}.",
-                    status="error",
-                    node_id=node_id,
-                )
-                return (
-                    "Exit Code: 1\n"
-                    "STDERR:\n"
-                    f"run_tests budget exhausted for {selected_type}: {used}/{TDD_RUN_TESTS_BUDGET}.\n"
-                )
-            usage_by_type[selected_type] = used + 1
-            await self._log(
-                "TestDrivenDeveloper",
-                f"`run_tests` {selected_type} usage {usage_by_type[selected_type]}/{TDD_RUN_TESTS_BUDGET}.",
-                node_id=node_id,
-            )
-            output = await self.app_handler.run_test_group(selected_type, selected_files)
-            await self._log(
-                "TestDrivenDeveloper",
-                (
-                    "run_tests raw output\n"
-                    f"test_type={selected_type}\n"
-                    f"attempt={usage_by_type[selected_type]}/{TDD_RUN_TESTS_BUDGET}\n"
-                    f"test_files={json.dumps(selected_files, ensure_ascii=False)}\n"
-                    "----- BEGIN RAW TEST OUTPUT -----\n"
-                    f"{output.rstrip()}\n"
-                    "----- END RAW TEST OUTPUT -----"
-                ),
-                status="debug",
-                node_id=node_id,
-            )
-            parsed_result = parse_test_results(output)
-            exit_code = int(parsed_result.get("exit_code", -1))
-            passed = exit_code == 0
-            await self._log(
-                "TestDrivenDeveloper",
-                (
-                    f"`run_tests` {selected_type} {'passed' if passed else 'failed'} "
-                    f"with Exit Code: {exit_code} "
-                    f"on attempt {usage_by_type[selected_type]}/{TDD_RUN_TESTS_BUDGET}: "
-                    f"{', '.join(selected_files)}"
-                ),
-                status="ok" if passed else "error",
-                node_id=node_id,
-            )
-            result_by_type[selected_type] = output
-            next_index = ordered_types.index(selected_type) + 1
-            next_type = ordered_types[next_index] if next_index < len(ordered_types) else None
-            if passed and next_type:
-                output += (
-                    "\n\nARC_TEST_LAYER_STATUS:\n"
-                    f"- {selected_type} passed.\n"
-                    f"- The system will advance to the next test layer: {next_type}.\n"
-                    "- Do not return IMPLEMENTED until all scheduled layers have been attempted and passed.\n"
-                )
-            elif passed:
-                output += (
-                    "\n\nARC_TEST_LAYER_STATUS:\n"
-                    f"- {selected_type} passed.\n"
-                    "- This is the last scheduled test layer. You may return IMPLEMENTED only if all earlier scheduled layers also passed.\n"
-                )
-            return output
-
-        output = ""
-        session_count = 0
-        max_sessions = max(1, TDD_RUN_TESTS_BUDGET * len(ordered_types))
-        for ordered_type in ordered_types:
-            active_test_type = ordered_type
-            previous_failure_summary = str(sessions.load_node_session(node_id).get("recent_failure_summary", "") or "")
-            while parse_test_results(result_by_type.get(ordered_type, "")).get("exit_code") != 0:
-                used_before = usage_by_type.get(ordered_type, 0)
-                if used_before >= TDD_RUN_TESTS_BUDGET:
-                    break
-                if session_count >= max_sessions:
-                    await self._log(
-                        "TestDrivenDeveloper",
-                        f"TDD stopped after {session_count} agent session(s); continuing layer summary with collected results.",
-                        status="error",
-                        node_id=node_id,
-                    )
-                    break
-
-                session_count += 1
-                if used_before > 0:
-                    await self._log(
-                        "TestDrivenDeveloper",
-                        (
-                            f"Resuming TDD agent session {session_count} for `{ordered_type}`; "
-                            f"run_tests usage is {used_before}/{TDD_RUN_TESTS_BUDGET}."
-                        ),
-                        node_id=node_id,
-                    )
-                output = await self.test_driven_developer.run(
-                    node_id=node_id,
-                    test_files=collect_test_files(tests),
-                    test_type=ordered_type,
-                    node_tests=tests,
-                    previous_failure_summary=previous_failure_summary,
-                    run_tests_budget=None,
-                    run_tests_usage=None,
-                    run_tests_executor=run_requested_tests,
-                )
-
-                latest_result = result_by_type.get(ordered_type, "")
-                previous_failure_summary = (
-                    self.test_driven_developer.get_last_verifier_report()
-                    or summarize_batch_output(latest_result or output)
-                )
-                used_after = usage_by_type.get(ordered_type, 0)
-                if parse_test_results(latest_result).get("exit_code") == 0:
-                    break
-                if used_after >= TDD_RUN_TESTS_BUDGET:
-                    break
-                if used_after == used_before:
-                    await self._log(
-                        "TestDrivenDeveloper",
-                        (
-                            f"TDD agent session ended without calling run_tests for `{ordered_type}`; "
-                            "moving to the next scheduled layer with a fresh budget."
-                        ),
-                        status="error",
-                        node_id=node_id,
-                    )
-                    break
-            active_test_type = None
-            if parse_test_results(result_by_type.get(ordered_type, "")).get("exit_code") != 0:
-                await self._log(
-                    "TestDrivenDeveloper",
-                    f"Advancing past `{ordered_type}` without a passing result; the next scheduled layer will start with its own budget.",
-                    status="warning",
-                    node_id=node_id,
-                )
-
-        final_ok = True
-        failure_summaries: list[str] = []
-        failed_types: list[str] = []
-        for test_type in ordered_types:
-            latest_result = result_by_type.get(test_type, "")
-            group_passed = parse_test_results(latest_result).get("exit_code") == 0
-            status_by_test_id = {
-                str(test.get("test_id", "")).strip(): group_passed
-                for test in groups[test_type.lower()]
-                if str(test.get("test_id", "")).strip()
-            }
-            self.traceability.set_test_pass_statuses(status_by_test_id)
-            if group_passed:
-                await self._log(
-                    "TestDrivenDeveloper",
-                    f"TDD batch `{test_type}` passed after {usage_by_type.get(test_type, 0)}/{TDD_RUN_TESTS_BUDGET} run_tests call(s).",
-                    node_id=node_id,
-                )
-                continue
-            final_ok = False
-            failed_types.append(test_type)
-            failure_summary = (
-                summarize_batch_output(latest_result)
-                if latest_result
-                else self.test_driven_developer.get_last_verifier_report()
-                or summarize_batch_output(output)
-            )
-            failure_summaries.append(f"{test_type}: {failure_summary}")
-            used = usage_by_type.get(test_type, 0)
-            detail = "budget exhausted" if used >= TDD_RUN_TESTS_BUDGET else "agent session ended before this layer passed"
-            await self._log(
-                "TestDrivenDeveloper",
-                f"TDD batch `{test_type}` did not pass after {used}/{TDD_RUN_TESTS_BUDGET} run_tests call(s); {detail}.",
-                status="error",
-                node_id=node_id,
-            )
-
-        context_pipeline.cache.invalidate_db_layers(node_id)
-        context_pipeline.cache.invalidate_file_layers(node_id)
-        failure_summary = "\n\n".join(failure_summaries)
-        self._update_node_session(
-            node_id,
-            {
-                "recent_failure_summary": failure_summary,
-                "tdd_handoff": {
-                    "last_test_type": failed_types[-1] if failed_types else ordered_types[-1],
-                    "last_failed_output_summary": failure_summary,
-                    "modified_files": [],
-                },
-            },
-        )
-        if not final_ok:
-            return False
-
-        unexpected_types = sorted(set(groups) - {item.lower() for item in TDD_BATCH_ORDER})
-        if unexpected_types:
-            await self._log(
-                "TestDrivenDeveloper",
-                f"Ignoring unsupported test batch type(s): {', '.join(unexpected_types)}.",
-                status="warning",
-                node_id=node_id,
-            )
-
-        return True
+            final_ok = not failures and len(results) == len(ordered)
+            feedback = "\n\n".join(failures) or ("" if final_ok else "Validation did not complete.")
+            for kind in ordered:
+                passed = kind in results and parse_test_results(results[kind]).get("exit_code") == 0
+                self.traceability.set_test_pass_statuses({
+                    str(test["test_id"]): passed for test in groups[kind] if test.get("test_id")
+                })
+            self._update_node_session(node_id, {
+                "recent_failure_summary": feedback,
+                "tdd_codegen": {"status": "passed" if final_ok else "failed",
+                                "build_output": build_output[-16000:],
+                                "test_outputs": {kind: results.get(kind, "")[-16000:] for kind in ordered},
+                                "modified_files": list(dict.fromkeys(modified))},
+                "tdd_handoff": {"last_test_type": "all", "last_failed_output_summary": feedback,
+                                "modified_files": list(dict.fromkeys(modified))},
+            })
+            context_pipeline.cache.invalidate_db_layers(node_id)
+            context_pipeline.cache.invalidate_file_layers(node_id)
+            if final_ok:
+                break
+        await self._log("TestDrivenDeveloper",
+                        "Node passed build and all test layers." if final_ok else f"TDD exhausted {TDD_MAX_CALLS} calls.",
+                        status="ok" if final_ok else "error", node_id=node_id)
+        return final_ok
 
     def _prepare_design_files(self, node_id: str, groups: Any, is_non_leaf: bool) -> tuple[dict[str, list[str]], list[dict[str, Any]]]:
         if not isinstance(groups, dict):
