@@ -84,6 +84,8 @@ def build_web_runtime_env() -> dict[str, str]:
         "PORT": str(_web_port),
         "ARC_WEB_PORT": str(_web_port),
         "BASE_URL": get_web_base_url(),
+        "PLAYWRIGHT_BASE_URL": get_web_base_url(),
+        "ARC_WEB_BASE_URL": get_web_base_url(),
         "VITE_API_BASE_URL": get_web_base_url(),
     }
 

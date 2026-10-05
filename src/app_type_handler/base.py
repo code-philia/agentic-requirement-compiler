@@ -67,7 +67,12 @@ class AppTypeHandler(ABC):
                 "Existing application detected; preserving it as the compilation baseline and skipping template scaffolding.",
             )
 
-        await self.install_dependencies()
+        try:
+            await self.install_dependencies()
+        except RuntimeError as exc:
+            self.initialization_error = str(exc)
+            self.initialization_failed_stage = "DEPENDENCIES"
+            return False
         return True
 
     async def check_prerequisites(self) -> bool:

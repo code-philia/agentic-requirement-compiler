@@ -221,6 +221,8 @@ class ARCWorkflowManager:
             seed_template=self.workspace_mode == WORKSPACE_MODE_SCAFFOLD,
         )
         if not init_ok:
+            self.initialization_error = getattr(app_handler, "initialization_error", "Workspace initialization failed")
+            self.initialization_failed_stage = getattr(app_handler, "initialization_failed_stage", "WORKSPACE_PREPARE")
             return False
 
         await self._log(
@@ -315,11 +317,20 @@ class ARCWorkflowManager:
         if resume_from_queue:
             await self._log("Compiler", f"Resuming from existing queue: {self.queue_path}")
             await self.prepare_resume_context()
+            # Resume may follow a failed dependency installation; validate it before
+            # spending calls on shared/database/node generation again.
+            try:
+                await self.phase_runner.app_handler.install_dependencies()
+            except RuntimeError as exc:
+                await self._log("Compiler", f"DEPENDENCIES failed: {exc}", "error")
+                return {"ok": False, "failed_nodes": [], "failed_stage": "DEPENDENCIES", "error": str(exc)}
         else:
             init_ok = await self.initialize_project()
             if not init_ok:
                 await self._log("Compiler", "Project initialization failed.", "error")
-                return {"ok": False, "failed_nodes": []}
+                return {"ok": False, "failed_nodes": [],
+                        "failed_stage": getattr(self, "initialization_failed_stage", "WORKSPACE_PREPARE"),
+                        "error": getattr(self, "initialization_error", "Project initialization failed")}
             self.runtime.events.mark_run_started("ARC compilation run started.")
 
         result = await self.compile_requirement_tree(
@@ -340,9 +351,12 @@ class ARCWorkflowManager:
         else:
             self.runtime.events.mark_run_failed("ARC compilation finished with failures.")
             failed_nodes = result.get("failed_nodes", [])
+            failed_stage = str(result.get("failed_stage") or "")
+            message = (f"Compilation failed at {failed_stage}: {result.get('error', '')}" if failed_stage
+                       else f"Compilation finished with {len(failed_nodes)} failed node(s): {', '.join(failed_nodes)}")
             await self._log(
                 "Compiler",
-                f"Compilation finished with {len(failed_nodes)} failed node(s): {', '.join(failed_nodes)}",
+                message,
                 "error",
             )
         return result

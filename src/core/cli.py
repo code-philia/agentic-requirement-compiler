@@ -710,6 +710,10 @@ def print_compilation_summary(
         time_str = f"{mins}m {secs:02d}s"
     
     print(f"{Fore.WHITE}Duration:{Style.RESET_ALL} {time_str}")
+    if result.get("failed_stage"):
+        print(f"{Fore.RED}✗ Failed stage:{Style.RESET_ALL} {result['failed_stage']}")
+        if result.get("error"):
+            print(f"{Fore.RED}Reason:{Style.RESET_ALL} {result['error']}")
     
     # Nodes
     states = result.get("states", {})

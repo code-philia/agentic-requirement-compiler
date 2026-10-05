@@ -22,7 +22,7 @@ async def _emit_log(log_cb: Callable[..., Awaitable[None] | None], *args) -> Non
         await result
 
 
-async def run_npm_install(target_dir: str, log_cb: Callable[..., Awaitable[None] | None]):
+async def run_npm_install(target_dir: str, log_cb: Callable[..., Awaitable[None] | None]) -> None:
     try:
         process = await asyncio.create_subprocess_shell(
             "npm install",
@@ -30,13 +30,24 @@ async def run_npm_install(target_dir: str, log_cb: Callable[..., Awaitable[None]
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-        _, stderr = await process.communicate()
+        try:
+            stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=180.0)
+        except asyncio.TimeoutError:
+            await finalize_subprocess(process, force_kill=True)
+            raise RuntimeError(f"NPM install timed out after 180 seconds in {target_dir}")
         if process.returncode == 0:
             await _emit_log(log_cb, "System", f"NPM install success in {target_dir}")
         else:
-            await _emit_log(log_cb, "System", f"NPM install failed in {target_dir}: dependency installation returned a non-zero exit code.")
+            detail = (stderr.decode("utf-8", errors="replace") + "\n" + stdout.decode("utf-8", errors="replace")).strip()[-16000:]
+            message = f"NPM install failed in {target_dir} (Exit Code: {process.returncode}):\n{detail}"
+            await _emit_log(log_cb, "System", message, "error")
+            raise RuntimeError(message)
+    except RuntimeError:
+        raise
     except Exception as exc:
-        await _emit_log(log_cb, "System", f"NPM install error: {str(exc)}")
+        message = f"NPM install error in {target_dir}: {exc}"
+        await _emit_log(log_cb, "System", message, "error")
+        raise RuntimeError(message) from exc
 
 
 async def _execute_web_test_command(
@@ -787,6 +798,7 @@ class WebAppType(AppTypeHandler):
         return None
 
     async def post_template_setup(self) -> bool:
+        await self._configure_playwright_target()
         await self._log(
             "System",
             f"Web template uses port {get_web_port()} (default 3000; configurable with --port).",
@@ -794,6 +806,7 @@ class WebAppType(AppTypeHandler):
         return True
 
     async def install_dependencies(self) -> None:
+        await self._configure_playwright_target()
         backend_path = os.path.join(self.workspace_path, "backend")
         if os.path.exists(backend_path):
             await self._log("System", "Installing backend dependencies. This might take a moment...")
@@ -803,8 +816,68 @@ class WebAppType(AppTypeHandler):
         if os.path.exists(frontend_path):
             await self._log("System", "Installing frontend dependencies. This might take a moment...")
             await run_npm_install(frontend_path, self.log_cb)
+        self._installed_manifests = self._dependency_manifest_hashes()
+
+    def _dependency_manifest_hashes(self) -> dict[str, str]:
+        result = {}
+        for folder in ("backend", "frontend"):
+            target = os.path.join(self.workspace_path, folder, "package.json")
+            if os.path.isfile(target):
+                with open(target, "rb") as stream:
+                    result[folder] = hashlib.sha256(stream.read()).hexdigest()
+        return result
+
+    async def ensure_dependencies(self) -> None:
+        await self._configure_playwright_target()
+        current = self._dependency_manifest_hashes()
+        installed = getattr(self, "_installed_manifests", {})
+        for folder, digest in current.items():
+            target = os.path.join(self.workspace_path, folder)
+            if installed.get(folder) != digest or not os.path.isdir(os.path.join(target, "node_modules")):
+                await self._log("System", f"Installing changed dependencies from {folder}/package.json.")
+                await run_npm_install(target, self.log_cb)
+                installed[folder] = digest
+                self._installed_manifests = installed
+
+    async def _configure_playwright_target(self) -> None:
+        from pathlib import Path
+        root = Path(self.workspace_path).resolve()
+        target = root / "backend/playwright.config.js"
+        if not target.resolve().is_relative_to(root):
+            raise ValueError("Playwright runtime configuration escapes workspace")
+        if not target.is_file():
+            return
+        source = target.read_text(encoding="utf-8")
+        injected = "const defaultBaseURL = " + json.dumps(get_web_base_url()) + "; // ARC_PLAYWRIGHT_BASE_URL"
+        pattern = r"^const defaultBaseURL = [^\n]*; // ARC_PLAYWRIGHT_BASE_URL$"
+        if re.search(pattern, source, re.MULTILINE):
+            updated = re.sub(pattern, lambda _: injected, source, count=1, flags=re.MULTILINE)
+        else:
+            # Migrate the exact older scaffold URL block without rewriting custom configuration.
+            template = Path(self.template_dir()) / "backend/playwright.config.js"
+            expected = template.read_text(encoding="utf-8")
+            old_start, old_end = source.find("const baseURL ="), source.find("\n\nmodule.exports =")
+            prefix = source[:old_start] if old_start >= 0 else ""
+            legacy_block = "const baseURL = process.env.PLAYWRIGHT_BASE_URL || process.env.ARC_WEB_BASE_URL || 'http://127.0.0.1:3000';"
+            runtime_block = "const baseURL = process.env.PLAYWRIGHT_BASE_URL || process.env.ARC_WEB_BASE_URL\n  || process.env.BASE_URL || runtime.base_url\n  || `http://localhost:${process.env.ARC_WEB_PORT || process.env.PORT || 3000}`;"
+            if (old_start < 0 or old_end < old_start or
+                    "const { defineConfig } = require('@playwright/test');" not in prefix or
+                    source[old_start:old_end] not in {legacy_block, runtime_block} or
+                    "baseURL," not in source[old_end:]):
+                raise RuntimeError("Cannot inject Playwright URL into custom config; add the ARC_PLAYWRIGHT_BASE_URL defaultBaseURL marker")
+            # Keep all runner settings below module.exports; replace only the known scaffold header.
+            header = expected.split("\n\nmodule.exports =", 1)[0]
+            header = re.sub(pattern, lambda _: injected, header, count=1, flags=re.MULTILINE)
+            updated = header + source[old_end:]
+        if updated != source:
+            target.write_text(updated, encoding="utf-8")
+            await self._log("System", f"Playwright target configured: {get_web_base_url()}")
 
     async def run_build(self) -> str:
+        try:
+            await self.ensure_dependencies()
+        except RuntimeError as exc:
+            return "=== Dependency Install ===\nExit Code: 1\n" + str(exc)
         frontend_result = await _execute_web_test_command(
             "npm run build",
             cwd=os.path.join(self.workspace_path, "frontend"),
@@ -818,6 +891,10 @@ class WebAppType(AppTypeHandler):
         return f"=== Frontend Build Result ===\n{frontend_result}\n\n=== Backend Build Result ===\n{backend_result}"
 
     async def run_test_file(self, test_type: str, file_path: str) -> str:
+        try:
+            await self.ensure_dependencies()
+        except RuntimeError as exc:
+            return "=== Dependency Install ===\nExit Code: 1\n" + str(exc)
         await self._log("System", f"System test execution ({test_type}): {file_path}")
         normalized_type = test_type.lower()
         validation_error = self.validate_test_path(test_type, file_path)
@@ -846,7 +923,7 @@ class WebAppType(AppTypeHandler):
             if not build_ok:
                 return _prepend_test_execution_header(
                     execution,
-                    "Exit Code: 1\nFrontend build failed before E2E startup.\n\n"
+                    "Frontend build failed before E2E startup.\n\n"
                     f"=== Frontend Build ===\n{frontend_build_output}",
                 )
 
@@ -857,7 +934,7 @@ class WebAppType(AppTypeHandler):
             if not database_ready:
                 return _prepend_test_execution_header(
                     execution,
-                    "Exit Code: 1\nE2E database preparation failed before backend startup.\n\n"
+                    "E2E database preparation failed before backend startup.\n\n"
                     f"=== Frontend Build ===\n{frontend_build_output}\n\n"
                     f"=== E2E Runtime Env ===\nDB Path: {e2e_runtime_env.get('ARC_E2E_DB_PATH', 'unknown')}\n\n"
                     f"=== Database Prepare ===\n{database_prepare_output}",
@@ -916,6 +993,10 @@ class WebAppType(AppTypeHandler):
         return _prepend_test_execution_header(execution, result_body)
 
     async def run_test_group(self, test_type: str, file_paths: list[str]) -> str:
+        try:
+            await self.ensure_dependencies()
+        except RuntimeError as exc:
+            return "=== Dependency Install ===\nExit Code: 1\n" + str(exc)
         normalized_type = (test_type or "").strip().lower()
         if not file_paths:
             return (
