@@ -355,6 +355,8 @@ If no app package can be identified, set package_name to "UNKNOWN"."""
                 ),
                 timeout=60.0,
             )
+            from agents.model.usage import record_model_usage
+            record_model_usage(response, stage="ANDROID_PACKAGE", workspace_root=self.workspace_path)
             result_text = response.choices[0].message.content.strip()
             json_match = re.search(r"\{[\s\S]*\}", result_text)
             if not json_match:

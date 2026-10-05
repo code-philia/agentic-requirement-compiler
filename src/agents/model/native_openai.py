@@ -129,6 +129,8 @@ def _log_input(stage: str, workspace_root: str | Path | None,
 
 def _log_output(path: Path, response: Any) -> None:
     """Keep raw output, finish reason and usage next to its exact input."""
+    from agents.model.usage import record_model_usage
+    record_model_usage(response, stage=path.stem, workspace_root=path.parent.parent.parent)
     payload = response.model_dump(mode="json") if hasattr(response, "model_dump") else response
     with path.open("a", encoding="utf-8") as stream:
         stream.write("\n===== MODEL OUTPUT =====\n")

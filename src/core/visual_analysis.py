@@ -126,7 +126,7 @@ async def analyze_and_attach_visual_references(
                 continue
 
             await _log(log_cb, "System", f"Analyzing visual element: {image_path}", None, req_id)
-            analysis = await _request_visual_analysis(full_path)
+            analysis = await _request_visual_analysis(full_path, workspace_path)
             cache[cache_key] = {
                 "image_path": image_path,
                 "full_path": str(full_path),
@@ -211,7 +211,7 @@ def _image_reference_id(full_path: Path) -> str:
     return "VISUAL." + hashlib.sha256(full_path.read_bytes()).hexdigest()[:16]
 
 
-async def _request_visual_analysis(full_path: Path) -> dict[str, Any]:
+async def _request_visual_analysis(full_path: Path, workspace_root: str | None = None) -> dict[str, Any]:
     visual_base_url = _resolve_visual_base_url()
     visual_api_key = _resolve_visual_api_key()
     if not visual_base_url:
@@ -253,6 +253,8 @@ async def _request_visual_analysis(full_path: Path) -> dict[str, Any]:
                     "name": "visual_analysis", "strict": True, "schema": VISUAL_ANALYSIS_SCHEMA,
                 }},
             )
+            from agents.model.usage import record_model_usage
+            record_model_usage(response, stage="VISUAL_ANALYSIS", workspace_root=workspace_root)
             text = _extract_visual_chat_completion_text(response)
             try:
                 return validate_visual_analysis(text, reference_id)
