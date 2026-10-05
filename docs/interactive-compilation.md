@@ -17,6 +17,8 @@ arc compile requirements.yaml -o workspace/demo --resume
 
 节点 DESIGN 直接完善现有页面/组件、挂载新增 UI、实现前端请求函数及事件/状态逻辑，再生成并注册该节点独立的后端 API → FUNC → DB 操作函数调用骨架。接口清单只记录后端契约，DB 指对共享数据库的操作函数；UI 和前端请求函数不建模为接口或节点。
 
+生成代码沿用现有项目规范，以业务语义和职责命名目录、文件和符号，不使用 REQ-xx、ROOT 或智能体阶段名。页面、路由和应用入口保持简洁；表单组件、状态/请求 hook、校验、服务和持久化按职责拆分，功能私有代码放在对应功能附近。150～250 行或 4～8 KB 是提示模型检查是否混杂职责的参考值，不是强制切割阈值；禁止通过压缩 JSX 或长行规避拆分。DESIGN 提前创建并登记当前需求确实需要的后端辅助骨架，TDD 在登记范围内实现；前端可在允许范围内提取组件和 hook。不会自动重构旧工作区，也不会为拆分扩大后端写入权限。源码仍按具体任务按需读取。
+
 所有模型调用只输出工具调用数组，每项包含 `tool` 和必要参数，不输出包装对象、解释、summary、状态或空字段。DESIGN 仅提供 add_file/edit_file/delete_file/read_file。add_file 携带 layer（frontend/API/FUNC/DB/shared），创建时自动加入文件追踪；edit_file 保留已有归属，新接入且无法按路径分类的文件需携带 layer；删除时移除该节点的文件记录，不需要额外登记调用。TestGenerator 用文件操作及 `register_test(test_id,type,file_path)` 登记测试。系统校验实际文件并生成稳定追踪记录，需求归属由系统填写。节点会话仍保存 `file_groups` 和 `materialized_files`，供测试生成、TDD 按路径读取源码。父节点或纯前端需求不登记后端分组。TDD 完成后端业务并修复前端接通；骨架阶段不得伪造成功结果。
 
 TDD 从 DESIGN 的文件分组确定 `implementation_scope`，直接实现已登记的 API/FUNC/DB 文件。后端只允许修改这些文件和明确登记的 shared 接入文件，禁止全库搜索或新建替代后端模块；当前节点测试文件可修复。前端仍允许在前端范围内定位页面/组件/请求逻辑。其他依赖可以按精确路径读取。旧工作区从 traceability 恢复后端位置；骨架文件缺失时应重跑 DESIGN。

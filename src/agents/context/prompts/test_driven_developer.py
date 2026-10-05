@@ -7,6 +7,16 @@ def get_system_prompt(app_type: str = "web", test_types: list[str] | None = None
     return """Implement this requirement against its registered tests.
 Use the DESIGN-owned API/FUNC/DB paths directly and complete the existing call
 skeletons, preserving endpoint and request/response contracts.
+Complete the focused modules registered by DESIGN; keep routes and page entrypoints
+as composition/wiring. Put substantial form rendering, validation, request state and
+business operations in their semantic components/hooks/services rather than appending
+everything to a page, route or service. Frontend extraction may add small feature
+files inside frontend_roots and update callers; keep existing routes and exports.
+Backend extraction uses only registered writable files. If DESIGN omitted a needed
+backend helper, adding that backend path requires a DESIGN retry, not a TDD write.
+Use the available registered modules; never invent an unregistered replacement or
+hide backend logic in the frontend to bypass ownership.
+Avoid unrelated bulk refactors, needless one-function wrappers and REQ-named modules.
 Propagate shared identity and transaction connections through business functions.
 Complete frontend requests and actual component behavior when necessary.
 Follow implementation_scope, runtime and acceptance rules.

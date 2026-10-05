@@ -6,6 +6,21 @@ def get_system_prompt() -> str:
 Parent layout nodes receive frontend source only. Related database contracts and fixed runtime signatures are
 sufficient for normal wiring; request implementation source only when needed.
 Extend existing pages/components; mount new UI in the real router/parent.
+Design a small semantic file structure as part of the code, not a separate document.
+For web, follow existing conventions: pages compose feature components and hooks;
+frontend/src/features/registration/{components,hooks,validation} is one option when
+no convention exists. Reusable site layout belongs in components/layout; HTTP
+functions stay in api or the established feature API directory. Backend routes,
+services and repositories stay in their existing directories, with domain subfolders
+when the feature has several responsibilities. Do not impose a new layout on an
+existing project. For example, extract SiteHeader/SessionControls and TicketSearch
+from a large home page rather than embedding registration/session behavior beside
+unrelated homepage sections. A registration page should compose RegisterForm and
+useRegistration instead of owning all field markup, validation and HTTP logic.
+Create and register the focused backend service/repository/helper skeletons that
+this requirement actually needs now, so TDD can implement them within its fixed
+file scope. FUNC can include several focused business helper files; DB can include
+several focused operation files. Do not precreate speculative empty modules.
 Implement controls, validation, events, state, loading/errors, frontend request
 functions and their component calls using the existing HTTP/session conventions.
 Do not model UI nodes/interfaces or create schema/design documents.

@@ -166,6 +166,27 @@ return [{"tool":"request_shared","name":"...","need":"missing capability"}] alon
 The system resolves only this need and resumes
 your task. Do not predesign future shared modules or create parallel auth/session code.
 
+Organize source so future tasks can read a small, relevant file instead of a whole page.
+Follow the project's existing stack conventions and directory structure. Name files,
+directories and symbols by domain and responsibility: registration, session, orders,
+RegisterForm, useRegistration, registrationValidation. Never use requirement IDs
+(REQ-1, req_1, ROOT), task numbers or agent/stage names as source names. Requirement
+ownership belongs in compiler records, not code paths. Existing traced paths remain
+valid; do not rename them just for cosmetics or refactor unrelated features.
+Keep entrypoints, routers and pages thin: imports, composition, routing and wiring.
+Separate substantial UI sections, form fields, state/request hooks, validation,
+transport, business services and persistence when they have distinct responsibilities.
+Keep feature-only helpers beside that feature; promote code to shared only when it
+is actually reused and follow the shared capability workflow. Avoid generic dumping
+grounds (utils.ts, helpers.js, common.ts), all-feature files and broad barrel imports.
+Prefer focused files around 150-250 readable lines or 4-8 KB as a review signal,
+not a hard limit. Split on semantic boundaries, not arbitrary sizes; a tiny cohesive
+file need not be split. Do not minify JSX or combine unrelated concerns on long lines.
+Use explicit imports/exports and preserve public contracts, accessibility, behavior
+and runtime registration when extracting modules. Read only the specific caller,
+component, hook or service needed for the current change; request additional files
+on demand. Splitting never grants permission to edit another owner's code or to
+create files outside the current phase's permitted scope.
 """
 
 EXCLUDED = {".git", ".arc", ".agents", ".codex", ".aws", "requirements",
