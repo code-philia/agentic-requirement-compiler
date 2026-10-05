@@ -248,6 +248,24 @@ def source_bundle(root: Path, required: list[str], *, frontend_roots: list[str],
     # index for on-demand reads instead of preloading pages, configs and examples.
     relevant_entries = [path for path in entries if Path(path).stem.lower() in {"app", "main", "__main__"}]
     queue = list(dict.fromkeys(required + requested + relevant_entries[:3]))
+    wiring = design or frontend_wiring
+    if wiring:
+        # Existing integration conventions are more useful than arbitrary examples.
+        # Registered shared cores stay on-demand even when their names match.
+        integration = [path for path in index if path not in shared and not is_test_asset(path)
+                       and any(path.startswith(folder + "/") for folder in frontend_roots)
+                       and (Path(path).stem.lower() in {"router", "routes", "client", "http", "api", "auth", "session"}
+                            or re.search(r"(?:auth|session)(?:provider|context|store|client)|use(?:auth|session)$",
+                                         Path(path).stem, re.IGNORECASE)
+                            or path in {"frontend/src/api/index.ts", "frontend/src/api/index.js"})]
+        queue.extend(path for path in integration[:12] if path not in queue)
+    # Existing feature targets and UI composition belong in the initial snapshot.
+    if design:
+        brief = json.dumps(requirement or {}, ensure_ascii=False).lower()
+        candidates = [path for path in index if any(path.startswith(folder + "/") for folder in frontend_roots)
+                      and Path(path).stem.lower() not in {"index", "main", "app"}
+                      and len(Path(path).stem) >= 4 and Path(path).stem.lower() in brief]
+        queue.extend(path for path in candidates[:20] if path not in queue)
     sources: dict[str, str] = {}
     excluded: list[str] = []
     total = 0
@@ -281,6 +299,21 @@ def source_bundle(root: Path, required: list[str], *, frontend_roots: list[str],
             continue
         sources[relative] = content
         total += len(content.encode("utf-8"))
+        if wiring and any(relative.startswith(folder + "/") for folder in frontend_roots):
+            dependencies = re.findall(r"(?:from\s*|require\(\s*|import\s*)['\"](\.[^'\"]+)['\"]", content)
+            for specifier in dependencies:
+                base = (target.parent / specifier).resolve()
+                candidates = [base] + [Path(str(base) + ext) for ext in (".tsx", ".ts", ".jsx", ".js", ".css")]
+                candidates += [base / ("index" + ext) for ext in (".tsx", ".ts", ".jsx", ".js")]
+                for candidate in candidates:
+                    if not candidate.is_file() or not candidate.is_relative_to(root):
+                        continue
+                    dependency = candidate.relative_to(root).as_posix()
+                    if dependency not in queue and dependency not in shared and not is_test_asset(dependency):
+                        safe_path(root, dependency)
+                        if len(queue) < 60:
+                            queue.append(dependency)
+                    break
         # Shared/infrastructure and unresolved aliases remain available via read_file.
     return {"sources": sources, "file_index": index[:2000],
             "directory_structure": sorted({str(Path(path).parent) for path in index})[:500],

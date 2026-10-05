@@ -59,7 +59,8 @@ class TestDrivenDeveloper:
                     or path not in scope["test_asset_files"] or path in test_files]
         bundle = source_bundle(root, required,
                                frontend_roots=scope["frontend_roots"],
-                               feedback=previous_failure_summary + "\n" + str(requested_files), node_id=node_id)
+                               feedback=previous_failure_summary + "\n" + str(requested_files), node_id=node_id,
+                               frontend_wiring=app_type == "web")
         await self._log("Invoking plain implementation with bounded on-demand reads.", node_id=node_id)
         test_types = [str(test.get("type", "")) for test in node_tests or []] or [test_type]
         edits = await ask_with_reads(self.model, get_system_prompt(app_type, test_types), {

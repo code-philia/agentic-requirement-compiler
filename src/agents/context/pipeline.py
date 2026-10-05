@@ -168,6 +168,7 @@ class ContextPipeline:
             "primary_outcomes": [
                 "Implement the current node's owned behavior, not just a renderable shell.",
                 "Use real owned runtime wiring for fetched or persisted data when this node owns that chain.",
+                "Connect existing navigation/controls, mounted frontend, real request and mounted backend; preserve other frontend consumers. Verify required success, errors and reload behavior through the actual user entry.",
                 "Consume compiler-prepared database schema and seed records through the normal application path, preserving their relationships and ownership.",
                 "If runtime data is not owned here, render explicit loading, empty, or error states instead of fake records.",
             ],
@@ -187,6 +188,7 @@ class ContextPipeline:
                 "frontend-only seed data or test-only database setup used as a substitute for application initialization",
                 "fake success messages detached from real writes",
                 "placeholder-only panels presented as complete features",
+                "active dead links or pretend submissions for undeclared screenshot-only features",
             ],
         }
         return "<acceptance_gate>\n" + self._compact_json(gate) + "\n</acceptance_gate>"

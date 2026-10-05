@@ -15,6 +15,18 @@ For persisted domain changes, verify the relevant API/service/persistence path,
 not just local component state or static arrays.
 Use the supplied isolated test harness for persistence tests.
 Use real frontend routes, accessible controls and request conventions from source.
+For web requirements with a user-facing flow, cover the existing application
+entry/navigation/control once in the core success flow. Other cases may navigate
+directly to the feature URL; do not repeat the homepage journey in every test.
+Cover direct access when required without adding unrelated page assertions. Exercise real frontend requests
+and the mounted backend with the isolated runtime; do not mock the owned endpoint
+in E2E or fulfill its responses with success fixtures. Verify the required visible
+result, redirect and persistence, plus backend rejection visible in the UI without
+false success or forbidden side effects. For identity-changing flows, check existing
+header/account consumers and reload restoration when required. Component tests are
+supplemental; they do not replace verification that routes, callers and API connect.
+Assert final behavior even when DESIGN currently returns 501; TDD must complete it.
+Do not add obligations for unowned screenshot controls or undeclared future features.
 Frontend source is supplied as a bounded collection, without a separate locator.
 Follow the supplied test placement, runtime and runner rules. JSX tests must be
 .test.tsx/.spec.tsx, not .ts bridge files importing JSX tests.

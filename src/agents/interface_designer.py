@@ -87,11 +87,15 @@ class InterfaceDesigner:
                 bundle = source_bundle(root, [path for path in required if path not in missing],
                                        frontend_roots=frontend_roots, design=True,
                                        feedback=feedback + "\n" + str(requested_files), node_id=node_id,
-                                       frontend_only=bool(requirement_data.get("children_ids")))
+                                       frontend_only=bool(requirement_data.get("children_ids")), requirement=requirement_data)
                 bundle["missing_tracked_files"] = missing
                 edits = await ask_with_reads(self.model, get_system_prompt(), {
                     "model_stage": "DESIGN",
                     "node_id": node_id, "requirement": context_pipeline.task_requirement(node_id, requirement_data),
+                    "declared_child_requirements": [
+                        {key: child.get(key) for key in ("req_id", "name", "description")}
+                        for child_id in requirement_data.get("children_ids") or []
+                        if (child := get_runtime().traceability.get_requirement(child_id))],
                     "context": "\n\n".join([static, dynamic]),
                     **bundle, "protected_files": sorted(blocked), "feedback": feedback,
                     "previous_candidate": previous_candidate,

@@ -19,6 +19,13 @@ hide backend logic in the frontend to bypass ownership.
 Avoid unrelated bulk refactors, needless one-function wrappers and REQ-named modules.
 Propagate shared identity and transaction connections through business functions.
 Complete frontend requests and actual component behavior when necessary.
+Complete the whole existing user flow: navigation/control, mounted page/component,
+event handler, real HTTP request and mounted backend endpoint. Keep methods, URLs,
+payloads, response/errors and credentials consistent. Reuse existing transport and
+identity state; update existing UI consumers and restore sessions on reload where
+required. Do not fix an E2E failure by bypassing navigation, mocking the owned API,
+adding a parallel app/router, simulating success or weakening user-visible outcomes.
+Preserve other routes and working frontend behaviors when editing shared pages.
 Follow implementation_scope, runtime and acceptance rules.
 Do not create
 replacement backend modules, hardcode expected test values,

@@ -6,6 +6,21 @@ def get_system_prompt() -> str:
 Parent layout nodes receive frontend source only. Related database contracts and fixed runtime signatures are
 sufficient for normal wiring; request implementation source only when needed.
 Extend existing pages/components; mount new UI in the real router/parent.
+Complete one connected user flow in the existing application, not an isolated page.
+For each owned interaction, wire the existing navigation/control -> mounted route or
+component -> event/state handler -> real frontend HTTP function -> mounted backend
+endpoint. Match method, URL, payload, response and error shapes on both sides.
+Reuse the existing API client/base URL, credentials and identity/session convention;
+preserve providers and other features' routes. No parallel router or login state.
+After a successful response, update the existing consumers and navigate as required;
+show backend failures without claiming success. Restore identity after reload when
+required. Backend skeletons may honestly return 501 until TDD, but frontend requests
+must already reach them. Do not simulate successful writes or replace requests with
+messages promising a future module. Keep runtime contracts in code only.
+Parent layouts may expose navigation for declared child requirements, whose leaf
+DESIGN must connect it. Screenshot-only/unowned actions must be omitted or visibly
+disabled with an unavailable explanation; never create dead active links or fake
+search/submit behavior. Preserve working unrelated actions.
 Design a small semantic file structure as part of the code, not a separate document.
 For web, follow existing conventions: pages compose feature components and hooks;
 frontend/src/features/registration/{components,hooks,validation} is one option when
@@ -30,6 +45,7 @@ shared database. Leave backend business logic for TDD. Skeletons must return
 honest not-implemented errors. Preserve implemented behavior
 on retries and other requirements' UI/requests. Reuse shared infrastructure.
 Parent nodes implement layout/navigation only, with no backend modules.
+No frontend module inventory, UI nodes, call graph or extra JSON report is required.
 Frontend-only requirements must not invent API/FUNC/DB modules.
 Use only add_file, edit_file, delete_file and read_file. File tracking is automatic.
 add_file includes layer: frontend/API/FUNC/DB/shared; edit_file may include layer

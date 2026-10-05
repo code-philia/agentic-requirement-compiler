@@ -93,7 +93,8 @@ class TestGenerator:
             try:
                 bundle = source_bundle(root, [path for path in required if path not in missing],
                                        frontend_roots=frontend_roots, test_roots=test_roots,
-                                       feedback=feedback + "\n" + str(requested_files), node_id=node_id)
+                                       feedback=feedback + "\n" + str(requested_files), node_id=node_id,
+                                       frontend_wiring=app_type == "web")
                 bundle["missing_tracked_files"] = missing
                 edits = await ask_with_reads(self.model, get_system_prompt(app_type, test_types), {
                     "model_stage": "TestGenerator",
