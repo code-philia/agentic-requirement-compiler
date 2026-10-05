@@ -85,6 +85,7 @@ class TestGenerator:
         feedback = ""
         requested_files: list[str] = []
         read_budget: dict[str, Any] = {}
+        test_types = [str(selected.get("type", ""))] if selected else [str(test.get("type", "")) for test in existing]
         for attempt in range(1, TEST_GENERATION_MAX_CALLS + 1):
             await self._log(f"Plain test generation call {attempt}/{TEST_GENERATION_MAX_CALLS}.", node_id=node_id)
             sessions.merge_node_session(node_id, {"test_codegen": {
@@ -94,7 +95,7 @@ class TestGenerator:
                                        frontend_roots=frontend_roots, test_roots=test_roots,
                                        feedback=feedback + "\n" + str(requested_files), node_id=node_id)
                 bundle["missing_tracked_files"] = missing
-                edits = await ask_with_reads(self.model, get_system_prompt(), {
+                edits = await ask_with_reads(self.model, get_system_prompt(app_type, test_types), {
                     "model_stage": "TestGenerator",
                     "node_id": node_id, "requirement": context_pipeline.task_requirement(node_id, requirement_data),
                     "context": "\n\n".join([static, dynamic]), "existing_tests": existing,
@@ -105,6 +106,7 @@ class TestGenerator:
                 if edits.read_files or edits.shared_need:
                     apply_edits(root, edits, bundle["sources"], lambda path: False)
                 tests = [test.model_dump() for test in edits.tests]
+                test_types = [test["type"] for test in tests]
                 ids = [test["test_id"] for test in tests]
                 if len(set(ids)) != len(ids):
                     raise ValueError("Duplicate test_id in manifest")

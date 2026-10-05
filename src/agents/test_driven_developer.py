@@ -61,7 +61,8 @@ class TestDrivenDeveloper:
                                frontend_roots=scope["frontend_roots"],
                                feedback=previous_failure_summary + "\n" + str(requested_files), node_id=node_id)
         await self._log("Invoking plain implementation with bounded on-demand reads.", node_id=node_id)
-        edits = await ask_with_reads(self.model, get_system_prompt(), {
+        test_types = [str(test.get("type", "")) for test in node_tests or []] or [test_type]
+        edits = await ask_with_reads(self.model, get_system_prompt(app_type, test_types), {
             "model_stage": "TDD",
             "node_id": node_id, "requirement": context_pipeline.task_requirement(node_id, runtime.traceability.get_requirement(node_id) or {}),
             "context": "\n\n".join([static, dynamic]), "implementation_scope": scope,

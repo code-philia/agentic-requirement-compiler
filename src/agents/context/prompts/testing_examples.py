@@ -6,11 +6,7 @@ Use ESM imports in Vitest test files, even when backend application modules use
 CommonJS. Do not convert the backend package to ESM or change package.json type.
 NEVER use require('vitest'). NEVER obtain Vitest functions from globalThis;
 the standard runner does not enable globals. Do not alternate these failed forms.
-Use explicit imports instead of enabling globals as a workaround. Playwright E2E
-files import test/expect from '@playwright/test', not from 'vitest'.
-Playwright tests use relative navigation such as page.goto('/register'). The system
-sets baseURL from the initialized --port; never hardcode localhost/127.0.0.1:3000
-or override baseURL in generated tests. Reuse the supplied runtime target.
+Use explicit imports instead of enabling globals as a workaround.
 
 Correct Vitest example:
 import request from 'supertest';
@@ -46,3 +42,29 @@ validRegistrationPayload() from the actual requirement. Adapt imports, endpoint,
 table/column names and expected status to supplied source and database contracts.
 Keep real assertions and test isolation; do not copy sample names blindly.
 """
+
+PLAYWRIGHT_EXAMPLE = """
+### Playwright E2E
+import { test, expect } from '@playwright/test';
+Use relative page.goto('/actual-route'); reuse the configured baseURL and runtime
+port. Never hardcode an origin or override baseURL. Select unique semantic roles
+and accessible names; scope validation errors to their actual alert/field container.
+Never mask ambiguity with .first(), .nth(), force, sleeps or weaker assertions.
+"""
+
+
+def testing_guidance(app_type: str, test_types: list[str] | None = None) -> str:
+    """Initial generation has no chosen layers; concrete examples follow selection."""
+    if app_type != "web":
+        return ""
+    layers = {str(kind).strip().lower().replace("_", "").replace("-", "") for kind in test_types or []}
+    if not layers:
+        return "\nWeb runner conventions: Vitest uses explicit ESM imports for Unit/Integration; " \
+            "Playwright E2E uses @playwright/test and relative navigation with configured baseURL. " \
+            "Use the supplied isolated database harness for persistence tests.\n"
+    parts = []
+    if layers & {"unit", "integration", "unittest", "integrationtest"}:
+        parts.append(VITEST_EXAMPLE)
+    if layers & {"e2e", "endtoend"}:
+        parts.append(PLAYWRIGHT_EXAMPLE)
+    return "\n".join(parts)

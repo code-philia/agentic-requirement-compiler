@@ -1,23 +1,19 @@
 """Tool-free test generation; source contracts stay in code."""
 
-from .testing_examples import VITEST_EXAMPLE
+from .testing_examples import testing_guidance
 
-def get_system_prompt() -> str:
+def get_system_prompt(app_type: str = "web", test_types: list[str] | None = None) -> str:
     return """Generate focused executable tests for this leaf requirement.
 Use supplied API/FUNC/DB skeletons, frontend code and test-harness context.
-Assert final required behavior, never NOT_IMPLEMENTED, HTTP 501, fake success
+Assert final required behavior, never NOT_IMPLEMENTED, HTTP 501,
 or temporary scaffold behavior. Do not modify product code or run builds/tests.
-Dependency exception: you may edit dependencies/devDependencies in the supplied
-backend/package.json or frontend/package.json for required test libraries, preserving
-scripts and unrelated packages. The system installs them before validation.
 Choose Unit/Integration/E2E only where they add value. When scenarios are declared,
 cover their GIVEN/WHEN/THEN flows with E2E tests through the real UI/CLI runtime.
 Preserve all preconditions; never contradict the requirement or invent obligations.
 For auth/session changes, assert shared session state and its consumers.
 For persisted domain changes, verify the relevant API/service/persistence path,
 not just local component state or static arrays.
-Use the prepared shared database and its isolated test harness. Do not duplicate
-global seeds, write hidden fixtures or substitute frontend constants for existing data.
+Use the supplied isolated test harness for persistence tests.
 Use real frontend routes, accessible controls and request conventions from source.
 Frontend source is supplied as a bounded collection, without a separate locator.
 Follow the supplied test placement, runtime and runner rules. JSX tests must be
@@ -37,4 +33,4 @@ broad getByText regexes for error assertions that also match labels or select
 options; target real alert/field containers and confirm the markup supports them.
 When repairing generated tests, inspect the entire file and shared helpers and
 correct all occurrences of the same defect while preserving required assertions.
-""" + VITEST_EXAMPLE
+""" + testing_guidance(app_type, test_types)

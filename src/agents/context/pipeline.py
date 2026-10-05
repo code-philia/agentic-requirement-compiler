@@ -209,14 +209,6 @@ class ContextPipeline:
                 {"req_id": dependency, "name": (store.get_requirement(dependency) or {}).get("name", "")}
                 for dependency in req_data.get("dependencies") or []
             ]), "</dependency_summary>"])
-        if visual_reference:
-            parts.extend(
-                [
-                    "<visual_reference>",
-                    self._compact_json(self._build_visual_digest(visual_reference)),
-                    "</visual_reference>",
-                ]
-            )
         parts.append("</requirement_focus>")
         return "\n".join(parts)
 
@@ -239,7 +231,10 @@ class ContextPipeline:
 
     def task_requirement(self, node_id: str, requirement: dict[str, Any]) -> dict[str, Any]:
         """Supply stored acceptance scenarios once, with the authoritative task requirement."""
-        return self._with_scenarios_from_store(node_id, requirement)
+        result = self._with_scenarios_from_store(node_id, requirement)
+        if result.get("visual_reference"):
+            result["visual_reference"] = self._build_visual_digest(result["visual_reference"])
+        return result
 
     def _get_tech_stack_context(self) -> str:
         app_type = (self.config.app_type or "web").strip().lower()
@@ -393,21 +388,31 @@ class ContextPipeline:
             relations[parent_id] = "ancestor"
             parent_id = str((store.get_requirement(parent_id) or {}).get("parent_id") or "")
         root = Path(self.config.workspace_dir).resolve()
-        files = []
+        files: dict[str, dict[str, Any]] = {}
         for req_id, relation in relations.items():
-            locations = list(self._load_node_session(req_id).get("materialized_files") or [])
+            session = self._load_node_session(req_id)
+            locations = list(session.get("materialized_files") or [])
             # Older workspaces may have UI records instead of materialized paths.
             # Use their locations only, without creating new UI contracts.
-            locations.extend(record.get("file_path") for record in store.list_interfaces(req_id=req_id)
-                             if record.get("type") == "UI")
+            records = store.list_interfaces(req_id=req_id)
+            locations.extend(record.get("file_path") for record in records)
+            layers = {record.get("file_path"): record.get("type") for record in records}
+            for layer, paths in (session.get("file_groups") or {}).items():
+                locations.extend(paths)
+                layers.update({path: layer for path in paths})
             for value in dict.fromkeys(locations):
                 relative = str(value or "").strip().replace("\\", "/")
                 path = root / relative
                 if relative and path.resolve().is_relative_to(root) and path.is_file():
-                    files.append({"file_path": relative, "req_id": req_id, "relation": relation})
+                    entry = files.setdefault(relative, {"file_path": relative, "owners": []})
+                    owner = {"req_id": req_id, "relation": relation}
+                    if owner not in entry["owners"]:
+                        entry["owners"].append(owner)
+                    if layers.get(relative):
+                        entry["layer"] = layers[relative]
         if not files:
             return ""
-        return "<materialized_files>\n" + self._compact_json(files) + "\n</materialized_files>"
+        return "<file_locations>\n" + self._compact_json(list(files.values())) + "\n</file_locations>"
 
     def _get_resume_context(self, node_id: str) -> str:
         session = self._load_node_session(node_id)
@@ -497,17 +502,16 @@ class ContextPipeline:
             return f"<error>Requirement node {node_id} not found in database.</error>"
         req_data = self._with_scenarios_from_store(node_id, req_data)
 
+        plain_stage = agent_type in {"InterfaceDesigner", "TestGenerator", "TestDrivenDeveloper"}
         context_parts = [
             self._build_requirement_focus(node_id, req_data),
-            self._build_acceptance_gate(node_id, req_data),
             self.cache.get_or_compute(node_id, "tech_stack_context", self._get_tech_stack_context),
         ]
+        if not plain_stage:
+            context_parts.append(self._build_acceptance_gate(node_id, req_data))
         database_context = "" if req_data.get("children_ids") and agent_type == "InterfaceDesigner" else self._get_database_context(node_id)
         if database_context:
             context_parts.append(database_context)
-        context_parts.append("<shared_contracts>\n" + self._compact_json({
-            "rules": "This is an incremental index, not a complete architecture plan. Request selected contracts via read_shared, code via read_files, index pages via read_shared_groups. Read rounds have a separate bounded budget. Historical consumer relationships do not preload all source. If reusable code is missing, return shared_need={name,reason} without edits. Shared code stays read-only and business actions node-owned.",
-        }) + "\n</shared_contracts>")
         project_structure = self.cache.get_or_compute(
             node_id,
             f"project_structure::{agent_type}",
@@ -523,7 +527,7 @@ class ContextPipeline:
             "node_session",
             lambda: self._get_node_session_layers(node_id),
         )
-        if node_session_layers:
+        if node_session_layers and not plain_stage:
             context_parts.append(node_session_layers)
         materialized_files = self._get_materialized_files(node_id)
         if materialized_files:
@@ -542,7 +546,7 @@ class ContextPipeline:
             "existing_interfaces",
             lambda: self._get_existing_interface_cards(node_id),
         )
-        if existing_interfaces:
+        if existing_interfaces and not plain_stage:
             context_parts.append(existing_interfaces)
 
         if agent_type in {"InterfaceDesigner", "TestGenerator", "TestDrivenDeveloper", "TestFailureVerifier"}:
@@ -555,7 +559,7 @@ class ContextPipeline:
                 if source_cards:
                     context_parts.append(source_cards)
 
-        if agent_type in {"TestDrivenDeveloper", "TestFailureVerifier"}:
+        if agent_type == "TestFailureVerifier":
             if target_test_files:
                 normalized_targets = sorted(
                     {
@@ -630,7 +634,6 @@ class ContextPipeline:
                 "cli": ["connect_database(db_path=None) -> sqlite3.Connection"],
                 "android": ["ArcDatabase(context[, name]); getWritableDatabase() -> SQLiteDatabase"],
             }.get(self.config.app_type, []),
-            "ownership": "Global DATABASE_PREPARE owns schema, bootstrap rows, and generated files. Reuse these DB contracts; node design/TDD owns queries and business behavior. Do not redefine tables, seed rows, or the bootstrap hook. A missing structure requires requirement synchronization.",
         }
         return "<prepared_database>\n" + self._compact_json(context) + "\n</prepared_database>"
 
