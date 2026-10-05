@@ -172,13 +172,13 @@ def check_config() -> dict[str, Any]:
     else:
         info.append(f"Python version: {sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}")
 
-    # Check agent runtime availability
+    # Stages use ordinary LangChain model calls, not a Deep Agent runtime.
     try:
-        import deepagents as _agent_runtime
+        import langchain_core as _agent_runtime
         version = getattr(_agent_runtime, '__version__', 'installed')
-        info.append(f"Agent runtime: {version}")
+        info.append(f"LLM runtime: {version}")
     except ImportError:
-        errors.append("Agent runtime not installed (reinstall ARC or check dependencies)")
+        errors.append("LLM runtime not installed (reinstall ARC or check dependencies)")
 
     # Check Node.js for web app type
     import shutil

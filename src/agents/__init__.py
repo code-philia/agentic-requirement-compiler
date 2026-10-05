@@ -1,2 +1,1 @@
-"""Deep-agents based stage agent infrastructure for ARC."""
-
+"""Tool-free LLM compilation stages for ARC."""

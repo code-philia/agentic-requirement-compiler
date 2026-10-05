@@ -52,6 +52,8 @@ class WorkflowPhaseRunner:
         self.test_driven_developer.app_handler = self.app_handler
         self.interface_designer.validate_files = self._prepare_design_files
 
+        self.test_generator.app_handler = self.app_handler
+        self.test_generator.validate_tests = self._prepare_tests
     @property
     def traceability(self):
         return get_runtime().traceability
