@@ -179,7 +179,8 @@ class DatabasePreparation:
         await self._log("Preparing the whole-application database before node compilation.")
         try:
             db_path = application_db_path(self.workspace, self.app_type)
-            if state.get("requirements_revision") == revision and state.get("analysis_validated") and isinstance(state.get("plan"), dict):
+            if (state.get("requirements_revision") == revision
+                    and state.get("analysis_validated") and isinstance(state.get("plan"), dict)):
                 plan = validate_plan(state["plan"], sources)
                 await self._log("Reusing analyzed database records; replaying deterministic materialization and preparation.")
             else:
@@ -190,7 +191,8 @@ class DatabasePreparation:
                 }, revision=revision, requirement_ids=sources)
                 plan = validate_plan(payload, sources)
             ensure_additive(previous, plan)
-            state.update({"requirements_revision": revision, "plan": plan, "analysis_validated": False})
+            state.update({"requirements_revision": revision,
+                          "plan": plan, "analysis_validated": False, "runtime_verified": False})
             write_json_file(self.state_path, state)
             validate_against_database(db_path, plan)
             state["analysis_validated"] = True
@@ -228,6 +230,7 @@ class DatabasePreparation:
                 affected = sorted(set(affected) | set(state.get("affected_node_ids", [])))
             state.update({
                 "status": "COMPLETED", "applied_plan": plan, "error": "",
+                "runtime_verified": bool(plan["tables"]) and self.app_type == "web",
                 "database_path": str(db_path.relative_to(self.workspace)),
                 "affected_node_ids": affected, "impact_revision": revision,
                 "code_hashes": {path: hashlib.sha256((self.workspace / path).read_bytes()).hexdigest()
@@ -242,7 +245,7 @@ class DatabasePreparation:
             return state
         except Exception as exc:
             os.environ["ARC_DATABASE_READY"] = "0"
-            state.update({"status": "FAILED", "error": str(exc)})
+            state.update({"status": "FAILED", "error": str(exc), "runtime_verified": False})
             write_json_file(self.state_path, state)
             await self._log(f"Database preparation failed; node compilation is stopped: {exc}", "error")
             return state
@@ -265,9 +268,8 @@ class DatabasePreparation:
             )
 
     async def _prepare_web(self, db_path: Path) -> str:
-        script = "const d=require('./src/database/init_db');d.initializeDatabase().then(()=>d.closeDb()).catch(async e=>{console.error(e);try{await d.closeDb()}finally{process.exitCode=1}});"
         process = await asyncio.create_subprocess_exec(
-            "node", "-e", script, cwd=str(self.workspace / "backend"),
+            "node", "src/database/verify_runtime.js", cwd=str(self.workspace / "backend"),
             env={**os.environ, "ARC_DB_FILE": str(db_path)},
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
         )

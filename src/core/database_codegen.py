@@ -205,9 +205,52 @@ def web_init_hook(workspace: Path) -> dict[str, str]:
     return {"backend/src/database/init_db.js": source.replace(anchor, anchor + "\n" + hook, 1)}
 
 
+def fixed_web_runtime(workspace: Path) -> dict[str, str]:
+    """Materialize fixed scaffold code; migrate known legacy code, reject customization."""
+    template = Path(__file__).resolve().parents[1] / "arc-template/templates/web-react-express/backend/src/database"
+    hook = "    await require('./arc_database').prepareDatabase(database); // ARC_DATABASE_PREPARE"
+    result: dict[str, str] = {}
+    for name in ("init_db.js", "db_runtime.js", "index.js", "seed_db.js", "test_harness.js", "prepare_e2e.js", "verify_runtime.js"):
+        relative = "backend/src/database/" + name
+        target = workspace / relative
+        if target.is_symlink() or not target.resolve().is_relative_to(workspace.resolve()):
+            raise ValueError(f"Unsafe fixed database runtime path: {relative}")
+        expected = (template / name).read_text(encoding="utf-8")
+        if target.exists():
+            original = target.read_text(encoding="utf-8")
+            normalized = original.replace(hook + "\n", "") if name == "init_db.js" else original
+            if name == "init_db.js":
+                normalized = re.sub(
+                    r"    /\*\*\n     \* Guide model instructions:\n.*?     \*/",
+                    "    // Fixed connection lifecycle. Schema and seeds come from ARC's JSON compiler.\n    return database;",
+                    normalized, count=1, flags=re.DOTALL)
+            if name == "seed_db.js":
+                legacy = re.sub(r"    /\*\*\n     \* Guide model instructions:\n.*?     \*/", "", original, count=1, flags=re.DOTALL)
+                skeleton = """const { closeDb } = require('./init_db');
+const { withTransaction } = require('./db_runtime');
+async function seedDatabase() {
+  return withTransaction(async ({ run, get, all, exec }) => {
+    void run; void get; void all; void exec;
+  });
+}
+"""
+                prefix, separator, suffix = legacy.partition("if (require.main === module)")
+                expected_suffix = expected.partition("if (require.main === module)")[2]
+                if (separator and re.sub(r"\s+", "", prefix) == re.sub(r"\s+", "", skeleton)
+                        and suffix == expected_suffix):
+                    normalized = expected
+            if normalized != expected:
+                raise ValueError(f"Database runtime differs from the fixed scaffold: {relative}; migrate custom code explicitly, not through node TDD")
+        if name == "init_db.js":
+            anchor = "    await runStatement(database, 'PRAGMA foreign_keys = ON;');"
+            expected = expected.replace(anchor, anchor + "\n" + hook, 1)
+        result[relative] = expected
+    return result
+
+
 def runtime_bootstrap_hook(workspace: Path, app_type: str, android_package: str) -> dict[str, str]:
     if app_type == "web":
-        return web_init_hook(workspace)
+        return fixed_web_runtime(workspace)
     if app_type == "cli":
         relative = "app/__main__.py"
         path = workspace / relative
