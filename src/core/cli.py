@@ -676,7 +676,8 @@ def cli_log(
     node_id: str | None = None,
 ) -> None:
     append_debug_log(agent_name, message, status=status, node_id=node_id, workspace_root=_cli_workspace_root)
-    if ARC_DEBUG_ENABLED:
+    if ARC_DEBUG_ENABLED or message.startswith("flow>"):
+        _spinner.stop()
         _progress_view.clear_transient_block()
         write_terminal_log(agent_name, message, status=status, node_id=node_id)
         return

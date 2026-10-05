@@ -164,6 +164,8 @@ class InterfaceDesigner:
                             if not safe_path(root, path).is_file():
                                 raise ValueError(f"Missing DESIGN file: {path}")
                 changed = apply_edits(root, edits, bundle["sources"], allowed, validate, deletable)
+                from agents.runtime.plain_codegen import applied_batch_log
+                await self._log(applied_batch_log(edits, changed), status="ok", node_id=node_id)
                 sessions.merge_node_session(node_id, {"design_codegen": {
                     "status": "accepted", "modified_files": changed, "feedback": "",
                     "accepted_edits": edits.model_dump(), "read_rounds": read_budget.get("rounds", 0),
@@ -179,7 +181,7 @@ class InterfaceDesigner:
             except Exception as exc:
                 feedback = str(exc)[:8000]
                 requested_files = list(dict.fromkeys([*requested_files, *feedback_source_paths(root, feedback)]))[:24]
-                await self._log(feedback, status="error", node_id=node_id)
+                await self._log("flow> DESIGN batch rejected; repair follows:\n" + feedback, status="error", node_id=node_id)
                 sessions.merge_node_session(node_id, {"design_codegen": {
                     "status": "rejected", "feedback": feedback, "requested_files": requested_files}})
         raise ValueError(f"DESIGN exhausted {DESIGN_MAX_CALLS} calls: {feedback}")

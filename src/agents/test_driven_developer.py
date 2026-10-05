@@ -81,6 +81,8 @@ class TestDrivenDeveloper:
             return path not in scope["allowed_files"] and any(
                 path.startswith(folder + "/") for folder in scope["frontend_roots"])
         self.modified_files = apply_edits(root, edits, bundle["sources"], allowed, deletable=deletable)
+        from agents.runtime.plain_codegen import applied_batch_log
+        await self._log(applied_batch_log(edits, self.modified_files), status="ok", node_id=node_id)
         deleted = {item.path for item in edits.delete_files}
         self.read_budget["files"] = [path for path in self.read_budget.get("files", []) if path not in deleted]
         sessions.merge_node_session(node_id, {"tdd_codegen": {

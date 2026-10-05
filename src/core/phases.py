@@ -463,28 +463,41 @@ class WorkflowPhaseRunner:
                 context_pipeline.cache.invalidate_file_layers(node_id)
                 validation_started = True
                 attempt += 1
+                await self._log("TestDrivenDeveloper", f"flow> Build started: validation round {attempt}/{TDD_MAX_CALLS}.", node_id=node_id)
                 build_output = await self.app_handler.run_build()
                 await self._log("TestDrivenDeveloper", "Build output\n" + build_output,
                                 status="debug", node_id=node_id)
                 # Web returns one exit code per sub-build, rather than an aggregate.
                 build_codes = re.findall(r"^\s*Exit Code:\s*(-?\d+)\s*$", build_output, re.MULTILINE)
                 if not build_codes or any(int(code) != 0 for code in build_codes):
+                    await self._log("TestDrivenDeveloper", f"flow> Build FAILED; exit codes: {build_codes or ['missing']}. Tests skipped.\n" +
+                                    summarize_batch_output(build_output, max_lines=35), status="error", node_id=node_id)
                     failures.append("Build: " + summarize_batch_output(build_output)
                                     + "\nSource paths: " + json.dumps(feedback_source_paths(Path(self.workspace_path), build_output)))
                 else:
+                    await self._log("TestDrivenDeveloper", f"flow> Build PASSED; exit codes: {build_codes}.", status="ok", node_id=node_id)
                     for kind in ordered:
+                        await self._log("TestDrivenDeveloper", f"flow> {kind} tests started: {len(groups[kind])} registered test(s); files: " +
+                                        ", ".join(collect_test_files(groups[kind])), node_id=node_id)
                         output = await self.app_handler.run_test_group(kind, collect_test_files(groups[kind]))
                         results[kind] = output
                         await self._log("TestDrivenDeveloper", f"{kind} output\n{output}",
                                         status="debug", node_id=node_id)
-                        if parse_test_results(output).get("exit_code") != 0:
+                        parsed = parse_test_results(output)
+                        passed = parsed.get("exit_code") == 0
+                        summary_lines = [line.strip() for line in output.splitlines() if re.search(
+                            r"(?:\d+\s+(?:passed|failed|skipped)|Test Files\s|Tests\s|[✓✔✗×]\s+\d+|^\s*(?:PASS|FAIL)\s)", line)]
+                        await self._log("TestDrivenDeveloper", f"flow> {kind} tests {'PASSED' if passed else 'FAILED'}; exit code: {parsed.get('exit_code')}.\n" +
+                                        ("\n".join(summary_lines) if passed else summarize_batch_output(output, max_lines=45)),
+                                        status="ok" if passed else "error", node_id=node_id)
+                        if not passed:
                             failures.append(kind + ": " + summarize_batch_output(output)
                                             + "\nSource paths: " + json.dumps(feedback_source_paths(Path(self.workspace_path), output)))
             except SharedNeeded:
                 raise
             except Exception as exc:
                 failures.append("Generation/application/validation: " + str(exc)[:8000])
-                await self._log("TestDrivenDeveloper", failures[-1], status="error", node_id=node_id)
+                await self._log("TestDrivenDeveloper", "flow> " + failures[-1], status="error", node_id=node_id)
                 if not validation_started:
                     protocol_errors += 1
                     feedback = "\n\n".join(filter(None, [validation_feedback,
@@ -508,7 +521,7 @@ class WorkflowPhaseRunner:
             feedback = "\n\n".join(failures) or ("" if final_ok else "Validation did not complete.")
             validation_feedback = feedback
             if failures:
-                await self._log("TestDrivenDeveloper", "Validation failed:\n" + feedback,
+                await self._log("TestDrivenDeveloper", f"flow> Validation round {attempt} failed; feedback will be supplied for repair:\n" + feedback,
                                 status="error", node_id=node_id)
             for kind in ordered:
                 passed = kind in results and parse_test_results(results[kind]).get("exit_code") == 0
@@ -530,8 +543,8 @@ class WorkflowPhaseRunner:
             if final_ok:
                 break
         await self._log("TestDrivenDeveloper",
-                        "Node passed build and all test layers." if final_ok else
-                        f"TDD exhausted {TDD_MAX_CALLS} validation rounds. Last failure:\n{validation_feedback}",
+                        "flow> Node passed build and all scheduled test layers." if final_ok else
+                        f"flow> TDD exhausted {TDD_MAX_CALLS} validation rounds. Last failure:\n{validation_feedback}",
                         status="ok" if final_ok else "error", node_id=node_id)
         return final_ok
 

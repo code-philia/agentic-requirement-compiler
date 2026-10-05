@@ -170,6 +170,11 @@ class TestGenerator:
                     return not replace_test_id and path not in registered | set(required) | paths \
                         and not self._is_test_config(path) and not self._is_executable_test(path)
                 changed = apply_edits(root, edits, bundle["sources"], allowed, validate, deletable)
+                from agents.runtime.plain_codegen import applied_batch_log
+                await self._log(applied_batch_log(edits, changed), status="ok", node_id=node_id)
+                await self._log("flow> Test manifest accepted:\n" + "\n".join(
+                    f"{test['type']}: {test['test_id']} -> {test['file_path']}" for test in tests),
+                    status="ok", node_id=node_id)
                 assets = list(dict.fromkeys([*(sessions.load_node_session(node_id).get("test_asset_files") or []),
                                              *paths, *(path for path in changed if is_test_asset(path))]))
                 assets = [path for path in assets if (root / path).is_file()]
@@ -184,6 +189,8 @@ class TestGenerator:
                 raise
             except Exception as exc:
                 feedback = str(exc)[:8000]
+                await self._log("flow> Test generation batch rejected; repair follows:\n" + feedback,
+                                status="error", node_id=node_id)
                 requested_files = list(dict.fromkeys([*requested_files, *feedback_source_paths(root, feedback)]))[:24]
                 sessions.merge_node_session(node_id, {"test_codegen": {
                     "status": "rejected", "feedback": feedback, "requested_files": requested_files}})

@@ -209,11 +209,16 @@ class SharedPreparation:
                         if not safe_path(self.root, path).is_file() or not (self.root / path).read_text().strip():
                             raise ValueError(f"Shared implementation missing: {path}")
                 changed = apply_edits(self.root, edits, bundle["sources"], allowed, validate)
+                from agents.runtime.plain_codegen import applied_batch_log
+                await self._log(applied_batch_log(edits, changed), node_id)
                 state["pending"]["accepted_edits"] = edits.model_dump()
                 write_json_file(self.state_path, state)
+                await self._log(f"flow> Shared capability build started: {capability.name}", node_id)
                 output = await app_handler.run_build()
                 codes = re.findall(r"^\s*Exit Code:\s*(-?\d+)\s*$", output, re.MULTILINE)
                 passed = bool(codes) and all(int(code) == 0 for code in codes)
+                await self._log(f"flow> Shared capability build {'PASSED' if passed else 'FAILED'}: {capability.name}; "
+                                f"exit codes: {codes or ['missing']}" + ("" if passed else "\n" + output[-6000:]), node_id)
                 if not codes or any(int(code) != 0 for code in codes):
                     raise ValueError("Shared build failed:\n" + output[-24000:]
                                      + "\nSource paths: " + json.dumps(feedback_source_paths(self.root, output)))

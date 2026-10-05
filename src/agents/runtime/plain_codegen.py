@@ -386,7 +386,10 @@ async def ask_with_reads(model: str | object, system: str, task: dict[str, Any],
     from copy import deepcopy
     from inspect import isawaitable
     async def emit(message: str) -> None:
-        pass  # Structured terminal flow logging is added separately.
+        if log:
+            result = log("flow> " + message)
+            if isawaitable(result):
+                await result
     current = deepcopy(task)
     current["shared_index"] = shared_index(root)
     catalog = {cap["name"]: cap for cap in shared_catalog(root)}
@@ -721,3 +724,28 @@ def apply_edits(root: Path, edits: CodeEdits, sources: dict[str, str],
                 target.write_text(old, encoding="utf-8")
         raise
     return written
+
+
+def applied_batch_log(edits: CodeEdits, paths: list[str]) -> str:
+    """Report actual application separately from a model's proposed actions."""
+    added = {item.path for item in edits.new_files}
+    deleted = {item.path for item in edits.delete_files}
+    return "flow> File batch applied successfully: " + str(len(paths)) + " file(s)." + "".join(
+        f"\n{'delete_file' if path in deleted else 'add_file' if path in added else 'edit_file'}: {path} — applied"
+        for path in paths)
+
+
+def protected_paths(root: Path, node_id: str, records: list[dict[str, Any]]) -> set[str]:
+    paths = {str(record.get("file_path", "")) for record in records
+             if record.get("type") in {"API", "FUNC", "DB"}
+             and (node_id not in record.get("req_ids", [])
+                  or str(record.get("interface_id", "")).startswith("GLOBAL:DB:"))}
+    state = root / ".arc/database/state.json"
+    if state.exists():
+        paths.update(json.loads(state.read_text(encoding="utf-8")).get("generated_files", []))
+    shared_state = root / ".arc/shared/state.json"
+    if shared_state.exists():
+        plan = json.loads(shared_state.read_text(encoding="utf-8")).get("plan") or {}
+        paths.update(path for capability in plan.get("capabilities", [])
+                     for path in capability.get("files", []) + capability.get("reuse_files", []))
+    return paths
