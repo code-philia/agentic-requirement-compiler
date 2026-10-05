@@ -49,4 +49,13 @@ Check both Integration and E2E consumers of the same component so fixing one tes
 does not leave equivalent failures elsewhere. Preserve each negative case's
 visible error assertion and its no-account/no-session side-effect checks.
 Use previous failure feedback to avoid undoing an earlier valid correction.
+Keep E2E focused on the current requirement's core flow. When a test has genuine
+scope/setup defects, remove redundant field inventories and unrelated detours or
+move detailed validation coverage to the registered Unit/Integration assets when
+permitted. Preserve the core real request, required result and explicit scenarios.
+Arrange prerequisite accounts through the real API/harness instead of repeating
+long browser journeys. A rejected registration does not invalidate an existing
+session; use an anonymous context if that is the scenario's precondition.
+Do not hide click/check timeouts with force, sleeps or removed core assertions;
+inspect actionability and the configured time budget rather than blaming scope alone.
 """ + testing_guidance(app_type, test_types)

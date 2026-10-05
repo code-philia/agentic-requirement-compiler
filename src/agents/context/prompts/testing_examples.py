@@ -50,6 +50,11 @@ Use relative page.goto('/actual-route'); reuse the configured baseURL and runtim
 port. Never hardcode an origin or override baseURL. Select unique semantic roles
 and accessible names; scope validation errors to their actual alert/field container.
 Never mask ambiguity with .first(), .nth(), force, sleeps or weaker assertions.
+Keep browser tests to the minimal core interaction and required outcome; detailed
+field/validation matrices belong in Unit/Integration. Use auto-waiting locators and
+web-first assertions. Respect the configured test timeout: do not introduce shorter
+per-test overrides or long setup chains. Required reload checks belong in the core
+flow only when the requirement asks for persistence across reload.
 """
 
 

@@ -7,8 +7,24 @@ def get_system_prompt(app_type: str = "web", test_types: list[str] | None = None
 Use supplied API/FUNC/DB skeletons, frontend code and test-harness context.
 Assert final required behavior, never NOT_IMPLEMENTED, HTTP 501,
 or temporary scaffold behavior. Do not modify product code or run builds/tests.
-Choose Unit/Integration/E2E only where they add value. When scenarios are declared,
-cover their GIVEN/WHEN/THEN flows with E2E tests through the real UI/CLI runtime.
+Choose Unit/Integration/E2E only where they add value. Use a minimal E2E smoke flow
+for the requirement's core user outcome, normally one happy path and at most one
+representative rejection. This is a default, not a cap on explicitly required E2E
+scenarios. Cover declared GIVEN/WHEN/THEN outcomes across the appropriate layers;
+do not turn every validation rule into a browser journey.
+Keep each E2E short and independent: minimum setup, required input, one action,
+and the essential visible outcome. Fill valid inputs directly. Do not mix default
+option inventories, required-attribute checks, headings, password-strength exercises,
+visual details or unrelated navigation into the happy path. Put detailed field,
+boundary and duplicate-data matrices in Unit/Integration tests instead.
+Use the real API/isolated harness for prerequisite records when appropriate; do not
+repeat a full UI registration/login journey merely to arrange a rejection case.
+For such a case, start in a fresh anonymous browser context if anonymity is required.
+Rejection must not create a NEW account/session, but must not be assumed to destroy
+an existing valid session. Test duplicate username/email independently when needed.
+Prefer a visible semantic error container and relevant meaning over exact incidental
+error wording unless the requirement fixes that wording. Keep required accessible
+names and all core business outcomes; simplify setup and redundancy, not correctness.
 Preserve all preconditions; never contradict the requirement or invent obligations.
 For auth/session changes, assert shared session state and its consumers.
 For persisted domain changes, verify the relevant API/service/persistence path,
