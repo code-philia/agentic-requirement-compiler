@@ -10,7 +10,7 @@ from pydantic import Field
 from agents.context.pipeline import context_pipeline
 from agents.context.prompts.interface_designer import get_system_prompt
 from agents.runtime.plain_codegen import (
-    CodeEdits, Record, apply_edits, ask_for_edits, is_test_asset, protected_paths, source_bundle,
+    CodeEdits, Record, SharedNeeded, ModelTransportExhausted, apply_edits, ask_with_reads, feedback_source_paths, is_test_asset, protected_paths, source_bundle,
 )
 from core import sessions
 from core.service import get_runtime
@@ -21,15 +21,15 @@ DESIGN_MAX_CALLS = 3
 
 
 class DesignFiles(Record):
-    frontend: list[str] = Field(default_factory=list)
-    API: list[str] = Field(default_factory=list)
-    FUNC: list[str] = Field(default_factory=list)
-    DB: list[str] = Field(default_factory=list)
-    shared: list[str] = Field(default_factory=list)
+    frontend: list[str] = Field(default_factory=list, description="UI and frontend HTTP request files; frontend/src/api/*.ts belongs here, never API.")
+    API: list[str] = Field(default_factory=list, description="Node-owned backend routes/controllers only; web paths must start with backend/.")
+    FUNC: list[str] = Field(default_factory=list, description="Node-owned backend business service skeletons.")
+    DB: list[str] = Field(default_factory=list, description="Node-owned backend database operation skeletons, not global schema/runtime.")
+    shared: list[str] = Field(default_factory=list, description="Editable existing integration/registration files such as backend/src/app.js; not read-only shared core.")
 
 
 class InterfaceDesignResponse(CodeEdits):
-    files: DesignFiles
+    files: DesignFiles = Field(default_factory=DesignFiles)
 
 
 class InterfaceDesigner:
@@ -74,24 +74,51 @@ class InterfaceDesigner:
         frontend_roots = ["frontend"] if app_type == "web" else ["app/src/main"] if app_type == "android" else []
         required = list(dict.fromkeys(required))
         missing = [path for path in required if not (root / path).is_file()]
-        bundle = source_bundle(root, [path for path in required if path not in missing],
-                               frontend_roots=frontend_roots, design=True)
-        bundle["missing_tracked_files"] = missing
         feedback = ""
+        requested_files: list[str] = []
+        read_budget: dict[str, Any] = {}
+        transport_budget: dict[str, int] = {}
+        previous_candidate: dict[str, Any] | None = None
         for attempt in range(1, DESIGN_MAX_CALLS + 1):
             await self._log(f"Plain DESIGN call {attempt}/{DESIGN_MAX_CALLS}.", node_id=node_id)
             sessions.merge_node_session(node_id, {"design_codegen": {
                 "call": attempt, "max_calls": DESIGN_MAX_CALLS, "status": "running"}})
             try:
-                edits = await ask_for_edits(self.model, get_system_prompt(), {
-                    "node_id": node_id, "requirement": requirement_data,
+                bundle = source_bundle(root, [path for path in required if path not in missing],
+                                       frontend_roots=frontend_roots, design=True,
+                                       feedback=feedback + "\n" + str(requested_files), node_id=node_id,
+                                       frontend_only=bool(requirement_data.get("children_ids")))
+                bundle["missing_tracked_files"] = missing
+                edits = await ask_with_reads(self.model, get_system_prompt(), {
+                    "model_stage": "DESIGN",
+                    "node_id": node_id, "requirement": context_pipeline.task_requirement(node_id, requirement_data),
                     "context": "\n\n".join([static, dynamic]),
                     **bundle, "protected_files": sorted(blocked), "feedback": feedback,
-                }, InterfaceDesignResponse)
+                    "previous_candidate": previous_candidate,
+                }, InterfaceDesignResponse, root=root, budget=read_budget,
+                    log=lambda message: self._log(message, node_id=node_id), transport_budget=transport_budget)
+                if edits.shared_need:
+                    apply_edits(root, edits, bundle["sources"], lambda path: False)
+                previous_candidate = edits.model_dump()
                 files = edits.files.model_dump()
                 listed = {path for values in files.values() for path in values}
                 if listed & blocked or any(is_test_asset(path) for path in listed):
                     raise ValueError("DESIGN cannot claim protected backend/database files or test assets")
+                unlisted = {item.path for item in [*edits.changes, *edits.new_files]} - listed
+                if unlisted:
+                    raise ValueError(
+                        f"Modified/created files missing from files groups: {sorted(unlisted)}. "
+                        "Declare every touched file. Existing application route-registration files "
+                        "such as backend/src/app.js belong in files.shared if not protected. "
+                        "Keep the API/FUNC/DB skeletons; repair the manifest rather than removing backend code.")
+                if app_type == "web":
+                    misplaced = [path for layer in ("API", "FUNC", "DB") for path in files[layer]
+                                 if not path.startswith("backend/")]
+                    if misplaced:
+                        raise ValueError(
+                            f"Backend groups API/FUNC/DB require backend/ paths: {misplaced}. "
+                            "Move frontend HTTP request files into files.frontend. "
+                            "Keep/create the corresponding backend routes, service and repository skeletons.")
                 def allowed(path: str) -> bool:
                     return path in listed and path not in blocked and not is_test_asset(path)
                 def validate() -> None:
@@ -107,13 +134,22 @@ class InterfaceDesigner:
                 changed = apply_edits(root, edits, bundle["sources"], allowed, validate)
                 sessions.merge_node_session(node_id, {"design_codegen": {
                     "status": "accepted", "modified_files": changed, "feedback": "",
-                    "accepted_edits": edits.model_dump()}})
+                    "accepted_edits": edits.model_dump(), "read_rounds": read_budget.get("rounds", 0),
+                    "transport_retries": transport_budget.get("retries", 0)}})
                 return {"files": files}
+            except SharedNeeded:
+                raise
+            except ModelTransportExhausted as exc:
+                sessions.merge_node_session(node_id, {"design_codegen": {
+                    "status": "transport_failed", "feedback": str(exc),
+                    "transport_retries": transport_budget.get("retries", 0)}})
+                raise
             except Exception as exc:
                 feedback = str(exc)[:8000]
+                requested_files = list(dict.fromkeys([*requested_files, *feedback_source_paths(root, feedback)]))[:24]
                 await self._log(feedback, status="error", node_id=node_id)
                 sessions.merge_node_session(node_id, {"design_codegen": {
-                    "status": "rejected", "feedback": feedback}})
+                    "status": "rejected", "feedback": feedback, "requested_files": requested_files}})
         raise ValueError(f"DESIGN exhausted {DESIGN_MAX_CALLS} calls: {feedback}")
 
     async def _log(self, message: str, status: str | None = None, node_id: str | None = None) -> None:

@@ -196,22 +196,19 @@ class ContextPipeline:
         visual_reference = req_data.get("visual_reference") or []
         focus = {
             "req_id": req_data.get("req_id", node_id),
-            "name": req_data.get("name", ""),
-            "description": req_data.get("description", ""),
+            "instruction": "The authoritative requirement is supplied once in the top-level requirement field.",
             "dependencies": req_data.get("dependencies", []),
             "children_ids": req_data.get("children_ids", []),
             "scenario_count": len(scenarios),
             "visual_reference_count": len(visual_reference),
         }
         parts = ["<requirement_focus>", self._compact_json(focus)]
-        if scenarios:
-            parts.extend(
-                [
-                    "<scenarios>",
-                    self._compact_json([self._build_scenario_digest(item) for item in scenarios if isinstance(item, dict)]),
-                    "</scenarios>",
-                ]
-            )
+        store = self._store()
+        if store:
+            parts.extend(["<dependency_summary>", self._compact_json([
+                {"req_id": dependency, "name": (store.get_requirement(dependency) or {}).get("name", "")}
+                for dependency in req_data.get("dependencies") or []
+            ]), "</dependency_summary>"])
         if visual_reference:
             parts.extend(
                 [
@@ -239,6 +236,10 @@ class ContextPipeline:
                 scenarios.append(scenario)
                 seen.add(key)
         return {**req_data, "scenarios": scenarios}
+
+    def task_requirement(self, node_id: str, requirement: dict[str, Any]) -> dict[str, Any]:
+        """Supply stored acceptance scenarios once, with the authoritative task requirement."""
+        return self._with_scenarios_from_store(node_id, requirement)
 
     def _get_tech_stack_context(self) -> str:
         app_type = (self.config.app_type or "web").strip().lower()
@@ -310,27 +311,8 @@ class ContextPipeline:
             file_path = str(iface.get("file_path", "") or "").strip()
             if not file_path:
                 continue
-            content = self._decode_interface_content(iface)
-            if content.get("kind") == "code_file":
-                cards.append({"file_path": file_path, "layer": iface.get("type"),
-                              "implemented": bool(iface.get("implemented")),
-                              "instruction": "Read source for interface details."})
-                continue
-            cards.append(
-                {
-                    "file_path": file_path,
-                    "first_line": str(iface.get("first_line", "") or "").strip(),
-                    "interface_id": str(iface.get("interface_id", "") or "").strip(),
-                    "type": str(iface.get("type", "") or "").strip(),
-                    "implemented": bool(iface.get("implemented")),
-                    "responsibility": self._truncate_text(content.get("responsibility", ""), 180),
-                    "specification": self._truncate_text(content.get("specification", ""), 220),
-                    "test_focus": self._limit_string_list(content.get("test_focus") or [], limit=4, item_limit=120),
-                    "callers": self._limit_string_list(content.get("callers") or [], limit=3, item_limit=80),
-                    "callees": self._limit_string_list(content.get("callees") or [], limit=3, item_limit=80),
-                    "why_relevant": "Current-node owned interface file.",
-                }
-            )
+            cards.append({"file_path": file_path, "layer": iface.get("type"),
+                          "req_ids": iface.get("req_ids", []), "implemented": bool(iface.get("implemented"))})
         if not cards:
             return ""
         return "<source_file_cards>\n" + self._compact_json(cards) + "\n</source_file_cards>"
@@ -467,28 +449,9 @@ class ContextPipeline:
                 continue
             else:
                 relation = "existing"
-            content = self._decode_interface_content(iface)
-            if content.get("kind") == "code_file":
-                cards.append({"req_ids": req_ids, "relation": relation,
-                              "layer": iface.get("type"), "file_path": iface.get("file_path"),
-                              "implemented": bool(iface.get("implemented"))})
-                if len(cards) >= self.max_related_interfaces:
-                    break
-                continue
-            cards.append(
-                {
-                    "interface_id": str(iface.get("interface_id", "") or "").strip(),
-                    "req_ids": req_ids,
-                    "relation": relation,
-                    "type": str(iface.get("type", "") or "").strip(),
-                    "file_path": str(iface.get("file_path", "") or "").strip(),
-                    "implemented": bool(iface.get("implemented")),
-                    "responsibility": self._truncate_text(content.get("responsibility", ""), 180),
-                    "specification": self._truncate_text(content.get("specification", ""), 220),
-                    "callers": self._limit_string_list(content.get("callers") or [], limit=3, item_limit=80),
-                    "callees": self._limit_string_list(content.get("callees") or [], limit=3, item_limit=80),
-                }
-            )
+            cards.append({"req_ids": req_ids, "relation": relation,
+                          "layer": iface.get("type"), "file_path": iface.get("file_path"),
+                          "implemented": bool(iface.get("implemented"))})
             if len(cards) >= self.max_related_interfaces:
                 break
         if not cards:
@@ -539,9 +502,12 @@ class ContextPipeline:
             self._build_acceptance_gate(node_id, req_data),
             self.cache.get_or_compute(node_id, "tech_stack_context", self._get_tech_stack_context),
         ]
-        database_context = self._get_database_context(node_id)
+        database_context = "" if req_data.get("children_ids") and agent_type == "InterfaceDesigner" else self._get_database_context(node_id)
         if database_context:
             context_parts.append(database_context)
+        context_parts.append("<shared_contracts>\n" + self._compact_json({
+            "rules": "This is an incremental index, not a complete architecture plan. Request selected contracts via read_shared, code via read_files, index pages via read_shared_groups. Read rounds have a separate bounded budget. Historical consumer relationships do not preload all source. If reusable code is missing, return shared_need={name,reason} without edits. Shared code stays read-only and business actions node-owned.",
+        }) + "\n</shared_contracts>")
         project_structure = self.cache.get_or_compute(
             node_id,
             f"project_structure::{agent_type}",
@@ -580,9 +546,7 @@ class ContextPipeline:
             context_parts.append(existing_interfaces)
 
         if agent_type in {"InterfaceDesigner", "TestGenerator", "TestDrivenDeveloper", "TestFailureVerifier"}:
-            if preloaded_source:
-                context_parts.append(preloaded_source)
-            else:
+            if agent_type == "TestFailureVerifier":
                 source_cards = self.cache.get_or_compute(
                     node_id,
                     "source_code",
@@ -620,7 +584,7 @@ class ContextPipeline:
             "recent_failure_summary",
             lambda: self._get_recent_failure_summary(node_id),
         )
-        if recent_failure_summary:
+        if recent_failure_summary and agent_type == "TestFailureVerifier":
             context_parts.append(recent_failure_summary)
 
         return "\n\n".join(part for part in context_parts if part)
@@ -656,6 +620,16 @@ class ContextPipeline:
                 "cli": "Use app.arc_database.connect_database(db_path). It applies the compiled schema and seeds to ARC_DB_FILE (or an explicit isolated test database). app/__main__.py bootstraps it before the command runtime.",
                 "android": "Use the generated database.ArcDatabase SQLiteOpenHelper; getWritableDatabase applies assets/arc_database.json on open. The Application bootstraps it at startup. Use a separate database name for isolated tests. This is the authoritative new domain database; do not create parallel Room entities/schema for these tables. The compiler prepares the same program on the host; device creation occurs on open.",
             }.get(self.config.app_type, ""),
+            "runtime_signatures": {
+                "web": ["initializeDatabase({dbPath?, reset?}) -> Promise<sqlite3.Database>",
+                        "run(sql, params=[]) -> Promise<{lastID, changes}>",
+                        "get(sql, params=[]) -> Promise<row|null>", "all(sql, params=[]) -> Promise<row[]>",
+                        "exec(sql) -> Promise<void>", "withTransaction(async tx => result) -> Promise<result>; tx has run/get/all/exec",
+                        "createTestDatabaseHarness(options) -> {setup, reset, seed, cleanup}; await setup() -> query facade",
+                        "setDbPath(path), closeDb(), resetDatabaseFile(path?) -> Promise; getDbPath() -> string"],
+                "cli": ["connect_database(db_path=None) -> sqlite3.Connection"],
+                "android": ["ArcDatabase(context[, name]); getWritableDatabase() -> SQLiteDatabase"],
+            }.get(self.config.app_type, []),
             "ownership": "Global DATABASE_PREPARE owns schema, bootstrap rows, and generated files. Reuse these DB contracts; node design/TDD owns queries and business behavior. Do not redefine tables, seed rows, or the bootstrap hook. A missing structure requires requirement synchronization.",
         }
         return "<prepared_database>\n" + self._compact_json(context) + "\n</prepared_database>"

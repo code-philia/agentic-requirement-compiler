@@ -4,6 +4,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from agents.runtime.plain_codegen import is_test_asset, protected_paths
+
 
 def implementation_scope(workspace_root: str, node_id: str, app_type: str,
                          test_files: list[str], records: list[dict[str, Any]]) -> dict[str, Any]:
@@ -43,6 +45,13 @@ def implementation_scope(workspace_root: str, node_id: str, app_type: str,
         frontend_roots.extend(path.relative_to(root).as_posix()
                               for path in (root / "app/src/main/java").glob("**/ui") if path.is_dir())
     frontend_files = paths(groups.get("frontend") or [])
+    # Test generation owns helpers/configuration as well as executable test paths.
+    test_assets = paths(session.get("test_asset_files") or
+                       [path for path in session.get("test_codegen", {}).get("modified_files", []) if is_test_asset(path)])
+    blocked = protected_paths(root, node_id, records)
+    for path in test_assets:
+        if not is_test_asset(path) or path in blocked:
+            raise ValueError(f"Invalid test repair asset: {path}")
     # Backend ownership remains authoritative even if a file was mislabeled shared.
     for path in [path for values in backend.values() for path in values] + shared + frontend_files:
         for record in records:
@@ -52,8 +61,13 @@ def implementation_scope(workspace_root: str, node_id: str, app_type: str,
             ):
                 raise ValueError(f"File is owned by another requirement/global database: {path}")
     allowed_files = sorted(set([path for values in backend.values() for path in values]
-                               + shared + frontend_files + paths(test_files)))
+                               + shared + frontend_files + paths(test_files) + test_assets))
+    manifests = [path for path in ("backend/package.json", "frontend/package.json")
+                 if app_type == "web" and (root / path).is_file()]
+    allowed_files = sorted(set(allowed_files + manifests))
     return {"backend": backend, "frontend_roots": frontend_roots,
             "frontend_files": frontend_files, "shared": shared,
+            "test_asset_files": test_assets,
             "allowed_files": allowed_files,
-            "rules": "Implement API/FUNC/DB files directly; do not search for backend owners or create replacement modules. Backend writes are limited to these files and listed shared integration files. Locate frontend changes within frontend roots. Tests may be repaired only at listed paths. Other files can be read as direct dependencies but cannot be modified. Missing backend targets require a DESIGN retry."}
+            "dependency_manifests": manifests,
+            "rules": "Implement API/FUNC/DB files directly; do not search for backend owners or create replacement modules. Backend writes are limited to these files and listed shared integration files. Explicit exception: dependency_manifests may change dependencies/devDependencies only; system npm install precedes build/tests. Locate frontend changes within frontend roots. Repair registered tests and test_asset_files (helpers/configs); restore missing registered helpers at the same paths. Other dependencies and globally prepared shared implementations may be read but not modified. Missing backend targets require a DESIGN retry."}

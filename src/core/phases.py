@@ -13,6 +13,7 @@ from core.service import get_runtime
 from core.path_compat import normalize_windows_extended_prefix_text
 from core.visual_analysis import analyze_and_attach_visual_references
 from app_type_handler.test_results import parse_test_results
+from agents.runtime.plain_codegen import SharedNeeded, feedback_source_paths
 
 
 LogCallback = Callable[[str, str, str | None, str | None], Awaitable[None] | None]
@@ -433,6 +434,7 @@ class WorkflowPhaseRunner:
         feedback = str(sessions.load_node_session(node_id).get("recent_failure_summary") or "")
         final_ok = False
         modified: list[str] = []
+        self.test_driven_developer.read_budget = {}
         for attempt in range(1, TDD_MAX_CALLS + 1):
             # Never reuse a passing layer from an earlier code revision.
             results: dict[str, str] = {}
@@ -464,6 +466,8 @@ class WorkflowPhaseRunner:
                                         status="debug", node_id=node_id)
                         if parse_test_results(output).get("exit_code") != 0:
                             failures.append(kind + ": " + summarize_batch_output(output))
+            except SharedNeeded:
+                raise
             except Exception as exc:
                 failures.append("Generation/application/validation: " + str(exc)[:8000])
                 await self._log("TestDrivenDeveloper", failures[-1], status="error", node_id=node_id)

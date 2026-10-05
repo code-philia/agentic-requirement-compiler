@@ -41,6 +41,8 @@ class RejectedRecord(ValueError):
 
 
 DATABASE_PROMPT = """Analyze ARC's shared SQLite database before node design and TDD.
+Include persistent identity/session prerequisites implied by requirements. Shared
+application modules are discovered later; database analysis does not design their APIs.
 You have no tools. Return only JSON matching the supplied schema, never SQL, code or documents.
 Use the smallest model justified by requirements. Reuse global entity names and persisted schema;
 do not create parallel domain tables. Columns use INTEGER/REAL/TEXT/BLOB/NUMERIC, ASCII identifiers,

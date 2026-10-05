@@ -16,6 +16,8 @@ from agents.context.pipeline import context_pipeline
 from core import commits, config, files, sessions
 from core.phases import WorkflowPhaseRunner
 from core.database import DatabasePreparation
+from core.shared import SharedPreparation
+from agents.runtime.plain_codegen import SharedNeeded, record_shared_consumers
 from core.service import configure_runtime
 from core.commits import build_commit_message
 from core.config import load_project_env, set_app_type, set_web_port, set_workspace_root
@@ -102,6 +104,7 @@ class ARCWorkflowManager:
             app_type=self.app_type,
             log_cb=self.log_cb,
         )
+        self.shared_preparation = SharedPreparation(self.workspace_path, self.app_type, self.log_cb)
         self.workspace_mode = WORKSPACE_MODE_SCAFFOLD
 
         set_web_port(self.web_port)
@@ -516,7 +519,29 @@ class ARCWorkflowManager:
             self._save_processing_queue(queue_state)
 
             await self._log("Compiler", f"Running {phase} for node {node_id}...", node_id=node_id)
-            task_ok = await self._run_task(task)
+            task_ok = False
+            # Resolve only requests raised by this task, with a fixed interruption budget.
+            for shared_round in range(4):
+                try:
+                    task_ok = await self._run_task(task)
+                    break
+                except SharedNeeded as exc:
+                    sessions.merge_node_session(node_id, {"shared_handoff": {
+                        "status": "pending", "need": exc.need.model_dump(), "phase": phase}})
+                    if shared_round == 3:
+                        sessions.merge_node_session(node_id, {"shared_handoff": {
+                            "status": "failed", "error": "Shared request budget exhausted for this task."}})
+                        await self._log("Compiler", "Shared request budget exhausted for this task.", "error", node_id)
+                        break
+                    try:
+                        await self.shared_preparation.resolve(node_id, exc.need, self.runtime, self.phase_runner.app_handler)
+                        sessions.merge_node_session(node_id, {"shared_handoff": {"status": "resolved"}})
+                        context_pipeline.cache.clear()
+                    except Exception as error:
+                        sessions.merge_node_session(node_id, {"shared_handoff": {"status": "failed", "error": str(error)}})
+                        await self._log("Compiler", str(error), "error", node_id)
+                        break
+            record_shared_consumers(Path(self.workspace_path), node_id)
 
             if task_ok:
                 task["status"] = TASK_COMPLETED
