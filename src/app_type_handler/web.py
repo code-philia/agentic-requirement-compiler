@@ -7,10 +7,12 @@ import subprocess
 import signal
 import hashlib
 import inspect
+import tempfile
 
 from typing import Awaitable, Callable
 
 from .base import AppTypeHandler
+from .test_results import compact_execution_output
 from core.config import build_web_runtime_env, get_web_base_url, get_web_port
 from core.processes import finalize_subprocess
 
@@ -67,9 +69,7 @@ async def _execute_web_test_command(
             result += f"STDOUT:\n{output}\n"
         if error:
             result += f"STDERR:\n{error}\n"
-        if len(result) > 4000:
-            result = result[:2000] + "\n...[OUTPUT TRUNCATED]...\n" + result[-2000:]
-        return result
+        return compact_execution_output(result)
     except asyncio.TimeoutError:
         if process:
             await finalize_subprocess(process, force_kill=True)
@@ -651,34 +651,49 @@ async def _start_backend_runtime(
     except RuntimeError as exc:
         return None, start_command, str(exc), ""
 
+    startup_log = tempfile.TemporaryFile(mode="w+b")
     try:
         backend_process = await asyncio.create_subprocess_shell(
             start_command,
             cwd=backend_path,
-            stdout=asyncio.subprocess.DEVNULL,
-            stderr=asyncio.subprocess.DEVNULL,
+            stdout=startup_log,
+            stderr=startup_log,
             env={
                 **os.environ,
                 **runtime_env,
             },
         )
     except Exception as exc:
+        startup_log.close()
         return None, start_command, f"Failed to start backend runtime with `{start_command}`: {str(exc)}", ""
 
-    server_ready = await _wait_for_tcp_server("127.0.0.1", get_web_port(), timeout=20.0)
+    deadline = asyncio.get_running_loop().time() + 20.0
+    server_ready = False
+    while asyncio.get_running_loop().time() < deadline:
+        if backend_process.returncode is not None:
+            break
+        if await _wait_for_tcp_server("127.0.0.1", get_web_port(), timeout=0.5):
+            server_ready = True
+            break
     if not server_ready:
         cleanup_note = ""
         try:
             cleanup_note = await _terminate_process(backend_process, port=get_web_port())
         except Exception as cleanup_exc:
             cleanup_note = f"Backend runtime cleanup after failed startup also failed: {cleanup_exc}"
+        startup_log.seek(0, os.SEEK_END)
+        startup_log.seek(max(0, startup_log.tell() - 24000))
+        startup_output = startup_log.read().decode("utf-8", errors="replace")
+        startup_log.close()
         return None, start_command, (
             f"Failed to start backend runtime with `{start_command}` on port {get_web_port()} "
             "within 20 seconds.\n"
             f"{startup_cleanup_note}\n"
-            f"{cleanup_note}"
+            f"{cleanup_note}\nLauncher exit code: {backend_process.returncode}\n"
+            f"Backend startup output:\n{startup_output}\nSource paths: backend/package.json, backend/src/index.js"
         ), ""
 
+    startup_log.close()
     instance_fingerprint = _format_backend_instance_fingerprint(
         launcher_pid=backend_process.pid,
         port=get_web_port(),
@@ -831,7 +846,7 @@ class WebAppType(AppTypeHandler):
             if not build_ok:
                 return _prepend_test_execution_header(
                     execution,
-                    "Frontend build failed before E2E startup.\n\n"
+                    "Exit Code: 1\nFrontend build failed before E2E startup.\n\n"
                     f"=== Frontend Build ===\n{frontend_build_output}",
                 )
 
@@ -842,7 +857,7 @@ class WebAppType(AppTypeHandler):
             if not database_ready:
                 return _prepend_test_execution_header(
                     execution,
-                    "E2E database preparation failed before backend startup.\n\n"
+                    "Exit Code: 1\nE2E database preparation failed before backend startup.\n\n"
                     f"=== Frontend Build ===\n{frontend_build_output}\n\n"
                     f"=== E2E Runtime Env ===\nDB Path: {e2e_runtime_env.get('ARC_E2E_DB_PATH', 'unknown')}\n\n"
                     f"=== Database Prepare ===\n{database_prepare_output}",
@@ -966,7 +981,7 @@ class WebAppType(AppTypeHandler):
         if not build_ok:
             return _prepend_group_execution_header(
                 execution,
-                "Frontend build failed before E2E startup.\n\n"
+                "Exit Code: 1\nFrontend build failed before E2E startup.\n\n"
                 f"=== Frontend Build ===\n{frontend_build_output}",
             )
 
@@ -981,7 +996,7 @@ class WebAppType(AppTypeHandler):
         if not database_ready:
             return _prepend_group_execution_header(
                 execution,
-                "E2E database preparation failed before backend startup.\n\n"
+                "Exit Code: 1\nE2E database preparation failed before backend startup.\n\n"
                 f"=== Frontend Build ===\n{frontend_build_output}\n\n"
                 f"=== E2E Runtime Env ===\nDB Path: {e2e_runtime_env.get('ARC_E2E_DB_PATH', 'unknown')}\n\n"
                 f"=== Database Prepare ===\n{database_prepare_output}",

@@ -12,12 +12,13 @@ from core import sessions
 from core.service import get_runtime
 from core.path_compat import normalize_windows_extended_prefix_text
 from core.visual_analysis import analyze_and_attach_visual_references
-from app_type_handler.test_results import parse_test_results
+from app_type_handler.test_results import parse_test_results, compact_execution_output
 from agents.runtime.plain_codegen import SharedNeeded, feedback_source_paths
 
 
 LogCallback = Callable[[str, str, str | None, str | None], Awaitable[None] | None]
-TDD_MAX_CALLS = 4  # One initial generation plus at most three repair calls per invocation.
+TDD_MAX_CALLS = 4  # Actual build/test validation rounds; protocol repairs are separate.
+TDD_MAX_PROTOCOL_REPAIRS = 3  # Separate, execution-wide budget for invalid generation/edits.
 ALLOWED_INTERFACE_TYPES = {"API", "FUNC", "DB"}
 TDD_BATCH_ORDER = ("Unit", "Integration", "E2E")
 
@@ -51,9 +52,9 @@ class WorkflowPhaseRunner:
         )
         self.test_driven_developer.app_handler = self.app_handler
         self.interface_designer.validate_files = self._prepare_design_files
-
         self.test_generator.app_handler = self.app_handler
         self.test_generator.validate_tests = self._prepare_tests
+
     @property
     def traceability(self):
         return get_runtime().traceability
@@ -421,7 +422,7 @@ class WorkflowPhaseRunner:
     async def _run_tdd_for_node(
         self, *, node_id: str, tests: list[dict[str, Any]],
     ) -> bool:
-        """One generation call per round; validate every layer on current code."""
+        """Bound protocol repairs separately; validate every layer on current code."""
         groups: dict[str, list[dict[str, Any]]] = {}
         for test in tests:
             test_type = canonical_test_type(str(test.get("type", "")))
@@ -433,19 +434,25 @@ class WorkflowPhaseRunner:
         ordered = [kind for kind in TDD_BATCH_ORDER if kind in groups]
         if not ordered:
             return True
-        feedback = str(sessions.load_node_session(node_id).get("recent_failure_summary") or "")
+        session = sessions.load_node_session(node_id)
+        validation_feedback = str(session.get("tdd_codegen", {}).get("validation_feedback")
+                                  or session.get("recent_failure_summary") or "")
+        feedback = validation_feedback
         final_ok = False
         modified: list[str] = []
         self.test_driven_developer.read_budget = {}
-        for attempt in range(1, TDD_MAX_CALLS + 1):
+        attempt = 0
+        protocol_errors = 0
+        while attempt < TDD_MAX_CALLS:
             # Never reuse a passing layer from an earlier code revision.
             results: dict[str, str] = {}
             build_output = ""
             failures: list[str] = []
-            await self._log("TestDrivenDeveloper", f"Plain TDD round {attempt}/{TDD_MAX_CALLS}.",
+            validation_started = False
+            await self._log("TestDrivenDeveloper", f"Plain TDD round {attempt + 1}/{TDD_MAX_CALLS}.",
                             node_id=node_id)
             self._update_node_session(node_id, {"tdd_codegen": {
-                "round": attempt, "max_calls": TDD_MAX_CALLS, "status": "running"}})
+                "round": attempt + 1, "max_calls": TDD_MAX_CALLS, "status": "running"}})
             try:
                 await self.test_driven_developer.run(
                     node_id=node_id, test_files=collect_test_files(tests),
@@ -453,13 +460,16 @@ class WorkflowPhaseRunner:
                 )
                 modified.extend(self.test_driven_developer.modified_files)
                 context_pipeline.cache.invalidate_file_layers(node_id)
+                validation_started = True
+                attempt += 1
                 build_output = await self.app_handler.run_build()
                 await self._log("TestDrivenDeveloper", "Build output\n" + build_output,
                                 status="debug", node_id=node_id)
                 # Web returns one exit code per sub-build, rather than an aggregate.
                 build_codes = re.findall(r"^\s*Exit Code:\s*(-?\d+)\s*$", build_output, re.MULTILINE)
                 if not build_codes or any(int(code) != 0 for code in build_codes):
-                    failures.append("Build: " + summarize_batch_output(build_output))
+                    failures.append("Build: " + summarize_batch_output(build_output)
+                                    + "\nSource paths: " + json.dumps(feedback_source_paths(Path(self.workspace_path), build_output)))
                 else:
                     for kind in ordered:
                         output = await self.app_handler.run_test_group(kind, collect_test_files(groups[kind]))
@@ -467,15 +477,38 @@ class WorkflowPhaseRunner:
                         await self._log("TestDrivenDeveloper", f"{kind} output\n{output}",
                                         status="debug", node_id=node_id)
                         if parse_test_results(output).get("exit_code") != 0:
-                            failures.append(kind + ": " + summarize_batch_output(output))
+                            failures.append(kind + ": " + summarize_batch_output(output)
+                                            + "\nSource paths: " + json.dumps(feedback_source_paths(Path(self.workspace_path), output)))
             except SharedNeeded:
                 raise
             except Exception as exc:
                 failures.append("Generation/application/validation: " + str(exc)[:8000])
                 await self._log("TestDrivenDeveloper", failures[-1], status="error", node_id=node_id)
+                if not validation_started:
+                    protocol_errors += 1
+                    feedback = "\n\n".join(filter(None, [validation_feedback,
+                        "Protocol correction: " + str(exc)[:8000],
+                        "Return valid JSON and unique exact old_text from the latest supplied source. Preserve the test failure above."]))
+                    self._update_node_session(node_id, {
+                        "recent_failure_summary": feedback,
+                        "tdd_codegen": {"status": "protocol_error", "protocol_errors": protocol_errors,
+                                        "validation_feedback": validation_feedback,
+                                        "protocol_error": str(exc)[:8000]},
+                    })
+                    context_pipeline.cache.invalidate_file_layers(node_id)
+                    context_pipeline.cache.invalidate_db_layers(node_id)
+                    if protocol_errors > TDD_MAX_PROTOCOL_REPAIRS:
+                        await self._log("TestDrivenDeveloper", "Protocol repair budget exhausted; " + str(exc)[:2000],
+                                        status="error", node_id=node_id)
+                        return False
+                    continue
 
             final_ok = not failures and len(results) == len(ordered)
             feedback = "\n\n".join(failures) or ("" if final_ok else "Validation did not complete.")
+            validation_feedback = feedback
+            if failures:
+                await self._log("TestDrivenDeveloper", "Validation failed:\n" + feedback,
+                                status="error", node_id=node_id)
             for kind in ordered:
                 passed = kind in results and parse_test_results(results[kind]).get("exit_code") == 0
                 self.traceability.set_test_pass_statuses({
@@ -484,6 +517,7 @@ class WorkflowPhaseRunner:
             self._update_node_session(node_id, {
                 "recent_failure_summary": feedback,
                 "tdd_codegen": {"status": "passed" if final_ok else "failed",
+                                "validation_feedback": validation_feedback, "protocol_errors": protocol_errors,
                                 "build_output": build_output[-16000:],
                                 "test_outputs": {kind: results.get(kind, "")[-16000:] for kind in ordered},
                                 "modified_files": list(dict.fromkeys(modified))},
@@ -495,7 +529,8 @@ class WorkflowPhaseRunner:
             if final_ok:
                 break
         await self._log("TestDrivenDeveloper",
-                        "Node passed build and all test layers." if final_ok else f"TDD exhausted {TDD_MAX_CALLS} calls.",
+                        "Node passed build and all test layers." if final_ok else
+                        f"TDD exhausted {TDD_MAX_CALLS} validation rounds. Last failure:\n{validation_feedback}",
                         status="ok" if final_ok else "error", node_id=node_id)
         return final_ok
 
@@ -702,11 +737,8 @@ def normalize_workspace_relative_path(value: Any, workspace_path: str) -> str:
     return path.lstrip("/")
 
 
-def summarize_batch_output(batch_output: str, max_lines: int = 30) -> str:
-    lines = [line for line in (batch_output or "").splitlines() if line.strip()]
-    if len(lines) > max_lines:
-        lines = ["...[truncated]", *lines[-max_lines:]]
-    return "\n".join(lines)
+def summarize_batch_output(batch_output: str, max_lines: int = 240) -> str:
+    return compact_execution_output(batch_output, max_lines=max_lines)
 
 
 def normalize_string_list(value: Any) -> list[str]:

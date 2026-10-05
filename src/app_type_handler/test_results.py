@@ -4,19 +4,51 @@ import re
 from typing import Any
 
 
+def compact_execution_output(output: str, *, max_chars: int = 24000, max_lines: int = 240) -> str:
+    """Keep status and error/stack neighborhoods instead of slicing the log tail."""
+    clean = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", output or "")
+    lines = [line for line in clean.splitlines() if line.strip()]
+    if len(clean) <= max_chars and len(lines) <= max_lines:
+        return "\n".join(lines)
+    status = [i for i, line in enumerate(lines) if re.search(
+        r"Exit Code:|^=== |^Runner:|^Batch Test Type:|^Requested Test Files:|^Source paths:", line)]
+    errors = [i for i, line in enumerate(lines) if re.search(
+        r"\b(?:FAIL|FAILED|Error|TypeError|AssertionError|SQLITE_\w+)\b|failed|timed out|Timeout|^\s*(?:at |❯)|Expected:|Received:", line)]
+    # Cover every error first, then expand neighborhoods evenly across failures.
+    priorities = list(dict.fromkeys(status + errors))
+    for distance in range(1, 7):
+        priorities.extend(index for i in errors for index in (i - distance, i + distance)
+                          if 0 <= index < len(lines))
+    priorities.extend(range(min(12, len(lines))))
+    priorities.extend(range(max(0, len(lines) - 8), len(lines)))
+    selected: set[int] = set()
+    size = 0
+    for i in dict.fromkeys(priorities):
+        cost = len(lines[i]) + 48  # Allow room for omission markers between selected lines.
+        if len(selected) < max_lines and size + cost <= max_chars - 1000:
+            selected.add(i)
+            size += cost
+    result = []
+    previous = -1
+    for i in sorted(selected):
+        if i > previous + 1:
+            result.append(f"...[omitted {i - previous - 1} lines]...")
+        result.append(lines[i])
+        previous = i
+    if previous < len(lines) - 1:
+        result.append(f"...[omitted {len(lines) - previous - 1} lines]...")
+    return "\n".join(result)
+
+
 def parse_test_results(test_output: str) -> dict[str, Any]:
     """Parse ARC test-run output into a compact status structure."""
 
     result: dict[str, Any] = {"passed": [], "failed": [], "exit_code": -1, "sub_batches": []}
     output = test_output or ""
-    for line in output.splitlines():
-        if "Exit Code:" not in line:
-            continue
-        try:
-            result["exit_code"] = int(line.split("Exit Code:", 1)[1].strip())
-        except ValueError:
-            result["exit_code"] = -1
-        break
+    codes = [int(code) for code in re.findall(r"^\s*Exit Code:\s*(-?\d+)\s*$", output, re.MULTILINE)]
+    if codes:
+        # A successful build section cannot conceal failed preparation/test sections.
+        result["exit_code"] = next((code for code in codes if code != 0), 0)
 
     test_file_sections = re.findall(
         r"Test File:\s*(.+?)\r?\nTest Results:\r?\n(.*?)(?=\r?\nTest File: |\Z)",
