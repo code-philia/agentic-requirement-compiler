@@ -7,10 +7,10 @@ import re
 from pathlib import Path
 from typing import Any, Callable
 
-from langchain_core.messages import HumanMessage, SystemMessage
 from pydantic import BaseModel, ConfigDict, Field
 
 from agents.model.factory import create_arc_chat_model
+from agents.model.native_openai import generate_text
 from agents.runtime.runners import parse_json_payload
 
 
@@ -131,22 +131,18 @@ def source_bundle(root: Path, required: list[str], *, frontend_roots: list[str],
 
 
 async def ask_for_edits(model: str | object, system: str, task: dict[str, Any],
-                        response_type: type[CodeEdits]) -> CodeEdits:
+                        response_type: type[CodeEdits], *, workspace_root: Path | None = None) -> CodeEdits:
     resolved = create_arc_chat_model(model)
-    if isinstance(resolved, str):
-        from langchain.chat_models import init_chat_model
-        resolved = init_chat_model(resolved)
-    response = await resolved.ainvoke([
-        SystemMessage(content=system + "\n\n" + EDIT_POLICY),
-        HumanMessage(content=json.dumps({**task, "response_schema": response_type.model_json_schema()}, ensure_ascii=False)),
-    ])
-    content = response.content
-    if not isinstance(content, str):
-        content = "\n".join(block if isinstance(block, str) else block.get("text", "")
-                            for block in content if isinstance(block, (str, dict)))
+    from agents.model.prompt_input import format_task_input
+    content = await generate_text(resolved, [
+        {"role": "system", "content": system + "\n\n" + EDIT_POLICY},
+        {"role": "user", "content": format_task_input(task, response_type.model_json_schema())},
+    ], stage=str(task.get("model_stage") or response_type.__name__) +
+       ("_" + str(task["node_id"]) if task.get("node_id") else ""), workspace_root=workspace_root)
     payload = parse_json_payload(content)
     if payload is None:
-        raise ValueError("Expected JSON code edits")
+        raise ValueError("Expected JSON code edits; inspect MODEL OUTPUT in .arc/model_inputs. "
+                         "Return one complete JSON object matching response_schema, without prose.")
     return response_type.model_validate(payload)
 
 

@@ -10,10 +10,10 @@ from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
-from langchain_core.messages import HumanMessage, SystemMessage
 from pydantic import Field
 
 from agents.model.factory import create_arc_chat_model
+from agents.model.native_openai import generate_text
 from agents.runtime.runners import parse_json_payload
 from core.database_plan import DatabasePlan, Record, ensure_additive, validate_plan
 from core.files import read_json_file, write_json_file
@@ -131,16 +131,13 @@ class DatabaseDesigner:
                 await result
 
     async def _ask(self, model, phase, context, schema, accept):
-        messages = [SystemMessage(content=DATABASE_PROMPT), HumanMessage(content=json.dumps({
-            "phase": phase, "app_type": self.app_type, "record_schema": schema,
-            **context,
-        }, ensure_ascii=False))]
+        from agents.model.prompt_input import format_task_input
+        messages = [{"role": "system", "content": DATABASE_PROMPT}, {"role": "user", "content": format_task_input({
+            "phase": phase, "app_type": self.app_type, **context,
+        }, schema)}]
         for attempt in range(3):
-            response = await model.ainvoke(messages)
-            content = response.content
-            if not isinstance(content, str):
-                content = "\n".join(block if isinstance(block, str) else block.get("text", "")
-                                    for block in content if isinstance(block, (str, dict)))
+            content = await generate_text(model, messages, stage=f"DATABASE_PREPARE_{phase}",
+                                          workspace_root=self.workspace_root)
             payload = None
             try:
                 payload = parse_json_payload(content)
@@ -151,8 +148,9 @@ class DatabaseDesigner:
                 if attempt == 2:
                     raise RejectedRecord(exc, payload) from exc
                 await self._log(f"{phase}: correcting rejected JSON: {exc}")
-                messages.extend([response, HumanMessage(content=f"Validation rejected your record: {exc}. "
-                                  "Return corrected JSON; the draft has not changed.")])
+                messages.extend([{"role": "assistant", "content": content},
+                                 {"role": "user", "content": f"Validation rejected your record: {exc}. "
+                                  "Return corrected JSON; the draft has not changed."}])
 
     async def run(self, requirement_tree: dict[str, Any], baseline: dict[str, Any], *,
                   revision: str = "", requirement_ids: set[str] | None = None) -> dict[str, Any]:
@@ -172,9 +170,6 @@ class DatabaseDesigner:
         if state.get("complete") and not baseline.get("previous_failure"):
             return validate_plan(plan, sources)
         model = create_arc_chat_model(os.environ.get("MODEL", "openai:gpt-5.4"))
-        if isinstance(model, str):
-            from langchain.chat_models import init_chat_model
-            model = init_chat_model(model)
         common = {"root": {k: v for k, v in requirement_tree.items() if k != "children"},
                   "module_summaries": [_summary(node) for node in nodes], "baseline": baseline}
         if "catalog" not in state:

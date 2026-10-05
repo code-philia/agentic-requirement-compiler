@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from agents.model.openai_api_adapter import build_openai_chat_model
+from agents.model.native_openai import NativeOpenAIModel
 
 
 def create_arc_chat_model(model: str | object, *, api_mode: str | None = None) -> str | object:
@@ -9,9 +9,9 @@ def create_arc_chat_model(model: str | object, *, api_mode: str | None = None) -
 
     provider, model_name = _split_model_name(model)
     if provider not in ("", "openai"):
-        return model
+        raise ValueError(f"Native model requests require an OpenAI-compatible provider, got: {provider}")
 
-    return build_openai_chat_model(model_name, api_mode=api_mode)
+    return NativeOpenAIModel(model_name, api_mode=api_mode)
 
 
 def _split_model_name(model: str) -> tuple[str, str]:
