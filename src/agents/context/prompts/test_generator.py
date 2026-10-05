@@ -18,7 +18,7 @@ Use real frontend routes, accessible controls and request conventions from sourc
 Frontend source is supplied as a bounded collection, without a separate locator.
 Follow the supplied test placement, runtime and runner rules. JSX tests must be
 .test.tsx/.spec.tsx, not .ts bridge files importing JSX tests.
-Return tests with only test_id/type/file_path plus changes/new_files for code.
+Return only tool calls: file operations and register_test(test_id,type,file_path).
 For new IDs use node_id + ':' + a stable descriptive suffix. On full-node retries,
 reuse existing current-node IDs, paths and types rather than duplicate coverage.
 If test_intent is provided without replace_test_id, add only new coverage; do not
@@ -26,7 +26,7 @@ overwrite existing tests. If replace_test_id is provided, return only that test,
 edit only its original file, preserve its path/type and every unrelated test in it.
 Helpers/configs may be edited for normal generation, but never another node's tests.
 No interface IDs, requirement IDs, summaries or model-generated call graphs.
-Return an empty tests list with no edits only when no node-local coverage is justified.
+Return [] only when no node-local coverage is justified.
 Each call returns one batch; the system validates and may send bounded repair feedback.
 For frontend Integration/E2E tests, choose unique semantic locators. Do not use
 broad getByText regexes for error assertions that also match labels or select

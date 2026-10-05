@@ -17,11 +17,17 @@ arc compile requirements.yaml -o workspace/demo --resume
 
 节点 DESIGN 直接完善现有页面/组件、挂载新增 UI、实现前端请求函数及事件/状态逻辑，再生成并注册该节点独立的后端 API → FUNC → DB 操作函数调用骨架。接口清单只记录后端契约，DB 指对共享数据库的操作函数；UI 和前端请求函数不建模为接口或节点。
 
-DESIGN 只返回 `summary` 和按 `frontend/API/FUNC/DB/shared` 分组的 `files`，不返回接口描述、签名副本、调用图或模型生成的追踪 ID。系统校验文件并生成稳定的后端文件追踪记录，前端/共享注册文件仅记录触及关系。节点会话保存 `file_groups` 和 `materialized_files`，供测试生成、TDD 和相关节点按路径读取源码。父节点或纯前端需求的后端分组为空。测试清单每项只需 `test_id/type/file_path`，需求归属由系统填写。TDD 完成后端业务并修复前端接通；骨架阶段不得伪造成功结果。
+所有模型调用只输出工具调用数组，每项包含 `tool` 和必要参数，不输出包装对象、解释、summary、状态或空字段。DESIGN 仅提供 add_file/edit_file/delete_file/read_file。add_file 携带 layer（frontend/API/FUNC/DB/shared），创建时自动加入文件追踪；edit_file 保留已有归属，新接入且无法按路径分类的文件需携带 layer；删除时移除该节点的文件记录，不需要额外登记调用。TestGenerator 用文件操作及 `register_test(test_id,type,file_path)` 登记测试。系统校验实际文件并生成稳定追踪记录，需求归属由系统填写。节点会话仍保存 `file_groups` 和 `materialized_files`，供测试生成、TDD 按路径读取源码。父节点或纯前端需求不登记后端分组。TDD 完成后端业务并修复前端接通；骨架阶段不得伪造成功结果。
 
 TDD 从 DESIGN 的文件分组确定 `implementation_scope`，直接实现已登记的 API/FUNC/DB 文件。后端只允许修改这些文件和明确登记的 shared 接入文件，禁止全库搜索或新建替代后端模块；当前节点测试文件可修复。前端仍允许在前端范围内定位页面/组件/请求逻辑。其他依赖可以按精确路径读取。旧工作区从 traceability 恢复后端位置；骨架文件缺失时应重跑 DESIGN。
 
 ## 重试节点
+
+节点设计、测试生成、TDD 及共享能力处理使用简易 ReAct 文件循环。初始仅提供当前登记目标、失败涉及的文件及少量入口，不预加载整个前端或递归依赖。模型返回 `[{"tool":"read_file","path":"单个具体路径"}]`，可同时请求多个文件；下一步收到完整内容或路径错误。后续修复重新读取最新快照。有足够信息后返回最终的 `add_file(path,content)`、`edit_file(path,old_text,new_text)`、`delete_file(path)` 及该阶段必要的登记调用。读取不能与写入或登记混在同一批次，最终写入统一校验并落盘，失败则回滚，包括删除操作。
+
+共享读取使用 `read_shared(name)`、`read_shared_group(id)`；缺失能力使用单独的 `request_shared(name,need)`，共享发现使用 `register_shared(name,files,reuse_files,contract)` 或单独的 `report_database_gap(need)`。数据库实体分析使用 `define_entity`；表和预置数据使用 `define_table`、`seed_rows`，草案冲突时使用 `replace_table(name)`、`replace_seed_rows(name)`。这些调用只产生经校验的内部记录，数据库仍由系统确定性生成代码。无操作返回 `[]`。
+
+每次 ReAct 循环默认最多 12 步，每步最多读取 10 项（包括契约/索引组）；可通过 `ARC_AGENT_MAX_STEPS` 设置 2～50 步。最后一步必须结束读取并给出最终批次。JSON/清单修复以及系统构建/测试反馈仍使用原有外层有限修复轮次；没有恢复 Deep Agent、shell 或自由搜索。读取保持单文件 60 KB、总源码 300 KB 限制，不授予写权限。删除只允许阶段内可移除文件：DESIGN 可移除旧前端文件并从最终分组排除；TDD 不删除登记目标；TestGenerator 不删除登记测试、资产或运行器配置；共享核心/数据库文件保持受保护。模型返回对象、旧协议字段、额外参数或不可用工具会被明确拒绝，进入原有有限修复流程。
 
 ```powershell
 arc compile requirements.yaml -o workspace/demo --resume --retry REQ-2.1
@@ -71,6 +77,8 @@ ARC 会追加新增/变更节点、其祖先及显式反向依赖节点的标准
 同步需求时会重新分析全局数据库记录，并将变化的共享表消费者及其反向依赖、祖先纳入重编译。数据库只允许保留数据的追加式演进；删除/重命名表字段、修改已有键或预置行等不兼容变化会阻止编译。节点智能体复用全局 DB 契约，不自行修改生成的建库与预置数据代码。
 
 ## 规则
+
+模型输入去重：视觉分析只放在顶层 `requirement.visual_reference`，不再次注入 context；文件位置、归属、读取状态及明确写入权限合并为 `file_inventory`，源码正文仍单独完整提供，系统内部继续使用原始范围记录校验落盘。共享/数据库所有权、按需读取、真实行为及输出规则集中在公共 system policy。测试示例按应用类型和当前测试层注入：Web E2E 使用 Playwright 示例，Unit/Integration 使用 Vitest 示例；首次生成尚未选择测试层时仅提供简短约定，后续修复依据候选或登记测试层提供示例，CLI/Android 不注入 Web 示例。
 
 - 每次调用只能使用一种交互动作。
 - `--test` 仅用于 `--rerun-tdd` 或 `--regenerate-tests`；后者要求恰好一个 test ID。

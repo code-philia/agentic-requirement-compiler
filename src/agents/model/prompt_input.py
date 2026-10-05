@@ -70,12 +70,30 @@ def format_task_input(task: dict[str, Any], schema: dict[str, Any]) -> str:
 
     section("1. Current task", ("model_stage", "phase", "node_id", "app_type", "test_type", "test_intent", "replace_test_id"))
     section("2. Priority feedback — fix the cause and preserve valid behavior", ("feedback", "previous_failure", "shared_read_status"))
-    section("3. Write boundaries and reading budget", ("implementation_scope", "read_budget"))
+    section("3. Write boundaries and agent budget", ("implementation_scope", "agent_budget"))
     section("4. Authoritative requirement", ("requirement", "requirements", "requirement_tree", "shared_need"))
     section("5. Acceptance, dependencies and runtime contracts", ("context", "prepared_database", "capability", "selected_shared_contracts"))
-    section("6. Discovery index and file availability", ("shared_index", "shared_index_pages", "file_inventory", "index_truncated"))
+    section("6. Discovery index and file availability", ("directory_structure", "shared_index", "shared_index_pages", "file_inventory", "index_truncated"))
     section("7. Registered tests", ("tests", "existing_tests"))
-    sources = remaining.pop("sources", {})
+    sources = dict(remaining.pop("sources", {}))
+    observations = remaining.pop("file_observations", [])
+    results = remaining.pop("last_read_results", [])
+    if observations or results:
+        parts = ["## 8. read_file observations"]
+        for observation in observations:
+            path = observation["path"]
+            if path not in sources:
+                continue
+            content = sources.pop(path)
+            fence = "```"
+            while fence in content:
+                fence += "`"
+            parts.extend(["### read_file result: " + path,
+                          "status: ok\n" + fence + "text\n" + content + "\n" + fence])
+        for result in results:
+            if result.get("status") != "ok":
+                parts.append(json.dumps(result, ensure_ascii=False))
+        sections.append("\n".join(parts))
     if sources:
         parts = ["## 8. Source snapshots"]
         for path, content in sources.items():
@@ -88,5 +106,7 @@ def format_task_input(task: dict[str, Any], schema: dict[str, Any]) -> str:
     section("9. Rejected candidate — repair only; it was not applied", ("previous_candidate",))
     if remaining:
         section("10. Additional task records", tuple(remaining))
-    sections.append("## 11. Required JSON output\n### response_schema\n" + json.dumps(schema, ensure_ascii=False, indent=2))
+    sections.append("## 11. Available tools\nReturn only a JSON array of calls. Each call contains tool and its parameters directly. "
+                    "Omit unused optional parameters. No wrapper object, explanation, status or summary. "
+                    "Use [] when no action is needed.\n" + json.dumps(schema, ensure_ascii=False, separators=(",", ":")))
     return "\n\n".join(sections)

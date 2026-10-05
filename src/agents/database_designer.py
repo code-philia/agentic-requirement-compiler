@@ -14,7 +14,6 @@ from pydantic import Field
 
 from agents.model.factory import create_arc_chat_model
 from agents.model.native_openai import generate_text
-from agents.runtime.runners import parse_json_payload
 from core.database_plan import DatabasePlan, Record, ensure_additive, validate_plan
 from core.files import read_json_file, write_json_file
 
@@ -43,7 +42,8 @@ class RejectedRecord(ValueError):
 DATABASE_PROMPT = """Analyze ARC's shared SQLite database before node design and TDD.
 Include persistent identity/session prerequisites implied by requirements. Shared
 application modules are discovered later; database analysis does not design their APIs.
-You have no tools. Return only JSON matching the supplied schema, never SQL, code or documents.
+Return only a JSON array of the supplied tool calls, never SQL, code, documents,
+explanations or wrapper properties. Parameters are directly on each call.
 Use the smallest model justified by requirements. Reuse global entity names and persisted schema;
 do not create parallel domain tables. Columns use INTEGER/REAL/TEXT/BLOB/NUMERIC, ASCII identifiers,
 literal defaults, explicit non-null primary keys and valid unique/FK constraints.
@@ -52,18 +52,18 @@ data, never registration/login/order action outputs, screenshots, or invented fi
 stable identities and unique conflict_columns. No plaintext passwords in hash fields, dynamic
 placeholders, or JSON BLOB values. Order seed groups parents before children.
 
-Catalog phase identifies shared entity names and purposes from root and module summaries.
-Delta phases return only new or changed tables (complete definitions of those tables), and new
-seed groups/rows. Keep untouched records out of the response. Preserve table source IDs and add
-newly relevant ones. Empty tables/seeds means no changes. Forward foreign keys may refer to later
+Catalog phase uses define_entity for shared entity names from root and module summaries.
+Delta phases use define_table only for new or changed tables (complete definitions), and
+seed_rows for new seed groups/rows. Keep untouched records out of the response. Preserve table source IDs and add
+newly relevant ones. [] means no changes. Forward foreign keys may refer to later
 batches, but must resolve at final reconciliation. Normally extend earlier draft definitions.
-For genuine conflicts explicitly list the touched table in replace_tables or replace_seed_tables,
-with corrected complete definitions or all retained seed groups for that table. Never silently
+For genuine conflicts call replace_table(name) or replace_seed_rows(name),
+plus define_table or seed_rows with corrected complete definitions or all retained seed groups. Never silently
 overwrite conflicting values. Replacement is allowed only during resolve/final phases. Never
 remove tables or lose requirement coverage. Applied previous_plan is immutable: only additive
 tables, safe columns, indexes and seed rows; never redefine or remove applied structures or seeds.
 Final phase reconciles references, cross-module naming and seed dependencies. All records must
-then validate as a complete database plan. No persistence means empty tables and seeds.
+then validate as a complete database plan. No persistence means [].
 """
 
 
@@ -134,17 +134,16 @@ class DatabaseDesigner:
 
     async def _ask(self, model, phase, context, schema, accept):
         from agents.model.prompt_input import format_task_input
+        from agents.model.tool_sequence import parse_tool_sequence, tool_contract
         messages = [{"role": "system", "content": DATABASE_PROMPT}, {"role": "user", "content": format_task_input({
             "phase": phase, "app_type": self.app_type, **context,
-        }, schema)}]
+        }, tool_contract(schema))}]
         for attempt in range(3):
             content = await generate_text(model, messages, stage=f"DATABASE_PREPARE_{phase}",
                                           workspace_root=self.workspace_root)
             payload = None
             try:
-                payload = parse_json_payload(content)
-                if payload is None:
-                    raise ValueError("Expected a JSON object")
+                payload = parse_tool_sequence(content, schema)
                 return payload, accept(payload)
             except ValueError as exc:
                 if attempt == 2:
@@ -152,7 +151,7 @@ class DatabaseDesigner:
                 await self._log(f"{phase}: correcting rejected JSON: {exc}")
                 messages.extend([{"role": "assistant", "content": content},
                                  {"role": "user", "content": f"Validation rejected your record: {exc}. "
-                                  "Return corrected JSON; the draft has not changed."}])
+                                  "Return only the corrected tool-call array; the draft has not changed."}])
 
     async def run(self, requirement_tree: dict[str, Any], baseline: dict[str, Any], *,
                   revision: str = "", requirement_ids: set[str] | None = None) -> dict[str, Any]:

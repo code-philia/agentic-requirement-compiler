@@ -33,7 +33,7 @@ class TestGenerationResponse(CodeEdits):
 
 
 class TestGenerator:
-    """Bounded plain calls; only test assets are writable, never product code."""
+    """ReAct file generation scoped to tests and dependency manifests."""
 
     agent_name = "TestGenerator"
 
@@ -132,7 +132,7 @@ class TestGenerator:
                     raise ValueError("Test manifest claims protected/other-node files")
                 if requirement_data.get("scenarios") and not test_intent and not any(test["type"] == "E2E" for test in tests):
                     raise ValueError("Declared scenarios require E2E coverage")
-                if not tests and (edits.changes or edits.new_files):
+                if not tests and (edits.changes or edits.new_files or edits.delete_files):
                     raise ValueError("Empty test manifest must not change files")
                 def allowed(path: str) -> bool:
                     if app_type == "web" and path in {"backend/package.json", "frontend/package.json"}:
@@ -162,10 +162,18 @@ class TestGenerator:
                     if self.validate_tests:
                         self.validate_tests(node_id=node_id, tests=tests)
                 # Manifest checks participate in rollback and the same finite repair loop.
-                changed = apply_edits(root, edits, bundle["sources"], allowed, validate)
+                def deletable(path: str) -> bool:
+                    # Never remove registered tests/assets or runner config. Only
+                    # obsolete unregistered helpers in the permitted test tree.
+                    registered = {str(test.get("file_path", "")) for test in all_tests}
+                    return not replace_test_id and path not in registered | set(required) | paths \
+                        and not self._is_test_config(path) and not self._is_executable_test(path)
+                changed = apply_edits(root, edits, bundle["sources"], allowed, validate, deletable)
                 assets = list(dict.fromkeys([*(sessions.load_node_session(node_id).get("test_asset_files") or []),
                                              *paths, *(path for path in changed if is_test_asset(path))]))
-                payload = {"tests": tests, "files_written": changed}
+                assets = [path for path in assets if (root / path).is_file()]
+                payload = {"tests": tests, "files_written": [path for path in changed if (root / path).is_file()],
+                           "files_deleted": [item.path for item in edits.delete_files]}
                 sessions.merge_node_session(node_id, {"test_asset_files": assets, "test_codegen": {
                     "status": "accepted", "feedback": "", "modified_files": changed,
                     "accepted_edits": edits.model_dump(), "read_rounds": read_budget.get("rounds", 0)}})

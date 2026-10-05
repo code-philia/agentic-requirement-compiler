@@ -33,7 +33,7 @@ class InterfaceDesignResponse(CodeEdits):
 
 
 class InterfaceDesigner:
-    """Bounded plain-LLM design; the system owns file application."""
+    """ReAct file design; the system owns scoped batch application."""
 
     agent_name = "InterfaceDesigner"
 
@@ -100,8 +100,34 @@ class InterfaceDesigner:
                 if edits.shared_need:
                     apply_edits(root, edits, bundle["sources"], lambda path: False)
                 previous_candidate = edits.model_dump()
-                files = edits.files.model_dump()
+                files = {layer: list(paths) for layer, paths in (session.get("file_groups") or {}).items()
+                         if layer in {"frontend", "API", "FUNC", "DB", "shared"}}
+                for layer, paths in edits.files.model_dump().items():
+                    files.setdefault(layer, []).extend(path for path in paths if path not in files.get(layer, []))
                 listed = {path for values in files.values() for path in values}
+                deleted = {item.path for item in edits.delete_files}
+                for layer in files:
+                    files[layer] = [path for path in files[layer] if path not in deleted]
+                listed -= deleted
+                for item in [*edits.changes, *edits.new_files]:
+                    if item.path in listed:
+                        continue
+                    path = item.path
+                    if path.startswith("frontend/"):
+                        layer = "frontend"
+                    elif Path(path).name == "package.json" or Path(path).stem in {"app", "main", "index", "server"}:
+                        layer = "shared"
+                    elif any(part in Path(path).parts for part in ("routes", "controllers", "api")):
+                        layer = "API"
+                    elif any(part in Path(path).parts for part in ("repositories", "dao", "db")):
+                        layer = "DB"
+                    elif any(part in Path(path).parts for part in ("services", "functions")):
+                        layer = "FUNC"
+                    else:
+                        raise ValueError(f"edit_file for untracked file needs layer: {path}")
+                    files[layer].append(path)
+                    listed.add(path)
+                edits.files = DesignFiles.model_validate(files)
                 if listed & blocked or any(is_test_asset(path) for path in listed):
                     raise ValueError("DESIGN cannot claim protected backend/database files or test assets")
                 unlisted = {item.path for item in [*edits.changes, *edits.new_files]} - listed
@@ -120,7 +146,9 @@ class InterfaceDesigner:
                             "Move frontend HTTP request files into files.frontend. "
                             "Keep/create the corresponding backend routes, service and repository skeletons.")
                 def allowed(path: str) -> bool:
-                    return path in listed and path not in blocked and not is_test_asset(path)
+                    return path in listed | deleted and path not in blocked and not is_test_asset(path)
+                def deletable(path: str) -> bool:
+                    return any(path.startswith(folder + "/") for folder in frontend_roots) and path not in blocked
                 def validate() -> None:
                     if requirement_data.get("children_ids") and any(files[layer] for layer in ("API", "FUNC", "DB")):
                         raise ValueError("Parent DESIGN cannot own backend files")
@@ -131,7 +159,7 @@ class InterfaceDesigner:
                         for path in listed:
                             if not safe_path(root, path).is_file():
                                 raise ValueError(f"Missing DESIGN file: {path}")
-                changed = apply_edits(root, edits, bundle["sources"], allowed, validate)
+                changed = apply_edits(root, edits, bundle["sources"], allowed, validate, deletable)
                 sessions.merge_node_session(node_id, {"design_codegen": {
                     "status": "accepted", "modified_files": changed, "feedback": "",
                     "accepted_edits": edits.model_dump(), "read_rounds": read_budget.get("rounds", 0),

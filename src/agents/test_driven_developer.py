@@ -75,7 +75,13 @@ class TestDrivenDeveloper:
             return path not in blocked and (
                 path in scope["allowed_files"]
                 or any(path.startswith(folder + "/") for folder in scope["frontend_roots"]))
-        self.modified_files = apply_edits(root, edits, bundle["sources"], allowed)
+        def deletable(path: str) -> bool:
+            # Registered targets must survive for traceability and later repairs.
+            return path not in scope["allowed_files"] and any(
+                path.startswith(folder + "/") for folder in scope["frontend_roots"])
+        self.modified_files = apply_edits(root, edits, bundle["sources"], allowed, deletable=deletable)
+        deleted = {item.path for item in edits.delete_files}
+        self.read_budget["files"] = [path for path in self.read_budget.get("files", []) if path not in deleted]
         sessions.merge_node_session(node_id, {"tdd_codegen": {
             "accepted_edits": edits.model_dump(), "read_rounds": self.read_budget.get("rounds", 0)}})
         await self._log(f"Applied {len(self.modified_files)} file(s); system validation follows.", node_id=node_id)

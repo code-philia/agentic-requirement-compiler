@@ -1,21 +1,45 @@
-"""One tool-free model call, followed by deterministic, scoped file edits."""
+"""Minimal ReAct file actions with deterministic, scoped batch application."""
 from __future__ import annotations
 
 import json
 import os
 import re
 from pathlib import Path
-from typing import Any, Callable, TypeVar
+from typing import Annotated, Any, Callable, Literal, TypeVar
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from agents.model.factory import create_arc_chat_model
 from agents.model.native_openai import generate_text
-from agents.runtime.runners import parse_json_payload
 
 
 class Record(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_actions(cls, value: Any) -> Any:
+        if not isinstance(value, dict) or not value.get("actions") or "actions" not in cls.model_fields:
+            return value
+        result = dict(value)
+        actions = result.pop("actions")
+        if not isinstance(actions, list):
+            raise ValueError("actions must be a list")
+        if any(result.get(key) for key in ("changes", "new_files", "delete_files", "read_files")):
+            raise ValueError("Use actions or legacy file fields, never both")
+        for action in actions:
+            if isinstance(action, BaseModel):
+                action = action.model_dump()
+            if not isinstance(action, dict) or action.get("tool") not in FILE_TOOLS:
+                raise ValueError("Unknown file tool")
+            parsed = FILE_TOOLS[action["tool"]].model_validate(action)
+            field = {"read_file": "read_files", "add_file": "new_files",
+                     "edit_file": "changes", "delete_file": "delete_files"}[parsed.tool]
+            if field not in cls.model_fields:
+                raise ValueError(f"{parsed.tool} is unavailable in this phase")
+            item = parsed.path if parsed.tool == "read_file" else parsed.model_dump(exclude={"tool"})
+            result.setdefault(field, []).append(item)
+        return result
 
 
 ResponseRecord = TypeVar("ResponseRecord", bound=Record)
@@ -30,6 +54,34 @@ class Replacement(Record):
 class NewFile(Record):
     path: str
     content: str
+
+
+class ReadFile(Record):
+    tool: Literal["read_file"]
+    path: str
+    reason: str = ""
+
+
+class AddFile(NewFile):
+    tool: Literal["add_file"]
+
+
+class EditFile(Replacement):
+    tool: Literal["edit_file"]
+
+
+class DeleteFile(Record):
+    path: str
+    reason: str = Field(min_length=1)
+
+
+class DeleteAction(DeleteFile):
+    tool: Literal["delete_file"]
+
+
+FILE_TOOLS = {"read_file": ReadFile, "add_file": AddFile,
+              "edit_file": EditFile, "delete_file": DeleteAction}
+FileAction = Annotated[ReadFile | AddFile | EditFile | DeleteAction, Field(discriminator="tool")]
 
 
 class SharedNeed(Record):
@@ -48,19 +100,39 @@ class ModelTransportExhausted(RuntimeError):
 
 
 class CodeEdits(Record):
+    actions: list[FileAction] = Field(default_factory=list, description="Batch read_file actions, or the final add_file/edit_file/delete_file batch.")
     changes: list[Replacement] = Field(default_factory=list)
     new_files: list[NewFile] = Field(default_factory=list)
+    delete_files: list[DeleteFile] = Field(default_factory=list)
     read_files: list[str] = Field(default_factory=list, description="Exact additional source paths needed for the next bounded call; no edits in this response.")
     shared_need: SharedNeed | None = Field(default=None, description="Missing reusable capability; return this alone, without edits/read_files.")
     read_shared: list[str] = Field(default_factory=list, description="Shared capability names whose contracts are needed.")
     read_shared_groups: list[str] = Field(default_factory=list, description="Shared index group IDs to expand.")
 
 
-EDIT_POLICY = """You have no tools. Return one complete JSON object matching response_schema,
-without Markdown fences or explanatory prose.
-changes replaces one unique exact old_text in a supplied source file with new_text.
-Use separate, non-overlapping replacements. new_files creates missing files only.
-Never replace an existing file via new_files, delete files, or edit unseen source.
+EDIT_POLICY = """Return only a JSON array of tool calls. Each item contains tool and
+its necessary parameters directly. No wrapper object, Markdown, explanation,
+reasoning, status, summary, empty optional fields or legacy output properties.
+Use only the supplied available tools. Example:
+[{"tool":"read_file","path":"frontend/src/App.tsx"}].
+Each read_file names ONE exact workspace-relative file path, never a directory,
+glob or search query. Batch multiple independent read_file actions in one response.
+Read only missing evidence needed for this task: a target, its caller/dependency,
+runtime contract or failing test/helper. Prefer paths from file_inventory, imports,
+or failure feedback. Do not enumerate the codebase or reread already supplied files.
+The system attaches complete content or an error to each read_file result and
+calls you again. Use those observations to decide the next action. As soon as
+you have sufficient information, STOP reading and return the final write batch:
+[{"tool":"edit_file","path":"...","old_text":"unique existing fragment","new_text":"replacement"},
+{"tool":"add_file","path":"...","content":"complete new file"}].
+edit_file replaces one unique exact old_text in supplied source; use separate,
+non-overlapping replacements. add_file creates missing files only. delete_file
+requires a supplied existing file; delete only obsolete in-scope
+files, never required registered backend targets/tests or shared infrastructure.
+Do not mix reads with writes. The final batch may contain multiple write actions;
+it is validated and applied together, not one file per model call.
+File operations automatically track DESIGN artifacts. TestGenerator uses
+register_test(test_id,type,file_path) for its tests. Return [] for no actions.
 Paths are workspace-relative. Preserve unrelated behavior and database bootstrap hooks.
 Do not change the prepared database schema/seeds/runtime or compiler control files.
 Existing backend/package.json and frontend/package.json may be edited to add or
@@ -83,17 +155,17 @@ sources is the only full source snapshot. Database contracts/runtime signatures
 describe read-only infrastructure; request its source only for a specific unresolved
 dependency or failure. Preserve each test layer's exit status and root error evidence.
 The system applies edits and runs validation; do not claim builds/tests passed.
-If necessary source is missing, return read_files with exact dependency/config paths
-and no changes/new_files. The system supplies these files in the next bounded call.
 Reading a file does not grant permission to modify it. Never request secrets.
-Use sources[path] directly when the file is already supplied. Do not request
-read_files for paths already present in sources; request only missing evidence.
-Use shared_index first; read_shared requests selected contracts, read_files requests
-real source, read_shared_groups expands index groups. Reading has a separate budget:
-at most two read rounds and five items per round. Return read requests alone.
+Use supplied sources/read_file results directly. Use shared_index first;
+read_shared(name) requests selected contracts and read_shared_group(id) expands index groups.
+Observe agent_budget. Batch reads (maximum ten items per step); avoid needless
+reading. The last available step must finish with writes or a phase result:
+request_shared, register_shared, report_database_gap when available, or [].
 Reuse the shared catalog before inventing infrastructure. If reusable code is missing,
-return shared_need={name,reason} alone. The system resolves only this need and resumes
+return [{"tool":"request_shared","name":"...","need":"missing capability"}] alone.
+The system resolves only this need and resumes
 your task. Do not predesign future shared modules or create parallel auth/session code.
+
 """
 
 EXCLUDED = {".git", ".arc", ".agents", ".codex", ".aws", "requirements",
@@ -126,8 +198,9 @@ def safe_path(root: Path, value: str) -> Path:
 def source_bundle(root: Path, required: list[str], *, frontend_roots: list[str],
                   design: bool = False, test_roots: list[str] | None = None,
                   feedback: str = "", node_id: str | None = None,
-                  frontend_only: bool = False) -> dict[str, Any]:
-    """Bounded frontend index; backend reads use exact targets and local imports."""
+                  frontend_only: bool = False, requirement: dict[str, Any] | None = None,
+                  frontend_wiring: bool = False) -> dict[str, Any]:
+    """Closest task sources plus an index for on-demand reads."""
     manifests = [path for path in ("frontend/package.json", "backend/package.json")
                  if (root / path).is_file() and (not frontend_only or path.startswith("frontend/"))]
     required = list(dict.fromkeys([*required, *manifests]))
@@ -145,14 +218,15 @@ def source_bundle(root: Path, required: list[str], *, frontend_roots: list[str],
     index = sorted(set(index))
     entry_names = {"app", "main", "index", "server", "router", "routes", "client", "api", "__main__"}
     entries = [path for path in index if Path(path).stem.lower() in entry_names]
-    frontend = [path for path in index if any(path.startswith(folder + "/") for folder in frontend_roots)]
-    test_examples = [path for path in index if any(path.startswith(folder + "/") for folder in (test_roots or []))][:12]
     # Failure files and shared implementations take priority over optional UI/examples.
     requested = feedback_source_paths(root, feedback)
     shared = set(shared_source_paths(root))
     required = list(dict.fromkeys(required))
     explicit = set(required + requested)
-    queue = list(dict.fromkeys(required + requested + test_examples + entries + frontend))
+    # Start with owned targets and failure evidence. Keep the wider directory
+    # index for on-demand reads instead of preloading pages, configs and examples.
+    relevant_entries = [path for path in entries if Path(path).stem.lower() in {"app", "main", "__main__"}]
+    queue = list(dict.fromkeys(required + requested + relevant_entries[:3]))
     sources: dict[str, str] = {}
     excluded: list[str] = []
     total = 0
@@ -185,57 +259,10 @@ def source_bundle(root: Path, required: list[str], *, frontend_roots: list[str],
             excluded.append(relative)
             continue
         sources[relative] = content
-        total += len(content)
-        dependencies: list[str] = []
-        # Follow direct JS/TS relative imports, without searching backend owners.
-        for specifier in re.findall(r"(?:from\s*|require\(\s*|import\s*)['\"](\.[^'\"]+)['\"]", content):
-            base = (target.parent / specifier).resolve()
-            candidates = [base] + [Path(str(base) + ext) for ext in (".js", ".ts", ".tsx", ".jsx", ".json")]
-            candidates += [base / ("index" + ext) for ext in (".js", ".ts", ".tsx")]
-            for candidate in candidates:
-                if candidate.is_file() and candidate.is_relative_to(root):
-                    dependency = candidate.relative_to(root).as_posix()
-                    try:
-                        safe_path(root, dependency)
-                    except ValueError:
-                        break
-                    dependencies.append(dependency)
-                    break
-        if target.suffix == ".py":
-            for prefix, module in re.findall(r"^\s*from\s+(\.*)([\w.]*)\s+import", content, re.MULTILINE):
-                base = target.parent if prefix else root
-                for _ in range(max(0, len(prefix) - 1)):
-                    base = base.parent
-                base = base.joinpath(*module.split(".")) if module else base
-                for candidate in (base.with_suffix(".py"), base / "__init__.py"):
-                    if candidate.is_file() and candidate.is_relative_to(root):
-                        dependencies.append(candidate.relative_to(root).as_posix())
-            for module in re.findall(r"^\s*import\s+([\w.]+)", content, re.MULTILINE):
-                candidate = root.joinpath(*module.split(".")).with_suffix(".py")
-                if candidate.is_file():
-                    dependencies.append(candidate.relative_to(root).as_posix())
-        if target.suffix == ".java":
-            for module in re.findall(r"^\s*import\s+(?:static\s+)?([\w.]+);", content, re.MULTILINE):
-                for folder in ("app/src/main/java", "app/src/test/java", "app/src/androidTest/java"):
-                    candidate = root / folder / (module.replace(".", "/") + ".java")
-                    if candidate.is_file():
-                        dependencies.append(candidate.relative_to(root).as_posix())
-        # Dependencies of mandatory/failure sources precede the optional frontend bundle.
-        priority_end = max(cursor, len(required))
-        for dependency in dict.fromkeys(dependencies):
-            try:
-                safe_path(root, dependency)
-            except ValueError:
-                continue
-            if dependency in queue[:cursor]:
-                continue
-            if relative in explicit:
-                explicit.add(dependency)
-            if dependency in queue:
-                queue.remove(dependency)
-            queue.insert(priority_end, dependency)
-            priority_end += 1
+        total += len(content.encode("utf-8"))
+        # Shared/infrastructure and unresolved aliases remain available via read_file.
     return {"sources": sources, "file_index": index[:2000],
+            "directory_structure": sorted({str(Path(path).parent) for path in index})[:500],
             "required_source_files": required,
             "index_truncated": len(index) > 2000, "excluded_sources": excluded,
             "requested_sources": requested, "missing_requested_sources": [path for path in requested if not (root / path).is_file()]}
@@ -301,14 +328,17 @@ async def ask_with_reads(model: str | object, system: str, task: dict[str, Any],
                          response_type: type[ResponseRecord], *, root: Path,
                          budget: dict[str, Any], log: Callable[[str], Any] | None = None,
                          transport_budget: dict[str, int] | None = None) -> ResponseRecord:
-    """Fresh two-message calls; bounded read rounds never apply code or run validation."""
+    """Minimal ReAct loop: action -> read observations -> final atomic write batch."""
     from copy import deepcopy
     from inspect import isawaitable
+    async def emit(message: str) -> None:
+        pass  # Structured terminal flow logging is added separately.
     current = deepcopy(task)
     current["shared_index"] = shared_index(root)
     catalog = {cap["name"]: cap for cap in shared_catalog(root)}
     sources = current.setdefault("sources", {})
     pinned = set(current.get("required_source_files", []))
+    max_steps = max(2, min(50, int(os.getenv("ARC_AGENT_MAX_STEPS", "12"))))
     def supply(files: list[str], names: list[str], groups: list[str]) -> None:
         selected = current.setdefault("selected_shared_contracts", {})
         for name in names:
@@ -349,13 +379,21 @@ async def ask_with_reads(model: str | object, system: str, task: dict[str, Any],
     # Keep only selections within this execution; reload fresh code after every repair.
     # This state is never restored from historical consumer relationships or prompts.
     supply(budget.get("files", []), budget.get("names", []), budget.get("groups", []))
-    for _ in range(3):
-        current["read_budget"] = {"remaining_rounds": max(0, 2 - budget.get("rounds", 0)), "max_items_per_round": 5}
+    current["file_observations"] = [{"tool": "read_file", "path": path, "status": "ok"}
+                                    for path in budget.get("files", [])]
+    for step in range(max_steps):
+        current["agent_budget"] = {"step": step + 1, "max_steps": max_steps,
+                                   "remaining_steps": max_steps - step - 1, "max_reads_per_step": 10,
+                                   "instruction": "Information sufficient? Finish with the write batch now."
+                                   if step < max_steps - 1 else "Final step: return the final write batch or phase result, not more reads."}
         while True:
             try:
+                await emit(f"Model call start: step {step + 1}/{max_steps}; "
+                           f"{len(sources)} source files, {sum(len(s.encode('utf-8')) for s in sources.values())} source bytes.")
                 response = await ask_for_edits(model, system, current, response_type, workspace_root=root)
                 break
             except Exception as exc:
+                await emit(f"Model call failed: {type(exc).__name__}: {str(exc)[:1200]}")
                 from openai import APIConnectionError
                 original = getattr(exc, "original", None) or exc.__cause__ or exc
                 if transport_budget is None or not isinstance(original, APIConnectionError):
@@ -371,40 +409,103 @@ async def ask_with_reads(model: str | object, system: str, task: dict[str, Any],
         files = list(getattr(response, "read_files", []))
         names = list(getattr(response, "read_shared", []))
         groups = list(getattr(response, "read_shared_groups", []))
+        automatic_read = False
+        if "files" in response_type.model_fields and not files and not names and not groups:
+            unseen = [item.path for item in [*getattr(response, "changes", []), *getattr(response, "delete_files", [])]
+                      if item.path not in sources]
+            if unseen:
+                files = list(dict.fromkeys(unseen))[:10]
+                automatic_read = True
+                current["previous_candidate"] = response.model_dump()
+                current["shared_read_status"] = (
+                    "Candidate was not applied: target source was missing. The system is supplying it. "
+                    "Return the complete corrected write batch against these snapshots.")
+                await emit("Unseen DESIGN targets routed to source reads; no file edits applied and no repair round consumed.")
+        await emit(f"Model response: {len(files)} read_file, {len(names)} shared-contract reads, "
+                   f"{len(groups)} index reads; {len(getattr(response, 'changes', []))} edit_file, "
+                   f"{len(getattr(response, 'new_files', []))} add_file, {len(getattr(response, 'delete_files', []))} delete_file.")
+        for tool, items in (("edit_file", getattr(response, "changes", [])),
+                            ("add_file", getattr(response, "new_files", [])),
+                            ("delete_file", getattr(response, "delete_files", []))):
+            for item in items:
+                await emit(f"Model requested {tool}: {item.path} (pending validation/application)")
         if not files and not names and not groups:
+            need = getattr(response, "shared_need", None)
+            capability = getattr(response, "capability", None)
+            if need:
+                await emit(f"Shared handoff requested: {need.name}; {need.reason}")
+            elif capability:
+                await emit(f"Shared discovery completed: {capability.name}")
+            elif getattr(response, "database_gap", ""):
+                await emit(f"Database gap: {response.database_gap}")
+            else:
+                await emit("Final batch received; handing off to scope/snapshot/manifest validation.")
             task.setdefault("sources", {}).clear()
             task["sources"].update(sources)
             return response
-        if getattr(response, "changes", []) or getattr(response, "new_files", []) or getattr(response, "shared_need", None):
+        if not automatic_read and (getattr(response, "changes", []) or getattr(response, "new_files", []) or getattr(response, "delete_files", []) or getattr(response, "shared_need", None)):
             raise ValueError("Read requests must not contain code edits/shared_need")
         if getattr(response, "capability", None) or getattr(response, "database_gap", ""):
             raise ValueError("Read requests must not contain a capability/database_gap")
-        if budget.get("rounds", 0) >= 2:
-            raise ValueError("Source read budget exhausted (2 rounds); use supplied evidence")
+        if step == max_steps - 1:
+            raise ValueError(f"ReAct loop exhausted {max_steps} steps without a final batch")
         budget["rounds"] = budget.get("rounds", 0) + 1
         previous = deepcopy(current)
         previous_pinned = set(pinned)
         try:
-            if len(files) + len(names) + len(groups) > 5:
-                raise ValueError("Read at most five files/capabilities/index groups per round")
-            supply(files, names, groups)
+            if len(files) + len(names) + len(groups) > 10:
+                raise ValueError("Read at most ten files/capabilities/index groups per step")
+            # File reads are independent; one missing file must not discard other
+            # observations from the same batch. Results carry the requested path.
+            results = []
+            for path in dict.fromkeys(files):
+                await emit(f"read_file requested: {path}")
+                snapshot = deepcopy(current)
+                old_pinned = set(pinned)
+                try:
+                    if path in sources:
+                        results.append({"tool": "read_file", "path": path, "status": "already_supplied"})
+                        pinned.add(path)
+                    else:
+                        supply([path], [], [])
+                        results.append({"tool": "read_file", "path": path, "status": "ok"})
+                    budget["files"] = list(dict.fromkeys([*budget.get("files", []), path]))
+                except (ValueError, OSError, UnicodeError) as exc:
+                    current = snapshot
+                    sources = current["sources"]
+                    pinned = old_pinned
+                    results.append({"tool": "read_file", "path": path, "status": "error", "error": str(exc)})
+                observation = results[-1]
+                detail = observation.get("error") or f"{len(sources[path].encode('utf-8'))} bytes"
+                await emit(f"read_file result: {path}; {observation['status']}; {detail}")
+            current["file_observations"] = [
+                {"tool": "read_file", "path": path, "status": "ok"} for path in budget.get("files", [])]
+            current["last_read_results"] = results
+            # Contract/page errors must not roll back successful file reads.
+            previous = deepcopy(current)
+            previous_pinned = set(pinned)
+            supply([], names, groups)
+            for name in names:
+                await emit(f"Shared contract supplied: {name}")
+            for group in groups:
+                await emit(f"Shared index supplied: {group}")
         except (ValueError, OSError, UnicodeError) as exc:
             # Failed reads consume only the reading budget. Keep the original
             # test feedback, and let the next call select an existing path.
             current = previous
             sources = current["sources"]
             pinned = previous_pinned
-            current["shared_read_status"] = f"Read rejected: {exc}. Use file_index/supplied source; do not invent paths."
+            current["shared_read_status"] = f"Read rejected: {exc}. Use file_inventory/supplied source; do not invent paths."
             if log:
                 result = log(current["shared_read_status"])
                 if isawaitable(result):
                     await result
             continue
-        for key, values in (("files", files), ("names", names), ("groups", groups)):
+        for key, values in (("names", names), ("groups", groups)):
             budget[key] = list(dict.fromkeys([*budget.get(key, []), *values]))
-        current["shared_read_status"] = "Requested evidence supplied; return edits or use remaining read budget."
+        current["shared_read_status"] = "Read observations supplied. If sufficient, return the final write batch; read again only for a concrete missing dependency."
         if log:
-            result = log(f"Source read round {budget['rounds']}/2: {len(files)} file(s), {len(names)} contract(s), {len(groups)} index group(s).")
+            result = log(f"ReAct step {step + 1}/{max_steps}: {len(files)} file read(s), {len(names)} contract(s), {len(groups)} index group(s).")
             if isawaitable(result):
                 await result
     raise ValueError("Source read loop exhausted")
@@ -465,23 +566,23 @@ async def ask_for_edits(model: str | object, system: str, task: dict[str, Any],
                         response_type: type[ResponseRecord], *, workspace_root: Path | None = None) -> ResponseRecord:
     resolved = create_arc_chat_model(model)
     from agents.model.prompt_input import format_task_input
+    from agents.model.tool_sequence import parse_tool_sequence, tool_contract
+    schema = response_type.model_json_schema()
     content = await generate_text(resolved, [
         {"role": "system", "content": system + "\n\n" + EDIT_POLICY},
-        {"role": "user", "content": format_task_input(task, response_type.model_json_schema())},
+        {"role": "user", "content": format_task_input(task, tool_contract(schema))},
     ], stage=str(task.get("model_stage") or response_type.__name__) +
        ("_" + str(task["node_id"]) if task.get("node_id") else ""), workspace_root=workspace_root)
-    payload = parse_json_payload(content)
-    if payload is None:
-        raise ValueError("Expected JSON code edits; inspect MODEL OUTPUT in .arc/model_inputs. "
-                         "Return one complete JSON object matching response_schema, without prose.")
+    payload = parse_tool_sequence(content, schema)
     return response_type.model_validate(payload)
 
 
 def apply_edits(root: Path, edits: CodeEdits, sources: dict[str, str],
-                allowed: Callable[[str], bool], validate: Callable[[], Any] | None = None) -> list[str]:
+                allowed: Callable[[str], bool], validate: Callable[[], Any] | None = None,
+                deletable: Callable[[str], bool] | None = None) -> list[str]:
     """Validate the complete batch before writing; roll back failed manifests."""
     if edits.shared_need:
-        if edits.changes or edits.new_files or edits.read_files or edits.read_shared or edits.read_shared_groups:
+        if edits.changes or edits.new_files or edits.delete_files or edits.read_files or edits.read_shared or edits.read_shared_groups:
             raise ValueError("shared_need must not contain edits or read_files")
         raise SharedNeeded(edits.shared_need)
     if edits.read_shared or edits.read_shared_groups:
@@ -489,13 +590,13 @@ def apply_edits(root: Path, edits: CodeEdits, sources: dict[str, str],
     if edits.read_files:
         for path in edits.read_files:
             safe_path(root, path)
-        if edits.changes or edits.new_files:
+        if edits.changes or edits.new_files or edits.delete_files:
             raise ValueError("read_files requests must not contain edits")
         unseen = [path for path in edits.read_files if path not in sources]
         if unseen:
             raise ValueError("Additional source requested: " + json.dumps(unseen))
         raise ValueError("Requested sources are already supplied; return concrete edits")
-    pending: dict[str, str] = {}
+    pending: dict[str, str | None] = {}
     originals: dict[str, str | None] = {}
     for edit in edits.changes:
         if edit.path not in sources:
@@ -512,13 +613,23 @@ def apply_edits(root: Path, edits: CodeEdits, sources: dict[str, str],
             raise ValueError(f"new_files path already exists/duplicated: {file.path}")
         pending[file.path] = file.content
         originals[file.path] = None
+    for file in edits.delete_files:
+        safe_path(root, file.path)
+        if file.path in pending:
+            raise ValueError(f"Cannot delete and write the same file: {file.path}")
+        if file.path not in sources:
+            raise ValueError(f"Cannot delete unseen source: {file.path}")
+        if deletable is None or not deletable(file.path):
+            raise ValueError(f"File cannot be deleted in this phase: {file.path}")
+        pending[file.path] = None
+        originals[file.path] = sources[file.path]
     for relative in pending:
         target = safe_path(root, relative)
         if not allowed(relative):
             raise ValueError(f"Write outside node scope: {relative}")
         old = originals[relative]
         if relative in {"backend/package.json", "frontend/package.json"}:
-            if old is None:
+            if old is None or pending[relative] is None:
                 raise ValueError("Dependency repair requires an existing package.json")
             before, after = json.loads(old), json.loads(pending[relative])
             if not isinstance(before, dict) or not isinstance(after, dict):
@@ -540,7 +651,10 @@ def apply_edits(root: Path, edits: CodeEdits, sources: dict[str, str],
             target = root / relative
             target.parent.mkdir(parents=True, exist_ok=True)
             written.append(relative)
-            target.write_text(content, encoding="utf-8")
+            if content is None:
+                target.unlink()
+            else:
+                target.write_text(content, encoding="utf-8")
         if validate:
             validate()
     except Exception:
@@ -553,19 +667,3 @@ def apply_edits(root: Path, edits: CodeEdits, sources: dict[str, str],
                 target.write_text(old, encoding="utf-8")
         raise
     return written
-
-
-def protected_paths(root: Path, node_id: str, records: list[dict[str, Any]]) -> set[str]:
-    paths = {str(record.get("file_path", "")) for record in records
-             if record.get("type") in {"API", "FUNC", "DB"}
-             and (node_id not in record.get("req_ids", [])
-                  or str(record.get("interface_id", "")).startswith("GLOBAL:DB:"))}
-    state = root / ".arc/database/state.json"
-    if state.exists():
-        paths.update(json.loads(state.read_text(encoding="utf-8")).get("generated_files", []))
-    shared_state = root / ".arc/shared/state.json"
-    if shared_state.exists():
-        plan = json.loads(shared_state.read_text(encoding="utf-8")).get("plan") or {}
-        paths.update(path for capability in plan.get("capabilities", [])
-                     for path in capability.get("files", []) + capability.get("reuse_files", []))
-    return paths

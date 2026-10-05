@@ -126,7 +126,8 @@ class WorkflowPhaseRunner:
             return False
         files_written = [path for paths in file_groups.values() for path in paths]
         # A retry may reuse working UI without rewriting it; keep its code locations.
-        previous_files = sessions.load_node_session(node_id).get("materialized_files") or []
+        previous_files = [path for path in (sessions.load_node_session(node_id).get("materialized_files") or [])
+                          if (Path(self.workspace_path) / path).is_file()]
         files_written = list(dict.fromkeys([*previous_files, *files_written]))
         if not prepared_interfaces and not files_written and not is_non_leaf:
             await self._log(

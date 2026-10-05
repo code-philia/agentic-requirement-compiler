@@ -12,7 +12,7 @@ from typing import Any
 from pydantic import Field
 
 from agents.runtime.plain_codegen import (
-    CodeEdits, Record, SharedNeed, apply_edits, ask_with_reads, feedback_source_paths,
+    CodeEdits, ReadFile, Record, SharedNeed, apply_edits, ask_with_reads, feedback_source_paths,
     is_test_asset, protected_paths, safe_path, source_bundle, shared_index,
 )
 from core.files import read_json_file, write_json_file
@@ -26,6 +26,7 @@ class Capability(Record):
 
 
 class Discovery(Record):
+    actions: list[ReadFile] = Field(default_factory=list)
     capability: Capability | None = None
     read_files: list[str] = Field(default_factory=list)
     read_shared: list[str] = Field(default_factory=list)
@@ -35,10 +36,10 @@ class Discovery(Record):
 
 DISCOVERY_PROMPT = """Resolve only the shared_need raised by the current requirement.
 Do not analyze the whole requirement tree or design future shared infrastructure.
-Return JSON matching response_schema. First inspect the catalog and supplied source:
+Return only the supplied tool calls as a JSON array. First inspect the catalog and supplied source:
 reuse actual existing exports rather than create a parallel implementation.
-Return one capability with stable files and a short source contract, or read_files
-with no capability to request missing evidence. Use database_gap only when required
+Use register_shared with stable files and a short source contract, or read_file calls
+alone to request missing evidence. Use report_database_gap(need) only when required
 persistence cannot be implemented on the prepared schema; never add schema or seeds.
 Owned files belong under backend/src/shared or frontend/src/shared for web,
 app/shared for CLI, or app/src/main/java/<package>/shared for Android.
@@ -59,7 +60,7 @@ Use installed dependencies. Preserve credentials, identity, session lifetime and
 transaction connection semantics. Node business workflows remain node-owned.
 Only declared shared files may be created; existing integration files may be edited
 around compiler bootstrap hooks. Do not edit feature-owned modules or test assets.
-If evidence is missing, return read_files only. Never emit another shared_need here.
+If evidence is missing, return read_file calls only. Never call request_shared here.
 The system builds and provides bounded repair feedback. Return code edits only.
 """
 
@@ -207,11 +208,12 @@ class SharedPreparation:
                     for path in owned | reused:
                         if not safe_path(self.root, path).is_file() or not (self.root / path).read_text().strip():
                             raise ValueError(f"Shared implementation missing: {path}")
-                apply_edits(self.root, edits, bundle["sources"], allowed, validate)
+                changed = apply_edits(self.root, edits, bundle["sources"], allowed, validate)
                 state["pending"]["accepted_edits"] = edits.model_dump()
                 write_json_file(self.state_path, state)
                 output = await app_handler.run_build()
                 codes = re.findall(r"^\s*Exit Code:\s*(-?\d+)\s*$", output, re.MULTILINE)
+                passed = bool(codes) and all(int(code) == 0 for code in codes)
                 if not codes or any(int(code) != 0 for code in codes):
                     raise ValueError("Shared build failed:\n" + output[-24000:]
                                      + "\nSource paths: " + json.dumps(feedback_source_paths(self.root, output)))
