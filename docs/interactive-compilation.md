@@ -11,6 +11,8 @@ arc compile requirements.yaml -o workspace/demo --resume
 
 `--clean` 会重建输出目录，不能与 `--resume` 同用。
 
+Web 初始化会将 `--port` 写入 `backend/src/index.js` 的 `defaultPort` 和 `frontend/vite.config.js` 的 `backendPort` 默认值（Vite `/api` 代理目标），保留后端 `PORT`、前端 `ARC_WEB_PORT` 的环境变量覆盖。恢复编译时安装依赖也会同步这些模板配置；自定义结构无法匹配时保留原文件并打印提示。Vite 开发服务器自身端口不变，应用部署和 E2E 仍由后端统一端口承载。
+
 逐节点 DESIGN/TDD 之前，ARC 自动执行全局 `DATABASE_PREPARE`：先通过普通 LLM JSON 问答确定全局实体命名，再分析根需求及各一级需求子树。每批只返回发生变化的完整表定义和新增预置行，系统校验并合并；草案冲突必须显式修正，已落地记录仍仅允许追加。批间允许暂未解析的外键，最终统一核对所有引用和预置数据，再确定性生成代码并初始化真实数据库。不使用智能体工具，不生成 schema 文档。
 
 实体目录、已接受批次的增量记录、累计草案和最终核对结果保存在 `.arc/database/analysis.json`；最终建库记录和阶段状态保存在 `.arc/database/state.json`。数据库准备失败时不会执行节点；修正原因后使用 `--resume` 恢复。同一需求版本和数据库基线下跳过成功批次，版本或基线改变则重新分析。数据库初始化可重复执行而不覆盖已有业务数据。Web 运行库和 E2E 隔离库使用同一套生成代码。

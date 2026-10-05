@@ -798,6 +798,7 @@ class WebAppType(AppTypeHandler):
         return None
 
     async def post_template_setup(self) -> bool:
+        await self._configure_application_port()
         await self._configure_playwright_target()
         await self._log(
             "System",
@@ -806,6 +807,7 @@ class WebAppType(AppTypeHandler):
         return True
 
     async def install_dependencies(self) -> None:
+        await self._configure_application_port()
         await self._configure_playwright_target()
         backend_path = os.path.join(self.workspace_path, "backend")
         if os.path.exists(backend_path):
@@ -838,6 +840,35 @@ class WebAppType(AppTypeHandler):
                 await run_npm_install(target, self.log_cb)
                 installed[folder] = digest
                 self._installed_manifests = installed
+
+    async def _configure_application_port(self) -> None:
+        """Persist the CLI port as the scaffold default, preserving env overrides."""
+        from pathlib import Path
+        root = Path(self.workspace_path).resolve()
+        port = get_web_port()
+        configurations = [
+            ("backend/src/index.js",
+             r"^const defaultPort = \d+;(?: // ARC_WEB_PORT)?$",
+             f"const defaultPort = {port}; // ARC_WEB_PORT"),
+            ("frontend/vite.config.js",
+             r"^const backendPort = Number\(process\.env\.ARC_WEB_PORT \|\| \d+\);?(?: // ARC_WEB_PORT)?$",
+             f"const backendPort = Number(process.env.ARC_WEB_PORT || {port}); // ARC_WEB_PORT"),
+        ]
+        for relative, pattern, replacement in configurations:
+            target = root / relative
+            if target.is_symlink() or target.resolve() != target:
+                raise ValueError(f"Application port configuration uses an unsafe path: {relative}")
+            if not target.is_file():
+                continue
+            source = target.read_text(encoding="utf-8")
+            updated, matches = re.subn(pattern, lambda _: replacement, source, count=1, flags=re.MULTILINE)
+            if not matches:
+                await self._log("System", f"flow> Port injection skipped for custom configuration: {relative}; "
+                                f"runtime environment still supplies port {port}.", "warning")
+                continue
+            if updated != source:
+                target.write_text(updated, encoding="utf-8")
+                await self._log("System", f"flow> Startup port injected: {relative} -> {port} (environment overrides preserved).")
 
     async def _configure_playwright_target(self) -> None:
         from pathlib import Path
