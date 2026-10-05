@@ -31,6 +31,10 @@ For persisted domain changes, verify the relevant API/service/persistence path,
 not just local component state or static arrays.
 Use the supplied isolated test harness for persistence tests.
 Use real frontend routes, accessible controls and request conventions from source.
+Calculate relative imports from each test file's own directory, not the source root.
+For required exact accessible names, use matching semantic locators. If source
+markup violates the requirement, retain the required locator so TDD repairs the UI;
+never compensate by weakening the assertion or merely increasing test timeouts.
 For web requirements with a user-facing flow, cover the existing application
 entry/navigation/control once in the core success flow. Other cases may navigate
 directly to the feature URL; do not repeat the homepage journey in every test.

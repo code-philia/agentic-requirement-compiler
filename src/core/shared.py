@@ -18,11 +18,21 @@ from agents.runtime.plain_codegen import (
 from core.files import read_json_file, write_json_file
 
 
+class IdentityContract(Record):
+    storage: str = Field(min_length=1)
+    credentials: str = Field(min_length=1)
+    authenticate: str = Field(min_length=1)
+    frontend_state: str = Field(min_length=1)
+    logout: str = Field(min_length=1)
+    expiration: str = Field(min_length=1)
+
+
 class Capability(Record):
     name: str = Field(min_length=1)
     files: list[str] = Field(default_factory=list)
     reuse_files: list[str] = Field(default_factory=list)
     contract: str = Field(min_length=1)
+    identity_contract: IdentityContract | None = None
 
 
 class Discovery(Record):
@@ -49,6 +59,15 @@ Specify exported names, inputs/results/errors and the lifecycle/identity/connect
 rules needed by this consumer. Keep feature workflows in the node's own modules.
 An existing capability is immutable: consume it or register a separate small adapter,
 never rename it or silently change its contract to satisfy one consumer.
+For capability identity, identity_contract is mandatory. Specify concrete code paths,
+exports and runtime conventions for storage, credentials, authenticate, frontend_state,
+logout and expiration. Create the minimal coherent identity runtime needed NOW:
+session create/resolve/revoke, protected-request authentication, common client credential
+attachment and one frontend identity provider with reload restoration where applicable.
+For non-web apps state the equivalent client integration. Keep registration/login business
+validation in the node. Bind all consumers to the same identity and token/session lifecycle.
+Never invent parallel infrastructure when existing code can be safely reused; feature-owned
+legacy identity code cannot be silently adopted or relocated. Report the conflict explicitly.
 """
 
 
@@ -58,6 +77,10 @@ Implement real behavior using the prepared database, not skeletons or fake succe
 Do not add database structure/seeds or a parallel database/session/transaction runtime.
 Use installed dependencies. Preserve credentials, identity, session lifetime and
 transaction connection semantics. Node business workflows remain node-owned.
+If capability identity, implement every identity_contract entry using concrete exports.
+The common client attaches credentials; authentication derives identity server-side;
+logout revokes server-side credentials and clears client state; expiration/401 clears stale
+identity consistently. Providers are mounted by the consuming node, never by a parallel app.
 Only declared shared files may be created; existing integration files may be edited
 around compiler bootstrap hooks. Do not edit feature-owned modules or test assets.
 If evidence is missing, return read_file calls only. Never call request_shared here.
@@ -89,6 +112,10 @@ class SharedPreparation:
                              frontend_roots=frontend, design=True, feedback=feedback)
 
     def _validate(self, capability: Capability, state: dict[str, Any], runtime) -> None:
+        if capability.name == "identity" and capability.identity_contract is None:
+            raise ValueError("identity requires a unified identity_contract before node design")
+        if capability.name != "identity" and capability.identity_contract is not None:
+            raise ValueError("Only the canonical identity capability may define identity_contract")
         if not capability.files and not capability.reuse_files:
             raise ValueError("Capability needs implementation files or existing reuse_files")
         existing = state.get("plan", {}).get("capabilities", [])
@@ -118,6 +145,8 @@ class SharedPreparation:
         catalog = state.get("plan", {}).get("capabilities", [])
         existing = next((cap for cap in catalog if cap["name"] == need.name), None)
         if existing:
+            if need.name == "identity" and not existing.get("identity_contract"):
+                raise ValueError("Existing identity capability has no unified contract; explicit migration is required")
             for path in existing.get("files", []) + existing.get("reuse_files", []):
                 target = safe_path(self.root, path)
                 expected = state.get("code_hashes", {}).get(path)

@@ -39,6 +39,9 @@ def tool_contract(schema: dict[str, Any]) -> dict[str, Any]:
     if "tests" in props:
         test = compact(props["tests"]["items"])
         add("register_test", test["properties"], test["required"])
+    if "identity_usage" in props:
+        usage = compact(definitions["IdentityUsage"])
+        add("declare_identity_usage", usage["properties"], usage["required"])
     for field, name, parameter in (("read_shared", "read_shared", "name"),
                                    ("read_shared_groups", "read_shared_group", "id")):
         if field in props and not design:
@@ -50,7 +53,8 @@ def tool_contract(schema: dict[str, Any]) -> dict[str, Any]:
         add("register_shared", cap["properties"], cap["required"])
     if "database_gap" in props:
         add("report_database_gap", {"need": string}, ["need"])
-    for field, name in (("entities", "define_entity"), ("tables", "define_table"), ("seeds", "seed_rows")):
+    for field, name in (("entities", "define_entity"), ("facts", "record_persistence_fact"),
+                        ("bindings", "bind_entity"), ("tables", "define_table"), ("seeds", "seed_rows")):
         if field in props:
             item = compact(props[field]["items"])
             add(name, item["properties"], item["required"])
@@ -70,7 +74,7 @@ def parse_tool_sequence(text: str, schema: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("Expected a tool-call array, not an object")
     tools = tool_contract(schema)["tools"]
     props = schema.get("properties", {})
-    result: dict[str, Any] = {field: [] for field in ("entities", "tables", "seeds") if field in props}
+    result: dict[str, Any] = {field: [] for field in ("entities", "facts", "bindings", "tables", "seeds") if field in props}
     if any(not isinstance(call, dict) or not isinstance(call.get("tool"), str) for call in sequence):
         raise ValueError("Every call must be an object with a string tool name")
     names = [call["tool"] for call in sequence]
@@ -101,6 +105,10 @@ def parse_tool_sequence(text: str, schema: dict[str, Any]) -> dict[str, Any]:
             result.setdefault("actions", []).append({"tool": name, **params})
         elif name == "register_test":
             result.setdefault("tests", []).append(params)
+        elif name == "declare_identity_usage":
+            if "identity_usage" in result:
+                raise ValueError("Declare identity usage exactly once")
+            result["identity_usage"] = params
         elif name in {"read_shared", "read_shared_group"}:
             field, parameter = ("read_shared", "name") if name == "read_shared" else ("read_shared_groups", "id")
             result.setdefault(field, []).append(params[parameter])
@@ -111,8 +119,9 @@ def parse_tool_sequence(text: str, schema: dict[str, Any]) -> dict[str, Any]:
                 raise ValueError(f"Only one {name} call is allowed")
             result[field] = ({"name": params["name"], "reason": params["need"]} if name == "request_shared"
                              else params if name == "register_shared" else params["need"])
-        elif name in {"define_entity", "define_table", "seed_rows"}:
-            result[{"define_entity": "entities", "define_table": "tables", "seed_rows": "seeds"}[name]].append(params)
+        elif name in {"define_entity", "record_persistence_fact", "bind_entity", "define_table", "seed_rows"}:
+            result[{"define_entity": "entities", "record_persistence_fact": "facts",
+                    "bind_entity": "bindings", "define_table": "tables", "seed_rows": "seeds"}[name]].append(params)
         else:
             field = "replace_tables" if name == "replace_table" else "replace_seed_tables"
             result.setdefault(field, []).append(params["name"])

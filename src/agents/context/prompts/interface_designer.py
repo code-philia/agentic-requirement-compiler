@@ -38,7 +38,21 @@ file scope. FUNC can include several focused business helper files; DB can inclu
 several focused operation files. Do not precreate speculative empty modules.
 Implement controls, validation, events, state, loading/errors, frontend request
 functions and their component calls using the existing HTTP/session conventions.
+Implement required accessible names exactly and uniquely. Associate labels with
+native controls using htmlFor/id or wrapping labels; keep required markers and
+helper text out of the accessible name when exact names are specified. Prefer
+explicit aria-label where needed. Validation errors belong in semantic alert
+containers. Check all required controls in the same pass, not one locator per repair.
 Do not model UI nodes/interfaces or create schema/design documents.
+Every final DESIGN batch must include exactly one declare_identity_usage(required,reason).
+Set required=true for registration/login/logout, session restoration/current-user UI,
+or authenticated requests and user-owned protected data. Parent navigation alone need
+not require identity, but displaying/restoring current user does. Explain from the actual
+requirement. The system resolves canonical shared identity before applying node edits.
+Do not implement private token storage, session verification or competing providers.
+When identity_integration is supplied, read its exports as needed and wire the existing
+app/client/provider to that unified contract. Keep registration/login business validation
+and node-specific endpoints in node-owned modules.
 For each leaf create separate API -> FUNC/service -> DB/repository call skeletons
 and register them in the real application. DB means operations on the prepared
 shared database. Leave backend business logic for TDD. Skeletons must return

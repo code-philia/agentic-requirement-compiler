@@ -4,6 +4,28 @@ import re
 from typing import Any
 
 
+def repair_execution_feedback(output: str) -> str:
+    """Model-facing evidence, separate from complete operational/debug output."""
+    clean = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", output or "")
+    sections = re.split(r"(?=^=== )", clean, flags=re.MULTILINE)
+    evidence = []
+    for section in sections:
+        if section.startswith(("=== E2E Browser Evidence", "=== E2E Failure Page Snapshot")):
+            evidence.append(section.strip())
+    if not evidence:
+        # Preserve startup/build/SQL failures when no browser evidence exists.
+        return compact_execution_output(clean, max_chars=8000, max_lines=100)
+    lines = clean.splitlines()
+    selected = set()
+    for i, line in enumerate(lines):
+        if re.search(r"Test timeout|Error: locator|^\s*\d+\).*›|^\s*FAIL\b|^\s*Expected:|^\s*Received:", line):
+            selected.update(range(max(0, i - 1), min(len(lines), i + 18)))
+    runner = "\n".join(lines[i] for i in sorted(selected))
+    codes = re.findall(r"^\s*Exit Code:\s*(-?\d+)\s*$", clean, re.MULTILINE)
+    status = next((code for code in codes if code != "0"), codes[0] if codes else "missing")
+    return (f"Exit Code: {status}\n" + runner[:3500] + "\n\n" + "\n\n".join(evidence)[:8500]).strip()
+
+
 def compact_execution_output(output: str, *, max_chars: int = 24000, max_lines: int = 240) -> str:
     """Keep status and error/stack neighborhoods instead of slicing the log tail."""
     clean = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", output or "")

@@ -442,6 +442,7 @@ class WorkflowPhaseRunner:
         final_ok = False
         modified: list[str] = []
         self.test_driven_developer.read_budget = {}
+        failed_kinds = set(session.get("tdd_codegen", {}).get("failed_test_types", [])) & set(ordered)
         attempt = 0
         protocol_errors = 0
         while attempt < TDD_MAX_CALLS:
@@ -476,7 +477,11 @@ class WorkflowPhaseRunner:
                                     + "\nSource paths: " + json.dumps(feedback_source_paths(Path(self.workspace_path), build_output)))
                 else:
                     await self._log("TestDrivenDeveloper", f"flow> Build PASSED; exit codes: {build_codes}.", status="ok", node_id=node_id)
-                    for kind in ordered:
+                    # Recheck known failures first. Complete every remaining layer on
+                    # this revision before declaring success; never reuse old passes.
+                    validation_order = [kind for kind in ordered if kind in failed_kinds]
+                    validation_order += [kind for kind in ordered if kind not in failed_kinds]
+                    for kind in validation_order:
                         await self._log("TestDrivenDeveloper", f"flow> {kind} tests started: {len(groups[kind])} registered test(s); files: " +
                                         ", ".join(collect_test_files(groups[kind])), node_id=node_id)
                         output = await self.app_handler.run_test_group(kind, collect_test_files(groups[kind]))
@@ -491,8 +496,12 @@ class WorkflowPhaseRunner:
                                         ("\n".join(summary_lines) if passed else summarize_batch_output(output, max_lines=45)),
                                         status="ok" if passed else "error", node_id=node_id)
                         if not passed:
-                            failures.append(kind + ": " + summarize_batch_output(output)
+                            from app_type_handler.test_results import repair_execution_feedback
+                            failures.append(kind + ": " + repair_execution_feedback(output)
                                             + "\nSource paths: " + json.dumps(feedback_source_paths(Path(self.workspace_path), output)))
+                            if failed_kinds or attempt > 1:
+                                await self._log("TestDrivenDeveloper", "flow> Stopping this repair round at the first failed layer; repair follows before further regression.", node_id=node_id)
+                                break
             except SharedNeeded:
                 raise
             except Exception as exc:
@@ -518,6 +527,8 @@ class WorkflowPhaseRunner:
                     continue
 
             final_ok = not failures and len(results) == len(ordered)
+            failed_kinds = {kind for kind in ordered if kind in results
+                            and parse_test_results(results[kind]).get("exit_code") != 0} | (failed_kinds - set(results))
             feedback = "\n\n".join(failures) or ("" if final_ok else "Validation did not complete.")
             validation_feedback = feedback
             if failures:
@@ -532,6 +543,7 @@ class WorkflowPhaseRunner:
                 "recent_failure_summary": feedback,
                 "tdd_codegen": {"status": "passed" if final_ok else "failed",
                                 "validation_feedback": validation_feedback, "protocol_errors": protocol_errors,
+                                "failed_test_types": [kind for kind in ordered if kind in failed_kinds],
                                 "build_output": build_output[-16000:],
                                 "test_outputs": {kind: results.get(kind, "")[-16000:] for kind in ordered},
                                 "modified_files": list(dict.fromkeys(modified))},

@@ -3,6 +3,7 @@ from __future__ import annotations
 import inspect
 import json
 import os
+import re
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Literal
 
@@ -20,6 +21,29 @@ from core.service import get_runtime
 
 LogCallback = Callable[[str, str, str | None, str | None], Awaitable[None] | None]
 TEST_GENERATION_MAX_CALLS = 3
+
+
+def validate_relative_test_imports(root: Path, paths: set[str]) -> None:
+    """Reject obvious local JS/TS path mistakes before handing tests to TDD."""
+    for relative in sorted(paths):
+        target = safe_path(root, relative)
+        if target.suffix not in {".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs"} or not target.is_file():
+            continue
+        source = target.read_text(encoding="utf-8")
+        # Ignore comments; this is a conservative path check, not a module resolver.
+        source = re.sub(r"/\*.*?\*/|^\s*//[^\n]*", "", source, flags=re.DOTALL | re.MULTILINE)
+        modules = re.findall(r"(?:\bfrom\s*|\brequire\(\s*|\bimport\s*(?:\(\s*)?)['\"](\.[^'\"]+)['\"]", source)
+        for module in modules:
+            base = (target.parent / re.split(r"[?#]", module, maxsplit=1)[0]).resolve()
+            if not base.is_relative_to(root):
+                raise ValueError(f"Test import escapes workspace: {relative} -> {module}")
+            candidates = [base]
+            candidates += [Path(str(base) + ext) for ext in (".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs", ".json")]
+            candidates += [base / ("index" + ext) for ext in (".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs")]
+            if base.suffix in {".js", ".jsx", ".mjs", ".cjs"}:
+                candidates += [base.with_suffix(ext) for ext in (".ts", ".tsx", ".mts", ".cts")]
+            if not any(path.is_file() for path in candidates) and not (base / "package.json").is_file():
+                raise ValueError(f"Unresolved relative test import: {relative} -> {module}. Calculate the path from the test file directory; preserve the assertions.")
 
 
 class TestManifestItem(Record):
@@ -152,6 +176,8 @@ class TestGenerator:
                         return False
                     return True
                 def validate() -> None:
+                    if app_type == "web":
+                        validate_relative_test_imports(root, paths | {item.path for item in edits.changes + edits.new_files})
                     for test in tests:
                         target = safe_path(root, test["file_path"])
                         if not target.is_file() or not target.read_text(encoding="utf-8").strip():

@@ -10,7 +10,7 @@ from pydantic import Field
 from agents.context.pipeline import context_pipeline
 from agents.context.prompts.interface_designer import get_system_prompt
 from agents.runtime.plain_codegen import (
-    CodeEdits, Record, SharedNeeded, ModelTransportExhausted, apply_edits, ask_with_reads, feedback_source_paths, is_test_asset, protected_paths, source_bundle,
+    CodeEdits, Record, SharedNeed, SharedNeeded, ModelTransportExhausted, apply_edits, ask_with_reads, feedback_source_paths, is_test_asset, protected_paths, source_bundle, shared_catalog,
 )
 from core import sessions
 from core.service import get_runtime
@@ -28,8 +28,14 @@ class DesignFiles(Record):
     shared: list[str] = Field(default_factory=list, description="Editable existing integration/registration files such as backend/src/app.js; not read-only shared core.")
 
 
+class IdentityUsage(Record):
+    required: bool
+    reason: str = Field(min_length=1)
+
+
 class InterfaceDesignResponse(CodeEdits):
     files: DesignFiles = Field(default_factory=DesignFiles)
+    identity_usage: IdentityUsage | None = None
 
 
 class InterfaceDesigner:
@@ -103,6 +109,12 @@ class InterfaceDesigner:
                     log=lambda message: self._log(message, node_id=node_id), transport_budget=transport_budget)
                 if edits.shared_need:
                     apply_edits(root, edits, bundle["sources"], lambda path: False)
+                if edits.identity_usage is None:
+                    raise ValueError("Final DESIGN batch must include declare_identity_usage(required,reason), even when identity is not needed")
+                identity = next((cap for cap in shared_catalog(root) if cap["name"] == "identity"), None)
+                if edits.identity_usage.required and not (identity and identity.get("identity_contract")):
+                    # No node files are applied before the shared protocol exists.
+                    raise SharedNeeded(SharedNeed(name="identity", reason=edits.identity_usage.reason))
                 previous_candidate = edits.model_dump()
                 files = {layer: list(paths) for layer, paths in (session.get("file_groups") or {}).items()
                          if layer in {"frontend", "API", "FUNC", "DB", "shared"}}
@@ -167,6 +179,7 @@ class InterfaceDesigner:
                 from agents.runtime.plain_codegen import applied_batch_log
                 await self._log(applied_batch_log(edits, changed), status="ok", node_id=node_id)
                 sessions.merge_node_session(node_id, {"design_codegen": {
+                    "identity_usage": edits.identity_usage.model_dump(),
                     "status": "accepted", "modified_files": changed, "feedback": "",
                     "accepted_edits": edits.model_dump(), "read_rounds": read_budget.get("rounds", 0),
                     "transport_retries": transport_budget.get("retries", 0)}})

@@ -30,7 +30,8 @@ Follow implementation_scope, runtime and acceptance rules.
 Do not create
 replacement backend modules, hardcode expected test values,
 skip assertions or weaken coverage. Repair tests only for genuine test defects.
-You generate one edit batch; the system builds and runs all scheduled test layers.
+You generate one edit batch; the system builds and validates prior failing layers
+first, stopping at failure. Success requires every scheduled layer on current code.
 Use feedback to fix the next round.
 
 ### Repair the error family, not only the reported line
@@ -45,6 +46,14 @@ when it violates the requirement; change tests only for genuine test defects.
 For accessible-label failures, check every required control and its label/aria
 association, including decorative required markers. Preserve required accessible
 names; fix markup when they are wrong rather than loosening every test matcher.
+When supplied, use the E2E Failure Page Snapshot to compare actual accessible
+names with the required locators. Distinguish wrong markup from a missing route
+or runtime error; do not merely increase the timeout for an absent control.
+Use E2E Browser Evidence to identify the failed action, exact selector, actionability
+logs, browser errors and failed requests. A resolved visible locator that stalls on
+stability is not evidence of a missing link or broken session. An anonymous session
+lookup returning 401 is expected. Do not infer overlays or layout motion without
+evidence, or reverse a previous UI change without new evidence supporting it.
 Check both Integration and E2E consumers of the same component so fixing one test
 does not leave equivalent failures elsewhere. Preserve each negative case's
 visible error assertion and its no-account/no-session side-effect checks.

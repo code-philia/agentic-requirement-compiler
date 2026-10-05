@@ -151,6 +151,9 @@ Visual references govern layout/style only, never screenshot business data.
 Shared core is read-only; call existing capabilities and keep business actions
 node-owned. Database schema, seeds and bootstrap files belong to DATABASE_PREPARE;
 missing persistence structure requires requirement synchronization.
+When identity_integration is supplied, reuse its authoritative storage, credentials,
+authentication, frontend state, logout and expiration conventions. Read concrete
+code as needed; never create a competing token store, resolver or identity provider.
 sources is the only full source snapshot. Database contracts/runtime signatures
 describe read-only infrastructure; request its source only for a specific unresolved
 dependency or failure. Preserve each test layer's exit status and root error evidence.
@@ -393,6 +396,10 @@ async def ask_with_reads(model: str | object, system: str, task: dict[str, Any],
     current = deepcopy(task)
     current["shared_index"] = shared_index(root)
     catalog = {cap["name"]: cap for cap in shared_catalog(root)}
+    identity = catalog.get("identity")
+    if identity and identity.get("identity_contract"):
+        current["identity_integration"] = {"files": identity.get("files", []) + identity.get("reuse_files", []),
+                                           "contract": identity["identity_contract"]}
     sources = current.setdefault("sources", {})
     pinned = set(current.get("required_source_files", []))
     max_steps = max(2, min(50, int(os.getenv("ARC_AGENT_MAX_STEPS", "12"))))

@@ -8,6 +8,9 @@ import signal
 import hashlib
 import inspect
 import tempfile
+import zipfile
+from urllib.parse import urlsplit
+from pathlib import Path
 
 from typing import Awaitable, Callable
 
@@ -631,6 +634,94 @@ async def _build_frontend_dist(workspace_path: str) -> tuple[bool, str]:
     )
 
 
+def _e2e_failure_context(workspace_path: str, output: str) -> str:
+    """Attach only this invocation's reported Playwright page snapshots."""
+    backend = (Path(workspace_path) / "backend").resolve()
+    results = backend / "test-results"
+    sections: list[str] = []
+    remaining = 4000
+    locator_names = re.findall(r"(?:name:\s*|getByLabel\()['\"]([^'\"]+)", output)
+    references = re.findall(r"Error Context:\s*([^\r\n]+)", output)
+    for relative in dict.fromkeys(references):
+        if len(sections) >= 3 or remaining <= 0:
+            break
+        target = (backend / relative.strip()).resolve()
+        if not target.is_relative_to(results) or target.name != "error-context.md":
+            continue
+        try:
+            with target.open(encoding="utf-8") as stream:
+                content = stream.read(60000)
+        except (OSError, UnicodeError):
+            continue
+        lines = content.splitlines()
+        hits = {i for i, line in enumerate(lines) if any(name in line for name in locator_names)
+                or re.search(r"\balert\b|dialog|Error|错误", line)}
+        selected = sorted({j for i in hits for j in range(max(0, i - 2), min(len(lines), i + 4))})
+        content = "\n".join(lines[i] for i in selected) if selected else "\n".join(lines[:18])
+        content = content[:min(remaining, 2000)]
+        remaining -= len(content)
+        sections.append(f"=== E2E Failure Page Snapshot: {relative.strip()} ===\n{content}")
+    sections.extend(_e2e_trace_evidence(backend, output))
+    return "\n\n".join(sections)
+
+
+def _e2e_trace_evidence(backend: Path, output: str) -> list[str]:
+    """Read bounded, reported artifacts only; do not invent actionability diagnoses."""
+    references = re.findall(r"(?:^|\n)\s*(test-results/[^\r\n]+/trace\.zip)\s*(?=\n|$)", output)
+    evidence: list[str] = []
+    for relative in list(dict.fromkeys(references))[:3]:
+        path = (backend / relative).resolve()
+        if not path.is_relative_to(backend / "test-results"):
+            continue
+        calls = {}
+        errors = []
+        network = []
+        try:
+            with zipfile.ZipFile(path) as archive:
+                budget = 8000000
+                for member in archive.infolist():
+                    if not member.filename.endswith((".trace", ".network")) or member.file_size > budget:
+                        continue
+                    budget -= member.file_size
+                    for line in archive.read(member).decode("utf-8", errors="replace").splitlines():
+                        try:
+                            event = json.loads(line)
+                        except ValueError:
+                            continue
+                        kind = event.get("type")
+                        call_id = event.get("callId")
+                        if kind == "before":
+                            calls[call_id] = {"method": event.get("method"), "params": event.get("params", {}),
+                                              "start": event.get("startTime"), "logs": []}
+                        elif kind == "log" and call_id in calls:
+                            calls[call_id]["logs"].append(str(event.get("message", ""))[:500])
+                            calls[call_id]["logs"] = calls[call_id]["logs"][-12:]
+                        elif kind == "after" and event.get("error"):
+                            call = calls.get(call_id, {})
+                            errors.append({"action": call.get("method"), "selector": call.get("params", {}).get("selector"),
+                                           "elapsed_ms": round(event.get("endTime", 0) - call.get("start", event.get("endTime", 0))),
+                                           "error": str(event["error"].get("message", ""))[:1800],
+                                           "actionability": call.get("logs", [])})
+                        elif kind == "event" and event.get("method") in {"pageError", "console"}:
+                            params = event.get("params", {})
+                            if event["method"] == "pageError" or params.get("type") == "error":
+                                errors.append({"browser_error": str(params.get("error") or params.get("text") or params)[:1000]})
+                        snapshot = event.get("snapshot", {})
+                        request = snapshot.get("request", {})
+                        response = snapshot.get("response", {})
+                        status = response.get("status", 0)
+                        if request and (status >= 400 or snapshot.get("_failureText")):
+                            parsed = urlsplit(request.get("url", ""))
+                            network.append({"method": request.get("method"), "path": parsed.path,
+                                            "status": status, "error": snapshot.get("_failureText", "")})
+            compact = {"failed_actions_and_browser_errors": errors[-6:], "failed_requests": network[:12],
+                       "note": "A 401 session lookup may be expected for an anonymous visitor. Missing trace events are not proof of no browser errors. Actionability logs do not prove a specific root cause."}
+            evidence.append("=== E2E Browser Evidence ===\n" + json.dumps(compact, ensure_ascii=False)[:6500])
+        except (OSError, ValueError, zipfile.BadZipFile, RuntimeError):
+            evidence.append("=== E2E Browser Evidence ===\nReported trace could not be read; rely on runner call log.")
+    return evidence
+
+
 async def _prepare_e2e_database(workspace_path: str, runtime_env: dict[str, str]) -> tuple[bool, str]:
     backend_path = os.path.join(workspace_path, "backend")
     prepare_output = await _execute_web_test_command(
@@ -714,6 +805,46 @@ async def _start_backend_runtime(
 
 class WebAppType(AppTypeHandler):
     name = "web"
+
+    def _frontend_build_snapshot(self) -> tuple[str, str] | None:
+        """Fingerprint build inputs and outputs; never trust dist existence alone."""
+        frontend = Path(self.workspace_path) / "frontend"
+        if not (frontend / "dist/index.html").is_file():
+            return None
+        inputs = hashlib.sha256(json.dumps(dict(os.environ), sort_keys=True).encode())
+        outputs = hashlib.sha256()
+        excluded = {"node_modules", "dist", ".git", ".arc", "coverage", "test-results", "playwright-report"}
+        try:
+            for directory, dirs, files in os.walk(frontend):
+                dirs[:] = sorted(name for name in dirs if name not in excluded)
+                if any((Path(directory) / name).is_symlink() for name in dirs):
+                    return None  # External source trees require a fresh build.
+                for name in sorted(files):
+                    path = Path(directory) / name
+                    inputs.update(path.relative_to(frontend).as_posix().encode())
+                    inputs.update(hashlib.sha256(path.read_bytes()).digest())
+            dependency_lock = frontend / "node_modules/.package-lock.json"
+            if dependency_lock.is_file():
+                inputs.update(hashlib.sha256(dependency_lock.read_bytes()).digest())
+            for path in sorted((frontend / "dist").rglob("*")):
+                if path.is_symlink():
+                    return None
+                if path.is_file():
+                    outputs.update(path.relative_to(frontend).as_posix().encode())
+                    outputs.update(hashlib.sha256(path.read_bytes()).digest())
+        except OSError:
+            return None
+        return inputs.hexdigest(), outputs.hexdigest()
+
+    async def _ensure_frontend_dist(self) -> tuple[bool, str]:
+        snapshot = self._frontend_build_snapshot()
+        if snapshot is not None and snapshot == getattr(self, "_successful_frontend_build", None):
+            return True, "Exit Code: 0\nReused verified frontend build: inputs and dist are unchanged."
+        self._successful_frontend_build = None
+        ok, output = await _build_frontend_dist(self.workspace_path)
+        if ok:
+            self._successful_frontend_build = self._frontend_build_snapshot()
+        return ok, output
 
     @classmethod
     def prerequisite_commands(cls) -> list[str]:
@@ -905,6 +1036,7 @@ class WebAppType(AppTypeHandler):
             await self._log("System", f"Playwright target configured: {get_web_base_url()}")
 
     async def run_build(self) -> str:
+        self._successful_frontend_build = None
         try:
             await self.ensure_dependencies()
         except RuntimeError as exc:
@@ -914,6 +1046,8 @@ class WebAppType(AppTypeHandler):
             cwd=os.path.join(self.workspace_path, "frontend"),
             timeout=120.0,
         )
+        if _extract_exit_code(frontend_result) == 0:
+            self._successful_frontend_build = self._frontend_build_snapshot()
         backend_result = await _execute_web_test_command(
             "npm run build --if-present",
             cwd=os.path.join(self.workspace_path, "backend"),
@@ -950,7 +1084,7 @@ class WebAppType(AppTypeHandler):
                 self.workspace_path,
                 [execution.get("resolved_test_file", "")],
             )
-            build_ok, frontend_build_output = await _build_frontend_dist(self.workspace_path)
+            build_ok, frontend_build_output = await self._ensure_frontend_dist()
             if not build_ok:
                 return _prepend_test_execution_header(
                     execution,
@@ -990,11 +1124,15 @@ class WebAppType(AppTypeHandler):
 
         try:
             result_body = await _execute_web_test_command(
-                execution["command"],
+                execution["command"] + (" --max-failures=1" if normalized_type == "e2e" else ""),
                 cwd=execution["working_directory"],
                 extra_env=e2e_runtime_env if normalized_type == "e2e" else None,
             )
             if normalized_type == "e2e":
+                if _extract_exit_code(result_body) != 0:
+                    context = _e2e_failure_context(self.workspace_path, result_body)
+                    if context:
+                        result_body = context + "\n\n" + result_body
                 result_body = (
                     f"=== Frontend Build ===\n{frontend_build_output}\n\n"
                     f"=== E2E Runtime Env ===\nDB Path: {e2e_runtime_env.get('ARC_E2E_DB_PATH', 'unknown')}\n"
@@ -1089,7 +1227,7 @@ class WebAppType(AppTypeHandler):
             body = f"Exit Code: {batch_exit_code}\n\n" + "\n\n".join(sections)
             return _prepend_group_execution_header(execution, body)
 
-        build_ok, frontend_build_output = await _build_frontend_dist(self.workspace_path)
+        build_ok, frontend_build_output = await self._ensure_frontend_dist()
         if not build_ok:
             return _prepend_group_execution_header(
                 execution,
@@ -1138,7 +1276,7 @@ class WebAppType(AppTypeHandler):
                     f"STDERR:\n{backend_startup_detail or 'No startup detail recorded.'}\n",
                 )
 
-            playwright_command = "npx playwright test"
+            playwright_command = "npx playwright test --max-failures=1"
             if execution.get("resolved_targets"):
                 playwright_command += " " + " ".join(execution["resolved_targets"])
             playwright_result = await _execute_web_test_command(
@@ -1150,8 +1288,10 @@ class WebAppType(AppTypeHandler):
             playwright_exit_code = _extract_exit_code(playwright_result)
             if playwright_exit_code is None:
                 playwright_exit_code = 1
+            page_context = _e2e_failure_context(self.workspace_path, playwright_result) if playwright_exit_code else ""
             body = (
                 f"Exit Code: {playwright_exit_code}\n\n"
+                f"{page_context}\n\n"
                 f"=== Frontend Build ===\n{frontend_build_output}\n\n"
                 f"=== E2E Runtime Env ===\nDB Path: {e2e_runtime_env.get('ARC_E2E_DB_PATH', 'unknown')}\n"
                 f"DB Label: {e2e_runtime_env.get('ARC_E2E_DB_LABEL', 'unknown')}\n\n"
