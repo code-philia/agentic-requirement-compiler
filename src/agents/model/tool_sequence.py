@@ -53,6 +53,9 @@ def tool_contract(schema: dict[str, Any]) -> dict[str, Any]:
         add("register_shared", cap["properties"], cap["required"])
     if "database_gap" in props:
         add("report_database_gap", {"need": string}, ["need"])
+    if "corrections" in props:
+        correction = compact(props["corrections"]["items"])
+        add("correct_seed", correction["properties"], correction["required"])
     for field, name in (("entities", "define_entity"), ("facts", "record_persistence_fact"),
                         ("bindings", "bind_entity"), ("tables", "define_table"), ("seeds", "seed_rows")):
         if field in props:
@@ -119,6 +122,8 @@ def parse_tool_sequence(text: str, schema: dict[str, Any]) -> dict[str, Any]:
                 raise ValueError(f"Only one {name} call is allowed")
             result[field] = ({"name": params["name"], "reason": params["need"]} if name == "request_shared"
                              else params if name == "register_shared" else params["need"])
+        elif name == "correct_seed":
+            result.setdefault("corrections", []).append(params)
         elif name in {"define_entity", "record_persistence_fact", "bind_entity", "define_table", "seed_rows"}:
             result[{"define_entity": "entities", "record_persistence_fact": "facts",
                     "bind_entity": "bindings", "define_table": "tables", "seed_rows": "seeds"}[name]].append(params)

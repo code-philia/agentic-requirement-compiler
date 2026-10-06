@@ -12,7 +12,7 @@ from typing import Any
 from pydantic import Field
 
 from agents.runtime.plain_codegen import (
-    CodeEdits, ReadFile, Record, SharedNeed, apply_edits, ask_with_reads, feedback_source_paths,
+    CodeEdits, ReadFile, Record, SharedNeed, DatabaseRepairNeeded, apply_edits, ask_with_reads, feedback_source_paths,
     is_test_asset, protected_paths, safe_path, source_bundle, shared_index,
 )
 from core.files import read_json_file, write_json_file
@@ -195,7 +195,7 @@ class SharedPreparation:
                     self._validate(response.capability, state, runtime)
                     capability = response.capability
                     break
-                except DatabaseGap:
+                except DatabaseRepairNeeded:
                     raise
                 except Exception as exc:
                     feedback = str(exc)[:16000]
@@ -281,6 +281,6 @@ class SharedPreparation:
         raise ValueError(f"Shared implementation exhausted 3 calls: {feedback}")
 
 
-class DatabaseGap(ValueError):
+class DatabaseGap(DatabaseRepairNeeded):
     def __init__(self, detail: str):
         super().__init__("Shared capability needs a database plan correction; node schema writes are forbidden: " + detail)

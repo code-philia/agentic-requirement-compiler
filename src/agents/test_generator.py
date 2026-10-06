@@ -12,7 +12,7 @@ from pydantic import Field
 from agents.context.pipeline import context_pipeline
 from agents.context.prompts.test_generator import get_system_prompt
 from agents.runtime.plain_codegen import (
-    CodeEdits, Record, SharedNeeded, apply_edits, ask_with_reads, feedback_source_paths, is_test_asset,
+    CodeEdits, Record, SharedNeeded, DatabaseRepairNeeded, apply_edits, ask_with_reads, feedback_source_paths, is_test_asset,
     protected_paths, safe_path, source_bundle,
 )
 from core import sessions
@@ -211,7 +211,7 @@ class TestGenerator:
                     "accepted_edits": edits.model_dump(), "read_rounds": read_budget.get("rounds", 0)}})
                 await self._log(f"Accepted {len(tests)} test artifact(s).", node_id=node_id)
                 return tests, json.dumps(payload, ensure_ascii=False)
-            except SharedNeeded:
+            except (SharedNeeded, DatabaseRepairNeeded):
                 raise
             except Exception as exc:
                 feedback = str(exc)[:8000]

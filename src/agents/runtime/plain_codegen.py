@@ -96,11 +96,16 @@ class SharedNeeded(Exception):
         super().__init__(f"Shared capability needed: {need.name}: {need.reason}")
 
 
+class DatabaseRepairNeeded(Exception):
+    """A node hands a concrete persistence problem back to the compiler."""
+
+
 class ModelTransportExhausted(RuntimeError):
     """Connection retry budget exhausted without a model-generated candidate."""
 
 
 class CodeEdits(Record):
+    database_gap: str = ""
     actions: list[FileAction] = Field(default_factory=list, description="Batch read_file actions, or the final add_file/edit_file/delete_file batch.")
     changes: list[Replacement] = Field(default_factory=list)
     new_files: list[NewFile] = Field(default_factory=list)
@@ -112,6 +117,10 @@ class CodeEdits(Record):
 
 
 EDIT_POLICY = """Return only a JSON array of tool calls. Each item contains tool and
+When the prepared schema or bootstrap data is incorrect/missing, return
+report_database_gap(need) alone with concrete table/column/identity, expected
+behavior and evidence. The compiler repairs persistence and retries this task;
+never modify generated database files or create a parallel database yourself.
 its necessary parameters directly. No wrapper object, Markdown, explanation,
 reasoning, status, summary, empty optional fields or legacy output properties.
 Use only the supplied available tools. Example:
@@ -487,6 +496,11 @@ async def ask_with_reads(model: str | object, system: str, task: dict[str, Any],
             for item in items:
                 await emit(f"Model requested {tool}: {item.path} (pending validation/application)")
         if not files and not names and not groups:
+            if getattr(response, "database_gap", ""):
+                if (getattr(response, "changes", []) or getattr(response, "new_files", [])
+                        or getattr(response, "delete_files", []) or getattr(response, "shared_need", None)):
+                    raise ValueError("report_database_gap must be returned alone")
+                raise DatabaseRepairNeeded(response.database_gap)
             need = getattr(response, "shared_need", None)
             capability = getattr(response, "capability", None)
             if need:
@@ -638,6 +652,8 @@ def apply_edits(root: Path, edits: CodeEdits, sources: dict[str, str],
                 allowed: Callable[[str], bool], validate: Callable[[], Any] | None = None,
                 deletable: Callable[[str], bool] | None = None) -> list[str]:
     """Validate the complete batch before writing; roll back failed manifests."""
+    if edits.database_gap:
+        raise DatabaseRepairNeeded(edits.database_gap)
     if edits.shared_need:
         if edits.changes or edits.new_files or edits.delete_files or edits.read_files or edits.read_shared or edits.read_shared_groups:
             raise ValueError("shared_need must not contain edits or read_files")

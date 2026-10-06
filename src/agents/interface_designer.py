@@ -10,7 +10,7 @@ from pydantic import Field
 from agents.context.pipeline import context_pipeline
 from agents.context.prompts.interface_designer import get_system_prompt
 from agents.runtime.plain_codegen import (
-    CodeEdits, Record, SharedNeed, SharedNeeded, ModelTransportExhausted, apply_edits, ask_with_reads, feedback_source_paths, is_test_asset, protected_paths, source_bundle, shared_catalog,
+    CodeEdits, Record, SharedNeed, SharedNeeded, DatabaseRepairNeeded, ModelTransportExhausted, apply_edits, ask_with_reads, feedback_source_paths, is_test_asset, protected_paths, source_bundle, shared_catalog,
 )
 from core import sessions
 from core.service import get_runtime
@@ -184,7 +184,7 @@ class InterfaceDesigner:
                     "accepted_edits": edits.model_dump(), "read_rounds": read_budget.get("rounds", 0),
                     "transport_retries": transport_budget.get("retries", 0)}})
                 return {"files": files}
-            except SharedNeeded:
+            except (SharedNeeded, DatabaseRepairNeeded):
                 raise
             except ModelTransportExhausted as exc:
                 sessions.merge_node_session(node_id, {"design_codegen": {

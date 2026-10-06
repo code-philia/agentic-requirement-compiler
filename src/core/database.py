@@ -13,7 +13,7 @@ from typing import Any
 from agents.database_designer import DatabaseDesigner
 from core.config import get_android_package
 from core.database_codegen import render_files, runtime_bootstrap_hook, write_generated_files
-from core.database_plan import compile_plan, ensure_additive, identifier, literal, validate_plan
+from core.database_plan import compile_plan, ensure_additive, identifier, literal, validate_plan, unique_keys
 from core.files import read_json_file, write_json_file
 
 
@@ -117,6 +117,90 @@ def validate_against_database(path: Path, plan: dict[str, Any]) -> None:
         apply_sqlite_plan(scratch, plan)
 
 
+def isolate_database_records(path: Path, plan: dict[str, Any], previous: dict[str, Any],
+                             sources: set[str]) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """Select a strict, replayable plan on a backup; never weaken SQLite constraints."""
+    from copy import deepcopy
+    accepted = deepcopy(previous)
+    issues: list[dict[str, Any]] = []
+    old_tables = {table["name"]: table for table in previous["tables"]}
+    with sqlite3.connect(":memory:") as scratch:
+        if path.exists():
+            with sqlite3.connect(path.as_uri() + "?mode=ro", uri=True) as source:
+                source.backup(scratch)
+        apply_sqlite_plan(scratch, previous)
+        for table in plan["tables"]:
+            try:
+                candidate = {"tables": [table], "seeds": []}
+                validate_plan({"tables": [item for item in accepted["tables"] if item["name"] != table["name"]] + [table],
+                               "seeds": accepted["seeds"]}, sources, defer_references=True)
+                ensure_additive({"tables": [old_tables[table["name"]]] if table["name"] in old_tables else [], "seeds": []}, candidate)
+                # Existing apply uses a transaction: one table failure rolls back only
+                # this scratch attempt. No failed definition enters generated code.
+                apply_sqlite_plan(scratch, candidate)
+                accepted["tables"] = [item for item in accepted["tables"] if item["name"] != table["name"]] + [table]
+            except (ValueError, sqlite3.Error) as exc:
+                issues.append({"phase": "schema", "table": table["name"], "record": table,
+                               "req_ids": table["req_ids"], "error": str(exc)})
+        # Quarantine referencing definitions transitively rather than removing FKs.
+        while True:
+            rejected = []
+            names = {item["name"]: item for item in accepted["tables"]}
+            for table in accepted["tables"]:
+                invalid = [col["references"] for col in table["columns"] if col["references"] and (
+                    col["references"]["table"] not in names or
+                    [col["references"]["column"]] not in unique_keys(names[col["references"]["table"]]))]
+                if invalid:
+                    rejected.append((table, f"Unavailable foreign key targets: {invalid}"))
+            if not rejected:
+                break
+            for table, error in rejected:
+                if table["name"] in old_tables:
+                    raise ValueError(f"Previously applied database contract is invalid: {table['name']}: {error}")
+                accepted["tables"].remove(table)
+                issues.append({"phase": "schema", "table": table["name"], "record": table,
+                               "req_ids": table["req_ids"], "error": error})
+        accepted = validate_plan(accepted, sources)
+        # Rebuild a clean backup: quarantined scratch tables must not help seed FKs.
+        with sqlite3.connect(":memory:") as rows_db:
+            if path.exists():
+                with sqlite3.connect(path.as_uri() + "?mode=ro", uri=True) as source:
+                    source.backup(rows_db)
+            apply_sqlite_plan(rows_db, accepted)
+            pending = [(seed, row) for seed in plan["seeds"] for row in seed["rows"]
+                       if not any(seed["table"] == prior["table"] and row in prior["rows"]
+                                  and seed["conflict_columns"] == prior["conflict_columns"] for prior in previous["seeds"])]
+            while pending:
+                retry = []
+                progress = False
+                for seed, row in pending:
+                    item = {**seed, "rows": [row]}
+                    try:
+                        candidate = validate_plan({"tables": accepted["tables"], "seeds": [*accepted["seeds"], item]}, sources)
+                        rows_db.execute("SAVEPOINT seed_record")
+                        try:
+                            for sql in compile_plan({"tables": [], "seeds": [item]})["seeds"]:
+                                rows_db.execute(sql)
+                        except sqlite3.Error:
+                            rows_db.execute("ROLLBACK TO seed_record")
+                            rows_db.execute("RELEASE seed_record")
+                            raise
+                        rows_db.execute("RELEASE seed_record")
+                        accepted = candidate
+                        progress = True
+                    except (ValueError, sqlite3.Error) as exc:
+                        retry.append((seed, row, str(exc)))
+                if not retry:
+                    break
+                if not progress:
+                    issues.extend({"phase": "seeds", "table": seed["table"], "record": {**seed, "rows": [row]},
+                                   "req_ids": seed["req_ids"], "error": error} for seed, row, error in retry)
+                    break
+                pending = [(seed, row) for seed, row, _ in retry]
+    ensure_additive(previous, accepted)
+    return accepted, issues
+
+
 def verify_materialized_database(path: Path, plan: dict[str, Any]) -> None:
     if not plan["tables"]:
         return
@@ -165,10 +249,17 @@ class DatabasePreparation:
             requirement_path=requirement_path, log_cb=log_cb,
         )
 
-    async def prepare(self, tree: dict[str, Any], revision: str, runtime) -> dict[str, Any]:
+    async def prepare(self, tree: dict[str, Any], revision: str, runtime, *,
+                      repair_plan: dict[str, Any] | None = None,
+                      repair_baseline: dict[str, Any] | None = None,
+                      remaining_issues: list[dict[str, Any]] | None = None,
+                      commit: bool = True) -> dict[str, Any]:
+        if repair_plan is None:
+            from core.database_repair import recover_database_repair
+            recover_database_repair(self)
         state = read_json_file(self.state_path) or {}
         previous_error = state.get("error", "")
-        previous = state.get("applied_plan") or {"tables": [], "seeds": []}
+        previous = repair_baseline if repair_baseline is not None else state.get("applied_plan") or {"tables": [], "seeds": []}
         sources = {item["req_id"] for item in runtime.traceability.list_requirements()}
         # Evolution can preserve tables sourced from the previous requirement document.
         sources.update(req_id for table in previous.get("tables", []) for req_id in table["req_ids"])
@@ -179,9 +270,11 @@ class DatabasePreparation:
         await self._log("Preparing the whole-application database before node compilation.")
         try:
             db_path = application_db_path(self.workspace, self.app_type)
-            if (state.get("requirements_revision") == revision
+            if repair_plan is not None:
+                plan = validate_plan(repair_plan, sources)
+            elif (state.get("requirements_revision") == revision
                     and state.get("analysis_validated") and isinstance(state.get("plan"), dict)):
-                plan = validate_plan(state["plan"], sources)
+                plan = validate_plan(state.get("requested_plan") or state["plan"], sources, defer_references=True)
                 await self._log("Reusing analyzed database records; replaying deterministic materialization and preparation.")
             else:
                 payload = await self.designer.run(tree, {
@@ -189,7 +282,25 @@ class DatabasePreparation:
                     "existing_schema": inspect_database(db_path),
                     "previous_failure": previous_error,
                 }, revision=revision, requirement_ids=sources)
-                plan = validate_plan(payload, sources)
+                plan = validate_plan(payload, sources, defer_references=True)
+            requested_plan = plan
+            plan, issues = isolate_database_records(db_path, plan, previous, sources)
+            analysis = read_json_file(self.workspace / ".arc/database/analysis.json") or {}
+            issues = [*(remaining_issues if remaining_issues is not None else analysis.get("skipped_records", [])), *issues]
+            blocked = {req_id for issue in issues if issue["phase"] == "schema" for req_id in issue.get("req_ids", [])}
+            # Block requirement dependencies too; leave unrelated node tasks runnable.
+            records = runtime.traceability.list_requirements()
+            while True:
+                expanded = blocked | {record["req_id"] for record in records
+                                      if set(record.get("dependencies", [])) & blocked}
+                if expanded == blocked:
+                    break
+                blocked = expanded
+            state.update({"requested_plan": requested_plan, "skipped_records": issues,
+                          "blocked_node_ids": sorted(blocked), "degraded": bool(issues)})
+            write_json_file(self.workspace / ".arc/database/skipped_records.json", {"records": issues})
+            if issues:
+                await self._log(f"Isolated {len(issues)} database record(s); continuing with the accepted plan; {len(blocked)} node(s) blocked.")
             ensure_additive(previous, plan)
             state.update({"requirements_revision": revision,
                           "plan": plan, "analysis_validated": False, "runtime_verified": False})
@@ -240,7 +351,8 @@ class DatabasePreparation:
             os.environ["ARC_DATABASE_READY"] = "1"
             runtime.events.notify_traceability_changed("database_prepared")
             self._register_interfaces(plan, state, runtime)
-            runtime.git.commit("ARC DATABASE_PREPARE: materialize shared schema and bootstrap records")
+            if commit:
+                runtime.git.commit("ARC DATABASE_PREPARE: materialize shared schema and bootstrap records")
             await self._log(output)
             return state
         except Exception as exc:
@@ -249,6 +361,10 @@ class DatabasePreparation:
             write_json_file(self.state_path, state)
             await self._log(f"Database preparation failed; node compilation is stopped: {exc}", "error")
             return state
+
+    async def repair(self, node_id: str, problem: str, tree: dict[str, Any], revision: str, runtime) -> dict[str, Any]:
+        from core.database_repair import repair_database
+        return await repair_database(self, node_id, problem, tree, revision, runtime)
 
     def _register_interfaces(self, plan: dict[str, Any], state: dict[str, Any], runtime) -> None:
         primary_file = next((path for path in state["generated_files"] if path.endswith(("arc_database.js", "arc_database.py", "ArcDatabase.java"))), "")

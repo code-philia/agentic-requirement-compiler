@@ -13,7 +13,7 @@ from core.service import get_runtime
 from core.path_compat import normalize_windows_extended_prefix_text
 from core.visual_analysis import analyze_and_attach_visual_references
 from app_type_handler.test_results import parse_test_results, compact_execution_output
-from agents.runtime.plain_codegen import SharedNeeded, ModelTransportExhausted, feedback_source_paths
+from agents.runtime.plain_codegen import SharedNeeded, DatabaseRepairNeeded, ModelTransportExhausted, feedback_source_paths
 
 
 LogCallback = Callable[[str, str, str | None, str | None], Awaitable[None] | None]
@@ -60,6 +60,8 @@ class WorkflowPhaseRunner:
         return get_runtime().traceability
 
     async def run_design_phase(self, node_id: str, requirement_data: dict[str, Any]) -> bool:
+        if await self._database_blocks_node(node_id):
+            return False
         is_non_leaf = bool(requirement_data.get("children_ids"))
         requirement_data = await analyze_and_attach_visual_references(
             workspace_path=self.workspace_path,
@@ -252,6 +254,8 @@ class WorkflowPhaseRunner:
         replace_test_id: str | None = None,
     ) -> bool:
         normalized_intent = str(intent or "").strip()
+        if await self._database_blocks_node(node_id):
+            return False
         if not normalized_intent:
             await self._log("TestGenerator", "A test intent is required.", status="error", node_id=node_id)
             return False
@@ -349,6 +353,8 @@ class WorkflowPhaseRunner:
         test_ids: list[str] | None = None,
     ) -> bool:
         is_non_leaf = bool(requirement_data.get("children_ids"))
+        if await self._database_blocks_node(node_id):
+            return False
         selected_test_ids = list(dict.fromkeys(str(test_id or "").strip() for test_id in test_ids or [] if str(test_id or "").strip()))
         if selected_test_ids and is_non_leaf:
             await self._log(
@@ -503,7 +509,7 @@ class WorkflowPhaseRunner:
                             if failed_kinds or attempt > 1:
                                 await self._log("TestDrivenDeveloper", "flow> Stopping this repair round at the first failed layer; repair follows before further regression.", node_id=node_id)
                                 break
-            except SharedNeeded:
+            except (SharedNeeded, DatabaseRepairNeeded):
                 raise
             except ModelTransportExhausted as exc:
                 self._update_node_session(node_id, {"tdd_codegen": {
@@ -684,6 +690,16 @@ class WorkflowPhaseRunner:
             interface_id = str(interface.get("interface_id", "") or "").strip()
             if interface_id:
                 self.traceability.set_interface_implemented(interface_id, True)
+
+    async def _database_blocks_node(self, node_id: str) -> bool:
+        from core.files import read_json_file
+        state = read_json_file(Path(self.workspace_path) / ".arc/database/state.json") or {}
+        if node_id not in state.get("blocked_node_ids", []):
+            return False
+        message = "Required database structure was quarantined; see .arc/database/skipped_records.json."
+        self._update_node_session(node_id, {"database_blocked": True, "recent_failure_summary": message})
+        await self._log("DatabasePreparation", message, status="error", node_id=node_id)
+        raise DatabaseRepairNeeded(message)
 
     def _update_node_session(self, node_id: str, patch: dict[str, Any]) -> None:
         sessions.merge_node_session(node_id, patch)

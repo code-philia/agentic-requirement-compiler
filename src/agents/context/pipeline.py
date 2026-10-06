@@ -617,6 +617,10 @@ class ContextPipeline:
             related = expanded
         context = {
             "status": "PREPARED",
+            "degraded": state.get("degraded", False),
+            "missing_records": [{key: item.get(key) for key in ("phase", "table", "error", "req_ids")} for item in state.get("skipped_records", [])
+                                if node_id in item.get("req_ids", [])],
+            "missing_records_rule": "Only tables/seeds below are materialized. Skipped seeds are unavailable; never assume they exist. Use isolated test setup for scenario-specific data. Do not recreate quarantined schema in node code.",
             "tables": [table for table in tables if table["name"] in related],
             "table_catalog": [{"name": table["name"], "req_ids": table["req_ids"]} for table in tables],
             "seeds": [seed for seed in plan.get("seeds", []) if seed["table"] in related],

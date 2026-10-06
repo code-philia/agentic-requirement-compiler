@@ -17,7 +17,7 @@ from core import commits, config, files, sessions
 from core.phases import WorkflowPhaseRunner
 from core.database import DatabasePreparation
 from core.shared import SharedPreparation
-from agents.runtime.plain_codegen import SharedNeeded, record_shared_consumers
+from agents.runtime.plain_codegen import SharedNeeded, DatabaseRepairNeeded, record_shared_consumers
 from core.service import configure_runtime
 from core.commits import build_commit_message
 from core.config import load_project_env, set_app_type, set_web_port, set_workspace_root
@@ -535,10 +535,29 @@ class ARCWorkflowManager:
             await self._log("Compiler", f"Running {phase} for node {node_id}...", node_id=node_id)
             task_ok = False
             # Resolve only requests raised by this task, with a fixed interruption budget.
-            for shared_round in range(4):
+            shared_round = 0
+            database_round = 0
+            for _ in range(6):
                 try:
                     task_ok = await self._run_task(task)
                     break
+                except DatabaseRepairNeeded as exc:
+                    if database_round >= 2:
+                        await self._log("Compiler", "Database repair budget exhausted for this task.", "error", node_id)
+                        break
+                    database_round += 1
+                    sessions.merge_node_session(node_id, {"database_handoff": {
+                        "status": "pending", "problem": str(exc), "phase": phase, "round": database_round}})
+                    try:
+                        await self.database_preparation.repair(node_id, str(exc), requirement_tree,
+                                                              self._requirement_tree_revision(requirement_tree), self.runtime)
+                        sessions.merge_node_session(node_id, {"database_handoff": {"status": "resolved"},
+                                                             "database_blocked": False})
+                        context_pipeline.cache.clear()
+                    except Exception as error:
+                        sessions.merge_node_session(node_id, {"database_handoff": {"status": "failed", "error": str(error)}})
+                        await self._log("Compiler", f"Database repair failed: {error}", "error", node_id)
+                        break
                 except SharedNeeded as exc:
                     sessions.merge_node_session(node_id, {"shared_handoff": {
                         "status": "pending", "need": exc.need.model_dump(), "phase": phase}})
@@ -547,10 +566,23 @@ class ARCWorkflowManager:
                             "status": "failed", "error": "Shared request budget exhausted for this task."}})
                         await self._log("Compiler", "Shared request budget exhausted for this task.", "error", node_id)
                         break
+                    shared_round += 1
                     try:
                         await self.shared_preparation.resolve(node_id, exc.need, self.runtime, self.phase_runner.app_handler)
                         sessions.merge_node_session(node_id, {"shared_handoff": {"status": "resolved"}})
                         context_pipeline.cache.clear()
+                    except DatabaseRepairNeeded as error:
+                        if database_round >= 2:
+                            await self._log("Compiler", "Database repair budget exhausted for this task.", "error", node_id)
+                            break
+                        database_round += 1
+                        try:
+                            await self.database_preparation.repair(node_id, str(error), requirement_tree,
+                                                                  self._requirement_tree_revision(requirement_tree), self.runtime)
+                            context_pipeline.cache.clear()
+                        except Exception as repair_error:
+                            await self._log("Compiler", f"Database repair failed: {repair_error}", "error", node_id)
+                            break
                     except Exception as error:
                         sessions.merge_node_session(node_id, {"shared_handoff": {"status": "failed", "error": str(error)}})
                         await self._log("Compiler", str(error), "error", node_id)
