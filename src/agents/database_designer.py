@@ -7,39 +7,17 @@ import inspect
 import json
 import os
 import re
+import sqlite3
 from copy import deepcopy
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any
 
 from pydantic import Field
 
 from agents.model.factory import create_arc_chat_model
 from agents.model.native_openai import generate_text
-from core.database_plan import DatabasePlan, Record, Table, Seed, identifier, ensure_additive, validate_plan, unique_keys
+from core.database_plan import DatabasePlan, Record, Table, Seed, compile_plan, ensure_additive, validate_plan, unique_keys
 from core.files import read_json_file, write_json_file
-
-
-class Entity(Record):
-    name: str
-    purpose: str
-    req_ids: list[str]
-    identity: str
-    identity_keys: list[str]
-    aliases: list[str]
-    roles: list[str]
-
-
-class Evidence(Record):
-    req_id: str
-    quote: str = Field(min_length=1)
-
-
-class PersistenceFact(Record):
-    kind: Literal["entity", "identity_key", "relationship", "state", "seed", "no_persistence"]
-    entity: str
-    target: str = ""
-    detail: str = Field(min_length=1, max_length=3000)
-    evidence: list[Evidence] = Field(min_length=1)
 
 
 class SchemaDelta(Record):
@@ -62,65 +40,44 @@ class RejectedRecord(ValueError):
         self.payload = payload
 
 
-DATABASE_PROMPT = """Analyze ARC's shared SQLite database before node design and TDD.
-Include persistent identity/session prerequisites implied by requirements. Shared
-application modules are discovered later; database analysis does not design their APIs.
-Return only a JSON array of the supplied tool calls, never SQL, code, documents,
-explanations or wrapper properties. Parameters are directly on each call.
-Use the smallest model justified by requirements. Reuse global entity names and persisted schema;
-do not create parallel domain tables. Columns use INTEGER/REAL/TEXT/BLOB/NUMERIC, ASCII identifiers,
-literal defaults, explicit non-null primary keys and valid unique/FK constraints.
-Every table and seed group cites known requirement IDs. Seed only explicitly pre-existing product
-data, never registration/login/order action outputs, screenshots, or invented fixtures. Seeds need
-stable identities and unique conflict_columns. No plaintext passwords in hash fields, dynamic
-placeholders, or JSON BLOB values. Order seed groups parents before children.
-Structured data lifecycles override prose/GIVEN inference for those identities.
-SEED declares startup records. CREATED declares records produced by runtime actions:
-design persistence but never bootstrap their scenario examples. DERIVED means action-
-derived state, not guessed fixtures; persist only when required, do not invent rows.
-Use resolved_data as the authoritative referenced definitions. In seed_rows cite
-data_ids for structured SEED obligations. Never cite CREATED/DERIVED as seed sources.
-Map business properties to the supplied schema; preserve explicit values, identities,
-timestamps and relationships. Descriptive creation/target/icon instructions are not
-automatically database columns. Add only necessary stable technical keys/relations.
-Return JSON records, not arbitrary INSERT SQL; the compiler emits idempotent SQL.
-For legacy identities without structured declarations retain explicit prose seed inference.
+DATABASE_ANALYSIS_VERSION = 6
 
-Entities phase identifies canonical entities directly from the controlled-size subtree,
-using the supplied compact record contract. Include identity keys, relationships
-(cardinality/ownership/deletion), persistent states and explicit seed obligations in
-the SAME response. Cite supplied source IDs; the compiler supplies original quotes
-and requirement IDs. No record is required for nodes without persistence. [] means
-this subtree has no persistence obligations. State inferred prerequisites explicitly;
-do not pretend an inference was written in the source. Seed obligations describe
-pre-existing data, not copied row datasets; the seeds phase sees the original subtree.
-Match identity/lifecycle/keys and roles, not spelling. Login user and passenger may share an identity only when evidence
-supports this; a passenger may exist without an account. Roles are not automatically
-entities, and equal names do not prove equal identities. Existing canonical identities
-are immutable. Reuse their exact canonical names or declare distinct identities with a clear reason.
-Canonical entity names are ASCII SQL table names. Existing persisted tables retain names.
-Schema phases receive normalized facts, a lightweight global entity/table index and
-only selected tables plus direct FK neighbours. Use the existing primary table name
-for each canonical identity; supplemental/association tables must implement an explicit
-fact. Keep out unrelated tables. Seed rows are generated in a separate seeds phase;
-never return seed_rows during schema phases. Seeds phase receives only seed facts and
-their relevant schema, plus seed summaries without accumulated row payloads.
-Delta phases use define_table only for new or changed tables (complete definitions), and
-seed_rows for new seed groups/rows. Keep untouched records out of the response. Preserve table source IDs and add
-newly relevant ones. [] means no changes. Forward foreign keys may refer to later
-batches, but must resolve at final reconciliation. Normally extend earlier draft definitions.
-For genuine conflicts call replace_table(name) or replace_seed_rows(name),
-plus define_table or seed_rows with corrected complete definitions or all retained seed groups. Never silently
-overwrite conflicting values. Replacement is allowed only during resolve/reconcile phases. Never
-remove tables or lose requirement coverage. Applied previous_plan is immutable: only additive
-tables, safe columns, indexes and seed rows; never redefine or remove applied structures or seeds.
-Reconcile phases revisit one fact batch against the accumulated RELATED schema.
-Final structural validation is deterministic, not a giant all-schema model prompt. Records must
-then validate as a complete database plan. No persistence means [].
-If deferred_requirements are supplied, entity analysis was inconclusive, NOT no_persistence.
-Analyze their original sources during schema/reconcile phases, reuse indexed identities and
-tables, and define only genuinely necessary structures. In seeds phase inspect their Given
-data for explicit seed obligations even if there is no seed fact. Never invent fixtures.
+DATABASE_PROMPT = """Design ARC's shared SQLite database before node design and TDD.
+Return only a JSON array of supplied tool calls, never SQL, code, documents or prose.
+Schema phase: read the supplied child subtree directly and define the persistent
+entities, attributes, keys, relationships and states required by its behavior.
+ROOT is not analyzed for schema. Startup properties referenced from ROOT are
+withheld; their identity/lifecycle metadata can clarify entity identity.
+Reuse the accumulated schema; do not create parallel tables for the same identity.
+Return define_table only for new or changed tables, using complete definitions.
+Preserve earlier columns, constraints and requirement coverage; add relevant req_ids.
+Use ASCII SQL names, INTEGER/REAL/TEXT/BLOB/NUMERIC columns, literal defaults,
+explicit non-null primary keys and valid unique/foreign-key constraints.
+Roles do not automatically imply separate entities. Include persistent identity/session
+prerequisites when behavior requires them; do not design application APIs.
+Forward foreign keys may target later subtrees and must resolve after all batches.
+[] means this subtree requires no changes. Never emit seeds during schema analysis.
+For conflicting draft definitions use replace_table with the corrected complete
+definition, preserving existing columns and requirement coverage. Applied schema
+and seeds are immutable: only safe additive evolution is permitted.
+There is no entity/fact/binding output and no routine reconciliation pass.
+Schema_repair runs only after deterministic validation fails: correct the supplied
+error without dropping obligations or weakening constraints to pass validation.
+
+Seeds phase: use only ROOT data and the supplied completed schema. Map explicit
+SEED properties into concrete rows, including association tables and foreign keys.
+SEED means startup data; CREATED and DERIVED must never produce bootstrap rows.
+Cite declared SEED data_ids and ROOT's requirement ID in every structured seed group.
+Do not create or change tables/columns in seeds phase. Unknown fields/tables are errors.
+Descriptive creation/target/icon instructions are not automatically database columns.
+Preserve explicit identities, values, timestamps and relationships; do not invent fixtures.
+For legacy ROOT data without lifecycle, seed only explicitly pre-existing records.
+Use stable unique conflict_columns and emit parents before children. Reuse supplied
+existing identities/values. Integer surrogate IDs may be omitted when a natural unique
+key is supplied; use distinct temporary IDs when new rows refer to one another.
+No plaintext passwords in hash fields, dynamic placeholders or JSON BLOB values.
+Return seed_rows JSON, not INSERT SQL. The compiler generates idempotent code.
+[] means no additional startup rows are necessary.
 """
 
 
@@ -130,93 +87,17 @@ def _nodes(tree):
         yield from _nodes(child)
 
 
-ENTITY_OUTPUT = """Return only a JSON array of compact records, without tool calls or prose.
-Entity: ["entity", canonical_name, identity_description, [identity_keys], [aliases], [roles], [source_ids]].
-Data obligation: [kind, canonical_name, target, detail, [source_ids]].
-kind is relationship, identity_key, state, or seed; target is empty except for relationships.
-Names are ASCII SQL table names. Every referenced identity must be declared here or already
-in entity_index/accepted_entities. Reuse existing names exactly; never redefine their identity.
-An entity may have evidence from several nodes. Sources are supplied E-numbers, not copied
-quotes or requirement IDs. No per-node records, no bindings, no no_persistence records.
-[] is valid when the subtree has no persistence. Inspect ALL descriptions and scenario Given
-steps for pre-existing data; describe seed obligations briefly without reproducing row data.
-For corrections return only remaining/corrected records; valid records are retained.
-Example: [["entity","accounts","Registered account",["email"],["user"],[],["E1"]],
-["entity","orders","Purchase order",["order_number"],[],[],["E2"]],
-["relationship","orders","accounts","Many orders belong to one account",["E2"]]]."""
-
-
-def _fact_sources(batch):
-    """Assign local references without asking the model to reproduce source text."""
-    inventory, sources = [], {}
-    for index, node in enumerate(_nodes(batch), 1):
-        local = f"N{index}"
-        excerpts = []
-
-        def add(field, value):
-            if value is None or value == "":
-                return
-            quote = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)
-            ref = f"E{len(sources) + 1}"
-            sources[ref] = {"node": local, "req_id": str(node["id"]), "quote": quote}
-            excerpts.append({"ref": ref, "field": field, "text": quote})
-
-        add("name", node.get("name"))
-        add("description", node.get("description"))
-        add("data", node.get("data"))
-        add("resolved_data", node.get("resolved_data"))
-        # Include all scenario fields, not only Given; never truncate seed data.
-        for i, scenario in enumerate(node.get("scenarios", []) or []):
-            for field, value in scenario.items():
-                if field == "steps" and isinstance(value, list):
-                    for j, step in enumerate(value):
-                        add(f"scenarios[{i}].steps[{j}]", step)
-                else:
-                    add(f"scenarios[{i}].{field}", value)
-        if not excerpts:
-            add("id", str(node["id"]))
-        inventory.append({"node": local, "req_id": str(node["id"]),
-                          "type": node.get("type", ""),
-                          "children": [str(child["id"]) for child in node.get("children", []) or []],
-                          "dependencies": node.get("dependencies") or [], "sources": excerpts})
-    return inventory, sources
-
-
-def _summary(node):
-    # Full descriptions and scenario steps belong only to the selected subtree.
-    return {
-        "id": str(node["id"]), "name": node.get("name", ""),
-        "type": node.get("type", ""),
-        "description_excerpt": str(node.get("description") or "")[:800],
-        "dependencies": node.get("dependencies") or [],
-        "scenario_names": [item.get("name", "") for item in node.get("scenarios", []) or []],
-    }
-
-
-def _entity_index(catalog):
-    return [{"name": entity["name"], "identity": entity["identity"][:320],
-             "identity_keys": entity["identity_keys"][:16], "aliases": entity["aliases"][:20],
-             "roles": entity["roles"][:20]} for entity in catalog]
-
-
-def _schema_context(plan, facts, bindings, req_ids):
-    names = {binding["canonical"] for binding in bindings}
-    tables = {table["name"]: table for table in plan["tables"]}
-    selected = names & tables.keys()
-    selected.update(table["name"] for table in tables.values() if set(table["req_ids"]) & req_ids)
-    # Include direct incoming and outgoing neighbours, not the whole FK closure.
-    primary = set(selected)
-    for table in tables.values():
-        targets = {column["references"]["table"] for column in table["columns"] if column["references"]}
-        if table["name"] in primary:
-            selected.update(targets & tables.keys())
-        if targets & primary:
-            selected.add(table["name"])
-    return {"facts": facts, "bindings": bindings,
-            "schema_index": [{"name": table["name"], "keys": [table["primary_key"], *table["unique"]],
-                              "references": sorted({col["references"]["table"] for col in table["columns"] if col["references"]})}
-                             for table in tables.values()],
-            "draft": {"tables": [tables[name] for name in sorted(selected)], "seeds": []}}
+def _schema_batch(batch, root_seed_ids):
+    """Withhold ROOT startup values while preserving referenced identity metadata."""
+    result = deepcopy(batch)
+    for node in _nodes(result):
+        for field in ("data", "resolved_data"):
+            entries = node.get(field)
+            if isinstance(entries, list):
+                node[field] = [{key: value for key, value in entry.items() if key != "properties"}
+                               if isinstance(entry, dict) and entry.get("id") in root_seed_ids
+                               else entry for entry in entries]
+    return result
 
 
 def _order_seed_dependencies(plan):
@@ -245,7 +126,7 @@ def _merge(plan, payload, applied, sources, *, resolve=False, final=False):
     replacements = set(delta["replace_tables"])
     seed_replacements = set(delta["replace_seed_tables"])
     if (replacements or seed_replacements) and not resolve:
-        raise ValueError("Draft replacements require the explicit resolve phase")
+        raise ValueError("Draft replacements require explicit correction")
     tables = {table["name"]: deepcopy(table) for table in plan["tables"]}
     incoming = {table["name"]: table for table in delta["tables"]}
     if len(incoming) != len(delta["tables"]):
@@ -262,10 +143,10 @@ def _merge(plan, payload, applied, sources, *, resolve=False, final=False):
                 columns = {column["name"]: column for column in prior["columns"]}
                 for column in table["columns"]:
                     if column["name"] in columns and column != columns[column["name"]]:
-                        raise ValueError(f"Conflicting draft column {name}.{column['name']}; use resolve with replace_table")
+                        raise ValueError(f"Conflicting draft column {name}.{column['name']}; use replace_table")
                     columns[column["name"]] = column
                 if table["primary_key"] != prior["primary_key"]:
-                    raise ValueError(f"Conflicting draft primary key for {name}; use resolve with replace_table")
+                    raise ValueError(f"Conflicting draft primary key for {name}; use replace_table")
                 table["columns"] = list(columns.values())
                 for field in ("unique", "indexes"):
                     table[field] = prior[field] + [item for item in table[field] if item not in prior[field]]
@@ -283,15 +164,6 @@ def _merge(plan, payload, applied, sources, *, resolve=False, final=False):
                               defer_references=not final)
     ensure_additive(applied, candidate)
     return candidate
-
-
-def _merge_related(plan, payload, applied, sources, context, *, resolve=False):
-    delta = SchemaDelta.model_validate(payload).model_dump()
-    seen = {table["name"] for table in context["draft"]["tables"]}
-    all_names = {table["name"] for table in plan["tables"]}
-    if any(table["name"] in all_names - seen for table in delta["tables"]):
-        raise ValueError("Cannot redefine an unrelated table whose complete definition was not supplied")
-    return _merge(plan, {**delta, "seeds": []}, applied, sources, resolve=resolve)
 
 
 def _normalize_seeds(plan, delta):
@@ -390,16 +262,12 @@ class DatabaseDesigner:
             if inspect.isawaitable(result):
                 await result
 
-    async def _ask(self, model, phase, context, schema, accept, *, output_contract=None,
-                   decode=None, attempts=3, salvage=None):
+    async def _ask(self, model, phase, context, schema, accept, *, attempts=3, salvage=None):
         from agents.model.prompt_input import format_task_input
         from agents.model.tool_sequence import parse_tool_sequence, tool_contract
         initial = [{"role": "system", "content": DATABASE_PROMPT}, {"role": "user", "content": format_task_input({
             "phase": phase, "app_type": self.app_type, **context,
-        }, output_contract or tool_contract(schema))}]
-        if output_contract:
-            initial[0] = {"role": "system", "content": DATABASE_PROMPT +
-                          "\nFor this phase the supplied compact output contract overrides the tool-call format."}
+        }, tool_contract(schema))}]
         messages = initial
         rejected_payloads = []
         for attempt in range(attempts):
@@ -413,7 +281,7 @@ class DatabaseDesigner:
                 if fence:
                     normalized = fence[1].strip()
                     await self._log(f"{phase}: normalized a JSON code fence without changing records.")
-                payload = decode(normalized) if decode else parse_tool_sequence(normalized, schema)
+                payload = parse_tool_sequence(normalized, schema)
                 return payload, accept(payload)
             except ValueError as exc:
                 if isinstance(payload, dict):
@@ -442,335 +310,176 @@ class DatabaseDesigner:
     async def run(self, requirement_tree: dict[str, Any], baseline: dict[str, Any], *,
                   revision: str = "", requirement_ids: set[str] | None = None) -> dict[str, Any]:
         from arcbench_agent_runtime.requirement_contracts import resolve_requirement_contracts, validate_seed_data_sources
-        requirement_tree = resolve_requirement_contracts(requirement_tree)
-        nodes = list(_nodes(requirement_tree))
-        def validate_seed_sources(seeds):
-            validate_seed_data_sources(seeds, nodes)
+        tree = resolve_requirement_contracts(requirement_tree)
+        nodes = list(_nodes(tree))
+        root = {key: value for key, value in tree.items() if key != "children"}
+        root_data = root.get("data")
+        seed_data = [entry for entry in root_data if isinstance(entry, dict)
+                     and entry.get("lifecycle") == "SEED"] if isinstance(root_data, list) else []
+        seed_ids = {entry["id"] for entry in seed_data}
+        batches = [_schema_batch(batch, seed_ids) for batch in tree.get("children", []) or []]
+        batch_order = [str(batch["id"]) for batch in batches]
         applied = baseline.get("previous_plan") or {"tables": [], "seeds": []}
         sources = set(requirement_ids or ()) | {str(node["id"]) for node in nodes}
         sources.update(rid for item in [*applied["tables"], *applied["seeds"]] for rid in item["req_ids"])
-        identity = {"version": 4, "revision": revision, "tree": requirement_tree,
-                    "applied": applied, "schema": baseline.get("existing_schema")}
+        identity = {"version": DATABASE_ANALYSIS_VERSION, "revision": revision,
+                    "tree": tree, "batch_order": batch_order, "applied": applied,
+                    "schema": baseline.get("existing_schema")}
         key = hashlib.sha256(json.dumps(identity, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
         path = Path(self.workspace_root) / ".arc/database/analysis.json"
-        seeds_path = path.with_name("seeds.json")
+        schema_path, seeds_path = path.with_name("schema.json"), path.with_name("seeds.json")
         state = read_json_file(path) or {}
         if state.get("key") != key:
-            old_catalog = state.get("catalog", [])
-            if isinstance(old_catalog, dict):
-                old_catalog = old_catalog.get("entities", [])
-            old_identities = {entity["name"]: entity for entity in old_catalog if "identity" in entity}
-            state = {"key": key, "revision": revision, "plan": {"tables": deepcopy(applied["tables"])},
-                     "fact_batches": [], "identity_batches": [], "batches": [], "reconciled": [],
-                     "catalog": [old_identities.get(table["name"]) or {"name": table["name"], "purpose": "Existing persistent entity",
-                                  "identity": "Existing table: " + table["name"],
-                                  "identity_keys": [",".join(table["primary_key"])], "aliases": [],
-                                  "roles": [], "req_ids": table["req_ids"]} for table in applied["tables"]]}
+            state = {"key": key, "version": DATABASE_ANALYSIS_VERSION, "revision": revision,
+                     "batch_order": batch_order, "batches": [], "schema_checked": False,
+                     "seed_complete": False, "complete": False, "skipped_records": []}
+            write_json_file(schema_path, {"key": key, "tables": deepcopy(applied["tables"])})
             write_json_file(seeds_path, {"key": key, "seeds": deepcopy(applied["seeds"])})
             write_json_file(path, state)
-        seed_state = read_json_file(seeds_path) or {}
-        if seed_state.get("key") != key:
-            raise ValueError("Database seed intermediate records are missing or belong to another analysis revision")
-        if state.get("seed_protocol") != 2 and not state.get("complete"):
-            # Old incomplete runs may contain latent primary-key collisions that
-            # previously passed validation. Preserve the draft for inspection and
-            # regenerate only bootstrap rows, keeping completed schema analysis.
-            if seed_state["seeds"]:
-                write_json_file(seeds_path.with_name("seeds.previous.json"), seed_state)
-            seed_state["seeds"] = deepcopy(applied["seeds"])
-            state["seed_batches"] = []
-            state["seed_protocol"] = 2
-            write_json_file(seeds_path, seed_state)
-            write_json_file(path, state)
-            await self._log("Seed protocol upgraded: retaining schema progress; regenerating draft seeds with shared identities.")
-        state["plan"]["seeds"] = seed_state["seeds"]
-        plan = validate_plan(state["plan"], sources, defer_references=True)
+        schema_state, seed_state = read_json_file(schema_path) or {}, read_json_file(seeds_path) or {}
+        if schema_state.get("key") != key or seed_state.get("key") != key:
+            raise ValueError("Database intermediate records are missing or belong to another analysis revision")
+        plan = validate_plan({"tables": schema_state["tables"], "seeds": seed_state["seeds"]},
+                             sources, defer_references=True)
         ensure_additive(applied, plan)
-        if state.get("complete") and not baseline.get("previous_failure"):
-            return validate_plan(plan, sources, defer_references=True)
+        if state.get("complete"):
+            return plan
         model = create_arc_chat_model(os.environ.get("MODEL", "openai:gpt-5.4"))
-        # Row payloads stay in a separate keyed record, never in analysis prompts/history.
+
         def persist():
+            write_json_file(schema_path, {"key": key, "tables": plan["tables"]})
             write_json_file(seeds_path, {"key": key, "seeds": plan["seeds"]})
-            state["plan"] = {"tables": plan["tables"]}
             write_json_file(path, state)
 
         def diagnostic(phase, record, error, req_ids):
-            state.setdefault("skipped_records", []).append({
-                "phase": phase, "table": record.get("table", record.get("name")) if isinstance(record, dict) else None,
-                "record": record, "error": error, "req_ids": sorted(req_ids),
+            state["skipped_records"].append({
+                "phase": phase,
+                "table": record.get("table", record.get("name")) if isinstance(record, dict) else None,
+                "record": record, "error": str(error), "req_ids": sorted(req_ids),
             })
 
-        def salvage_schema(payload, error, context):
+        def merge_schema(current, payload):
+            delta = SchemaDelta.model_validate(payload).model_dump()
+            previous = {table["name"]: table for table in current["tables"]}
+            for table in delta["tables"]:
+                prior = previous.get(table["name"])
+                if prior and table["name"] in delta["replace_tables"]:
+                    if not {col["name"] for col in prior["columns"]} <= {col["name"] for col in table["columns"]}:
+                        raise ValueError("Schema corrections cannot remove earlier columns")
+                    for field in ("unique", "indexes"):
+                        table[field] = prior[field] + [item for item in table[field] if item not in prior[field]]
+            return _merge(current, {**delta, "seeds": []}, applied, sources, resolve=True)
+
+        def salvage_schema(payload, error, req_ids):
             candidate = plan
             records = payload.get("tables", []) if isinstance(payload, dict) else []
             if not records:
-                req_ids = {str(node["id"]) for node in _nodes(context.get("requirements", {})) if "id" in node}
-                req_ids.update(item["req_id"] for fact in context.get("facts", []) for item in fact["evidence"])
-                req_ids.update(item["req_id"] for item in context.get("deferred_requirements", []))
                 diagnostic("schema", payload, error, req_ids)
             for record in records:
                 try:
                     replacements = payload.get("replace_tables", [])
-                    candidate = _merge_related(candidate, {
-                        "tables": [record], "replace_tables": [record.get("name")] if record.get("name") in replacements else [],
-                    }, applied, sources, context, resolve=True)
+                    candidate = merge_schema(candidate, {
+                        "tables": [record],
+                        "replace_tables": [record.get("name")] if record.get("name") in replacements else [],
+                    })
                 except (ValueError, TypeError, AttributeError) as exc:
-                    diagnostic("schema", record, str(exc), record.get("req_ids", []) if isinstance(record, dict) else [])
+                    diagnostic("schema", record, exc, req_ids)
             return candidate
 
-        root_context = _summary(requirement_tree)
-        batches = [{k: v for k, v in requirement_tree.items() if k != "children"},
-                   *(requirement_tree.get("children", []) or [])]
-        # Identify canonical entities and data obligations together, one subtree at a time.
-        # No separate candidate inventory, binding call, or per-node coverage requirement.
-        for index, batch in enumerate(batches):
-            if index < len(state["identity_batches"]):
-                continue
-            await self._log(f"Identifying database entities {index + 1}/{len(batches)}: {batch['id']}")
-            inventory, source_refs = _fact_sources(batch)
-            progress = state.setdefault("entity_progress", {}).setdefault(str(batch["id"]),
-                         {"entities": [], "facts": []})
-            additions, facts = progress["entities"], progress["facts"]
-
-            def accept_entities(rows):
-                if not isinstance(rows, list):
-                    raise ValueError("Expected a JSON array of entity/relationship/state/seed records")
-                errors = []
-                for position, row in enumerate(rows):
-                    try:
-                        if not isinstance(row, list) or not row:
-                            raise ValueError("Each record must be a nonempty array")
-                        kind = row[0]
-                        if kind in {"identity_key", "state", "seed"} and len(row) == 4:
-                            row = [*row[:2], "", *row[2:]]
-                        if kind in {"identity_key", "state", "seed"} and len(row) == 5 and row[2]:
-                            # Models often put a key/state name in the relationship-only
-                            # slot. Keep that information as detail instead of retrying.
-                            row = [*row[:2], "", f"{row[2]}: {row[3]}", row[4]]
-                        expected = 7 if kind == "entity" else 5
-                        if len(row) != expected:
-                            raise ValueError(f"{kind} requires {expected} fields; follow the supplied compact contract")
-                        refs = [row[-1]] if isinstance(row[-1], str) else row[-1]
-                        if not isinstance(refs, list) or not refs or any(not isinstance(ref, str) for ref in refs):
-                            raise ValueError("Provide source IDs from this batch")
-                        if any(ref not in source_refs for ref in refs):
-                            raise ValueError("Unknown source ID")
-                        evidence = [{"req_id": source_refs[ref]["req_id"], "quote": source_refs[ref]["quote"]}
-                                    for ref in dict.fromkeys(refs)]
-                        req_ids = sorted({item["req_id"] for item in evidence})
-                        if kind == "entity":
-                            _, name, description, keys, aliases, roles, _ = row
-                            identifier(name)
-                            entity = Entity.model_validate({"name": name, "purpose": description,
-                                "identity": description, "identity_keys": keys, "aliases": aliases,
-                                "roles": roles, "req_ids": req_ids}).model_dump()
-                            if not description.strip():
-                                raise ValueError("Describe entity identity/lifecycle")
-                            existing = next((item for item in state["catalog"] if item["name"] == name), None)
-                            prior = next((item for item in additions if item["name"] == name), None)
-                            fact = PersistenceFact.model_validate({"kind": "entity", "entity": name,
-                                    "target": "", "detail": existing["identity"] if existing else description,
-                                    "evidence": evidence}).model_dump()
-                            if not existing and not prior:
-                                if name.casefold() in {item["name"].casefold() for item in [*state["catalog"], *additions]}:
-                                    raise ValueError("Reuse the exact existing canonical name")
-                                additions.append(entity)
-                            elif prior:
-                                if prior["identity"] != description or prior["identity_keys"] != keys:
-                                    raise ValueError(f"Conflicting identity for {name}; preserve accepted identity")
-                                prior["req_ids"] = sorted(set(prior["req_ids"]) | set(req_ids))
-                                prior["aliases"] = sorted(set(prior["aliases"]) | set(aliases))
-                                prior["roles"] = sorted(set(prior["roles"]) | set(roles))
-                            elif existing:
-                                existing["aliases"] = sorted(set(existing["aliases"]) | set(aliases))
-                                existing["roles"] = sorted(set(existing["roles"]) | set(roles))
-                        elif kind in {"relationship", "identity_key", "state", "seed"}:
-                            _, name, target, detail, _ = row
-                            identifier(name)
-                            if kind == "relationship":
-                                identifier(target)
-                            elif target:
-                                raise ValueError("Only relationships have a target")
-                            fact = {"kind": kind, "entity": name, "target": target,
-                                    "detail": detail, "evidence": evidence}
-                        else:
-                            raise ValueError("Only entity, relationship, identity_key, state and seed records are needed")
-                        fact = PersistenceFact.model_validate(fact).model_dump()
-                        if fact not in facts:
-                            facts.append(fact)
-                    except (ValueError, TypeError) as exc:
-                        errors.append(f"Record {position + 1}: {str(exc)[:350]}")
-                persist()  # Retain valid rows even when another row requires correction.
-                if errors:
-                    raise ValueError("\n".join(errors[:12]))
-                known = {item["name"] for item in [*state["catalog"], *additions]}
-                missing = {fact["entity"] for fact in facts} - known
-                missing.update(fact["target"] for fact in facts
-                               if fact["kind"] == "relationship" and fact["target"] not in known)
-                if missing:
-                    raise ValueError("Declare identities for these referenced entities: " + ", ".join(sorted(missing)))
-                return facts
-
-            deferred = []
-            try:
-                await self._ask(model, "entities", {
-                    "root_summary": root_context, "nodes": inventory,
-                    "entity_index": _entity_index(state["catalog"]),
-                    "accepted_entities": _entity_index(additions),
-                    "accepted_obligations": [{k: v for k, v in fact.items() if k != "evidence"} for fact in facts],
-                    "instruction": "Identify canonical entities and data obligations directly. Return only new or remaining records. No record is needed for a node without persistence.",
-                }, None, accept_entities, output_contract=ENTITY_OUTPUT, decode=json.loads)
-            except RejectedRecord as exc:
-                # Inconclusive format is not evidence of absent data. Schema and seed
-                # analysis inspect the original subtree while retaining accepted records.
-                deferred = inventory
-                await self._log(f"entities: retained {len(facts)} records; continuing original-source analysis for {batch['id']}: {str(exc)[:500]}")
-            state["catalog"].extend(additions)
-            bindings = [{"candidate": name, "canonical": name, "reason": "Direct canonical entity identification"}
-                        for name in sorted({fact["entity"] for fact in facts}
-                            | {fact["target"] for fact in facts if fact["kind"] == "relationship"})]
-            for entity in state["catalog"]:
-                own_facts = [fact for fact in facts if entity["name"] in {fact["entity"], fact["target"]}]
-                entity["req_ids"] = sorted(set(entity["req_ids"]) |
-                    {item["req_id"] for fact in own_facts for item in fact["evidence"]})
-            state["fact_batches"].append({"root_id": str(batch["id"]), "facts": facts,
-                                          "deferred_requirements": deferred})
-            state["identity_batches"].append({"root_id": str(batch["id"]), "bindings": bindings})
-            state["entity_progress"].pop(str(batch["id"]), None)
-            persist()
-
+        # Each subtree directly extends the schema seen by subsequent subtrees.
         for index, batch in enumerate(batches):
             if index < len(state["batches"]):
                 continue
-            await self._log(f"Analyzing database batch {index + 1}/{len(batches)}: {batch['id']}")
-            facts = state["fact_batches"][index]["facts"]
-            bindings = state["identity_batches"][index]["bindings"]
-            deferred = state["fact_batches"][index].get("deferred_requirements", [])
-            if not bindings and not deferred:
-                state["batches"].append({"root_id": str(batch["id"]), "delta": {"tables": []}})
-                persist()
-                continue
-            batch_ids = {str(node["id"]) for node in _nodes(batch)}
-            context = {"root_summary": root_context, "entity_index": _entity_index(state["catalog"]),
-                       "requirements": batch, "deferred_requirements": deferred,
-                       **_schema_context(plan, facts, bindings, batch_ids)}
-            context["existing_schema"] = {name: definition for name, definition in (baseline.get("existing_schema") or {}).items()
-                                          if name in {binding["canonical"] for binding in bindings}
-                                          or name in {table["name"] for table in context["draft"]["tables"]}}
+            ids = {str(node["id"]) for node in _nodes(batch)}
+            await self._log(f"Designing database schema {index + 1}/{len(batches)}: {batch['id']}")
+            _, plan = await self._ask(model, "schema", {
+                "requirements": batch, "draft": {"tables": plan["tables"]},
+                "existing_schema": baseline.get("existing_schema") or {},
+            }, SchemaDelta.model_json_schema(), lambda payload: merge_schema(plan, payload),
+                salvage=lambda payload, error: salvage_schema(payload, error, ids))
+            state["batches"].append(str(batch["id"]))
+            persist()
+
+        def check_schema(candidate):
+            schema = validate_plan({"tables": candidate["tables"], "seeds": []}, sources)
+            # Check actual SQLite DDL as well as JSON/foreign-key structure.
+            with sqlite3.connect(":memory:") as scratch:
+                program = compile_plan(schema)
+                for table in program["tables"]:
+                    scratch.execute(table["create"])
+                for sql in program["indexes"]:
+                    scratch.execute(sql)
+
+        if not state["schema_checked"]:
             try:
-                delta, candidate = await self._ask(model, "subtree", context,
-                    SchemaDelta.model_json_schema(), lambda p: _merge_related(plan, p, applied, sources, context))
-            except RejectedRecord as exc:
-                delta, candidate = await self._ask(model, "resolve", {
-                    **context, "conflict": str(exc), "rejected_delta": exc.payload,
-                },
-                    SchemaDelta.model_json_schema(), lambda p: _merge_related(plan, p, applied, sources, context, resolve=True),
-                    salvage=lambda p, error: salvage_schema(p, error, context))
-            plan = candidate
-            if deferred:
-                # Deferred analysis can discover an identity without an earlier binding.
-                # Register its real table and keys for all subsequent batches to reuse.
-                known = {entity["name"] for entity in state["catalog"]}
-                for table in plan["tables"]:
-                    if table["name"] not in known and set(table["req_ids"]) & batch_ids:
-                        state["catalog"].append({"name": table["name"], "purpose": "Persistent entity",
-                            "identity": "Schema-confirmed table: " + table["name"],
-                            "identity_keys": [",".join(table["primary_key"])], "aliases": [],
-                            "roles": [], "req_ids": table["req_ids"]})
-            state["batches"].append({"root_id": str(batch["id"]), "delta": delta})
+                check_schema(plan)
+            except (ValueError, sqlite3.Error) as exc:
+                await self._log(f"Repairing database schema after validation: {exc}")
+                def accept_repair(payload):
+                    candidate = merge_schema(plan, payload)
+                    try:
+                        check_schema(candidate)
+                    except sqlite3.Error as error:
+                        raise ValueError(str(error)) from error
+                    return candidate
+                ids = {str(node["id"]) for batch in batches for node in _nodes(batch)}
+                _, plan = await self._ask(model, "schema_repair", {
+                    "error": str(exc), "requirements": batches,
+                    "draft": {"tables": plan["tables"]},
+                }, SchemaDelta.model_json_schema(), accept_repair,
+                    salvage=lambda payload, error: salvage_schema(payload, error, ids))
+                # The preparation layer quarantines any remaining invalid structures.
+            state["schema_checked"] = True
             persist()
 
-        # Local semantic reconciliation after every entity's schema has been seen.
-        for index, record in enumerate(state["fact_batches"]):
-            if index < len(state["reconciled"]):
-                continue
-            facts = record["facts"]
-            bindings = state["identity_batches"][index]["bindings"]
-            deferred = record.get("deferred_requirements", [])
-            if not bindings and not deferred:
-                state["reconciled"].append(record["root_id"])
-                persist()
-                continue
-            ids = {item["req_id"] for fact in facts for item in fact["evidence"]}
-            ids.update(item["req_id"] for item in deferred)
-            context = {"entity_index": _entity_index(state["catalog"]),
-                       "deferred_requirements": deferred,
-                       **_schema_context(plan, facts, bindings, ids)}
-            await self._log(f"Reconciling related schema {index + 1}/{len(batches)}: {record['root_id']}")
-            _, plan = await self._ask(model, "reconcile", context, SchemaDelta.model_json_schema(),
-                                      lambda p: _merge_related(plan, p, applied, sources, context, resolve=True),
-                                      salvage=lambda p, error: salvage_schema(p, error, context))
-            state["reconciled"].append(record["root_id"])
-            persist()
-
-        state.setdefault("seed_batches", [])
-        for index, record in enumerate(state["fact_batches"]):
-            if index < len(state["seed_batches"]):
-                continue
-            facts = [fact for fact in record["facts"] if fact["kind"] == "seed"]
-            deferred = record.get("deferred_requirements", [])
-            structured_seed_nodes = [node for node in _nodes(batches[index])
-                                     if any(entry["lifecycle"] == "SEED"
-                                            for entry in node.get("resolved_data", []))]
-            if facts or deferred or structured_seed_nodes:
-                ids = {item["req_id"] for fact in facts for item in fact["evidence"]}
-                ids.update(item["req_id"] for item in deferred)
-                ids.update(str(node["id"]) for node in structured_seed_nodes)
-                context = _schema_context(plan, facts, state["identity_batches"][index]["bindings"], ids)
-                context["deferred_requirements"] = deferred
-                context.pop("schema_index")
-                context["requirements"] = batches[index]
-                context["seed_data"] = [entry for node in _nodes(batches[index])
-                                        for entry in node.get("resolved_data", [])
-                                        if entry["lifecycle"] == "SEED"]
-                context["existing_seed_records"] = _seed_context(plan, context["draft"]["tables"], batches[index])
-                context["seed_rule"] = (
-                    "Reuse supplied existing records and identities. Do not generate different passwords, timestamps, "
-                    "IDs or optional values for the same identity. Emit only explicit startup data obligations; "
-                    "scenario-specific action results and incompatible Given states belong in test setup. "
-                    "Integer primary IDs may be omitted for new records with an explicit natural unique key; "
-                    "the compiler allocates them. Use distinct temporary IDs when other rows reference them. "
-                    "The compiler selects a schema-declared conflict key and remaps batch foreign keys. "
-                    "If no startup rows are required return [].")
-                await self._log(f"Generating explicit seed records for {record['root_id']}")
-                def accept_seeds(payload):
+        # Only ROOT supplies startup data. Empty structured CREATED/DERIVED-only
+        # declarations require no model call; legacy ROOT data remains supported.
+        legacy_data = root_data if not isinstance(root_data, list) else [
+            entry for entry in root_data if not isinstance(entry, dict) or "lifecycle" not in entry]
+        if not state["seed_complete"]:
+            if seed_data or legacy_data:
+                seed_source = {"seed_data": seed_data, "legacy_data": legacy_data}
+                context = {
+                    "requirement_id": str(root["id"]), **seed_source,
+                    "draft": {"tables": plan["tables"]},
+                    "existing_seed_records": _seed_context(plan, plan["tables"], seed_source),
+                }
+                def merge_seeds(current, payload):
                     delta = SeedDelta.model_validate(payload).model_dump()
-                    validate_seed_sources(delta["seeds"])
-                    allowed = {table["name"] for table in context["draft"]["tables"]}
-                    if any(seed["table"] not in allowed or not set(seed["req_ids"]) & ids for seed in delta["seeds"]):
-                        raise ValueError("Seed records must target supplied related tables and cite this batch's seed facts")
-                    delta = _normalize_seeds(plan, delta)
-                    return _merge(plan, {"tables": [], **delta}, applied, sources)
+                    validate_seed_data_sources(delta["seeds"], nodes)
+                    for seed in delta["seeds"]:
+                        if str(root["id"]) not in seed["req_ids"]:
+                            raise ValueError("Seed records must cite ROOT")
+                        if set(seed.get("data_ids", [])) - seed_ids:
+                            raise ValueError("Seed sources must be declared in ROOT.data")
+                        if seed_ids and not seed.get("data_ids"):
+                            raise ValueError("Structured ROOT seeds must cite SEED data_ids")
+                    delta = _normalize_seeds(current, delta)
+                    return _merge(current, {"tables": [], **delta}, applied, sources)
 
                 def salvage_seeds(payload, error):
                     candidate = plan
                     records = payload.get("seeds", []) if isinstance(payload, dict) else []
                     if not records:
-                        diagnostic("seeds", payload, error, ids)
+                        diagnostic("seeds", payload, error, {str(root["id"])})
                     for seed in records:
                         rows = seed.get("rows", []) if isinstance(seed, dict) else []
                         if not rows:
-                            diagnostic("seeds", seed, error, ids)
+                            diagnostic("seeds", seed, error, {str(root["id"])})
                         for row in rows:
                             item = {**seed, "rows": [row]}
                             try:
-                                delta = SeedDelta.model_validate({"seeds": [item]}).model_dump()
-                                validate_seed_sources(delta["seeds"])
-                                allowed = {table["name"] for table in context["draft"]["tables"]}
-                                if item["table"] not in allowed or not set(item["req_ids"]) & ids:
-                                    raise ValueError("Seed record must target a supplied table and cite this batch")
-                                delta = _normalize_seeds(candidate, delta)
-                                candidate = _merge(candidate, {"tables": [], **delta}, applied, sources)
+                                candidate = merge_seeds(candidate, {"seeds": [item]})
                             except (ValueError, TypeError, KeyError) as exc:
-                                diagnostic("seeds", item, str(exc), ids)
+                                diagnostic("seeds", item, exc, {str(root["id"])})
                     return candidate
+
+                await self._log("Mapping ROOT SEED data onto the completed database schema")
                 _, plan = await self._ask(model, "seeds", context, SeedDelta.model_json_schema(),
-                                          accept_seeds, salvage=salvage_seeds)
-            state["seed_batches"].append(record["root_id"])
+                    lambda payload: merge_seeds(plan, payload), salvage=salvage_seeds)
+            state["seed_complete"] = True
             persist()
-        # FK validity and row order are resolved against SQLite in preparation.
         plan = validate_plan(plan, sources, defer_references=True)
-        state.update({"complete": True})
+        state["complete"] = True
         persist()
         return plan

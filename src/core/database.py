@@ -10,7 +10,7 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
-from agents.database_designer import DatabaseDesigner
+from agents.database_designer import DATABASE_ANALYSIS_VERSION, DatabaseDesigner
 from core.config import get_android_package
 from core.database_codegen import render_files, runtime_bootstrap_hook, write_generated_files
 from core.database_plan import compile_plan, ensure_additive, identifier, literal, validate_plan, unique_keys
@@ -273,6 +273,7 @@ class DatabasePreparation:
             if repair_plan is not None:
                 plan = validate_plan(repair_plan, sources)
             elif (state.get("requirements_revision") == revision
+                    and state.get("analysis_version") == DATABASE_ANALYSIS_VERSION
                     and state.get("analysis_validated") and isinstance(state.get("plan"), dict)):
                 plan = validate_plan(state.get("requested_plan") or state["plan"], sources, defer_references=True)
                 await self._log("Reusing analyzed database records; replaying deterministic materialization and preparation.")
@@ -332,6 +333,7 @@ class DatabasePreparation:
                 await self._log(f"Isolated {len(issues)} database record(s); continuing with the accepted plan; {len(blocked)} node(s) blocked.")
             ensure_additive(previous, plan)
             state.update({"requirements_revision": revision,
+                          "analysis_version": DATABASE_ANALYSIS_VERSION,
                           "plan": plan, "analysis_validated": False, "runtime_verified": False})
             write_json_file(self.state_path, state)
             validate_against_database(db_path, plan)
