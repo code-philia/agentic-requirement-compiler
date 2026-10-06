@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import os
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -88,6 +89,21 @@ def build_web_runtime_env() -> dict[str, str]:
         "ARC_WEB_BASE_URL": get_web_base_url(),
         "VITE_API_BASE_URL": get_web_base_url(),
     }
+
+
+def build_test_clock_env() -> dict[str, str]:
+    """An explicit per-run clock; never infer time from arbitrary requirement prose."""
+    value = os.environ.get("ARC_TEST_NOW", "").strip()
+    if not value:
+        return {"ARC_TEST_CLOCK_ENABLED": "0", "ARC_TEST_NOW": ""}
+    try:
+        instant = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        if instant.tzinfo is None or "T" not in value:
+            raise ValueError("Timezone and time are required")
+        normalized = instant.astimezone(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+    except ValueError as exc:
+        raise ValueError("ARC_TEST_NOW must be an ISO timestamp with timezone, e.g. 2026-07-21T12:00:00Z") from exc
+    return {"ARC_TEST_CLOCK_ENABLED": "1", "ARC_TEST_NOW": normalized}
 
 
 def set_android_package(package_name: str) -> None:

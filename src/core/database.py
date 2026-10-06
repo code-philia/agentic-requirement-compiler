@@ -287,6 +287,9 @@ class DatabasePreparation:
             plan, issues = isolate_database_records(db_path, plan, previous, sources)
             analysis = read_json_file(self.workspace / ".arc/database/analysis.json") or {}
             issues = [*(remaining_issues if remaining_issues is not None else analysis.get("skipped_records", [])), *issues]
+            # Coverage diagnostics are derived afresh; retaining them would keep a
+            # successfully repaired seed's consumers blocked forever.
+            issues = [issue for issue in issues if not issue.get("data_id")]
             # Explicit seeds are mandatory product state. A quarantined or omitted
             # record must not leave its consumers runnable against an empty database.
             records = runtime.traceability.list_requirements()
@@ -301,10 +304,12 @@ class DatabasePreparation:
                               "identities": [{key: row[key] for key in seed["conflict_columns"]}
                                              for row in seed["rows"]]}
                              for seed in plan["seeds"] if data_id in seed.get("data_ids", [])]
-                rejected = any(data_id in (issue.get("record") or {}).get("data_ids", [])
-                               for issue in issues if isinstance(issue.get("record"), dict))
-                ready = bool(locations) and not rejected
-                seed_status[data_id] = {"status": "MATERIALIZED" if ready else "MISSING",
+                expected = [seed for seed in requested_plan["seeds"] if data_id in seed.get("data_ids", [])]
+                accepted = [seed for seed in plan["seeds"] if data_id in seed.get("data_ids", [])]
+                ready = bool(locations) and all(
+                    any(item["table"] == seed["table"] and row in item["rows"] for item in accepted)
+                    for seed in expected for row in seed["rows"])
+                seed_status[data_id] = {"status": "ACCEPTED" if ready else "MISSING",
                                         "locations": locations, "req_ids": sorted(consumers)}
                 if not ready:
                     issues.append({"phase": "seeds", "data_id": data_id,
@@ -358,6 +363,9 @@ class DatabasePreparation:
                 output = f"Prepared SQLite database: {db_path.relative_to(self.workspace)}"
             validate_against_database(db_path, plan)
             verify_materialized_database(db_path, plan)
+            for entry in state["seed_data_status"].values():
+                if entry["status"] == "ACCEPTED":
+                    entry["status"] = "MATERIALIZED"
             affected = plan_changes(previous, plan)
             # Keep unconsumed schema impact across a crash between preparation and
             # scheduling the incremental node tasks.

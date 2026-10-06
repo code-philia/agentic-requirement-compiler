@@ -234,6 +234,11 @@ class ContextPipeline:
     def task_requirement(self, node_id: str, requirement: dict[str, Any]) -> dict[str, Any]:
         """Supply stored acceptance scenarios once, with the authoritative task requirement."""
         result = self._with_scenarios_from_store(node_id, requirement)
+        if self.config.app_type == "web":
+            from core.config import build_test_clock_env
+            clock_env = build_test_clock_env()
+            result["test_clock"] = {"environment": clock_env,
+                                    "scope": "Explicit whole-test-run clock; production remains real time. Do not rewrite timestamps. Different scenario clocks need separate isolated runs or injected Unit/Integration clocks."}
         store = self._store()
         if store:
             # Root prose contains application-wide accessibility/data conventions.
@@ -619,6 +624,11 @@ class ContextPipeline:
         plan = state.get("applied_plan") or {}
         tables = plan.get("tables") or []
         related = {table["name"] for table in tables if node_id in table["req_ids"]}
+        store = self._store()
+        data_ids = {entry["id"] for entry in
+                    ((store.get_requirement(node_id) or {}).get("resolved_data", []) if store else [])}
+        related.update(seed["table"] for seed in plan.get("seeds", [])
+                       if data_ids & set(seed.get("data_ids", [])))
         # Include referenced tables so a node has the actual join/ownership contract.
         while True:
             expanded = related | {

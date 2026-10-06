@@ -68,6 +68,11 @@ For non-web apps state the equivalent client integration. Keep registration/logi
 validation in the node. Bind all consumers to the same identity and token/session lifecycle.
 Never invent parallel infrastructure when existing code can be safely reused; feature-owned
 legacy identity code cannot be silently adopted or relocated. Report the conflict explicitly.
+When the current need is a web business clock, expose nowMs() -> epoch milliseconds.
+Production defaults to Date.now(); read and validate ARC_TEST_NOW only when
+ARC_TEST_CLOCK_ENABLED === '1'. Keep it injectable in consuming services for isolated
+Unit/Integration tests. Reuse existing clock exports where possible; never fix the
+production clock to a scenario date or add a public endpoint that mutates server time.
 """
 
 

@@ -82,6 +82,20 @@ async def repair_database(preparation, node_id, problem, tree, revision, runtime
     issues = [issue for issue in original.get("skipped_records", []) if node_id in issue.get("req_ids", [])]
     data_catalog = {entry["id"]: entry for record in runtime.traceability.list_requirements()
                     for entry in record.get("resolved_data", [])}
+    relevant_data_ids = {entry["id"] for entry in
+                         (runtime.traceability.get_requirement(node_id) or {}).get("resolved_data", [])}
+    relevant_data_ids.update(issue["data_id"] for issue in issues if issue.get("data_id"))
+    # A SEED may be declared by ROOT while a leaf consumes it. Preserve the
+    # declaring requirement as a valid source when repairing that leaf's gap.
+    data_sources = [{"req_id": record["req_id"],
+                     "data_ids": [entry["id"] for entry in record.get("resolved_data", [])
+                                  if entry["id"] in relevant_data_ids]}
+                    for record in runtime.traceability.list_requirements()]
+    data_sources = [record for record in data_sources if record["data_ids"]]
+    seed_obligations = [seed for seed in (original.get("requested_plan") or {}).get("seeds", [])
+                        if relevant_data_ids & set(seed.get("data_ids", []))]
+    related.update(seed["table"] for seed in previous["seeds"] + seed_obligations
+                   if relevant_data_ids & set(seed.get("data_ids", [])))
     related.update(issue["table"] for issue in issues if issue.get("table"))
     related.update(col["references"]["table"] for table in previous["tables"] if table["name"] in related
                    for col in table["columns"] if col["references"])
@@ -125,7 +139,9 @@ async def repair_database(preparation, node_id, problem, tree, revision, runtime
     _, (candidate, baseline, delta) = await preparation.designer._ask(model, "repair", {
         "requirement": runtime.traceability.get_requirement(node_id), "problem": problem,
         "missing_records": issues,
-        "data_contracts": list(data_catalog.values()),
+        "data_contracts": [data_catalog[data_id] for data_id in sorted(relevant_data_ids)],
+        "data_sources": data_sources,
+        "requested_seed_records": seed_obligations,
         "table_index": [{"name": table["name"], "req_ids": table["req_ids"]} for table in previous["tables"]],
         "tables": [table for table in previous["tables"] if table["name"] in related],
         "seeds": [{**seed, "rows": seed["rows"][:80]} for seed in previous["seeds"] if seed["table"] in related],
@@ -160,7 +176,7 @@ async def repair_database(preparation, node_id, problem, tree, revision, runtime
         fixed_tables = {table["name"] for table in delta["tables"]}
         fixed_seeds = {seed["table"] for seed in delta["seeds"]} | {item["table"] for item in delta["corrections"]}
         remaining = [issue for issue in original.get("skipped_records", [])
-                     if not (issue.get("table") in (fixed_tables if issue["phase"] == "schema" else fixed_seeds)
+                     if not issue.get("data_id") and not (issue.get("table") in (fixed_tables if issue["phase"] == "schema" else fixed_seeds)
                              and node_id in issue.get("req_ids", []))]
         state = await preparation.prepare(tree, revision, runtime, repair_plan=candidate,
                                           repair_baseline=baseline, remaining_issues=remaining, commit=False)

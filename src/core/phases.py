@@ -729,7 +729,9 @@ class WorkflowPhaseRunner:
         state = read_json_file(Path(self.workspace_path) / ".arc/database/state.json") or {}
         if node_id not in state.get("blocked_node_ids", []):
             return False
-        message = "Required database structure was quarantined; see .arc/database/skipped_records.json."
+        relevant = [item for item in state.get("skipped_records", []) if node_id in item.get("req_ids", [])]
+        reasons = "; ".join(str(item.get("error", "")) for item in relevant)[:6000]
+        message = "Required database structure or seed data is unavailable; see .arc/database/skipped_records.json. " + reasons
         self._update_node_session(node_id, {"database_blocked": True, "recent_failure_summary": message})
         await self._log("DatabasePreparation", message, status="error", node_id=node_id)
         raise DatabaseRepairNeeded(message)

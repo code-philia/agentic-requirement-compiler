@@ -16,7 +16,7 @@ from typing import Awaitable, Callable
 
 from .base import AppTypeHandler
 from .test_results import compact_execution_output
-from core.config import build_web_runtime_env, get_web_base_url, get_web_port
+from core.config import build_web_runtime_env, build_test_clock_env, get_web_base_url, get_web_port
 from core.processes import finalize_subprocess
 
 async def _emit_log(log_cb: Callable[..., Awaitable[None] | None], *args) -> None:
@@ -71,6 +71,7 @@ async def _execute_web_test_command(
                 "PYTHONIOENCODING": "utf-8",
                 "JAVA_TOOL_OPTIONS": "-Dfile.encoding=UTF-8",
                 **build_web_runtime_env(),
+                **build_test_clock_env(),
                 **(extra_env or {}),
             },
         )
@@ -606,6 +607,7 @@ def _build_e2e_runtime_env(workspace_path: str, targets: list[str]) -> dict[str,
     e2e_db_path = os.path.abspath(os.path.join(e2e_db_root, f"{suite_label}-{suite_hash}.sqlite"))
     return {
         **build_web_runtime_env(),
+        **build_test_clock_env(),
         "ARC_DB_FILE": e2e_db_path,
         "ARC_E2E_DB_PATH": e2e_db_path,
         "ARC_E2E_DB_LABEL": suite_label,
@@ -932,6 +934,7 @@ class WebAppType(AppTypeHandler):
             "Integration tests: place under `frontend/tests/...` for frontend integration or `backend/tests/...` for API/service/database integration.",
             "E2E tests: place under `backend/test-e2e/...` and use a JavaScript or TypeScript test filename.",
             "Database-using tests must use the app-type-provided isolated test harness/scaffold.",
+            "The runner passes ARC_TEST_CLOCK_ENABLED=1 and normalized ARC_TEST_NOW to both tests and the isolated E2E backend only when ARC_TEST_NOW is explicitly configured. Otherwise the clock is disabled. Generated business code must use its shared injectable clock; browser-only Date mocking cannot control backend retention.",
         ]
 
     def validate_test_path(self, test_type: str, file_path: str) -> str | None:
