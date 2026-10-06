@@ -150,12 +150,27 @@ def validate_plan(
                 literal(value)
             if any(columns[name]["type"] == "BLOB" for name in row):
                 raise ValueError("JSON seed records cannot populate BLOB columns")
-            identity = (seed["table"], tuple(seed["conflict_columns"]), json.dumps(
-                [row[key] for key in seed["conflict_columns"]], ensure_ascii=False, sort_keys=True,
-            ))
-            if identity in identities and identities[identity] != row:
-                raise ValueError(f"Conflicting seed rows for {identity}")
-            identities[identity] = row
+            # Check every unique constraint, not only the selected upsert key.
+            # SQLite allows repeated NULLs in nullable UNIQUE columns.
+            for key in unique_keys(table):
+                if not key:
+                    continue
+                values = [row.get(name, columns[name]["default"]) for name in key]
+                if any(value is None for value in values):
+                    continue
+                identity = (seed["table"], tuple(key), json.dumps(values, ensure_ascii=False, sort_keys=True))
+                prior = identities.get(identity)
+                if prior is not None and prior != row:
+                    different = sorted(name for name in set(prior) | set(row) if prior.get(name) != row.get(name))
+                    # Return actionable business fields without logging credential values.
+                    sensitive = lambda name: any(part in name.lower() for part in ("password", "token", "secret", "credential", "hash"))
+                    safe = lambda record: {name: ("<redacted>" if sensitive(name) else value)
+                                           for name, value in record.items()}
+                    raise ValueError(f"Conflicting seed rows in {seed['table']} on key {key}; differing fields {different}. "
+                                     f"Existing: {json.dumps(safe(prior), ensure_ascii=False)}. "
+                                     f"Incoming: {json.dumps(safe(row), ensure_ascii=False)}. "
+                                     "Reuse the existing identity/values; incompatible scenario states belong in test setup.")
+                identities[identity] = row
     # Canonical ordering makes generated code stable; seed order preserves dependencies.
     plan["tables"].sort(key=lambda table: table["name"])
     return plan
