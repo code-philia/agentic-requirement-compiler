@@ -35,6 +35,7 @@ class TestDrivenDeveloper:
         self.app_handler = app_handler
         self.modified_files: list[str] = []
         self.read_budget: dict[str, Any] = {}
+        self.transport_budget: dict[str, int] = {}
 
     async def run(self, *, node_id: str, test_files: list[str], test_type: str,
                   node_tests: list[dict[str, Any]] | None = None,
@@ -71,7 +72,8 @@ class TestDrivenDeveloper:
             "feedback": previous_failure_summary, "protected_files": sorted(blocked),
             **bundle,
         }, CodeEdits, root=root, budget=self.read_budget,
-            log=lambda message: self._log(message, node_id=node_id))
+            log=lambda message: self._log(message, node_id=node_id),
+            transport_budget=self.transport_budget)
         def allowed(path: str) -> bool:
             return path not in blocked and (
                 path in scope["allowed_files"]
@@ -86,7 +88,8 @@ class TestDrivenDeveloper:
         deleted = {item.path for item in edits.delete_files}
         self.read_budget["files"] = [path for path in self.read_budget.get("files", []) if path not in deleted]
         sessions.merge_node_session(node_id, {"tdd_codegen": {
-            "accepted_edits": edits.model_dump(), "read_rounds": self.read_budget.get("rounds", 0)}})
+            "accepted_edits": edits.model_dump(), "read_rounds": self.read_budget.get("rounds", 0),
+            "transport_retries": self.transport_budget.get("retries", 0)}})
         await self._log(f"Applied {len(self.modified_files)} file(s); system validation follows.", node_id=node_id)
         return "APPLIED"
 

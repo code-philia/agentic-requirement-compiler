@@ -11,6 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from agents.model.factory import create_arc_chat_model
 from agents.model.native_openai import generate_text
+from agents.model.retries import MODEL_MAX_RETRIES, retryable_model_error
 
 
 class Record(BaseModel):
@@ -450,26 +451,18 @@ async def ask_with_reads(model: str | object, system: str, task: dict[str, Any],
                                    "remaining_steps": max_steps - step - 1, "max_reads_per_step": 10,
                                    "instruction": "Information sufficient? Finish with the write batch now."
                                    if step < max_steps - 1 else "Final step: return the final write batch or phase result, not more reads."}
-        while True:
-            try:
-                await emit(f"Model call start: step {step + 1}/{max_steps}; "
-                           f"{len(sources)} source files, {sum(len(s.encode('utf-8')) for s in sources.values())} source bytes.")
-                response = await ask_for_edits(model, system, current, response_type, workspace_root=root)
-                break
-            except Exception as exc:
-                await emit(f"Model call failed: {type(exc).__name__}: {str(exc)[:1200]}")
-                from openai import APIConnectionError
-                original = getattr(exc, "original", None) or exc.__cause__ or exc
-                if transport_budget is None or not isinstance(original, APIConnectionError):
-                    raise
-                retries = transport_budget.get("retries", 0)
-                if retries >= 2:
-                    raise ModelTransportExhausted(f"Model connection retry budget exhausted (2 retries): {exc}") from exc
-                transport_budget["retries"] = retries + 1
-                if log:
-                    result = log(f"Model connection failed; transport retry {retries + 1}/2. Design/read budgets unchanged. {exc}")
-                    if isawaitable(result):
-                        await result
+        try:
+            await emit(f"Model call start: step {step + 1}/{max_steps}; "
+                       f"{len(sources)} source files, {sum(len(s.encode('utf-8')) for s in sources.values())} source bytes.")
+            response = await ask_for_edits(model, system, current, response_type, workspace_root=root)
+        except Exception as exc:
+            await emit(f"Model call failed: {type(exc).__name__}: {str(exc)[:1200]}")
+            if not retryable_model_error(exc):
+                raise
+            if transport_budget is not None:
+                transport_budget["retries"] = MODEL_MAX_RETRIES
+            raise ModelTransportExhausted(
+                f"Model request retry budget exhausted ({MODEL_MAX_RETRIES} retries): {exc}") from exc
         files = list(getattr(response, "read_files", []))
         names = list(getattr(response, "read_shared", []))
         groups = list(getattr(response, "read_shared_groups", []))

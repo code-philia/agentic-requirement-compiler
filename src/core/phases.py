@@ -13,7 +13,7 @@ from core.service import get_runtime
 from core.path_compat import normalize_windows_extended_prefix_text
 from core.visual_analysis import analyze_and_attach_visual_references
 from app_type_handler.test_results import parse_test_results, compact_execution_output
-from agents.runtime.plain_codegen import SharedNeeded, feedback_source_paths
+from agents.runtime.plain_codegen import SharedNeeded, ModelTransportExhausted, feedback_source_paths
 
 
 LogCallback = Callable[[str, str, str | None, str | None], Awaitable[None] | None]
@@ -442,6 +442,7 @@ class WorkflowPhaseRunner:
         final_ok = False
         modified: list[str] = []
         self.test_driven_developer.read_budget = {}
+        self.test_driven_developer.transport_budget = {}
         failed_kinds = set(session.get("tdd_codegen", {}).get("failed_test_types", [])) & set(ordered)
         attempt = 0
         protocol_errors = 0
@@ -504,6 +505,14 @@ class WorkflowPhaseRunner:
                                 break
             except SharedNeeded:
                 raise
+            except ModelTransportExhausted as exc:
+                self._update_node_session(node_id, {"tdd_codegen": {
+                    "status": "transport_failed", "transport_error": str(exc),
+                    "transport_retries": self.test_driven_developer.transport_budget.get("retries", 0),
+                    "validation_feedback": validation_feedback,
+                }})
+                await self._log("TestDrivenDeveloper", str(exc), status="error", node_id=node_id)
+                return False
             except Exception as exc:
                 failures.append("Generation/application/validation: " + str(exc)[:8000])
                 await self._log("TestDrivenDeveloper", "flow> " + failures[-1], status="error", node_id=node_id)

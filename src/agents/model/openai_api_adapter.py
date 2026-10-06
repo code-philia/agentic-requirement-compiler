@@ -10,6 +10,7 @@ from langchain_openai import ChatOpenAI
 from pydantic import PrivateAttr
 
 from agents.model.compatible_openai import CompatibleChatOpenAI
+from agents.model.retries import MODEL_MAX_RETRIES
 
 
 OpenAIAPIMode = Literal["responses", "chat_completions"]
@@ -54,6 +55,7 @@ class ARCChatOpenAI(ChatOpenAI):
     _arc_model_name: str = PrivateAttr(default="")
 
     def __init__(self, *args: Any, arc_api_mode: OpenAIAPIMode, arc_model_name: str, **kwargs: Any) -> None:
+        kwargs["max_retries"] = MODEL_MAX_RETRIES
         super().__init__(*args, **kwargs)
         self._arc_api_mode = arc_api_mode
         self._arc_model_name = arc_model_name
@@ -78,6 +80,7 @@ class ARCCompatibleChatOpenAI(CompatibleChatOpenAI):
     _arc_model_name: str = PrivateAttr(default="")
 
     def __init__(self, *args: Any, arc_api_mode: OpenAIAPIMode, arc_model_name: str, **kwargs: Any) -> None:
+        kwargs["max_retries"] = MODEL_MAX_RETRIES
         super().__init__(*args, **kwargs)
         self._arc_api_mode = arc_api_mode
         self._arc_model_name = arc_model_name
@@ -110,6 +113,7 @@ def build_openai_chat_model(
     )
     kwargs: dict[str, Any] = {
         "model": config.model_name,
+        "max_retries": MODEL_MAX_RETRIES,
         "disable_streaming": True,
         "stream_usage": False,
         "use_responses_api": config.api_mode == "responses",

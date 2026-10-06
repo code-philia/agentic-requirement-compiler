@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 import openai
+from agents.model.retries import MODEL_MAX_RETRIES, retry_model_call, without_sdk_retries
 
 from agents.model.openai_api_adapter import (
     normalize_model_api_exception, resolve_openai_adapter_config,
@@ -22,7 +23,7 @@ class NativeOpenAIModel:
     async def generate(self, messages: list[dict[str, Any]], *, stage: str = "MODEL",
                        workspace_root: str | Path | None = None) -> str:
         config = self.config
-        kwargs: dict[str, Any] = {}
+        kwargs: dict[str, Any] = {"max_retries": MODEL_MAX_RETRIES}
         if config.api_key:
             kwargs["api_key"] = config.api_key
         if config.base_url:
@@ -144,7 +145,8 @@ async def generate_text(model: Any, messages: list[dict[str, Any]], *, stage: st
     # Preserve explicitly injected model objects (e.g. application integrations).
     log_path = _log_input(stage, workspace_root, {"model": getattr(model, "model_name", type(model).__name__),
                                      "messages": messages}, "injected")
-    response = await model.ainvoke(messages)
+    model = without_sdk_retries(model)
+    response = await retry_model_call(lambda: model.ainvoke(messages))
     _log_output(log_path, response)
     content = response.content
     if isinstance(content, str):

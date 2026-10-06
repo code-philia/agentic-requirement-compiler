@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable
 
 from openai import OpenAI
+from agents.model.retries import MODEL_MAX_RETRIES
 from jsonschema import ValidationError, validate
 
 from core import files
@@ -226,7 +227,7 @@ async def _request_visual_analysis(full_path: Path, workspace_root: str | None =
     reference_id = "VISUAL." + hashlib.sha256(image_bytes).hexdigest()[:16]
     base64_image = base64.b64encode(image_bytes).decode("utf-8")
     data_url = f"data:{mime_type};base64,{base64_image}"
-    client = OpenAI(api_key=visual_api_key, base_url=visual_base_url)
+    client = OpenAI(api_key=visual_api_key, base_url=visual_base_url, max_retries=MODEL_MAX_RETRIES)
     messages = [
             {
                 "role": "system",

@@ -342,22 +342,17 @@ If no app package can be identified, set package_name to "UNKNOWN"."""
         )
 
         try:
-            client = self.interface_designer.client
-            model = self.interface_designer.model
-            response = await asyncio.wait_for(
-                client.chat.completions.create(
-                    model=model,
-                    messages=[
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": user_prompt},
-                    ],
-                    temperature=0.0,
-                ),
-                timeout=60.0,
+            from agents.model.factory import create_arc_chat_model
+            from agents.model.native_openai import generate_text
+            model = create_arc_chat_model(
+                getattr(self.interface_designer, "model", None) or os.environ.get("MODEL", "openai:gpt-5.4"))
+            result_text = await generate_text(
+                model, [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ], stage="ANDROID_PACKAGE", workspace_root=self.workspace_path,
             )
-            from agents.model.usage import record_model_usage
-            record_model_usage(response, stage="ANDROID_PACKAGE", workspace_root=self.workspace_path)
-            result_text = response.choices[0].message.content.strip()
+            result_text = result_text.strip()
             json_match = re.search(r"\{[\s\S]*\}", result_text)
             if not json_match:
                 await self._log("System", "Package extraction: no JSON found in LLM response, using fallback")
