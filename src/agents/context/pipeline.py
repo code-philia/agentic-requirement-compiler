@@ -234,6 +234,20 @@ class ContextPipeline:
     def task_requirement(self, node_id: str, requirement: dict[str, Any]) -> dict[str, Any]:
         """Supply stored acceptance scenarios once, with the authoritative task requirement."""
         result = self._with_scenarios_from_store(node_id, requirement)
+        store = self._store()
+        if store:
+            # Root prose contains application-wide accessibility/data conventions.
+            ancestor = requirement
+            visited: set[str] = set()
+            while ancestor.get("parent_id") and ancestor["parent_id"] not in visited:
+                parent_id = ancestor["parent_id"]
+                visited.add(parent_id)
+                parent = store.get_requirement(parent_id)
+                if not parent:
+                    break
+                ancestor = parent
+            if ancestor is not requirement:
+                result["application_contract"] = ancestor.get("description", "")
         if result.get("visual_reference"):
             result["visual_reference"] = self._build_visual_digest(result["visual_reference"])
         return result
@@ -624,6 +638,8 @@ class ContextPipeline:
             "tables": [table for table in tables if table["name"] in related],
             "table_catalog": [{"name": table["name"], "req_ids": table["req_ids"]} for table in tables],
             "seeds": [seed for seed in plan.get("seeds", []) if seed["table"] in related],
+            "seed_data_status": {data_id: entry for data_id, entry in state.get("seed_data_status", {}).items()
+                                 if node_id in entry.get("req_ids", [])},
             "generated_files": state.get("generated_files", []),
             "runtime": {
                 "web": "Use backend/src/database/index.js and db_runtime.js. initializeDatabase automatically applies the compiled schema and seeds to ARC_DB_FILE, including isolated E2E databases.",

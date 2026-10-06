@@ -74,6 +74,17 @@ Every table and seed group cites known requirement IDs. Seed only explicitly pre
 data, never registration/login/order action outputs, screenshots, or invented fixtures. Seeds need
 stable identities and unique conflict_columns. No plaintext passwords in hash fields, dynamic
 placeholders, or JSON BLOB values. Order seed groups parents before children.
+Structured data lifecycles override prose/GIVEN inference for those identities.
+SEED declares startup records. CREATED declares records produced by runtime actions:
+design persistence but never bootstrap their scenario examples. DERIVED means action-
+derived state, not guessed fixtures; persist only when required, do not invent rows.
+Use resolved_data as the authoritative referenced definitions. In seed_rows cite
+data_ids for structured SEED obligations. Never cite CREATED/DERIVED as seed sources.
+Map business properties to the supplied schema; preserve explicit values, identities,
+timestamps and relationships. Descriptive creation/target/icon instructions are not
+automatically database columns. Add only necessary stable technical keys/relations.
+Return JSON records, not arbitrary INSERT SQL; the compiler emits idempotent SQL.
+For legacy identities without structured declarations retain explicit prose seed inference.
 
 Entities phase identifies canonical entities directly from the controlled-size subtree,
 using the supplied compact record contract. Include identity keys, relationships
@@ -152,6 +163,8 @@ def _fact_sources(batch):
 
         add("name", node.get("name"))
         add("description", node.get("description"))
+        add("data", node.get("data"))
+        add("resolved_data", node.get("resolved_data"))
         # Include all scenario fields, not only Given; never truncate seed data.
         for i, scenario in enumerate(node.get("scenarios", []) or []):
             for field, value in scenario.items():
@@ -428,11 +441,15 @@ class DatabaseDesigner:
 
     async def run(self, requirement_tree: dict[str, Any], baseline: dict[str, Any], *,
                   revision: str = "", requirement_ids: set[str] | None = None) -> dict[str, Any]:
+        from arcbench_agent_runtime.requirement_contracts import resolve_requirement_contracts, validate_seed_data_sources
+        requirement_tree = resolve_requirement_contracts(requirement_tree)
         nodes = list(_nodes(requirement_tree))
+        def validate_seed_sources(seeds):
+            validate_seed_data_sources(seeds, nodes)
         applied = baseline.get("previous_plan") or {"tables": [], "seeds": []}
         sources = set(requirement_ids or ()) | {str(node["id"]) for node in nodes}
         sources.update(rid for item in [*applied["tables"], *applied["seeds"]] for rid in item["req_ids"])
-        identity = {"version": 3, "revision": revision, "tree": requirement_tree,
+        identity = {"version": 4, "revision": revision, "tree": requirement_tree,
                     "applied": applied, "schema": baseline.get("existing_schema")}
         key = hashlib.sha256(json.dumps(identity, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
         path = Path(self.workspace_root) / ".arc/database/analysis.json"
@@ -693,13 +710,20 @@ class DatabaseDesigner:
                 continue
             facts = [fact for fact in record["facts"] if fact["kind"] == "seed"]
             deferred = record.get("deferred_requirements", [])
-            if facts or deferred:
+            structured_seed_nodes = [node for node in _nodes(batches[index])
+                                     if any(entry["lifecycle"] == "SEED"
+                                            for entry in node.get("resolved_data", []))]
+            if facts or deferred or structured_seed_nodes:
                 ids = {item["req_id"] for fact in facts for item in fact["evidence"]}
                 ids.update(item["req_id"] for item in deferred)
+                ids.update(str(node["id"]) for node in structured_seed_nodes)
                 context = _schema_context(plan, facts, state["identity_batches"][index]["bindings"], ids)
                 context["deferred_requirements"] = deferred
                 context.pop("schema_index")
                 context["requirements"] = batches[index]
+                context["seed_data"] = [entry for node in _nodes(batches[index])
+                                        for entry in node.get("resolved_data", [])
+                                        if entry["lifecycle"] == "SEED"]
                 context["existing_seed_records"] = _seed_context(plan, context["draft"]["tables"], batches[index])
                 context["seed_rule"] = (
                     "Reuse supplied existing records and identities. Do not generate different passwords, timestamps, "
@@ -712,6 +736,7 @@ class DatabaseDesigner:
                 await self._log(f"Generating explicit seed records for {record['root_id']}")
                 def accept_seeds(payload):
                     delta = SeedDelta.model_validate(payload).model_dump()
+                    validate_seed_sources(delta["seeds"])
                     allowed = {table["name"] for table in context["draft"]["tables"]}
                     if any(seed["table"] not in allowed or not set(seed["req_ids"]) & ids for seed in delta["seeds"]):
                         raise ValueError("Seed records must target supplied related tables and cite this batch's seed facts")
@@ -731,6 +756,7 @@ class DatabaseDesigner:
                             item = {**seed, "rows": [row]}
                             try:
                                 delta = SeedDelta.model_validate({"seeds": [item]}).model_dump()
+                                validate_seed_sources(delta["seeds"])
                                 allowed = {table["name"] for table in context["draft"]["tables"]}
                                 if item["table"] not in allowed or not set(item["req_ids"]) & ids:
                                     raise ValueError("Seed record must target a supplied table and cite this batch")

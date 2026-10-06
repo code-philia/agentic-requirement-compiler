@@ -763,6 +763,8 @@ class ARCWorkflowManager:
 
     @staticmethod
     def _flatten_requirement_tree(requirement_tree: dict[str, Any]) -> list[dict[str, Any]]:
+        from arcbench_agent_runtime.requirement_contracts import resolve_requirement_contracts
+        requirement_tree = resolve_requirement_contracts(requirement_tree)
         records: list[dict[str, Any]] = []
 
         def walk(node: dict[str, Any], parent_id: str | None = None) -> None:
@@ -777,6 +779,9 @@ class ARCWorkflowManager:
                     "description": str(node.get("description") or "").strip(),
                     "visual_reference": list(node.get("visual_reference") or []),
                     "scenarios": [dict(item) for item in node.get("scenarios", []) or [] if isinstance(item, dict)],
+                    "data": node.get("data"),
+                    "resolved_data": node.get("resolved_data", []),
+                    "interactions": node.get("interactions", []),
                     "parent_id": parent_id,
                     "children_ids": [
                         str(child.get("id") or child.get("req_id") or "").strip()
@@ -799,6 +804,9 @@ class ARCWorkflowManager:
             "description": str(requirement.get("description") or "").strip(),
             "visual_reference": requirement.get("visual_reference") or [],
             "scenarios": requirement.get("scenarios") or [],
+            "data": requirement.get("data"),
+            "resolved_data": requirement.get("resolved_data") or [],
+            "interactions": requirement.get("interactions") or [],
             "parent_id": str(requirement.get("parent_id") or "").strip(),
             "children_ids": requirement.get("children_ids") or [],
             "dependencies": requirement.get("dependencies") or [],

@@ -20,7 +20,8 @@ def load_requirements(requirement_path: str | os.PathLike[str]) -> dict[str, Any
         payload = payload["requirement"]
     if not str(payload.get("id", "")).strip():
         raise ValueError(f"Requirement root node id is missing: {path}")
-    return payload
+    from arcbench_agent_runtime.requirement_contracts import resolve_requirement_contracts
+    return resolve_requirement_contracts(payload)
 
 
 def read_json_file(path: str | os.PathLike[str]) -> dict[str, Any] | None:

@@ -10,6 +10,7 @@ from typing import Any
 from .context import RuntimePaths
 from .events import EventClient
 from .jsonio import read_json, write_json_atomic
+from .requirement_contracts import resolve_requirement_contracts
 
 
 TABLE_NAMES = (
@@ -94,6 +95,9 @@ class RequirementRecord:
     parent_id: str | None = None
     children_ids: list[str] | None = None
     dependencies: list[str] | None = None
+    data: list[dict[str, Any]] | dict[str, Any] | None = None
+    resolved_data: list[dict[str, Any]] | None = None
+    interactions: list[dict[str, Any]] | None = None
 
 
 @dataclass(frozen=True)
@@ -102,6 +106,8 @@ class ScenarioRecord:
     req_id: str
     name: str
     steps: list[dict[str, str]]
+    data: dict[str, Any] | None = None
+    interactions: list[dict[str, Any]] | None = None
 
 
 @dataclass(frozen=True)
@@ -209,6 +215,9 @@ class TraceabilityStore:
                 "description": str(node.get("description") or "").strip(),
                 "visual_reference": _as_visual_references(node.get("visual_reference")),
                 "scenarios": node_scenarios,
+                "data": node.get("data"),
+                "resolved_data": node.get("resolved_data", []),
+                "interactions": _as_list(node.get("interactions")),
                 "parent_id": _as_optional_str(parent_id),
                 "children_ids": children_ids,
                 "dependencies": _as_str_list(node.get("dependencies")),
@@ -218,6 +227,7 @@ class TraceabilityStore:
                 if not scenario_id:
                     continue
                 scenarios[scenario_id] = {
+                    **scenario,
                     "scenario_id": scenario_id,
                     "id": scenario_id,
                     "name": str(scenario.get("name") or "").strip() or scenario_id,
@@ -227,7 +237,7 @@ class TraceabilityStore:
             for child in children:
                 walk(child, req_id)
 
-        walk(requirement_tree)
+        walk(resolve_requirement_contracts(requirement_tree))
         self._write_table("requirements", requirements)
         self._write_table("scenarios", scenarios)
         self.events.notify_traceability_changed("requirement_tree_stored")
@@ -269,6 +279,9 @@ class TraceabilityStore:
         parent_id: str | None = None,
         children_ids: list[str] | None = None,
         dependencies: list[str] | None = None,
+        data: list[dict[str, Any]] | dict[str, Any] | None = None,
+        resolved_data: list[dict[str, Any]] | None = None,
+        interactions: list[dict[str, Any]] | None = None,
     ) -> None:
         normalized_req_id = str(req_id or "").strip()
         if not normalized_req_id:
@@ -283,6 +296,9 @@ class TraceabilityStore:
                 "description": str(description or "").strip(),
                 "visual_reference": _as_visual_references(visual_reference),
                 "scenarios": normalized_scenarios,
+                "data": data,
+                "resolved_data": _as_list(resolved_data),
+                "interactions": _as_list(interactions),
                 "parent_id": _as_optional_str(parent_id),
                 "children_ids": _as_str_list(children_ids),
                 "dependencies": _as_str_list(dependencies),
@@ -297,6 +313,7 @@ class TraceabilityStore:
             if not scenario_id:
                 continue
             scenarios_table[scenario_id] = {
+                **scenario,
                 "scenario_id": scenario_id,
                 "name": str(scenario.get("name") or "").strip() or scenario_id,
                 "req_id": normalized_req_id,
@@ -316,6 +333,9 @@ class TraceabilityStore:
             description=str(merged.get("description") or "").strip(),
             visual_reference=_as_visual_references(merged.get("visual_reference")),
             scenarios=_as_list(merged.get("scenarios")),
+            data=merged.get("data"),
+            resolved_data=_as_list(merged.get("resolved_data")),
+            interactions=_as_list(merged.get("interactions")),
             parent_id=merged.get("parent_id"),
             children_ids=_as_str_list(merged.get("children_ids")),
             dependencies=_as_str_list(merged.get("dependencies")),

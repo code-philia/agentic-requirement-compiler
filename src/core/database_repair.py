@@ -71,6 +71,7 @@ def recover_database_repair(preparation):
 
 async def repair_database(preparation, node_id, problem, tree, revision, runtime):
     from core.database import application_db_path, apply_sqlite_plan, inspect_database
+    from arcbench_agent_runtime.requirement_contracts import validate_seed_data_sources
     recover_database_repair(preparation)
     original = read_json_file(preparation.state_path) or {}
     previous = original.get("applied_plan") or {"tables": [], "seeds": []}
@@ -79,12 +80,15 @@ async def repair_database(preparation, node_id, problem, tree, revision, runtime
     db_path = application_db_path(preparation.workspace, preparation.app_type)
     related = {table["name"] for table in previous["tables"] if node_id in table["req_ids"]}
     issues = [issue for issue in original.get("skipped_records", []) if node_id in issue.get("req_ids", [])]
+    data_catalog = {entry["id"]: entry for record in runtime.traceability.list_requirements()
+                    for entry in record.get("resolved_data", [])}
     related.update(issue["table"] for issue in issues if issue.get("table"))
     related.update(col["references"]["table"] for table in previous["tables"] if table["name"] in related
                    for col in table["columns"] if col["references"])
 
     def accept(payload):
         delta = RepairDelta.model_validate(payload).model_dump()
+        validate_seed_data_sources(delta["seeds"], runtime.traceability.list_requirements())
         if not any(delta.values()):
             raise ValueError("Database repair must supply a concrete correction")
         baseline = deepcopy(previous)
@@ -121,6 +125,7 @@ async def repair_database(preparation, node_id, problem, tree, revision, runtime
     _, (candidate, baseline, delta) = await preparation.designer._ask(model, "repair", {
         "requirement": runtime.traceability.get_requirement(node_id), "problem": problem,
         "missing_records": issues,
+        "data_contracts": list(data_catalog.values()),
         "table_index": [{"name": table["name"], "req_ids": table["req_ids"]} for table in previous["tables"]],
         "tables": [table for table in previous["tables"] if table["name"] in related],
         "seeds": [{**seed, "rows": seed["rows"][:80]} for seed in previous["seeds"] if seed["table"] in related],

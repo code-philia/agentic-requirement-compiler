@@ -74,12 +74,26 @@ def requirement_data_policy() -> str:
         "Requirement-Driven Seed Data",
         [
             "Natural-language requirement descriptions and GIVEN steps may declare pre-existing records, users, relationships, permissions, catalog entries, histories, statuses, or other runtime data even when there is no `data` field or fixture DSL. Treat those statements as product requirements.",
+            "Explicit SEED/CREATED/DERIVED declarations override prose inference for the same identity. CREATED scenario examples are not startup records; DERIVED is state produced by actions, not model-invented data.",
             "Distinguish persistent preconditions from transient user input: records that must already exist belong in the application's normal database, migration, seed, bootstrap, or persistent-runtime path; values entered during the scenario must not be pre-seeded unless the requirement explicitly says they already exist.",
             "When a requirement needs pre-existing data, preserve the required entity identity, parent relationship, ownership, visibility, permissions, status, ordering, and cross-record references so the normal UI -> API -> FUNC -> DB path can read it.",
             "DATABASE_PREPARE has already materialized deterministic idempotent seed data. Consume it through the normal initialized database and repository/service/API path; do not recreate seeds in leaf nodes. Do not satisfy a data precondition with frontend constants, fallback arrays, hidden test-only setup, or a test-only endpoint.",
             "Do not infer or copy hidden evaluator fixtures. Use only data requirements visible in the requirement snapshot, scenarios, interfaces, and permitted project context; keep seeded records ordinary product state rather than a test-specific DSL.",
         ],
     )
+
+
+def structured_contract_policy() -> str:
+    return section("Structured data and interaction contracts", [
+        "Use requirement.resolved_data as the compiler-resolved data.requires definitions. application_contract contains root conventions. Preserve node and scenario data/interactions; they are authoritative requirements, not optional hints.",
+        "SEED is initialized by the real prepared database, never by frontend arrays or an E2E-only endpoint. CREATED is produced through its declared UI/runtime flow; example names are scenario roles, not mandatory initial rows. DERIVED is action-derived state; persistence depends on reload/saved-state requirements, not its lifecycle alone.",
+        "Preserve identity within each scenario. When required, compose run/worker/case suffixes once and reuse the resulting title/label across creation, selection and assertions. Never hardcode dynamic example names in product behavior.",
+        "interactions defines public role/accessibility-name semantics. Implement and test these exact contracts even if current markup is wrong. Interaction IDs are references, not prescribed DOM IDs or data-testid values. Do not create UI nodes or a UI inventory.",
+        "Prefer getByRole(role, {name, exact:true}) or associated labels. Scope repeated actions to the declared navigation/dialog/item region. Substitute {title} with the actual scenario identity. Preserve declared selected/expanded/toggle states and keyboard access; do not rely on DOM order or screenshot text.",
+        "For E2E prerequisite data declared CREATED via UI, use that creation flow rather than direct SQL or API/harness fixtures. Lower-layer Unit/Integration fixtures may arrange equivalent isolated states without replacing the product creation path. Keep the existing short smoke coverage policy while preserving declared semantics and preconditions.",
+        "Explicit historical target time is a test/run clock contract, not the production default. Date-sensitive backend behavior must use a shared injectable business clock. Production uses real time; isolated acceptance configures its declared time explicitly. Freezing browser time alone does not freeze the backend. Never special-case titles or rewrite seed timestamps to pass retention assertions.",
+        "Legacy documents without these fields retain their prose/scenario rules. Structured contracts take precedence over conflicting locator/setup advice.",
+    ])
 
 
 def code_quality_policy() -> str:

@@ -287,9 +287,33 @@ class DatabasePreparation:
             plan, issues = isolate_database_records(db_path, plan, previous, sources)
             analysis = read_json_file(self.workspace / ".arc/database/analysis.json") or {}
             issues = [*(remaining_issues if remaining_issues is not None else analysis.get("skipped_records", [])), *issues]
-            blocked = {req_id for issue in issues if issue["phase"] == "schema" for req_id in issue.get("req_ids", [])}
-            # Block requirement dependencies too; leave unrelated node tasks runnable.
+            # Explicit seeds are mandatory product state. A quarantined or omitted
+            # record must not leave its consumers runnable against an empty database.
             records = runtime.traceability.list_requirements()
+            seed_consumers: dict[str, set[str]] = {}
+            for record in records:
+                for entry in record.get("resolved_data", []):
+                    if entry["lifecycle"] == "SEED":
+                        seed_consumers.setdefault(entry["id"], set()).add(record["req_id"])
+            seed_status = {}
+            for data_id, consumers in seed_consumers.items():
+                locations = [{"table": seed["table"], "conflict_columns": seed["conflict_columns"],
+                              "identities": [{key: row[key] for key in seed["conflict_columns"]}
+                                             for row in seed["rows"]]}
+                             for seed in plan["seeds"] if data_id in seed.get("data_ids", [])]
+                rejected = any(data_id in (issue.get("record") or {}).get("data_ids", [])
+                               for issue in issues if isinstance(issue.get("record"), dict))
+                ready = bool(locations) and not rejected
+                seed_status[data_id] = {"status": "MATERIALIZED" if ready else "MISSING",
+                                        "locations": locations, "req_ids": sorted(consumers)}
+                if not ready:
+                    issues.append({"phase": "seeds", "data_id": data_id,
+                                   "req_ids": sorted(consumers),
+                                   "error": f"Required SEED {data_id} is missing or partially rejected"})
+            state["seed_data_status"] = seed_status
+            blocked = {req_id for issue in issues if issue["phase"] == "schema" for req_id in issue.get("req_ids", [])}
+            blocked.update(req_id for issue in issues if issue.get("data_id") for req_id in issue.get("req_ids", []))
+            # Block requirement dependencies too; leave unrelated node tasks runnable.
             while True:
                 expanded = blocked | {record["req_id"] for record in records
                                       if set(record.get("dependencies", [])) & blocked}

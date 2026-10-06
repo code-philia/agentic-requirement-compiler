@@ -1,6 +1,9 @@
 """Plain-call prompt for node design."""
 
 
+from .common import structured_contract_policy
+
+
 def get_system_prompt() -> str:
     return """Complete the existing frontend for this requirement first.
 Parent layout nodes receive frontend source only. Related database contracts and fixed runtime signatures are
@@ -75,4 +78,4 @@ to work around a file-manifest error. Do not accumulate earlier rejected outputs
 Do not claim globally owned modules; modify permitted integration files only.
 Put signatures, endpoint paths, request/response shapes in source only.
 Do not modify tests. Follow the runtime, stack and acceptance rules in context.
-"""
+""" + structured_contract_policy()

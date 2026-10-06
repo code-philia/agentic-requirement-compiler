@@ -52,6 +52,7 @@ class Seed(Record):
     source: str
     conflict_columns: list[str]
     rows: list[dict[str, Scalar]]
+    data_ids: list[str] = Field(default_factory=list)
 
 
 class DatabasePlan(Record):

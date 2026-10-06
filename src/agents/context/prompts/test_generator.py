@@ -1,6 +1,7 @@
 """Tool-free test generation; source contracts stay in code."""
 
 from .testing_examples import testing_guidance
+from .common import structured_contract_policy
 
 def get_system_prompt(app_type: str = "web", test_types: list[str] | None = None,
                       required_test_types: list[str] | None = None) -> str:
@@ -84,7 +85,7 @@ broad getByText regexes for error assertions that also match labels or select
 options; target real alert/field containers and confirm the markup supports them.
 When repairing generated tests, inspect the entire file and shared helpers and
 correct all occurrences of the same defect while preserving required assertions.
-""" + testing_guidance(app_type, test_types) + (
+""" + testing_guidance(app_type, test_types) + structured_contract_policy() + (
         "\nSuggested test layers for this generation: " + ", ".join(required_test_types) +
         ". Prefer covering each suggested layer when the supplied contracts support it; "
         "do not add a layer only to satisfy this suggestion.\n"

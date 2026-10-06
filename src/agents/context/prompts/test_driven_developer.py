@@ -1,6 +1,7 @@
 """Plain-call prompt for node implementation."""
 
 from .testing_examples import testing_guidance
+from .common import structured_contract_policy
 
 
 def get_system_prompt(app_type: str = "web", test_types: list[str] | None = None) -> str:
@@ -83,4 +84,4 @@ long browser journeys. A rejected registration does not invalidate an existing
 session; use an anonymous context if that is the scenario's precondition.
 Do not hide click/check timeouts with force, sleeps or removed core assertions;
 inspect actionability and the configured time budget rather than blaming scope alone.
-""" + testing_guidance(app_type, test_types)
+""" + testing_guidance(app_type, test_types) + structured_contract_policy()
