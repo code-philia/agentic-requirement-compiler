@@ -6,6 +6,10 @@ from copy import deepcopy
 from typing import Any
 
 
+class ToolSequenceJSONError(ValueError):
+    """Malformed JSON, eligible for syntax-only repair before tool validation."""
+
+
 def tool_contract(schema: dict[str, Any]) -> dict[str, Any]:
     definitions = schema.get("$defs", {})
 
@@ -70,9 +74,18 @@ def tool_contract(schema: dict[str, Any]) -> dict[str, Any]:
 def parse_tool_sequence(text: str, schema: dict[str, Any]) -> dict[str, Any]:
     """Reject prose/wrappers and unknown parameters before internal validation."""
     try:
-        sequence = json.loads(text.strip())
-    except (TypeError, json.JSONDecodeError) as exc:
-        raise ValueError("Return only a JSON array of tool calls, without Markdown or prose") from exc
+        sequence = json.loads(text)
+    except json.JSONDecodeError as exc:
+        start, end = max(0, exc.pos - 120), min(len(text), exc.pos + 120)
+        snippet = json.dumps(text[start:end], ensure_ascii=False)
+        raise ToolSequenceJSONError(
+            f"Invalid tool-call JSON at line {exc.lineno}, column {exc.colno} "
+            f"(character {exc.pos}): {exc.msg}. "
+            f"Nearby text (JSON-escaped, starts at character {start}): {snippet}. "
+            "Return only a valid JSON array of tool calls, without Markdown or prose."
+        ) from exc
+    except TypeError as exc:
+        raise ValueError("Tool-call response must be JSON text") from exc
     if not isinstance(sequence, list):
         raise ValueError("Expected a tool-call array, not an object")
     tools = tool_contract(schema)["tools"]
