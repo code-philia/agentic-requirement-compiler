@@ -195,10 +195,19 @@ class WorkflowPhaseRunner:
             node_id=node_id,
         )
 
-        await self._log("TestGenerator", "Generating tests from agent-selected coverage strategy.", node_id=node_id)
+        required_test_types = self._required_test_types(
+            requirement_data, prepared_interfaces, is_non_leaf=False,
+            frontend_present=bool(file_groups.get("frontend")),
+        )
+        await self._log(
+            "TestGenerator",
+            "Generating tests with suggested layers: " + ", ".join(required_test_types),
+            node_id=node_id,
+        )
         tests, _ = await self.test_generator.run(
             node_id=node_id,
             requirement_data=requirement_data,
+            required_test_types=required_test_types,
         )
         if tests is None:
             await self._log(
@@ -245,6 +254,24 @@ class WorkflowPhaseRunner:
         )
         return True
 
+    @staticmethod
+    def _required_test_types(
+        requirement_data: dict[str, Any], interfaces: list[dict[str, Any]], *, is_non_leaf: bool,
+        frontend_present: bool = False,
+    ) -> list[str]:
+        """Derive the minimum test layers from compiler-owned file contracts."""
+        if is_non_leaf:
+            return []
+        kinds = {str(item.get("type", "")).strip().upper() for item in interfaces}
+        required: list[str] = []
+        if kinds & {"FUNC", "DB"}:
+            required.append("Unit")
+        if "API" in kinds:
+            required.append("Integration")
+        if requirement_data.get("scenarios") or frontend_present:
+            required.append("E2E")
+        return required
+
     async def run_test_generation_phase(
         self,
         node_id: str,
@@ -270,6 +297,11 @@ class WorkflowPhaseRunner:
 
         normalized_replace_test_id = str(replace_test_id or "").strip()
         existing_tests = self.traceability.list_tests(req_id=node_id)
+        required_test_types = self._required_test_types(
+            requirement_data,
+            self.traceability.list_interfaces(req_id=node_id),
+            is_non_leaf=False,
+        )
         existing_by_id = {
             str(test.get("test_id", "") or "").strip(): test
             for test in existing_tests
@@ -291,6 +323,7 @@ class WorkflowPhaseRunner:
             requirement_data=requirement_data,
             test_intent=normalized_intent,
             replace_test_id=normalized_replace_test_id or None,
+            required_test_types=required_test_types,
         )
         if tests is None:
             await self._log("TestGenerator", "Test generation did not return a valid manifest.", status="error", node_id=node_id)

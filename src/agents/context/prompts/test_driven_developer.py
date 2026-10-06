@@ -70,10 +70,14 @@ Check both Integration and E2E consumers of the same component so fixing one tes
 does not leave equivalent failures elsewhere. Preserve each negative case's
 visible error assertion and its no-account/no-session side-effect checks.
 Use previous failure feedback to avoid undoing an earlier valid correction.
-Keep E2E focused on the current requirement's core flow. When a test has genuine
+Keep default E2E focused on page navigation and UI-to-API connectivity. Detailed
+business acceptance belongs in Unit/Integration, even when scenarios describe it.
+When a test has genuine
 scope/setup defects, remove redundant field inventories and unrelated detours or
 move detailed validation coverage to the registered Unit/Integration assets when
-permitted. Preserve the core real request, required result and explicit scenarios.
+permitted. Preserve the real navigation, UI-triggered request and successful API
+response checks; do not expand smoke tests into business journeys during repair.
+Implement the full requirement even when its E2E only checks connectivity.
 Arrange prerequisite accounts through the real API/harness instead of repeating
 long browser journeys. A rejected registration does not invalidate an existing
 session; use an anonymous context if that is the scenario's precondition.

@@ -2,18 +2,25 @@
 
 from .testing_examples import testing_guidance
 
-def get_system_prompt(app_type: str = "web", test_types: list[str] | None = None) -> str:
+def get_system_prompt(app_type: str = "web", test_types: list[str] | None = None,
+                      required_test_types: list[str] | None = None) -> str:
     return """Generate focused executable tests for this leaf requirement.
 Use supplied API/FUNC/DB skeletons, frontend code and test-harness context.
-Assert final required behavior, never NOT_IMPLEMENTED, HTTP 501,
+Assert final required behavior in Unit/Integration; E2E checks connectivity only.
+Never accept NOT_IMPLEMENTED, HTTP 501,
 or temporary scaffold behavior. Do not modify product code or run builds/tests.
-Choose Unit/Integration/E2E only where they add value. Use a minimal E2E smoke flow
-for the requirement's core user outcome, normally one happy path and at most one
-representative rejection. This is a default, not a cap on explicitly required E2E
-scenarios. Cover declared GIVEN/WHEN/THEN outcomes across the appropriate layers;
+Use the suggested test layers listed at the end of this prompt as the default
+coverage plan. The compiler derives them from this requirement's owned
+API/FUNC/DB/frontend files, so give Unit and Integration coverage priority when
+those contracts exist instead of silently replacing them with an E2E test. Use
+judgment when a layer is genuinely not applicable. Choose additional coverage
+only where it adds value. Generate normally one short E2E connectivity smoke test
+per requirement, checking its page navigation and/or UI-to-API connection.
+Do not generate browser rejection cases or detailed business scenarios by default.
+Cover declared GIVEN/WHEN/THEN outcomes across Unit/Integration where applicable;
 do not turn every validation rule into a browser journey.
 Keep each E2E short and independent: minimum setup, required input, one action,
-and the essential visible outcome. Fill valid inputs directly. Do not mix default
+and a destination-page marker or real API response. Fill valid inputs directly. Do not mix default
 option inventories, required-attribute checks, headings, password-strength exercises,
 visual details or unrelated navigation into the happy path. Put detailed field,
 boundary and duplicate-data matrices in Unit/Integration tests instead.
@@ -24,28 +31,40 @@ Rejection must not create a NEW account/session, but must not be assumed to dest
 an existing valid session. Test duplicate username/email independently when needed.
 Prefer a visible semantic error container and relevant meaning over exact incidental
 error wording unless the requirement fixes that wording. Keep required accessible
-names and all core business outcomes; simplify setup and redundancy, not correctness.
+names in Unit/Integration and all core business outcomes in appropriate layers.
 Preserve all preconditions; never contradict the requirement or invent obligations.
-For auth/session changes, assert shared session state and its consumers.
-For persisted domain changes, verify the relevant API/service/persistence path,
+For auth/session changes, assert shared session state and consumers in Unit/Integration.
+For persisted domain changes, verify the relevant API/service/persistence path in Integration,
 not just local component state or static arrays.
 Use the supplied isolated test harness for persistence tests.
 Use real frontend routes, accessible controls and request conventions from source.
+Choose each locator by comparing the requirement with the current component's DOM:
+native role, associated label, accessible name and unique containing region. Prefer
+getByRole/getByLabel, scoped to the actual form/dialog when needed. Inspect caller,
+mounted page and shared field components before inventing a locator. Use existing
+stable test IDs only when semantic locators cannot express the intended target.
+For Unit/Integration, preserve explicit name/role contracts even if current markup
+is wrong; TDD must fix the markup. For E2E use the real implementation's semantics,
+not guessed text, a brittle CSS path, DOM order or a fabricated test ID.
+Use small named test.step blocks for navigation, input, submission and restoration,
+so a failure identifies the actual user step. Shared fill/setup helpers must honor
+all required data bounds; limit random suffix lengths before composing identities.
 Calculate relative imports from each test file's own directory, not the source root.
-For required exact accessible names, use matching semantic locators. If source
-markup violates the requirement, retain the required locator so TDD repairs the UI;
+For required exact accessible names in Unit/Integration, use matching semantic locators.
+If source markup violates the requirement, retain that locator in those layers;
 never compensate by weakening the assertion or merely increasing test timeouts.
 For web requirements with a user-facing flow, cover the existing application
 entry/navigation/control once in the core success flow. Other cases may navigate
 directly to the feature URL; do not repeat the homepage journey in every test.
 Cover direct access when required without adding unrelated page assertions. Exercise real frontend requests
 and the mounted backend with the isolated runtime; do not mock the owned endpoint
-in E2E or fulfill its responses with success fixtures. Verify the required visible
-result, redirect and persistence, plus backend rejection visible in the UI without
-false success or forbidden side effects. For identity-changing flows, check existing
-header/account consumers and reload restoration when required. Component tests are
+in E2E or fulfill its responses with success fixtures. E2E verifies only that a real
+navigation reaches its mounted page and/or an actual UI action reaches its API and
+receives a successful response. Put response-body business semantics, persistence,
+backend rejection, session consumers and reload restoration in Unit/Integration.
+Component tests are
 supplemental; they do not replace verification that routes, callers and API connect.
-Assert final behavior even when DESIGN currently returns 501; TDD must complete it.
+An E2E API connection must not pass on 404/405/501 or a server error; TDD must connect it.
 Do not add obligations for unowned screenshot controls or undeclared future features.
 Frontend source is supplied as a bounded collection, without a separate locator.
 Follow the supplied test placement, runtime and runner rules. JSX tests must be
@@ -65,4 +84,8 @@ broad getByText regexes for error assertions that also match labels or select
 options; target real alert/field containers and confirm the markup supports them.
 When repairing generated tests, inspect the entire file and shared helpers and
 correct all occurrences of the same defect while preserving required assertions.
-""" + testing_guidance(app_type, test_types)
+""" + testing_guidance(app_type, test_types) + (
+        "\nSuggested test layers for this generation: " + ", ".join(required_test_types) +
+        ". Prefer covering each suggested layer when the supplied contracts support it; "
+        "do not add a layer only to satisfy this suggestion.\n"
+        if required_test_types else "")

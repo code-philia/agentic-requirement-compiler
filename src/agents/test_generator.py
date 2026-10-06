@@ -74,7 +74,8 @@ class TestGenerator:
 
     async def run(self, node_id: str, requirement_data: dict[str, Any], *,
                   preloaded_source: str | None = None, test_intent: str = "",
-                  replace_test_id: str | None = None) -> tuple[list[dict[str, Any]] | None, str]:
+                  replace_test_id: str | None = None,
+                  required_test_types: list[str] | None = None) -> tuple[list[dict[str, Any]] | None, str]:
         root = Path(self.workspace_root or context_pipeline.config.workspace_dir
                     or os.environ.get("ARC_WORKSPACE_ROOT") or os.getcwd()).expanduser().resolve()
         app_type = (self.app_type or context_pipeline.config.app_type
@@ -109,6 +110,10 @@ class TestGenerator:
         feedback = ""
         requested_files: list[str] = []
         read_budget: dict[str, Any] = {}
+        required_layers = list(dict.fromkeys(
+            str(kind).strip() for kind in (required_test_types or [])
+            if str(kind).strip() in {"Unit", "Integration", "E2E"}
+        ))
         test_types = [str(selected.get("type", ""))] if selected else [str(test.get("type", "")) for test in existing]
         for attempt in range(1, TEST_GENERATION_MAX_CALLS + 1):
             await self._log(f"Plain test generation call {attempt}/{TEST_GENERATION_MAX_CALLS}.", node_id=node_id)
@@ -120,7 +125,11 @@ class TestGenerator:
                                        feedback=feedback + "\n" + str(requested_files), node_id=node_id,
                                        frontend_wiring=app_type == "web")
                 bundle["missing_tracked_files"] = missing
-                edits = await ask_with_reads(self.model, get_system_prompt(app_type, test_types), {
+                edits = await ask_with_reads(self.model, get_system_prompt(
+                    app_type,
+                    list(dict.fromkeys(test_types + required_layers)),
+                    required_layers if not test_intent and not replace_test_id else None,
+                ), {
                     "model_stage": "TestGenerator",
                     "node_id": node_id, "requirement": context_pipeline.task_requirement(node_id, requirement_data),
                     "context": "\n\n".join([static, dynamic]), "existing_tests": existing,
@@ -155,8 +164,6 @@ class TestGenerator:
                 paths = {test["file_path"] for test in tests}
                 if paths & blocked or any(not is_test_asset(path) for path in paths):
                     raise ValueError("Test manifest claims protected/other-node files")
-                if requirement_data.get("scenarios") and not test_intent and not any(test["type"] == "E2E" for test in tests):
-                    raise ValueError("Declared scenarios require E2E coverage")
                 if not tests and (edits.changes or edits.new_files or edits.delete_files):
                     raise ValueError("Empty test manifest must not change files")
                 def allowed(path: str) -> bool:
