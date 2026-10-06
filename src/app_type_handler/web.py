@@ -675,6 +675,7 @@ def _e2e_trace_evidence(backend: Path, output: str) -> list[str]:
             continue
         calls = {}
         errors = []
+        failed_calls = []
         network = []
         try:
             with zipfile.ZipFile(path) as archive:
@@ -690,18 +691,17 @@ def _e2e_trace_evidence(backend: Path, output: str) -> list[str]:
                             continue
                         kind = event.get("type")
                         call_id = event.get("callId")
+                        call_key = (member.filename, call_id)
                         if kind == "before":
-                            calls[call_id] = {"method": event.get("method"), "params": event.get("params", {}),
+                            calls[call_key] = {"method": event.get("method"), "params": event.get("params", {}),
+                                              "step_id": event.get("stepId"), "class": event.get("class"),
+                                              "stack": event.get("stack", [])[:3],
                                               "start": event.get("startTime"), "logs": []}
-                        elif kind == "log" and call_id in calls:
-                            calls[call_id]["logs"].append(str(event.get("message", ""))[:500])
-                            calls[call_id]["logs"] = calls[call_id]["logs"][-12:]
+                        elif kind == "log" and call_key in calls:
+                            calls[call_key]["logs"].append(str(event.get("message", ""))[:500])
+                            calls[call_key]["logs"] = calls[call_key]["logs"][-12:]
                         elif kind == "after" and event.get("error"):
-                            call = calls.get(call_id, {})
-                            errors.append({"action": call.get("method"), "selector": call.get("params", {}).get("selector"),
-                                           "elapsed_ms": round(event.get("endTime", 0) - call.get("start", event.get("endTime", 0))),
-                                           "error": str(event["error"].get("message", ""))[:1800],
-                                           "actionability": call.get("logs", [])})
+                            failed_calls.append((call_key, event))
                         elif kind == "event" and event.get("method") in {"pageError", "console"}:
                             params = event.get("params", {})
                             if event["method"] == "pageError" or params.get("type") == "error":
@@ -714,6 +714,29 @@ def _e2e_trace_evidence(backend: Path, output: str) -> list[str]:
                             parsed = urlsplit(request.get("url", ""))
                             network.append({"method": request.get("method"), "path": parsed.path,
                                             "status": status, "error": snapshot.get("_failureText", "")})
+            # Runner trace may precede browser trace in the archive. Correlate only
+            # after reading both, using stepId rather than unrelated callId strings.
+            steps = {}
+            for key, call in calls.items():
+                if call.get("step_id"):
+                    steps.setdefault(call["step_id"], []).append((key, call))
+            reported = set()
+            for key, event in failed_calls:
+                runner = calls.get(key, {})
+                step = runner.get("step_id") or key[1]
+                related = [(k, call) for k, call in steps.get(step, [])
+                           if call.get("class") != "Test" and call.get("method") != "pw:api"]
+                candidates = related or [(key, runner)]
+                for browser_key, call in candidates:
+                    if browser_key in reported:
+                        continue
+                    reported.add(browser_key)
+                    errors.append({"step_id": step, "action": call.get("method"),
+                                   "selector": call.get("params", {}).get("selector"),
+                                   "source": runner.get("stack") or call.get("stack", []),
+                                   "elapsed_ms": round(event.get("endTime", 0) - call.get("start", event.get("endTime", 0))),
+                                   "error": re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", str(event["error"].get("message", "")))[:1800],
+                                   "actionability": call.get("logs", [])})
             compact = {"failed_actions_and_browser_errors": errors[-6:], "failed_requests": network[:12],
                        "note": "A 401 session lookup may be expected for an anonymous visitor. Missing trace events are not proof of no browser errors. Actionability logs do not prove a specific root cause."}
             evidence.append("=== E2E Browser Evidence ===\n" + json.dumps(compact, ensure_ascii=False)[:6500])

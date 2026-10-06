@@ -42,6 +42,18 @@ tests for the same cause and repair equivalent mistakes in one coherent batch.
 If needed source is absent, request its exact path; stay within implementation_scope.
 Compare the test with the requirement first: fix product behavior/accessibility
 when it violates the requirement; change tests only for genuine test defects.
+Start from the failed step, source line, action and correlated browser logs. Determine
+whether the target is absent/ambiguous, found but not actionable, the request failed,
+or the expected result is wrong. Do not edit a later business step that was never
+reached as a substitute for repairing the observed failure. Inspect the relevant
+route/component/helper; request its source if missing. Check all controls and tests
+that use the same field wrapper, locator convention, data factory or request protocol,
+then fix equivalent defects together. Preserve earlier fixes that advanced the flow.
+For invalid generated data, repair every affected factory/case to the requirement's
+bounds rather than relaxing validation. For incorrect locator assumptions, fix the
+locator family to real semantics unless the requirement mandates the missing markup.
+Keep real navigation, requests and outcome assertions; passing requires correct
+behavior, not force clicks, bypassed entrypoints or removed checks.
 
 For accessible-label failures, check every required control and its label/aria
 association, including decorative required markers. Preserve required accessible
