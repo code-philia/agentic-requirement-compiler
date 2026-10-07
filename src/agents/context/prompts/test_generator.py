@@ -24,7 +24,17 @@ Do not generate browser rejection cases or detailed business scenarios by defaul
 Cover declared GIVEN/WHEN/THEN outcomes across Unit/Integration where applicable;
 do not turn every validation rule into a browser journey.
 Keep each E2E short and independent: minimum setup, required input, one action,
-and a destination-page marker or real API response. Fill valid inputs directly. Do not mix default
+and a meaningful UI state, destination-page marker or real API response.
+Trace the mounted frontend route/component, event handler, request client and backend
+route before choosing the core flow; read missing concrete files when necessary.
+Assert only elements needed to perform that flow and one meaningful outcome.
+Do not inventory nearby headings, navigation items, editor launchers, labels, icons
+or section containers merely because they are present in the page. For a sidebar
+toggle flow, use the toggle and its expanded/collapsed state; unrelated note/editor
+controls and repeated label visibility checks are not prerequisites.
+If this requirement is purely frontend interaction, test that interaction without
+inventing an API request. Do not suppress an actual requirement-mandated outcome.
+Fill valid inputs directly. Do not mix default
 option inventories, required-attribute checks, headings, password-strength exercises,
 visual details or unrelated navigation into the happy path. Put detailed field,
 boundary and duplicate-data matrices in Unit/Integration tests instead.

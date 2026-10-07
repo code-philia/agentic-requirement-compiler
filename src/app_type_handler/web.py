@@ -637,34 +637,9 @@ async def _build_frontend_dist(workspace_path: str) -> tuple[bool, str]:
 
 
 def _e2e_failure_context(workspace_path: str, output: str) -> str:
-    """Attach only this invocation's reported Playwright page snapshots."""
+    """Attach flow, test source and browser evidence; omit page snapshots."""
     backend = (Path(workspace_path) / "backend").resolve()
-    results = backend / "test-results"
-    sections: list[str] = []
-    remaining = 4000
-    locator_names = re.findall(r"(?:name:\s*|getByLabel\()['\"]([^'\"]+)", output)
-    references = re.findall(r"Error Context:\s*([^\r\n]+)", output)
-    for relative in dict.fromkeys(references):
-        if len(sections) >= 3 or remaining <= 0:
-            break
-        target = (backend / relative.strip()).resolve()
-        if not target.is_relative_to(results) or target.name != "error-context.md":
-            continue
-        try:
-            with target.open(encoding="utf-8") as stream:
-                content = stream.read(60000)
-        except (OSError, UnicodeError):
-            continue
-        lines = content.splitlines()
-        hits = {i for i, line in enumerate(lines) if any(name in line for name in locator_names)
-                or re.search(r"\balert\b|dialog|Error|错误", line)}
-        selected = sorted({j for i in hits for j in range(max(0, i - 2), min(len(lines), i + 4))})
-        content = "\n".join(lines[i] for i in selected) if selected else "\n".join(lines[:18])
-        content = content[:min(remaining, 2000)]
-        remaining -= len(content)
-        sections.append(f"=== E2E Failure Page Snapshot: {relative.strip()} ===\n{content}")
-    sections.extend(_e2e_trace_evidence(backend, output))
-    return "\n\n".join(sections)
+    return "\n\n".join(_e2e_trace_evidence(backend, output))
 
 
 def _e2e_trace_evidence(backend: Path, output: str) -> list[str]:
@@ -696,14 +671,19 @@ def _e2e_trace_evidence(backend: Path, output: str) -> list[str]:
                         call_key = (member.filename, call_id)
                         if kind == "before":
                             calls[call_key] = {"method": event.get("method"), "params": event.get("params", {}),
+                                              "title": event.get("title"),
                                               "step_id": event.get("stepId"), "class": event.get("class"),
                                               "stack": event.get("stack", [])[:3],
                                               "start": event.get("startTime"), "logs": []}
                         elif kind == "log" and call_key in calls:
                             calls[call_key]["logs"].append(str(event.get("message", ""))[:500])
                             calls[call_key]["logs"] = calls[call_key]["logs"][-12:]
-                        elif kind == "after" and event.get("error"):
-                            failed_calls.append((call_key, event))
+                        elif kind == "after":
+                            if call_key in calls:
+                                calls[call_key]["completed"] = not bool(event.get("error"))
+                                calls[call_key]["end"] = event.get("endTime")
+                            if event.get("error"):
+                                failed_calls.append((call_key, event))
                         elif kind == "event" and event.get("method") in {"pageError", "console"}:
                             params = event.get("params", {})
                             if event["method"] == "pageError" or params.get("type") == "error":
@@ -739,6 +719,42 @@ def _e2e_trace_evidence(backend: Path, output: str) -> list[str]:
                                    "elapsed_ms": round(event.get("endTime", 0) - call.get("start", event.get("endTime", 0))),
                                    "error": re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", str(event["error"].get("message", "")))[:1800],
                                    "actionability": call.get("logs", [])})
+            flow_steps = [call for call in calls.values() if call.get("method") == "test.step"]
+            progress = [f"{('completed' if call.get('completed') else 'failed' if call.get('completed') is False else 'unfinished')}: "
+                        f"{call.get('title') or call.get('params', {}).get('title') or call.get('step_id')}"
+                        for call in sorted(flow_steps, key=lambda item: item.get("start") or 0)]
+            if progress:
+                evidence.append("=== E2E Flow Progress ===\n" + "\n".join(progress[-12:]) +
+                                "\nSteps after the stopped step may not have been reached.")
+            # Supply the actual failing test rather than only a line-number stack.
+            snippets = []
+            seen_sources = set()
+            for item in errors:
+                for location in item.get("source", []):
+                    filename = location.get("file")
+                    if not filename:
+                        continue
+                    source = Path(filename)
+                    source = (source if source.is_absolute() else backend / source).resolve()
+                    if source in seen_sources or not source.is_relative_to(backend) or not re.search(r"\.(?:spec|test)\.[cm]?[jt]sx?$", source.name):
+                        continue
+                    seen_sources.add(source)
+                    try:
+                        with source.open(encoding="utf-8") as stream:
+                            lines = stream.read(60000).splitlines()
+                    except (OSError, UnicodeError):
+                        continue
+                    line_no = int(location.get("line") or 1)
+                    start = max(0, line_no - 16) if len(lines) > 100 else 0
+                    end = min(len(lines), line_no + 15) if len(lines) > 100 else len(lines)
+                    snippets.append(f"{source.relative_to(backend.parent)} (failure line {line_no}):\n" +
+                                    "\n".join(f"{i + 1}: {lines[i]}" for i in range(start, end))[:4500])
+                    if len(snippets) >= 2:
+                        break
+                if len(snippets) >= 2:
+                    break
+            if snippets:
+                evidence.append("=== E2E Failing Test Code ===\n" + "\n\n".join(snippets))
             compact = {"failed_actions_and_browser_errors": errors[-6:], "failed_requests": network[:12],
                        "note": "A 401 session lookup may be expected for an anonymous visitor. Missing trace events are not proof of no browser errors. Actionability logs do not prove a specific root cause."}
             evidence.append("=== E2E Browser Evidence ===\n" + json.dumps(compact, ensure_ascii=False)[:6500])
@@ -1158,7 +1174,7 @@ class WebAppType(AppTypeHandler):
                 if _extract_exit_code(result_body) != 0:
                     context = _e2e_failure_context(self.workspace_path, result_body)
                     if context:
-                        result_body = context + "\n\n" + result_body
+                        result_body = context + "\n\n=== E2E Runner ===\n" + result_body
                 result_body = (
                     f"=== Frontend Build ===\n{frontend_build_output}\n\n"
                     f"=== E2E Runtime Env ===\nDB Path: {e2e_runtime_env.get('ARC_E2E_DB_PATH', 'unknown')}\n"
@@ -1326,7 +1342,7 @@ class WebAppType(AppTypeHandler):
                 f"Port: {get_web_port()}\n\n"
                 f"Startup Cleanup: {backend_startup_detail or 'No startup cleanup note recorded.'}\n\n"
                 f"=== Backend Instance Fingerprint ===\n{backend_instance_fingerprint or 'No backend instance fingerprint recorded.'}\n\n"
-                f"{playwright_result}"
+                f"=== E2E Runner ===\n{playwright_result}"
             )
         except Exception as exc:
             return f"Failed to start grouped E2E execution: {str(exc)}"

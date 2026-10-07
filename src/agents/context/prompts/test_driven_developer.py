@@ -37,6 +37,18 @@ skip assertions or weaken coverage. Repair tests only for genuine test defects.
 You generate one edit batch; the system builds and validates prior failing layers
 first, stopping at failure. Success requires every scheduled layer on current code.
 Use feedback to fix the next round.
+E2E repair is a joint test-and-product task: you may edit this node's registered
+test files and permitted frontend/backend source in the SAME batch. Compare the
+supplied failing test code and progress with the real mounted components, request
+client and backend handlers. Fix faulty setup/locators or unrelated assertions in
+tests, and incomplete behavior/wiring in source, wherever the evidence requires.
+Do not treat generated tests as immutable or make code mimic accidental test details.
+Preserve the requirement's core actions/outcomes and real API connectivity; never
+remove core coverage, skip tests or simulate success just to obtain a pass.
+Use E2E Flow Progress first: distinguish completed steps, the stopped step and
+unreached steps. For a purely frontend flow do not invent backend prerequisites.
+Check total test budget versus time already spent before a timed-out action;
+fix measured budget misconfiguration when justified, not blind timeout increases.
 
 ### Repair the error family, not only the reported line
 Read the complete supplied failing test file, its shared helpers/setup, and the

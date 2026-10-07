@@ -9,13 +9,30 @@ def repair_execution_feedback(output: str) -> str:
     clean = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", output or "")
     sections = re.split(r"(?=^=== )", clean, flags=re.MULTILINE)
     evidence = []
-    for section in sections:
-        if section.startswith(("=== E2E Browser Evidence", "=== E2E Failure Page Snapshot")):
-            evidence.append(section.strip())
+    # Evidence sections must never also enter the runner error excerpt.
+    remaining = 8500
+    for prefix, limit in (
+        ("=== E2E Flow Progress", 1800),
+        ("=== E2E Failing Test Code", 4500),
+        ("=== E2E Browser Evidence", 6500),
+    ):
+        for section in sections:
+            if section.startswith(prefix) and remaining > 0:
+                excerpt = section.strip()[:min(limit, remaining)]
+                evidence.append(excerpt)
+                remaining -= len(excerpt) + 2
     if not evidence:
         # Preserve startup/build/SQL failures when no browser evidence exists.
         return compact_execution_output(clean, max_chars=8000, max_lines=100)
-    lines = clean.splitlines()
+    runner_sections = []
+    for section in sections:
+        if section.startswith(("=== E2E Flow Progress", "=== E2E Failing Test Code",
+                               "=== E2E Browser Evidence", "=== E2E Failure Page Snapshot",
+                               "=== Backend", "=== Frontend Build", "=== Database Prepare",
+                               "=== E2E Runtime Env")):
+            continue
+        runner_sections.append(section)
+    lines = "\n".join(runner_sections).splitlines()
     selected = set()
     for i, line in enumerate(lines):
         if re.search(r"Test timeout|Error: locator|^\s*\d+\).*›|^\s*FAIL\b|^\s*Expected:|^\s*Received:", line):
@@ -23,7 +40,7 @@ def repair_execution_feedback(output: str) -> str:
     runner = "\n".join(lines[i] for i in sorted(selected))
     codes = re.findall(r"^\s*Exit Code:\s*(-?\d+)\s*$", clean, re.MULTILINE)
     status = next((code for code in codes if code != "0"), codes[0] if codes else "missing")
-    return (f"Exit Code: {status}\n" + runner[:3500] + "\n\n" + "\n\n".join(evidence)[:8500]).strip()
+    return (f"Exit Code: {status}\n" + runner[:3500] + "\n\n" + "\n\n".join(evidence)).strip()
 
 
 def compact_execution_output(output: str, *, max_chars: int = 24000, max_lines: int = 240) -> str:

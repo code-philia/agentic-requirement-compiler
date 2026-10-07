@@ -537,8 +537,9 @@ class WorkflowPhaseRunner:
                                         status="ok" if passed else "error", node_id=node_id)
                         if not passed:
                             from app_type_handler.test_results import repair_execution_feedback
-                            failures.append(kind + ": " + repair_execution_feedback(output)
-                                            + "\nSource paths: " + json.dumps(feedback_source_paths(Path(self.workspace_path), output)))
+                            repair_feedback = repair_execution_feedback(output)
+                            failures.append(kind + ": " + repair_feedback
+                                            + "\nSource paths: " + json.dumps(feedback_source_paths(Path(self.workspace_path), repair_feedback)))
                             if failed_kinds or attempt > 1:
                                 await self._log("TestDrivenDeveloper", "flow> Stopping this repair round at the first failed layer; repair follows before further regression.", node_id=node_id)
                                 break
