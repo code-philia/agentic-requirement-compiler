@@ -410,7 +410,7 @@ class DatabasePreparation:
     def _register_interfaces(self, plan: dict[str, Any], state: dict[str, Any], runtime) -> None:
         primary_file = next((path for path in state["generated_files"] if path.endswith(("arc_database.js", "arc_database.py", "ArcDatabase.java"))), "")
         for table in plan["tables"]:
-            table_file = next((path for path in state["generated_files"]
+            table_file = table.get('sql_file') or next((path for path in state["generated_files"]
                                if path.endswith(f"/schema/{table['name']}.sql")), primary_file)
             runtime.traceability.upsert_interface(
                 interface_id=f"GLOBAL:DB:{table['name']}", req_ids=table["req_ids"], type="DB",

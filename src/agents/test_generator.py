@@ -13,7 +13,7 @@ from agents.context.pipeline import context_pipeline
 from agents.context.prompts.test_generator import get_system_prompt
 from agents.runtime.plain_codegen import (
     CodeEdits, Record, SharedNeeded, DatabaseRepairNeeded, apply_edits, ask_with_reads, feedback_source_paths, is_test_asset,
-    protected_paths, safe_path, source_bundle, DATABASE_TEST_FILES,
+    protected_paths, safe_path, source_bundle, DATABASE_TEST_FILES, is_database_sql,
 )
 from core import sessions
 from core.service import get_runtime
@@ -167,6 +167,8 @@ class TestGenerator:
                 if not tests and (edits.changes or edits.new_files or edits.delete_files):
                     raise ValueError("Empty test manifest must not change files")
                 def allowed(path: str) -> bool:
+                    if is_database_sql(path):
+                        return path not in blocked
                     if app_type == "web" and path in DATABASE_TEST_FILES:
                         return path not in blocked
                     if app_type == "web" and path in {"backend/package.json", "frontend/package.json"}:

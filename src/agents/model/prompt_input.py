@@ -30,13 +30,13 @@ def format_task_input(task: dict[str, Any], schema: dict[str, Any]) -> str:
         for layer, paths in scope.get("backend", {}).items():
             for path in paths:
                 file_record(path)["layer"] = layer
-        for key in ("frontend_files", "shared", "test_asset_files", "dependency_manifests", "allowed_files"):
+        for key in ("frontend_files", "shared", "test_asset_files", "dependency_manifests", "allowed_files", "database_sql_files"):
             for path in scope.get(key, []):
                 file_record(path)["writable"] = True
                 if key != "allowed_files":
                     file_record(path)[key] = True
         remaining["implementation_scope"] = {key: value for key, value in scope.items()
-            if key not in {"backend", "frontend_files", "shared", "test_asset_files", "dependency_manifests", "allowed_files"}}
+            if key not in {"backend", "frontend_files", "shared", "test_asset_files", "dependency_manifests", "allowed_files", "database_sql_files"}}
     for key, flag in (("file_index", "indexed"), ("required_source_files", "required"),
                       ("protected_files", "protected"), ("excluded_sources", "excluded"),
                       ("requested_sources", "requested"), ("missing_requested_sources", "missing"),

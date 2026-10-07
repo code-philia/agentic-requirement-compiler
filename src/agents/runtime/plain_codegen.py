@@ -121,7 +121,9 @@ its necessary parameters directly beside tool, never under parameters/arguments.
 When the prepared schema or bootstrap data is incorrect/missing, return
 report_database_gap(need) alone with concrete table/column/identity, expected
 behavior and evidence. The compiler repairs persistence and retries this task;
-never modify generated database files or create a parallel database yourself.
+alternatively, read and correct the shared SQL definitions/inserts directly when
+the task permits database source edits. Keep the existing connection and bootstrap;
+never create a parallel database or hardcode seed arrays in application code.
 No wrapper object, Markdown, explanation,
 reasoning, status, summary, empty optional fields or legacy output properties.
 Use only the supplied available tools. Example:
@@ -145,7 +147,12 @@ it is validated and applied together, not one file per model call.
 File operations automatically track DESIGN artifacts. TestGenerator uses
 register_test(test_id,type,file_path) for its tests. Return [] for no actions.
 Paths are workspace-relative. Preserve unrelated behavior and database bootstrap hooks.
-Do not change prepared schema/seed SQL, generated arc_database programs or compiler
+Shared schema/seed SQL may be read and corrected to satisfy the requirement.
+Reuse actual table/column names, keys and seed owners; update DDL and inserts together
+when needed. Preserve earlier requirements, explicit ROOT values and CREATED/DERIVED
+lifecycles. Use repeatable initialization and parameterized runtime queries through
+existing database exports. Account for existing live-schema migrations; editing
+CREATE IF NOT EXISTS alone does not change existing columns. Do not edit compiler
 control files. Database connection/query/bootstrap adapters and test helpers may
 be edited when permitted by this task. Preserve public exports, ARC_DB_FILE isolation,
 the generated prepareDatabase bootstrap, transactions and normal startup behavior.
@@ -164,8 +171,8 @@ Use loading/empty/error states when runtime data is not owned by this node.
 Visual references govern layout/style only, never screenshot business data.
 Shared core is read-only except database adapters/helpers explicitly marked writable
 in the task inventory; call existing capabilities and keep business actions
-node-owned. Database schema, seeds and generated bootstrap programs belong to DATABASE_PREPARE;
-missing persistence structure requires requirement synchronization.
+node-owned. Schema/seed SQL is shared application source; make focused corrections
+there, or request a database repair when broader reanalysis is needed.
 When identity_integration is supplied, reuse its authoritative storage, credentials,
 authentication, frontend state, logout and expiration conventions. Read concrete
 code as needed; never create a competing token store, resolver or identity provider.
@@ -210,7 +217,7 @@ create files outside the current phase's permitted scope.
 EXCLUDED = {".git", ".arc", ".agents", ".codex", ".aws", "requirements",
             "node_modules", "dist", "build", ".gradle", ".venv", "venv", "__pycache__"}
 EXTENSIONS = {".js", ".jsx", ".ts", ".tsx", ".css", ".html", ".json",
-              ".py", ".java", ".xml", ".gradle", ".toml"}
+              ".py", ".java", ".xml", ".gradle", ".toml", ".sql"}
 
 DATABASE_RUNTIME_FILES = {
     "backend/src/database/" + name for name in
@@ -219,6 +226,11 @@ DATABASE_RUNTIME_FILES = {
 DATABASE_TEST_FILES = {
     "backend/src/database/test_harness.js", "backend/src/database/prepare_e2e.js",
 }
+
+
+def is_database_sql(path: str) -> bool:
+    return path.endswith('.sql') and any(path.startswith(prefix) for prefix in (
+        'backend/src/database/', 'app/database/', 'app/src/main/assets/database/'))
 
 
 def is_test_asset(path: str) -> bool:
@@ -801,4 +813,5 @@ def protected_paths(root: Path, node_id: str, records: list[dict[str, Any]]) -> 
         paths.update(path for capability in plan.get("capabilities", [])
                      for path in capability.get("files", []) + capability.get("reuse_files", []))
     paths.difference_update(DATABASE_RUNTIME_FILES)
+    paths = {path for path in paths if not is_database_sql(path)}
     return paths

@@ -9,7 +9,7 @@ from agents.context.pipeline import context_pipeline
 from agents.context.prompts.test_driven_developer import get_system_prompt
 from agents.runtime.implementation_scope import implementation_scope
 from agents.runtime.plain_codegen import (
-    CodeEdits, apply_edits, ask_with_reads, feedback_source_paths, protected_paths, source_bundle,
+    CodeEdits, apply_edits, ask_with_reads, feedback_source_paths, is_database_sql, protected_paths, source_bundle,
 )
 from core.service import get_runtime
 from core import sessions
@@ -78,6 +78,7 @@ class TestDrivenDeveloper:
         def allowed(path: str) -> bool:
             return path not in blocked and (
                 path in scope["allowed_files"]
+                or is_database_sql(path)
                 or any(path.startswith(folder + "/") for folder in scope["frontend_roots"]))
         def deletable(path: str) -> bool:
             # Registered targets must survive for traceability and later repairs.

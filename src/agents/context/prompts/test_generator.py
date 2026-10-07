@@ -11,8 +11,9 @@ Assert final required behavior in Unit/Integration; E2E checks connectivity only
 Never accept NOT_IMPLEMENTED, HTTP 501,
 or temporary scaffold behavior. Do not modify business product code or run builds/tests.
 You may repair database test_harness.js and prepare_e2e.js when needed; preserve
-their exports, isolated ARC_DB_FILE and normal schema/seed bootstrap. Do not
-change schema SQL, seed SQL or generated database programs.
+their exports, isolated ARC_DB_FILE and normal schema/seed bootstrap. Read existing
+SQL to understand real table/column/seed contracts; make focused SQL corrections
+only for concrete requirement omissions, never to weaken product behavior for tests.
 Use the suggested test layers listed at the end of this prompt as the default
 coverage plan. The compiler derives them from this requirement's owned
 API/FUNC/DB/frontend files, so give Unit and Integration coverage priority when

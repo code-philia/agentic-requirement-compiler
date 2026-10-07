@@ -26,7 +26,8 @@ async function prepareDatabase(db) {
   await run(db, 'PRAGMA foreign_keys = ON');
   await run(db, 'BEGIN IMMEDIATE');
   try {
-    for (const table of PROGRAM.tables) {
+    for (const sql of PROGRAM.schema_sql || []) await run(db, sql);
+    for (const table of PROGRAM.schema_sql ? [] : PROGRAM.tables) {
       await run(db, table.create);
       const columns = await all(db, `PRAGMA table_info("${table.name}")`);
       for (const column of table.columns) {
@@ -35,10 +36,10 @@ async function prepareDatabase(db) {
         }
       }
     }
-    for (const sql of PROGRAM.indexes) await run(db, sql);
+    for (const sql of PROGRAM.schema_sql ? [] : PROGRAM.indexes) await run(db, sql);
     for (const sql of PROGRAM.seeds) await run(db, sql);
     const violations = await all(db, 'PRAGMA foreign_key_check');
-    if (violations.length) throw new Error('Database foreign key violations: ' + JSON.stringify(violations));
+    if (!PROGRAM.schema_sql && violations.length) throw new Error('Database foreign key violations: ' + JSON.stringify(violations));
     await run(db, 'COMMIT');
   } catch (error) {
     await run(db, 'ROLLBACK');
@@ -61,15 +62,17 @@ def prepare_database(connection):
     connection.execute("PRAGMA foreign_keys = ON")
     with connection:
         connection.execute("BEGIN IMMEDIATE")
-        for table in PROGRAM["tables"]:
+        for sql in PROGRAM.get("schema_sql", []):
+            connection.execute(sql)
+        for table in ([] if "schema_sql" in PROGRAM else PROGRAM["tables"]):
             connection.execute(table["create"])
             names = {row[1] for row in connection.execute('PRAGMA table_info("' + table["name"] + '")')}
             for column in table["columns"]:
                 if column["name"] not in names:
                     connection.execute(table["add_columns"][column["name"]])
-        for sql in PROGRAM["indexes"] + PROGRAM["seeds"]:
+        for sql in ([] if "schema_sql" in PROGRAM else PROGRAM["indexes"]) + PROGRAM["seeds"]:
             connection.execute(sql)
-        if connection.execute("PRAGMA foreign_key_check").fetchall():
+        if "schema_sql" not in PROGRAM and connection.execute("PRAGMA foreign_key_check").fetchall():
             raise RuntimeError("Database contains foreign key violations")
 
 def connect_database(db_path=None):
@@ -125,7 +128,11 @@ public final class ArcDatabase extends SQLiteOpenHelper {
             int count;
             while ((count = input.read(bytes)) != -1) buffer.write(bytes, 0, count);
             JSONObject program = new JSONObject(buffer.toString("UTF-8"));
-            JSONArray tables = program.getJSONArray("tables");
+            JSONArray schema = program.optJSONArray("schema_sql");
+            if (schema != null) {
+                for (int i = 0; i < schema.length(); i++) db.execSQL(schema.getString(i));
+            }
+            JSONArray tables = schema != null ? new JSONArray() : program.getJSONArray("tables");
             for (int i = 0; i < tables.length(); i++) {
                 JSONObject table = tables.getJSONObject(i);
                 db.execSQL(table.getString("create"));
@@ -140,11 +147,12 @@ public final class ArcDatabase extends SQLiteOpenHelper {
                 }
             }
             for (String key : new String[]{"indexes", "seeds"}) {
+                if (schema != null && key.equals("indexes")) continue;
                 JSONArray statements = program.getJSONArray(key);
                 for (int i = 0; i < statements.length(); i++) db.execSQL(statements.getString(i));
             }
             try (Cursor cursor = db.rawQuery("PRAGMA foreign_key_check", null)) {
-                if (cursor.moveToFirst()) throw new IllegalStateException("Database foreign key violations");
+                if (schema == null && cursor.moveToFirst()) throw new IllegalStateException("Database foreign key violations");
             }
             db.setTransactionSuccessful();
         } catch (Exception error) {
@@ -278,6 +286,20 @@ async function seedDatabase() {
             expected = expected.replace(anchor, anchor + "\n" + hook, 1)
         if name == "init_db.js" and sql_files:
             expected = expected.replace(hook, "    await prepareSqlFiles(database); // ARC_DATABASE_PREPARE")
+            # Upgrade the known generated loader without replacing custom adapters.
+            legacy_loader = """  const schemaDirectory = path.join(__dirname, 'schema');
+  const tables = fs.readdirSync(schemaDirectory).filter(name => name.endsWith('.sql')).sort();
+  if (!tables.length) throw new Error('No database schema SQL files were prepared');"""
+            if legacy_loader in expected:
+                collector = WEB_SQL_BOOTSTRAP.split("  const collect =", 1)[1].split("  await exec('BEGIN IMMEDIATE;');", 1)[0]
+                expected = expected.replace(legacy_loader, "  const collect =" + collector.rstrip(), 1)
+                expected = expected.replace("fs.readFileSync(path.join(schemaDirectory, name), 'utf8')", "fs.readFileSync(name, 'utf8')")
+                legacy_check = """    const violations = await new Promise((resolve, reject) => {
+      database.all('PRAGMA foreign_key_check;', (error, rows) => error ? reject(error) : resolve(rows));
+    });
+    if (violations.length) throw new Error('Database SQL contains foreign key violations');
+"""
+                expected = expected.replace(legacy_check, "", 1)
             if "async function prepareSqlFiles(" not in expected:
                 expected += WEB_SQL_BOOTSTRAP
         result[relative] = expected
@@ -291,19 +313,18 @@ async function prepareSqlFiles(database) {
   const exec = sql => new Promise((resolve, reject) => {
     database.exec(sql, error => error ? reject(error) : resolve());
   });
-  const schemaDirectory = path.join(__dirname, 'schema');
-  const tables = fs.readdirSync(schemaDirectory).filter(name => name.endsWith('.sql')).sort();
-  if (!tables.length) throw new Error('No database schema SQL files were prepared');
+  const collect = directory => fs.readdirSync(directory, { withFileTypes: true }).flatMap(entry => {
+    const source = path.join(directory, entry.name);
+    return entry.isDirectory() ? collect(source) :
+      (entry.isFile() && entry.name.endsWith('.sql') && source !== path.join(__dirname, 'seed.sql') ? [source] : []);
+  });
+  const tables = collect(__dirname).sort();
   await exec('BEGIN IMMEDIATE;');
   try {
     for (const name of tables) {
-      await exec(fs.readFileSync(path.join(schemaDirectory, name), 'utf8'));
+      await exec(fs.readFileSync(name, 'utf8'));
     }
     await exec(fs.readFileSync(path.join(__dirname, 'seed.sql'), 'utf8'));
-    const violations = await new Promise((resolve, reject) => {
-      database.all('PRAGMA foreign_key_check;', (error, rows) => error ? reject(error) : resolve(rows));
-    });
-    if (violations.length) throw new Error('Database SQL contains foreign key violations');
     await exec('COMMIT;');
   } catch (error) {
     await exec('ROLLBACK;');

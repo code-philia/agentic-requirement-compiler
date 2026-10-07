@@ -73,6 +73,8 @@ frontend/src/api/registration.ts is frontend. API/FUNC/DB are backend code;
 shared means editable application integration, never read-only shared core.
 Database init_db.js/db_runtime.js/index.js/seed_db.js are editable shared adapters;
 use layer shared and preserve their public exports and generated bootstrap.
+Shared database SQL is readable/editable too; use layer shared for focused DDL/seed
+corrections and reuse the existing SQL identities in API/FUNC/DB skeletons.
 Database test_harness.js/prepare_e2e.js belong to test generation/TDD, not DESIGN.
 Wire backend routes by editing backend/src/app.js with layer shared when permitted.
 Creation requires add_file with complete source, not a list of planned filenames.

@@ -4,7 +4,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from agents.runtime.plain_codegen import DATABASE_RUNTIME_FILES, is_test_asset, protected_paths
+from agents.runtime.plain_codegen import DATABASE_RUNTIME_FILES, is_database_sql, is_test_asset, protected_paths
 
 
 def implementation_scope(workspace_root: str, node_id: str, app_type: str,
@@ -58,7 +58,7 @@ def implementation_scope(workspace_root: str, node_id: str, app_type: str,
             if record.get("file_path") == path and record.get("type") != "UI" and (
                 str(record.get("interface_id", "")).startswith("GLOBAL:DB:")
                 or node_id not in record.get("req_ids", [])
-            ) and path not in DATABASE_RUNTIME_FILES:
+            ) and path not in DATABASE_RUNTIME_FILES and not is_database_sql(path):
                 raise ValueError(f"File is owned by another requirement/global database: {path}")
     allowed_files = sorted(set([path for values in backend.values() for path in values]
                                + shared + frontend_files + paths(test_files) + test_assets))
@@ -73,4 +73,8 @@ def implementation_scope(workspace_root: str, node_id: str, app_type: str,
             "allowed_files": allowed_files,
             "dependency_manifests": manifests,
             "database_runtime_files": database_runtime,
+            "database_sql_files": sorted(path.relative_to(root).as_posix()
+                                         for folder in ('backend/src/database', 'app/database', 'app/src/main/assets/database')
+                                         for path in (root / folder).rglob('*.sql') if path.is_file()),
+            "database_sql_rule": "Read shared SQL on demand and correct DDL/inserts together as needed. New SQL paths are permitted under the database directory. Preserve normal initialization, seed lifecycles and earlier requirements; use the existing query/transaction exports.",
             "rules": "Implement the inventory's API/FUNC/DB targets directly; do not search for backend owners or create replacement modules. Outside frontend_roots, write only inventory entries marked writable. Repair registered tests and test_asset_files; restore missing helpers at the same paths. Missing backend targets require a DESIGN retry."}

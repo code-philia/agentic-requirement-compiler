@@ -16,6 +16,9 @@ files inside frontend_roots and update callers; keep existing routes and exports
 You may also repair or restore database adapters/helpers listed in
 implementation_scope.database_runtime_files without a DESIGN retry. Preserve
 their public exports, ARC_DB_FILE isolation and generated prepareDatabase bootstrap.
+Read implementation_scope.database_sql_files as needed; shared SQL definitions and
+inserts may be corrected without a DESIGN retry. Keep them consistent with runtime
+queries and ROOT seed obligations, and preserve earlier requirements.
 Backend extraction uses only registered writable files. If DESIGN omitted a needed
 backend helper, adding that backend path requires a DESIGN retry, not a TDD write.
 Use the available registered modules; never invent an unregistered replacement or

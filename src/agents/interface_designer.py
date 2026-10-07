@@ -131,7 +131,7 @@ class InterfaceDesigner:
                     path = item.path
                     if path.startswith("frontend/"):
                         layer = "frontend"
-                    elif Path(path).name == "package.json" or Path(path).stem in {"app", "main", "index", "server"}:
+                    elif path.endswith('.sql') or Path(path).name == "package.json" or Path(path).stem in {"app", "main", "index", "server"}:
                         layer = "shared"
                     elif any(part in Path(path).parts for part in ("routes", "controllers", "api")):
                         layer = "API"
