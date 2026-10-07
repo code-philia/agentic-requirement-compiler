@@ -20,11 +20,13 @@ def write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
     tmp_path.replace(path)
 
 
-def read_json(path: Path, default: dict[str, Any]) -> dict[str, Any]:
+def read_json(path: Path, default: dict[str, Any] | None = None) -> dict[str, Any] | None:
+    """Read a JSON mapping; missing, unreadable or invalid files use the default."""
+    fallback = dict(default) if default is not None else None
     if not path.exists():
-        return dict(default)
+        return fallback
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
-        return dict(default)
-    return payload if isinstance(payload, dict) else dict(default)
+        return fallback
+    return payload if isinstance(payload, dict) else fallback

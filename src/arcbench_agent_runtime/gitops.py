@@ -4,6 +4,7 @@ import os
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from .context import RuntimePaths
 from .events import EventClient
@@ -13,6 +14,12 @@ DEFAULT_GIT_USER_NAME = "ARC Bench Agent"
 DEFAULT_GIT_USER_EMAIL = "arcbench@example.com"
 ARC_GITIGNORE_START = "# >>> arcbench-agent-runtime >>>"
 ARC_GITIGNORE_END = "# <<< arcbench-agent-runtime <<<"
+
+
+def build_commit_message(node_id: str, phase: str, requirement_data: dict[str, Any]) -> str:
+    name = str(requirement_data.get("name") or node_id).strip()
+    normalized_phase = str(phase or "").strip().lower()
+    return f"{node_id} ({normalized_phase}): {name}"
 
 
 @dataclass(frozen=True)

@@ -19,7 +19,7 @@ from core.database import DatabasePreparation
 from core.shared import SharedPreparation
 from agents.runtime.plain_codegen import SharedNeeded, DatabaseRepairNeeded, record_shared_consumers
 from core.service import configure_runtime
-from core.commits import build_commit_message
+from arcbench_agent_runtime.gitops import build_commit_message
 from core.config import load_project_env, set_app_type, set_web_port, set_workspace_root
 from core.files import load_requirements, read_json_file, write_json_file
 from core.logging import append_debug_log, write_terminal_log

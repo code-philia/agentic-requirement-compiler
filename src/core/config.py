@@ -13,7 +13,6 @@ from agents.context.pipeline import set_context_config
 
 
 _workspace_root = Path(os.environ.get("ARC_WORKSPACE_ROOT", ".")).expanduser().resolve()
-_app_type = os.environ.get("ARC_APP_TYPE", "web").strip().lower() or "web"
 _web_port = int(os.environ.get("ARC_WEB_PORT", "3000") or 3000)
 _android_package = os.environ.get("ARC_ANDROID_PACKAGE", "com.example.template").strip() or "com.example.template"
 
@@ -47,22 +46,10 @@ def get_workspace_root() -> str:
     return str(_workspace_root)
 
 
-def get_abs_path(path: str | os.PathLike[str]) -> str:
-    candidate = Path(path)
-    if candidate.is_absolute():
-        return str(candidate.resolve())
-    return str((_workspace_root / candidate).resolve())
-
-
 def set_app_type(app_type: str) -> None:
-    global _app_type
-    _app_type = (app_type or "web").strip().lower() or "web"
-    os.environ["ARC_APP_TYPE"] = _app_type
-    set_context_config(app_type=_app_type)
-
-
-def get_app_type() -> str:
-    return _app_type
+    normalized = (app_type or "web").strip().lower() or "web"
+    os.environ["ARC_APP_TYPE"] = normalized
+    set_context_config(app_type=normalized)
 
 
 def set_web_port(port: int | str) -> None:

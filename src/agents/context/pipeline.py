@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
+from core.sessions import load_node_session
 
 @dataclass
 class ContextConfig:
@@ -367,19 +368,8 @@ class ContextPipeline:
             return ""
         return "<test_file_cards>\n" + self._compact_json(cards) + "\n</test_file_cards>"
 
-    def _node_session_path(self, node_id: str) -> Path:
-        return Path(self.config.workspace_dir) / ".arc" / "node_sessions" / f"{node_id}.json"
-
     def _load_node_session(self, node_id: str) -> dict[str, Any]:
-        path = self._node_session_path(node_id)
-        if not path.exists():
-            return {}
-        try:
-            with path.open("r", encoding="utf-8") as file:
-                payload = json.load(file)
-        except (OSError, json.JSONDecodeError):
-            return {}
-        return payload if isinstance(payload, dict) else {}
+        return load_node_session(node_id, workspace_dir=self.config.workspace_dir)
 
     def _get_node_session_layers(self, node_id: str) -> str:
         session = self._load_node_session(node_id)

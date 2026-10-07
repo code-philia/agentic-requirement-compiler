@@ -41,13 +41,3 @@ def get_runtime() -> AgentRuntime:
     if _runtime is None:
         raise RuntimeError("ARC runtime has not been configured.")
     return _runtime
-
-
-def has_runtime() -> bool:
-    return _runtime is not None
-
-
-def reset_runtime_for_tests() -> None:
-    global _runtime
-    _runtime = None
-    set_context_runtime(None)

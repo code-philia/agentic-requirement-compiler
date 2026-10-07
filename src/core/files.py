@@ -1,11 +1,22 @@
 from __future__ import annotations
 
-import json
 import os
 from pathlib import Path
 from typing import Any
 
 import yaml
+
+from arcbench_agent_runtime.jsonio import read_json, write_json_atomic
+
+
+def normalize_windows_extended_prefix_text(value: str | Path | None) -> str:
+    """Normalize separators and Windows extended prefixes for path comparisons."""
+    text = str(value or "").strip().replace("\\", "/")
+    if text.startswith("//?/UNC/"):
+        return "//" + text[len("//?/UNC/"):]
+    if text.startswith("//?/"):
+        return text[len("//?/"):]
+    return text
 
 
 def load_requirements(requirement_path: str | os.PathLike[str]) -> dict[str, Any]:
@@ -25,22 +36,8 @@ def load_requirements(requirement_path: str | os.PathLike[str]) -> dict[str, Any
 
 
 def read_json_file(path: str | os.PathLike[str]) -> dict[str, Any] | None:
-    candidate = Path(path)
-    if not candidate.exists():
-        return None
-    try:
-        with candidate.open("r", encoding="utf-8") as file:
-            payload = json.load(file)
-    except (OSError, json.JSONDecodeError):
-        return None
-    return payload if isinstance(payload, dict) else None
+    return read_json(Path(path))
 
 
 def write_json_file(path: str | os.PathLike[str], payload: dict[str, Any]) -> None:
-    candidate = Path(path)
-    candidate.parent.mkdir(parents=True, exist_ok=True)
-    tmp_path = candidate.with_suffix(candidate.suffix + ".tmp")
-    with tmp_path.open("w", encoding="utf-8") as file:
-        json.dump(payload, file, ensure_ascii=False, indent=2)
-        file.write("\n")
-    tmp_path.replace(candidate)
+    write_json_atomic(Path(path), payload)

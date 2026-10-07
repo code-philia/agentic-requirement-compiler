@@ -10,7 +10,7 @@ from app_type_handler import create_app_type_handler
 from agents.context.pipeline import context_pipeline
 from core import sessions
 from core.service import get_runtime
-from core.path_compat import normalize_windows_extended_prefix_text
+from core.files import normalize_windows_extended_prefix_text
 from core.visual_analysis import analyze_and_attach_visual_references
 from app_type_handler.test_results import parse_test_results, compact_execution_output
 from agents.runtime.plain_codegen import SharedNeeded, DatabaseRepairNeeded, ModelTransportExhausted, feedback_source_paths

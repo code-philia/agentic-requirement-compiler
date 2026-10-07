@@ -1,30 +1,18 @@
 from __future__ import annotations
 
-import json
 import re
 from pathlib import Path
 from typing import Any
 
-from core.config import get_workspace_root
+from arcbench_agent_runtime.jsonio import read_json, write_json_atomic
 
 
-def load_node_session(node_id: str) -> dict[str, Any]:
-    path = _node_session_path(node_id)
-    if not path.exists():
-        return {}
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return {}
-    return payload if isinstance(payload, dict) else {}
+def load_node_session(node_id: str, *, workspace_dir: str | Path | None = None) -> dict[str, Any]:
+    return read_json(_node_session_path(node_id, workspace_dir=workspace_dir), {}) or {}
 
 
 def save_node_session(node_id: str, payload: dict[str, Any]) -> None:
-    path = _node_session_path(node_id)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp_path = path.with_suffix(path.suffix + ".tmp")
-    tmp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    tmp_path.replace(path)
+    write_json_atomic(_node_session_path(node_id), payload)
 
 
 def merge_node_session(node_id: str, patch: dict[str, Any]) -> dict[str, Any]:
@@ -34,9 +22,14 @@ def merge_node_session(node_id: str, patch: dict[str, Any]) -> dict[str, Any]:
     return merged
 
 
-def _node_session_path(node_id: str) -> Path:
+def _node_session_path(node_id: str, *, workspace_dir: str | Path | None = None) -> Path:
     safe_node_id = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(node_id or "").strip()) or "node"
-    return Path(get_workspace_root()) / ".arc" / "node_sessions" / f"{safe_node_id}.json"
+    if workspace_dir is None:
+        # ContextPipeline supplies its own root; only legacy callers use process config.
+        from core.config import get_workspace_root
+        workspace_dir = get_workspace_root()
+    root = Path(workspace_dir)
+    return root / ".arc" / "node_sessions" / f"{safe_node_id}.json"
 
 
 def _deep_merge_dict(base: dict[str, Any], patch: dict[str, Any]) -> dict[str, Any]:
