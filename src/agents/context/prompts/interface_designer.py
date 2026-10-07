@@ -64,11 +64,16 @@ on retries and other requirements' UI/requests. Reuse shared infrastructure.
 Parent nodes implement layout/navigation only, with no backend modules.
 No frontend module inventory, UI nodes, call graph or extra JSON report is required.
 Frontend-only requirements must not invent API/FUNC/DB modules.
-Use only add_file, edit_file, delete_file and read_file. File tracking is automatic.
+Use the available file tools plus declare_identity_usage; read batches contain
+only reads, final DESIGN batches contain writes and the identity declaration.
+File tracking is automatic; do not return an internal files/identity_usage object.
 add_file includes layer: frontend/API/FUNC/DB/shared; edit_file may include layer
 for a newly adopted file, otherwise existing ownership/path conventions apply.
 frontend/src/api/registration.ts is frontend. API/FUNC/DB are backend code;
 shared means editable application integration, never read-only shared core.
+Database init_db.js/db_runtime.js/index.js/seed_db.js are editable shared adapters;
+use layer shared and preserve their public exports and generated bootstrap.
+Database test_harness.js/prepare_e2e.js belong to test generation/TDD, not DESIGN.
 Wire backend routes by editing backend/src/app.js with layer shared when permitted.
 Creation requires add_file with complete source, not a list of planned filenames.
 When previous_candidate is supplied, it was rejected and not applied. Repair the

@@ -78,6 +78,58 @@ key is supplied; use distinct temporary IDs when new rows refer to one another.
 No plaintext passwords in hash fields, dynamic placeholders or JSON BLOB values.
 Return seed_rows JSON, not INSERT SQL. The compiler generates idempotent code.
 [] means no additional startup rows are necessary.
+
+Output format and examples (illustrative only; use actual supplied requirements,
+tables and data IDs, never create these example records unless required):
+1. Return a bare JSON array. All arguments are siblings of tool. The available
+tools' parameters object is contract metadata, NOT the shape of a returned call.
+WRONG: [{"tool":"define_table","parameters":{"name":"label","req_ids":["REQ-1.1"],"columns":[]}}]
+RIGHT minimal table:
+[{"tool":"define_table","name":"workspace","req_ids":["REQ-1.1"],"columns":[{"name":"workspace_id","type":"TEXT","nullable":false}],"primary_key":["workspace_id"]}]
+Do not return {"tables":[...]}, {"tools":[...]}, arguments/function wrappers,
+Markdown fences, explanations, comments or trailing commas. Optional unique and
+indexes may be omitted when unnecessary. Use [] only when no changes are needed.
+
+2. columns is an array of objects, not a name-to-type mapping. Use only the
+documented fields; do not invent column-level primary_key, unique, auto_increment,
+enum, check or SQL expressions. Keys belong to the table. primary_key is an array
+of names; unique is an array of name arrays. Every named column must exist.
+WRONG: "primary_key":"label_id", "unique":["workspace_id","name"]
+RIGHT: "primary_key":["label_id"], "unique":[["workspace_id","name"]]
+Full table with a composite unique key and foreign key:
+[{"tool":"define_table","name":"label","req_ids":["REQ-1.1"],"columns":[{"name":"label_id","type":"TEXT","nullable":false},{"name":"workspace_id","type":"TEXT","nullable":false,"references":{"table":"workspace","column":"workspace_id","on_delete":"CASCADE"}},{"name":"name","type":"TEXT","nullable":false},{"name":"is_default","type":"INTEGER","nullable":false,"default":0}],"primary_key":["label_id"],"unique":[["workspace_id","name"]],"indexes":[{"name":"idx_label_workspace","columns":["workspace_id"]}]}]
+
+3. references is an object (table, column, optional on_delete), not "workspace.id"
+or SQL. Its target column must be individually unique when schema is complete.
+SET NULL requires a nullable referencing column. Every primary-key column must
+be nullable:false. Defaults are JSON literals (0, false, "active", null), never
+CURRENT_TIMESTAMP, datetime('now') or a function call. Supply runtime timestamps
+from application code; explicit seed timestamps are ordinary string values.
+An index has name, columns and optional unique. Preserve existing indexes:
+do not reuse an index name for different columns, even on another table.
+
+4. seed_rows uses exact schema columns and a real declared unique/primary key.
+For the label example above, name alone is NOT unique and id does NOT exist.
+WRONG: "conflict_columns":["name"] or ["id"]
+RIGHT: "conflict_columns":["workspace_id","name"]
+Example parent then child (seeds/repair phases only):
+[{"tool":"seed_rows","table":"workspace","req_ids":["ROOT"],"source":"Declared default workspace","data_ids":["DATA-WORKSPACE"],"conflict_columns":["workspace_id"],"rows":[{"workspace_id":"personal"}]},{"tool":"seed_rows","table":"label","req_ids":["ROOT"],"source":"Declared Reminders label","data_ids":["DATA-REMINDERS"],"conflict_columns":["workspace_id","name"],"rows":[{"label_id":"reminders","workspace_id":"personal","name":"Reminders","is_default":1}]}]
+rows is an array of flat column/value objects with scalar JSON values; no nested
+record objects or arrays. Include every non-null column without a default,
+including TEXT primary keys and foreign keys. Reuse existing parent identities.
+Never invent a parent fixture from this example: use declared startup requirements
+and legitimate application initialization conventions. CREATED/DERIVED are not seeds.
+
+5. replace_table marks a conflicting DRAFT definition; it does not carry columns.
+Return it beside a define_table call containing the complete corrected definition:
+[{"tool":"replace_table","name":"workspace"},{"tool":"define_table","name":"workspace","req_ids":["REQ-1.1"],"columns":[{"name":"workspace_id","type":"TEXT","nullable":false}],"primary_key":["workspace_id"]}]
+Use replacement only when the current phase offers replace_table. Preserve all
+earlier required columns/constraints; never use this example to shrink a real table.
+For repair, use only tools in that call's available contract; applied schemas remain
+subject to additive-change restrictions. correct_seed updates bootstrap VALUES,
+not schema or row identities: key must be unique and old_values the exact full row.
+Example for an existing label row with an incorrect bootstrap flag:
+[{"tool":"correct_seed","table":"label","key":{"label_id":"reminders"},"old_values":{"label_id":"reminders","workspace_id":"personal","name":"Reminders","is_default":0},"new_values":{"is_default":1}}]
 """
 
 

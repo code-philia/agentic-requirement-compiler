@@ -20,14 +20,19 @@ def tool_contract(schema: dict[str, Any]) -> dict[str, Any]:
             return value
         if "$ref" in value:
             return compact(definitions[value["$ref"].rsplit("/", 1)[-1]])
-        return {key: compact(item) for key, item in value.items()
+        # Property names may themselves be schema metadata words (e.g. a
+        # database column's default). Strip metadata only from schema objects.
+        return {key: ({name: compact(spec) for name, spec in item.items()}
+                      if key == "properties" else compact(item))
+                for key, item in value.items()
                 if key not in {"title", "description", "default", "$defs"}}
 
     props = schema.get("properties", {})
     tools: dict[str, Any] = {}
 
     def add(name: str, parameters: dict[str, Any], required: list[str]) -> None:
-        tools[name] = {"parameters": compact(parameters), "required": required}
+        tools[name] = {"parameters": {key: compact(value) for key, value in parameters.items()},
+                       "required": required}
 
     string = {"type": "string"}
     design = "files" in props
@@ -71,6 +76,46 @@ def tool_contract(schema: dict[str, Any]) -> dict[str, Any]:
     return {"tools": tools}
 
 
+def tool_return_examples(contract: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
+    """Derive placeholder call shapes from the same contract used for validation."""
+    def placeholder(spec: dict[str, Any], field: str) -> Any:
+        if "enum" in spec:
+            return spec["enum"][0]
+        if "const" in spec:
+            return spec["const"]
+        if "anyOf" in spec:
+            choice = next((item for item in spec["anyOf"] if item.get("type") != "null"), spec["anyOf"][0])
+            return placeholder(choice, field)
+        kind = spec.get("type")
+        if kind == "object":
+            properties = spec.get("properties", {})
+            if properties:
+                return {key: placeholder(properties[key], key) for key in spec.get("required", [])}
+            extra = spec.get("additionalProperties")
+            return {"<actual key>": placeholder(extra, "value")} if isinstance(extra, dict) else {}
+        if kind == "array":
+            return [placeholder(spec.get("items", {}), field)]
+        if kind == "boolean":
+            return False
+        if kind in {"integer", "number"}:
+            return 0
+        if kind == "null":
+            return None
+        return f"<actual {field}>"
+
+    examples = {}
+    for name, spec in contract.get("tools", {}).items():
+        fields = list(spec["required"])
+        # Registration must point to real created/reused files, even though the
+        # record schema allows omission of the file collections.
+        if name == "register_shared":
+            fields += [key for key in ("files", "reuse_files") if key in spec["parameters"]]
+        examples[name] = [{"tool": name, **{
+            key: placeholder(spec["parameters"][key], key) for key in dict.fromkeys(fields)
+        }}]
+    return examples
+
+
 def parse_tool_sequence(text: str, schema: dict[str, Any]) -> dict[str, Any]:
     """Reject prose/wrappers and unknown parameters before internal validation."""
     try:
@@ -107,8 +152,16 @@ def parse_tool_sequence(text: str, schema: dict[str, Any]) -> dict[str, Any]:
         name = call["tool"]
         spec = tools[name]
         params = {key: value for key, value in call.items() if key != "tool"}
-        if set(params) - spec["parameters"].keys() or set(spec["required"]) - params.keys():
-            raise ValueError(f"Invalid parameters for {name}; expected {spec['parameters'].keys()}")
+        unknown = sorted(set(params) - spec["parameters"].keys())
+        missing = sorted(set(spec["required"]) - params.keys())
+        if unknown or missing:
+            example = tool_return_examples({"tools": {name: spec}})[name]
+            raise ValueError(
+                f"Invalid parameters for {name}: unknown={unknown}, missing={missing}; "
+                f"allowed={list(spec['parameters'])}. Parameters belong directly beside tool, "
+                "without a parameters/arguments wrapper. Placeholder return example "
+                "(replace placeholders with actual values): " + json.dumps(example, ensure_ascii=False)
+            )
         params = deepcopy(params)
         if name in {"read_file", "add_file", "edit_file", "delete_file"}:
             layer = params.pop("layer", None)

@@ -5,6 +5,7 @@ import json
 import re
 from typing import Any
 
+from .tool_sequence import tool_return_examples
 
 def format_task_input(task: dict[str, Any], schema: dict[str, Any]) -> str:
     remaining = dict(task)
@@ -106,7 +107,23 @@ def format_task_input(task: dict[str, Any], schema: dict[str, Any]) -> str:
     section("9. Rejected candidate — repair only; it was not applied", ("previous_candidate",))
     if remaining:
         section("10. Additional task records", tuple(remaining))
-    sections.append("## 11. Available tools\nReturn only a JSON array of calls. Each call contains tool and its parameters directly. "
+    sections.append("## 11. Tool definitions — reference only, do not return this section\nReturn only a JSON array of calls. Each call contains tool and its parameters directly. "
+                    "The contract's parameters field describes allowed arguments; it is NOT an output field. "
+                    "Never wrap call arguments under parameters, arguments, input or function. "
                     "Omit unused optional parameters. No wrapper object, explanation, status or summary. "
                     "Use [] when no action is needed.\n" + json.dumps(schema, ensure_ascii=False, separators=(",", ":")))
+    sections.append("## 12. Placeholder return examples — choose only the needed calls\n"
+                    "Each named example below is a SEPARATE response array, not a wrapper to return. "
+                    "Return the array itself. Replace every <actual ...> placeholder with real values "
+                    "from this task/source; do not write placeholders into files. Enum/boolean/number "
+                    "examples show valid JSON types, not required business values. These are minimum "
+                    "field shapes, not complete implementations; include required business keys and "
+                    "permitted optional fields where needed. Do not copy example tools indiscriminately. "
+                    "Reads must be returned without writes/registrations; request_shared and "
+                    "report_database_gap must each be returned alone. A final write batch may combine "
+                    "writes with applicable registration/declaration calls. DESIGN needs exactly one "
+                    "declare_identity_usage; TestGenerator must register its tests. Escape code strings "
+                    "as JSON: use \\n for a newline, \\\" for a quote and \\\\ for a backslash.\n" +
+                    "\n".join(name + ":\n" + json.dumps(example, ensure_ascii=False)
+                              for name, example in tool_return_examples(schema).items()))
     return "\n\n".join(sections)

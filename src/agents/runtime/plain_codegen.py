@@ -117,11 +117,12 @@ class CodeEdits(Record):
 
 
 EDIT_POLICY = """Return only a JSON array of tool calls. Each item contains tool and
+its necessary parameters directly beside tool, never under parameters/arguments.
 When the prepared schema or bootstrap data is incorrect/missing, return
 report_database_gap(need) alone with concrete table/column/identity, expected
 behavior and evidence. The compiler repairs persistence and retries this task;
 never modify generated database files or create a parallel database yourself.
-its necessary parameters directly. No wrapper object, Markdown, explanation,
+No wrapper object, Markdown, explanation,
 reasoning, status, summary, empty optional fields or legacy output properties.
 Use only the supplied available tools. Example:
 [{"tool":"read_file","path":"frontend/src/App.tsx"}].

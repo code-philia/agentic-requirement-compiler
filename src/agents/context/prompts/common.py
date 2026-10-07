@@ -185,11 +185,11 @@ def response_contract() -> str:
     return section(
         "Response Contract",
         [
-            "Your final assistant message must be a single valid JSON object and nothing else.",
+            "Your assistant message must be a JSON array of available tool calls and nothing else; use the current stage's supplied definitions and placeholder return examples.",
             "Do not wrap the final JSON in Markdown fences, prose, labels, or tool-call narration.",
-            "Use only the keys requested by the current stage, such as `files`, `tests`, and `files_written`. Do not return a `summary` field.",
+            "Every call has tool and its allowed parameters directly beside it. Never return internal files/tests/files_written objects, schema metadata or a summary field.",
             "Keep outputs deterministic, scoped to the current node, and suitable for system-side validation.",
-            "If blocked, do not fabricate artifacts. Return only actual artifacts using the current stage's required keys; keep failure evidence in tool results rather than adding a final summary.",
+            "If blocked, do not fabricate artifacts. Use an available handoff tool when applicable; never add an unsupported status/error/summary field.",
         ],
     )
 
