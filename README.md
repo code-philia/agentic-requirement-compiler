@@ -157,19 +157,6 @@ Conceptually, ARC produces three layers of output:
 
 This is one of the main differences between ARC and prompt-only code generation: the result is not just an output directory, but a recoverable compilation process.
 
-Database preparation is automatic and requires no additional CLI flags. All compilation model calls return only a JSON array of tool calls, with a tool name and necessary parameters on each item; no wrapper, summary, explanation or status fields. DESIGN exposes only read_file/add_file/edit_file/delete_file; new files carry their layer and are tracked automatically. Test generation uses register_test. Database analysis uses define_entity, define_table and seed_rows to identify shared entities and analyze requirement subtrees incrementally. The compiler translates these calls into validated internal records and merges only changed definitions and new bootstrap rows. Conflicting drafts require explicit replacement calls, while applied database records remain additive-only. Forward foreign keys are checked during final reconciliation. The analyzer has no shell or filesystem tools and does not generate SQL, application code or schema documentation.
-
-The compiler saves the entity catalog, accepted batch deltas, cumulative draft, and final reconciliation in `.arc/database/analysis.json`, keyed by the requirement revision and database baseline. `--resume` skips accepted batches; a changed revision or baseline restarts analysis. Only after all batches and final validation pass does the existing deterministic generator write runtime files and initialize the actual database. The final plan and materialization status remain in `.arc/database/state.json`. A failed database stage prevents node execution.
-
-For web applications, generated `backend/src/database/arc_database.js` is connected to the existing `init_db.js` scaffold. Runtime startup and isolated E2E databases use the same schema and default rows. CLI applications use generated `app/arc_database.py`, bootstrapped by `app/__main__.py`. Android applications receive a generated `database/ArcDatabase.java` helper and `assets/arc_database.json`, bootstrapped by the manifest-declared Java Application; the compiler prepares a host SQLite database before node compilation, while the device database is initialized on open. Existing web/CLI/Android bootstrap files are extended at recognized anchors rather than replaced; an unsupported existing bootstrap fails with a specific message.
-
-Node agents receive the relevant database records and reuse stable `GLOBAL:DB:<table>` interfaces. Schema and bootstrap code are compiler-owned. `--sync-requirements` reanalyzes the complete tree and supports additive tables, safe columns, indexes, and seed rows while preserving existing data. Destructive or incompatible schema changes are rejected. User inputs and records created by registration, login, or ordering are not default seed data.
-
-Node DESIGN directly extends existing frontend pages/components, implements the request client and event/state wiring, and mounts any new UI in the real application. It returns only `files` grouped as `frontend`, `API`, `FUNC`, `DB`, and `shared`, without a final summary. Parent nodes with visual references return frontend/shared paths and empty backend groups. Node sessions preserve these locations as `file_groups` and `materialized_files` for test generation, TDD, and related nodes.
-
-The compiler derives stable backend file mapping IDs from requirement, layer, and canonical path, validates file existence/ownership, and stores lightweight rows in the existing interfaces table. Frontend and shared registration files are touched paths, not exclusive backend ownership. Function signatures, endpoint shapes, and comments live only in source; tests and TDD read those files. No model-generated interface descriptions or caller/callee graph are required. Test manifest items contain only `test_id`, `type`, and `file_path`; requirement ownership is system-assigned. Global database records, node states, tests, and Git checkpoints remain traceable. TDD completes the registered backend call skeletons and repairs frontend integration.
-
-TDD receives an `implementation_scope` resolved from DESIGN's file groups. Backend edits are restricted to the node's exact API/FUNC/DB files and explicitly listed shared integration files; current test files can be repaired. Backend-wide discovery is blocked, while exact dependency reads remain available. Frontend discovery and edits are allowed within the frontend source area, starting from tracked pages/components/clients. Legacy workspaces recover backend targets from their traceability records; a missing tracked skeleton requires a DESIGN retry rather than a codebase search.
 
 ### CLI Usage
 
@@ -220,27 +207,6 @@ Run `arc --help` or `arc compile --help` for detailed usage.
 | `--retry-failed` | Retry all failed nodes (requires `--resume`) |
 | `--retry NODE_ID...` | Retry specific node IDs (requires `--resume`) |
 
-#### Runtime behavior
-
-- ARC copies the requirement directory into `<output-dir>/requirements/` (you must specify `-o` explicitly)
-- Compilation executes inside `output-dir`
-- If `--clear-all` is not used and `.arc/processing_queue.json` already exists, ARC resumes from that workspace
-
-#### Partial failure recovery
-
-ARC now supports retrying failed nodes in an existing workspace without wiping generated code.
-
-- `--retry-failed` retries every node whose queue state is `FAILED`
-- `--retry REQ-1 REQ-2` retries only the named nodes, including nodes that already passed
-- `--clear-all` cannot be combined with retry flags
-
-Retry semantics are phase-aware:
-
-- If a node's `DESIGN` task failed, ARC treats it as a design failure, resets both queue tasks for that node to `PENDING`, clears that node's design/test traceability artifacts, and restarts the node from `UNSEEN`
-- If a node's `IMPLEMENT` task failed while `DESIGN` completed, ARC treats it as an implement-only failure, keeps the design artifacts, resets only `IMPLEMENT` to `PENDING`, and restarts the node from `DESIGNED`
-- If a selected node is already completed, ARC restarts that node from `DESIGN` but preserves existing interfaces, tests, node-session artifacts, and implementation files so the agents can revise incrementally in the same workspace
-
-This distinction comes from the queue itself, not from a separate manual flag. The workflow checks the task statuses for the node and chooses the narrowest safe reset for that node.
 
 #### Model API mode
 
@@ -254,33 +220,12 @@ Set this in your `.env` file (see Configuration section above).
 
 ## Visualization
 
-If you want a visual execution workflow with progress tracking and result visualization, use **ARC-Bench**: [arc-bench.com](http://arc-bench.com).
-
-### Use Built-in ARC Agent (Recommended)
-
-When submitting a task on ARC-Bench, select **"ARC"** from the built-in agents dropdown. This uses the official ARC implementation maintained by the ARC-Bench team.
-
-
-### Custom ARC Bundle (For Modified Versions)
-
-If you've modified ARC, package and upload your custom version:
+If you want a visual execution workflow with progress tracking and result visualization, use **ARC-Bench**: [arc-bench.com](http://arc-bench.com). Package and upload your custom version:
 
 1. Copy the contents of `src/` into your submission bundle root
 2. Keep `main.py` at the bundle root
 3. Zip the bundle
 4. Upload to ARC-Bench as a custom agent
-
-A minimal bundle layout:
-
-```text
-submission/
-|-- main.py
-|-- requirements.txt
-|-- agents/
-|-- context/
-|-- core/
-`-- ...
-```
 
 ARC-Bench provides the container runtime, workspace lifecycle, event streaming, and visualization layer. ARC performs the actual requirement-to-project compilation inside that environment.
 
