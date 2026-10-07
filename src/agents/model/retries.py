@@ -33,7 +33,7 @@ async def retry_model_call(call: Callable[[], Awaitable[Result]]) -> Result:
 
 
 def without_sdk_retries(model: Any) -> Any:
-    """Clone injected LangChain clients to avoid multiplying SDK and outer retries."""
+    """Disable retries on injected clients to avoid multiplying retry attempts."""
     if not hasattr(model, "model_copy") or not hasattr(model, "max_retries"):
         return model
     updates: dict[str, Any] = {"max_retries": 0}

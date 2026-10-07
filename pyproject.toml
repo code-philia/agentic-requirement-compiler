@@ -8,18 +8,13 @@ version = "1.2.0"
 description = "Agentic Requirement Compiler"
 requires-python = ">=3.11"
 dependencies = [
-  "aiofiles",
   "openai",
-  "requests",
   "python-dotenv",
   "pyyaml",
   "pydantic",
   "colorama",
   "jsonschema",
-  "tiktoken",
   "httpx[socks]",
-  "langchain",
-  "langchain-openai",
 ]
 
 [project.scripts]

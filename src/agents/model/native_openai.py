@@ -1,4 +1,4 @@
-"""Tool-free model requests using the native OpenAI SDK."""
+"""Model requests using the native OpenAI SDK."""
 from __future__ import annotations
 
 import json
@@ -29,7 +29,7 @@ class NativeOpenAIModel:
         if config.base_url:
             kwargs["base_url"] = config.base_url
         # Use the SDK transport directly, including its HTTPX2 implementation
-        # when installed; never let LangChain construct another transport.
+        # when installed.
         transport = getattr(openai, "DefaultAsyncHttpx2Client", openai.DefaultAsyncHttpxClient)
         kwargs["http_client"] = transport()
         try:

@@ -1,13 +1,7 @@
-aiofiles
 openai
-requests
 python-dotenv
 pyyaml
 pydantic
 colorama
-click
 jsonschema
-tiktoken
 httpx[socks]
-langchain
-langchain-openai

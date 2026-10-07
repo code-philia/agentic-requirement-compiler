@@ -190,13 +190,12 @@ def check_config() -> dict[str, Any]:
     else:
         info.append(f"Python version: {sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}")
 
-    # Stages use ordinary LangChain model calls, not a Deep Agent runtime.
+    # Compilation stages use the native OpenAI SDK.
     try:
-        import langchain_core as _agent_runtime
-        version = getattr(_agent_runtime, '__version__', 'installed')
-        info.append(f"LLM runtime: {version}")
+        import openai
+        info.append(f"OpenAI SDK: {openai.__version__}")
     except ImportError:
-        errors.append("LLM runtime not installed (reinstall ARC or check dependencies)")
+        errors.append("OpenAI SDK not installed (reinstall ARC or check dependencies)")
 
     # Check Node.js for web app type
     import shutil

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
 
 from arcbench_agent_runtime.runtime import AgentRuntime
 from agents.context.pipeline import set_context_config, set_context_runtime

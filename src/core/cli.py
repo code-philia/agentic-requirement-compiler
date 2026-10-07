@@ -7,7 +7,7 @@ import sys
 import threading
 import time
 from pathlib import Path
-from typing import Any, Callable
+from typing import Callable
 
 from colorama import Fore, Style, init as colorama_init
 

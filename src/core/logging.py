@@ -1,31 +1,10 @@
 from __future__ import annotations
 
-import json
 import os
 import sys
 from datetime import datetime, timezone, tzinfo
 from pathlib import Path
-from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
-
-
-def format_json_for_log(value: Any) -> str:
-    try:
-        return json.dumps(value, ensure_ascii=False, indent=2, default=str)
-    except TypeError:
-        return repr(value)
-
-
-def log_to_logger(logger: Any | None, event: str, *, label: str, thread_id: str, body: str = "") -> None:
-    if logger is None:
-        return
-    message = f"{event} label={label or '-'} thread_id={thread_id}"
-    if body:
-        message = f"{message}\n{body}"
-    if hasattr(logger, "info"):
-        logger.info("%s", message)
-    elif callable(logger):
-        logger(message)
 
 
 def append_debug_log(

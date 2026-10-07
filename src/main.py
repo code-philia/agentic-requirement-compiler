@@ -7,7 +7,6 @@ import shutil
 import sys
 import time
 from dataclasses import dataclass
-from pathlib import Path
 
 from app_type_handler import list_app_types, normalize_app_type
 from core.cli import (

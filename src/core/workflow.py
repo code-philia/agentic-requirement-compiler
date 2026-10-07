@@ -13,7 +13,7 @@ from agents.test_driven_developer import TestDrivenDeveloper
 from agents.test_generator import TestGenerator
 from app_type_handler import create_app_type_handler, normalize_app_type
 from agents.context.pipeline import context_pipeline
-from core import commits, config, files, sessions
+from core import sessions
 from core.phases import WorkflowPhaseRunner
 from core.database import DatabasePreparation
 from core.shared import SharedPreparation
