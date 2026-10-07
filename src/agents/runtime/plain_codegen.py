@@ -145,7 +145,10 @@ it is validated and applied together, not one file per model call.
 File operations automatically track DESIGN artifacts. TestGenerator uses
 register_test(test_id,type,file_path) for its tests. Return [] for no actions.
 Paths are workspace-relative. Preserve unrelated behavior and database bootstrap hooks.
-Do not change the prepared database schema/seeds/runtime or compiler control files.
+Do not change prepared schema/seed SQL, generated arc_database programs or compiler
+control files. Database connection/query/bootstrap adapters and test helpers may
+be edited when permitted by this task. Preserve public exports, ARC_DB_FILE isolation,
+the generated prepareDatabase bootstrap, transactions and normal startup behavior.
 Existing backend/package.json and frontend/package.json may be edited to add or
 adjust dependencies/devDependencies needed by this task. Preserve scripts and all
 other fields and unrelated packages. Prefer installed libraries. Never edit lockfiles
@@ -159,14 +162,15 @@ Complete real owned behavior and runtime wiring, not placeholder shells or fake
 success, hardcoded sample rows, fallback arrays or test-only initialization.
 Use loading/empty/error states when runtime data is not owned by this node.
 Visual references govern layout/style only, never screenshot business data.
-Shared core is read-only; call existing capabilities and keep business actions
-node-owned. Database schema, seeds and bootstrap files belong to DATABASE_PREPARE;
+Shared core is read-only except database adapters/helpers explicitly marked writable
+in the task inventory; call existing capabilities and keep business actions
+node-owned. Database schema, seeds and generated bootstrap programs belong to DATABASE_PREPARE;
 missing persistence structure requires requirement synchronization.
 When identity_integration is supplied, reuse its authoritative storage, credentials,
 authentication, frontend state, logout and expiration conventions. Read concrete
 code as needed; never create a competing token store, resolver or identity provider.
 sources is the only full source snapshot. Database contracts/runtime signatures
-describe read-only infrastructure; request its source only for a specific unresolved
+describe prepared infrastructure; request its source only for a specific unresolved
 dependency or failure. Preserve each test layer's exit status and root error evidence.
 The system applies edits and runs validation; do not claim builds/tests passed.
 Reading a file does not grant permission to modify it. Never request secrets.
@@ -208,8 +212,18 @@ EXCLUDED = {".git", ".arc", ".agents", ".codex", ".aws", "requirements",
 EXTENSIONS = {".js", ".jsx", ".ts", ".tsx", ".css", ".html", ".json",
               ".py", ".java", ".xml", ".gradle", ".toml"}
 
+DATABASE_RUNTIME_FILES = {
+    "backend/src/database/" + name for name in
+    ("init_db.js", "db_runtime.js", "index.js", "seed_db.js", "test_harness.js", "prepare_e2e.js")
+}
+DATABASE_TEST_FILES = {
+    "backend/src/database/test_harness.js", "backend/src/database/prepare_e2e.js",
+}
+
 
 def is_test_asset(path: str) -> bool:
+    if path in DATABASE_TEST_FILES:
+        return True
     normalized = "/" + path.lower()
     name = normalized.rsplit("/", 1)[-1]
     return any(part in normalized for part in ("/test/", "/tests/", "/__tests__/", "/e2e/", "/test-e2e/", "/androidtest/", "/__mocks__/")) or any(
@@ -786,4 +800,5 @@ def protected_paths(root: Path, node_id: str, records: list[dict[str, Any]]) -> 
         plan = json.loads(shared_state.read_text(encoding="utf-8")).get("plan") or {}
         paths.update(path for capability in plan.get("capabilities", [])
                      for path in capability.get("files", []) + capability.get("reuse_files", []))
+    paths.difference_update(DATABASE_RUNTIME_FILES)
     return paths

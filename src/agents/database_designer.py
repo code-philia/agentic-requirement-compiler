@@ -44,6 +44,10 @@ DATABASE_ANALYSIS_VERSION = 6
 
 DATABASE_PROMPT = """Design ARC's shared SQLite database before node design and TDD.
 Return only a JSON array of supplied tool calls, never SQL, code, documents or prose.
+Assume a small application database. The supplied draft/tables contain the entire
+schema available at this stage; use its exact columns, primary/unique keys and
+foreign-key dependencies rather than guessing from table names or conventions.
+Full schema visibility does not authorize unrelated changes during repair.
 Schema phase: read the supplied child subtree directly and define the persistent
 entities, attributes, keys, relationships and states required by its behavior.
 ROOT is not analyzed for schema. Startup properties referenced from ROOT are

@@ -644,7 +644,14 @@ class ContextPipeline:
             "degraded": state.get("degraded", False),
             "missing_records": [{key: item.get(key) for key in ("phase", "table", "error", "req_ids")} for item in state.get("skipped_records", [])
                                 if node_id in item.get("req_ids", [])],
-            "missing_records_rule": "Only tables/seeds below are materialized. Skipped seeds are unavailable; never assume they exist. Use isolated test setup for scenario-specific data. Do not recreate quarantined schema in node code.",
+            "missing_records_rule": (
+                "SQL SEED generation exhausted its three repairs. Missing SEED records are recorded and do not block node compilation. "
+                "Continue designing/implementing the actual requirement on the prepared schema; do not request another database repair "
+                "solely for the listed missing seeds. Never pretend they exist, hardcode them in frontend code or recreate bootstrap "
+                "data in node modules. Keep real behavior and report resulting acceptance failures."
+                if state.get("mode") == "sql_files" and state.get("degraded") else
+                "Only tables/seeds below are materialized. Skipped seeds are unavailable; never assume they exist. Use isolated test setup for scenario-specific data. Do not recreate quarantined schema in node code."
+            ),
             "tables": [table for table in tables if table["name"] in related],
             "table_catalog": [{"name": table["name"], "req_ids": table["req_ids"]} for table in tables],
             "seeds": [seed for seed in plan.get("seeds", []) if seed["table"] in related],
@@ -652,7 +659,7 @@ class ContextPipeline:
                                  if node_id in entry.get("req_ids", [])},
             "generated_files": state.get("generated_files", []),
             "runtime": {
-                "web": "Use backend/src/database/index.js and db_runtime.js. initializeDatabase automatically applies the compiled schema and seeds to ARC_DB_FILE, including isolated E2E databases.",
+                "web": "Use backend/src/database/index.js and db_runtime.js. In sql_files mode initializeDatabase directly executes schema/*.sql and seed.sql on ARC_DB_FILE, including isolated E2E databases. SQL files are authoritative; any leftover arc_database.js is obsolete and must not be used to diagnose missing tables or seeds.",
                 "cli": "Use app.arc_database.connect_database(db_path). It applies the compiled schema and seeds to ARC_DB_FILE (or an explicit isolated test database). app/__main__.py bootstraps it before the command runtime.",
                 "android": "Use the generated database.ArcDatabase SQLiteOpenHelper; getWritableDatabase applies assets/arc_database.json on open. The Application bootstraps it at startup. Use a separate database name for isolated tests. This is the authoritative new domain database; do not create parallel Room entities/schema for these tables. The compiler prepares the same program on the host; device creation occurs on open.",
             }.get(self.config.app_type, ""),

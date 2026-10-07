@@ -9,7 +9,10 @@ def get_system_prompt(app_type: str = "web", test_types: list[str] | None = None
 Use supplied API/FUNC/DB skeletons, frontend code and test-harness context.
 Assert final required behavior in Unit/Integration; E2E checks connectivity only.
 Never accept NOT_IMPLEMENTED, HTTP 501,
-or temporary scaffold behavior. Do not modify product code or run builds/tests.
+or temporary scaffold behavior. Do not modify business product code or run builds/tests.
+You may repair database test_harness.js and prepare_e2e.js when needed; preserve
+their exports, isolated ARC_DB_FILE and normal schema/seed bootstrap. Do not
+change schema SQL, seed SQL or generated database programs.
 Use the suggested test layers listed at the end of this prompt as the default
 coverage plan. The compiler derives them from this requirement's owned
 API/FUNC/DB/frontend files, so give Unit and Integration coverage priority when

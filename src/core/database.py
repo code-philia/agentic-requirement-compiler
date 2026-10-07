@@ -255,8 +255,8 @@ class DatabasePreparation:
                       remaining_issues: list[dict[str, Any]] | None = None,
                       commit: bool = True) -> dict[str, Any]:
         if repair_plan is None:
-            from core.database_repair import recover_database_repair
-            recover_database_repair(self)
+            from core.database_sql import prepare_sql_database
+            return await prepare_sql_database(self, tree, revision, runtime, commit=commit)
         state = read_json_file(self.state_path) or {}
         previous_error = state.get("error", "")
         previous = repair_baseline if repair_baseline is not None else state.get("applied_plan") or {"tables": [], "seeds": []}
@@ -397,23 +397,32 @@ class DatabasePreparation:
             return state
 
     async def repair(self, node_id: str, problem: str, tree: dict[str, Any], revision: str, runtime) -> dict[str, Any]:
+        state = read_json_file(self.state_path) or {}
+        if state.get("mode") == "sql_files":
+            from core.database_sql import prepare_sql_database
+            result = await prepare_sql_database(self, tree, revision, runtime, force=True)
+            if result.get("status") != "COMPLETED":
+                raise ValueError(result.get("error") or "SQL database repair failed")
+            return result
         from core.database_repair import repair_database
         return await repair_database(self, node_id, problem, tree, revision, runtime)
 
     def _register_interfaces(self, plan: dict[str, Any], state: dict[str, Any], runtime) -> None:
         primary_file = next((path for path in state["generated_files"] if path.endswith(("arc_database.js", "arc_database.py", "ArcDatabase.java"))), "")
         for table in plan["tables"]:
+            table_file = next((path for path in state["generated_files"]
+                               if path.endswith(f"/schema/{table['name']}.sql")), primary_file)
             runtime.traceability.upsert_interface(
                 interface_id=f"GLOBAL:DB:{table['name']}", req_ids=table["req_ids"], type="DB",
                 content=json.dumps({
                     "interface_id": f"GLOBAL:DB:{table['name']}", "type": "DB",
-                    "name": table["name"], "file_path": primary_file,
+                    "name": table["name"], "file_path": table_file,
                     "responsibility": "Compiler-owned shared persistence contract",
                     "specification": table,
                     "seed_records": [seed for seed in plan["seeds"] if seed["table"] == table["name"]],
                     "callers": [], "callees": [],
                 }, ensure_ascii=False),
-                file_path=primary_file, first_line=(self.workspace / primary_file).read_text(encoding="utf-8").splitlines()[0],
+                file_path=table_file, first_line=(self.workspace / table_file).read_text(encoding="utf-8").splitlines()[0],
                 implemented=True,
             )
 

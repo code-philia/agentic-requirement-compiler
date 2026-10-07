@@ -56,8 +56,9 @@ class TestDrivenDeveloper:
             target_test_files=test_files)
         requested_files = feedback_source_paths(root, previous_failure_summary)
         sessions.merge_node_session(node_id, {"tdd_codegen": {"requested_files": requested_files}})
+        optional_helpers = set(scope["test_asset_files"] + scope["database_runtime_files"])
         required = [path for path in scope["allowed_files"] if (root / path).is_file()
-                    or path not in scope["test_asset_files"] or path in test_files]
+                    or path not in optional_helpers or path in test_files]
         bundle = source_bundle(root, required,
                                frontend_roots=scope["frontend_roots"],
                                feedback=previous_failure_summary + "\n" + str(requested_files), node_id=node_id,

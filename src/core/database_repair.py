@@ -78,7 +78,6 @@ async def repair_database(preparation, node_id, problem, tree, revision, runtime
     sources = {item["req_id"] for item in runtime.traceability.list_requirements()}
     sources.update(rid for item in previous["tables"] + previous["seeds"] for rid in item["req_ids"])
     db_path = application_db_path(preparation.workspace, preparation.app_type)
-    related = {table["name"] for table in previous["tables"] if node_id in table["req_ids"]}
     issues = [issue for issue in original.get("skipped_records", []) if node_id in issue.get("req_ids", [])]
     data_catalog = {entry["id"]: entry for record in runtime.traceability.list_requirements()
                     for entry in record.get("resolved_data", [])}
@@ -94,11 +93,6 @@ async def repair_database(preparation, node_id, problem, tree, revision, runtime
     data_sources = [record for record in data_sources if record["data_ids"]]
     seed_obligations = [seed for seed in (original.get("requested_plan") or {}).get("seeds", [])
                         if relevant_data_ids & set(seed.get("data_ids", []))]
-    related.update(seed["table"] for seed in previous["seeds"] + seed_obligations
-                   if relevant_data_ids & set(seed.get("data_ids", [])))
-    related.update(issue["table"] for issue in issues if issue.get("table"))
-    related.update(col["references"]["table"] for table in previous["tables"] if table["name"] in related
-                   for col in table["columns"] if col["references"])
 
     def accept(payload):
         delta = RepairDelta.model_validate(payload).model_dump()
@@ -142,10 +136,11 @@ async def repair_database(preparation, node_id, problem, tree, revision, runtime
         "data_contracts": [data_catalog[data_id] for data_id in sorted(relevant_data_ids)],
         "data_sources": data_sources,
         "requested_seed_records": seed_obligations,
-        "table_index": [{"name": table["name"], "req_ids": table["req_ids"]} for table in previous["tables"]],
-        "tables": [table for table in previous["tables"] if table["name"] in related],
-        "seeds": [{**seed, "rows": seed["rows"][:80]} for seed in previous["seeds"] if seed["table"] in related],
-        "existing_schema": {name: spec for name, spec in inspect_database(db_path).items() if name in related},
+        # Small application databases: always supply the complete schema and
+        # bootstrap identities, including dependencies unrelated to this node.
+        "tables": previous["tables"],
+        "seeds": previous["seeds"],
+        "existing_schema": inspect_database(db_path),
         "repair_rule": "Repair only this concrete gap using define_table/seed_rows/correct_seed. Preserve all existing columns, types, defaults, keys and foreign keys. Add tables/nullable columns/indexes or safe defaulted columns. For incorrect bootstrap values use correct_seed with an existing unique key, exact complete old_values and changed new_values. Never change row identities or overwrite live business data. Never invent scenario fixtures. No SQL, dropping, renaming, type changes, weakening constraints or destructive migration. Include complete definitions of modified tables; do not return unchanged rows.",
     }, RepairDelta.model_json_schema(), accept)
 

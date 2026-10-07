@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import hashlib
 import json
 import re
 import xml.etree.ElementTree as ET
@@ -154,8 +155,9 @@ public final class ArcDatabase extends SQLiteOpenHelper {
 '''
 
 
-def render_files(plan: dict[str, Any], app_type: str, android_package: str) -> dict[str, str]:
-    program = compile_plan(plan)
+def render_files(plan: dict[str, Any], app_type: str, android_package: str, *,
+                 program: dict[str, Any] | None = None) -> dict[str, str]:
+    program = compile_plan(plan) if program is None else program
     encoded = json.dumps(program, ensure_ascii=True, sort_keys=True, indent=2)
     if app_type == "web":
         return {"backend/src/database/arc_database.js": JS_RUNTIME.replace("__PROGRAM__", encoded)}
@@ -229,11 +231,16 @@ module.exports = { verifyRuntime };
 """
 
 
-def fixed_web_runtime(workspace: Path) -> dict[str, str]:
-    """Materialize fixed scaffold code; migrate known legacy code, reject customization."""
+def fixed_web_runtime(workspace: Path, *, sql_files: bool = False) -> dict[str, str]:
+    """Provide default adapters, migrate untouched legacy files, preserve edits."""
     template = Path(__file__).resolve().parents[1] / "arc-template/templates/web-react-express/backend/src/database"
     hook = "    await require('./arc_database').prepareDatabase(database); // ARC_DATABASE_PREPARE"
     result: dict[str, str] = {}
+    legacy_templates = {
+        "seed_db.js": "b837a81f3cd69a562fd90a177d3aad75e7c2c1fee5f10065ce207a5d90af0fbf",
+        "test_harness.js": "d8c966b8ac800cd003034e855ab524504f2b0fda7c308b3a042f76eecf664e31",
+        "prepare_e2e.js": "9768ec5e411f048d5b05fd901ff715aa8238584b8e3ce2cd631de2aa04c56943",
+    }
     for name in ("init_db.js", "db_runtime.js", "index.js", "seed_db.js", "test_harness.js", "prepare_e2e.js", "verify_runtime.js"):
         relative = "backend/src/database/" + name
         target = workspace / relative
@@ -245,10 +252,14 @@ def fixed_web_runtime(workspace: Path) -> dict[str, str]:
         if target.exists():
             original = target.read_text(encoding="utf-8")
             normalized = original.replace(hook + "\n", "") if name == "init_db.js" else original
+            if hashlib.sha256(original.encode("utf-8")).hexdigest() == legacy_templates.get(name):
+                normalized = expected
             comparison = expected
             if name == "init_db.js":
                 pattern = r"    /\*\*\n     \* Guide model instructions:\n.*?     \*/"
-                replacement = "    // Fixed connection lifecycle. Schema and seeds come from ARC's JSON compiler."
+                replacement = "    // Fixed connection lifecycle. ARC injects the validated schema/seed bootstrap here."
+                normalized = normalized.replace(
+                    "    // Fixed connection lifecycle. Schema and seeds come from ARC's JSON compiler.", replacement)
                 # Normalize both sides: the current template may still contain
                 # the legacy guidance block. Keep materialized output unchanged.
                 normalized = re.sub(pattern, replacement, normalized, count=1, flags=re.DOTALL)
@@ -275,12 +286,50 @@ async function seedDatabase() {
                         and suffix == expected_suffix):
                     normalized = expected
             if normalized != comparison:
-                raise ValueError(f"Database runtime differs from the fixed scaffold: {relative}; migrate custom code explicitly, not through node TDD")
-        if name == "init_db.js":
+                # These adapters are application code. Only the verifier remains
+                # compiler-owned; do not overwrite model/user runtime repairs.
+                if name != "verify_runtime.js":
+                    expected = original
+        if name == "init_db.js" and "prepareDatabase" not in expected and not (sql_files and "await prepareSqlFiles(database)" in expected):
             anchor = "    await runStatement(database, 'PRAGMA foreign_keys = ON;');"
+            if anchor not in expected:
+                raise ValueError("Custom init_db.js must call arc_database.prepareDatabase during initialization")
             expected = expected.replace(anchor, anchor + "\n" + hook, 1)
+        if name == "init_db.js" and sql_files:
+            expected = expected.replace(hook, "    await prepareSqlFiles(database); // ARC_DATABASE_PREPARE")
+            if "async function prepareSqlFiles(" not in expected:
+                expected += WEB_SQL_BOOTSTRAP
         result[relative] = expected
     return result
+
+
+WEB_SQL_BOOTSTRAP = r'''
+
+// SQL files are the authoritative schema and seed source.
+async function prepareSqlFiles(database) {
+  const exec = sql => new Promise((resolve, reject) => {
+    database.exec(sql, error => error ? reject(error) : resolve());
+  });
+  const schemaDirectory = path.join(__dirname, 'schema');
+  const tables = fs.readdirSync(schemaDirectory).filter(name => name.endsWith('.sql')).sort();
+  if (!tables.length) throw new Error('No database schema SQL files were prepared');
+  await exec('BEGIN IMMEDIATE;');
+  try {
+    for (const name of tables) {
+      await exec(fs.readFileSync(path.join(schemaDirectory, name), 'utf8'));
+    }
+    await exec(fs.readFileSync(path.join(__dirname, 'seed.sql'), 'utf8'));
+    const violations = await new Promise((resolve, reject) => {
+      database.all('PRAGMA foreign_key_check;', (error, rows) => error ? reject(error) : resolve(rows));
+    });
+    if (violations.length) throw new Error('Database SQL contains foreign key violations');
+    await exec('COMMIT;');
+  } catch (error) {
+    await exec('ROLLBACK;');
+    throw error;
+  }
+}
+'''
 
 
 def runtime_bootstrap_hook(workspace: Path, app_type: str, android_package: str) -> dict[str, str]:

@@ -4,7 +4,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from agents.runtime.plain_codegen import is_test_asset, protected_paths
+from agents.runtime.plain_codegen import DATABASE_RUNTIME_FILES, is_test_asset, protected_paths
 
 
 def implementation_scope(workspace_root: str, node_id: str, app_type: str,
@@ -58,16 +58,19 @@ def implementation_scope(workspace_root: str, node_id: str, app_type: str,
             if record.get("file_path") == path and record.get("type") != "UI" and (
                 str(record.get("interface_id", "")).startswith("GLOBAL:DB:")
                 or node_id not in record.get("req_ids", [])
-            ):
+            ) and path not in DATABASE_RUNTIME_FILES:
                 raise ValueError(f"File is owned by another requirement/global database: {path}")
     allowed_files = sorted(set([path for values in backend.values() for path in values]
                                + shared + frontend_files + paths(test_files) + test_assets))
     manifests = [path for path in ("backend/package.json", "frontend/package.json")
                  if app_type == "web" and (root / path).is_file()]
     allowed_files = sorted(set(allowed_files + manifests))
+    database_runtime = sorted(path for path in DATABASE_RUNTIME_FILES if app_type == "web")
+    allowed_files = sorted(set(allowed_files + database_runtime))
     return {"backend": backend, "frontend_roots": frontend_roots,
             "frontend_files": frontend_files, "shared": shared,
             "test_asset_files": test_assets,
             "allowed_files": allowed_files,
             "dependency_manifests": manifests,
+            "database_runtime_files": database_runtime,
             "rules": "Implement the inventory's API/FUNC/DB targets directly; do not search for backend owners or create replacement modules. Outside frontend_roots, write only inventory entries marked writable. Repair registered tests and test_asset_files; restore missing helpers at the same paths. Missing backend targets require a DESIGN retry."}

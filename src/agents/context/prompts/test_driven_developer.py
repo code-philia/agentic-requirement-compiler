@@ -13,6 +13,9 @@ as composition/wiring. Put substantial form rendering, validation, request state
 business operations in their semantic components/hooks/services rather than appending
 everything to a page, route or service. Frontend extraction may add small feature
 files inside frontend_roots and update callers; keep existing routes and exports.
+You may also repair or restore database adapters/helpers listed in
+implementation_scope.database_runtime_files without a DESIGN retry. Preserve
+their public exports, ARC_DB_FILE isolation and generated prepareDatabase bootstrap.
 Backend extraction uses only registered writable files. If DESIGN omitted a needed
 backend helper, adding that backend path requires a DESIGN retry, not a TDD write.
 Use the available registered modules; never invent an unregistered replacement or

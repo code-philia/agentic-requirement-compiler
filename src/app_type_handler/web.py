@@ -1385,7 +1385,7 @@ class WebAppType(AppTypeHandler):
             "* **Database Scaffold**:\n"
             "  * Runtime bootstrap and schema lifecycle: `backend/src/database/init_db.js`\n"
             "  * Shared query helpers: `backend/src/database/db_runtime.js`\n"
-            "  * Shared seed entrypoint: `backend/src/database/seed_db.js`\n"
+            "  * Bootstrap data: compiler-owned `backend/src/database/seed.sql`, applied automatically during initialization; do not add a second seed implementation.\n"
             "  * Shared test DB harness: `backend/src/database/test_harness.js`\n"
             "  * Barrel export for reuse: `backend/src/database/index.js`\n"
             "  * Extend these scaffold files instead of creating one-off DB connection/reset helpers in feature folders.\n"
