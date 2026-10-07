@@ -66,6 +66,9 @@ error without dropping obligations or weakening constraints to pass validation.
 
 Seeds phase: use only ROOT data and the supplied completed schema. Map explicit
 SEED properties into concrete rows, including association tables and foreign keys.
+properties may be a mapping or a list of mappings. Preserve either shape: a list
+declares multiple records; map every record using the completed schema. A mapping
+may contain nested collections or descriptive constraints, not just one flat row.
 SEED means startup data; CREATED and DERIVED must never produce bootstrap rows.
 Cite declared SEED data_ids and ROOT's requirement ID in every structured seed group.
 Do not create or change tables/columns in seeds phase. Unknown fields/tables are errors.

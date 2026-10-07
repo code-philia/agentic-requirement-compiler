@@ -31,8 +31,10 @@ def resolve_requirement_contracts(tree: dict[str, Any]) -> dict[str, Any]:
                 raise ValueError(f"Duplicate data id: {identity}")
             if entry["lifecycle"] not in {"SEED", "CREATED", "DERIVED"}:
                 raise ValueError(f"Invalid data lifecycle: {identity}")
-            if not isinstance(entry.get("properties", {}), dict):
-                raise ValueError(f"Data properties must be a mapping: {identity}")
+            properties = entry.get("properties", {})
+            if not (isinstance(properties, dict) or
+                    isinstance(properties, list) and all(isinstance(item, dict) for item in properties)):
+                raise ValueError(f"Data properties must be a mapping or a list of mappings: {identity}")
             catalog[identity] = entry
     for node in nodes:
         references: list[str] = []
