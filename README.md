@@ -123,8 +123,8 @@ Edit `.env` with your configuration:
 # Required
 OPENAI_API_KEY=sk-your-api-key-here
 OPENAI_BASE_URL=https://api.openai.com/v1
-MODEL=gpt-5.6
-ARC_OPENAI_API_MODE=responses
+MODEL=gpt-5.5
+ARC_OPENAI_API_MODE=chat_completions
 
 # Optional: Visual analysis
 VISUAL_API_KEY=
@@ -317,6 +317,8 @@ That is the technical direction behind ARC's requirement graph modeling, test-fi
   series    = {ISSTA}
 }
 ```
+
+The data reported in the paper comes from an earlier implementation whose workflow was built on Trae Agent. Due to difficulties with its installation and use, this repository has since switched to a minimal agent developed.
 
 ## Contact
 
