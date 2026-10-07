@@ -44,7 +44,7 @@ class NativeOpenAIModel:
                     request = dict(model=config.model_name, messages=messages, stream=False, **options)
                     log_path = _log_input(stage, workspace_root, request, config.api_mode, config.base_url)
                     response = await client.chat.completions.create(**request)
-                    _log_output(log_path, response)
+                    _log_output(log_path, response, stage=stage)
                     if not response.choices:
                         raise ValueError("Model returned no chat completion choices")
                     message = response.choices[0].message
@@ -59,7 +59,7 @@ class NativeOpenAIModel:
                 request = dict(model=config.model_name, input=messages, stream=False, **options)
                 log_path = _log_input(stage, workspace_root, request, config.api_mode, config.base_url)
                 response = await client.responses.create(**request)
-                _log_output(log_path, response)
+                _log_output(log_path, response, stage=stage)
                 if isinstance(response, str):
                     return _sse_text(response)
                 if response.status == "incomplete":
@@ -128,10 +128,10 @@ def _log_input(stage: str, workspace_root: str | Path | None,
     return path
 
 
-def _log_output(path: Path, response: Any) -> None:
+def _log_output(path: Path, response: Any, *, stage: str) -> None:
     """Keep raw output, finish reason and usage next to its exact input."""
     from agents.model.usage import record_model_usage
-    record_model_usage(response, stage=path.stem, workspace_root=path.parent.parent.parent)
+    record_model_usage(response, stage=stage, workspace_root=path.parent.parent.parent)
     payload = response.model_dump(mode="json") if hasattr(response, "model_dump") else response
     with path.open("a", encoding="utf-8") as stream:
         stream.write("\n===== MODEL OUTPUT =====\n")
@@ -147,7 +147,7 @@ async def generate_text(model: Any, messages: list[dict[str, Any]], *, stage: st
                                      "messages": messages}, "injected")
     model = without_sdk_retries(model)
     response = await retry_model_call(lambda: model.ainvoke(messages))
-    _log_output(log_path, response)
+    _log_output(log_path, response, stage=stage)
     content = response.content
     if isinstance(content, str):
         return content

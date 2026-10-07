@@ -7,7 +7,7 @@ import threading
 from pathlib import Path
 from typing import Any
 
-from core.logging import append_debug_log, write_terminal_log, local_timestamp
+from core.logging import local_timestamp
 
 _lock = threading.Lock()
 
@@ -66,9 +66,10 @@ def record_model_usage(response: Any, *, stage: str, workspace_root: str | Path 
         for k in ("input_tokens", "output_tokens", "cached_tokens"):
             totals[k] += row[k] or 0
         show = lambda value: "unknown" if value is None else f"{value:,}"
-        message = (f"{stage} tokens: input={show(input_tokens)}, output={show(output_tokens)}, cache_hit={show(cached)}; "
-                   f"cumulative({totals['calls']} calls): input={totals['input_tokens']:,}, output={totals['output_tokens']:,}, "
+        message = (f"usage> {stage}: input={show(input_tokens)}, output={show(output_tokens)}, cache_hit={show(cached)}\n"
+                   f"Cumulative ({totals['calls']} calls): input={totals['input_tokens']:,}, output={totals['output_tokens']:,}, "
                    f"cache_hit={totals['cached_tokens']:,}, total={totals['input_tokens'] + totals['output_tokens']:,}; "
                    f"incomplete_usage_calls={totals['incomplete_calls']}. Cache hits are included in input.")
-        append_debug_log("ModelUsage", message, workspace_root=str(root))
-        write_terminal_log("ModelUsage", message)
+        # Use the CLI's normal/debug rendering and spinner handling, not a parallel printer.
+        from core.cli import cli_log
+        cli_log("ModelUsage", message, workspace_root=str(root))

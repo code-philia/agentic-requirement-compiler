@@ -427,7 +427,8 @@ async def ask_with_reads(model: str | object, system: str, task: dict[str, Any],
     from inspect import isawaitable
     async def emit(message: str) -> None:
         if log:
-            result = log("flow> " + message)
+            prefix = "" if message.startswith(("tool-call>", "tool-result>")) else "flow> "
+            result = log(prefix + message)
             if isawaitable(result):
                 await result
     current = deepcopy(task)
@@ -521,7 +522,8 @@ async def ask_with_reads(model: str | object, system: str, task: dict[str, Any],
                             ("add_file", getattr(response, "new_files", [])),
                             ("delete_file", getattr(response, "delete_files", []))):
             for item in items:
-                await emit(f"Model requested {tool}: {item.path} (pending validation/application)")
+                await emit(f"tool-call> {tool} args=" + json.dumps(
+                    {"path": item.path, "status": "pending validation/application"}, ensure_ascii=False))
         if not files and not names and not groups:
             if getattr(response, "database_gap", ""):
                 if (getattr(response, "changes", []) or getattr(response, "new_files", [])
@@ -557,7 +559,7 @@ async def ask_with_reads(model: str | object, system: str, task: dict[str, Any],
             # observations from the same batch. Results carry the requested path.
             results = []
             for path in dict.fromkeys(files):
-                await emit(f"read_file requested: {path}")
+                await emit("tool-call> read_file args=" + json.dumps({"path": path}, ensure_ascii=False))
                 snapshot = deepcopy(current)
                 old_pinned = set(pinned)
                 try:
@@ -575,18 +577,21 @@ async def ask_with_reads(model: str | object, system: str, task: dict[str, Any],
                     results.append({"tool": "read_file", "path": path, "status": "error", "error": str(exc)})
                 observation = results[-1]
                 detail = observation.get("error") or f"{len(sources[path].encode('utf-8'))} bytes"
-                await emit(f"read_file result: {path}; {observation['status']}; {detail}")
+                await emit(f"tool-result> read_file result={path}; {observation['status']}; {detail}")
             current["file_observations"] = [
                 {"tool": "read_file", "path": path, "status": "ok"} for path in budget.get("files", [])]
             current["last_read_results"] = results
             # Contract/page errors must not roll back successful file reads.
             previous = deepcopy(current)
             previous_pinned = set(pinned)
+            for tool, key, values in (("read_shared", "name", names), ("read_shared_group", "id", groups)):
+                for value in values:
+                    await emit(f"tool-call> {tool} args=" + json.dumps({key: value}, ensure_ascii=False))
             supply([], names, groups)
             for name in names:
-                await emit(f"Shared contract supplied: {name}")
+                await emit(f"tool-result> read_shared result={name}; supplied")
             for group in groups:
-                await emit(f"Shared index supplied: {group}")
+                await emit(f"tool-result> read_shared_group result={group}; supplied")
         except (ValueError, OSError, UnicodeError) as exc:
             # Failed reads consume only the reading budget. Keep the original
             # test feedback, and let the next call select an existing path.

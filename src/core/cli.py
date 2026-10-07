@@ -156,7 +156,12 @@ class _CliProgressView:
         if path and pattern:
             return self._clip(f"{pattern} in {self._compact_path(path)}", 120)
         if path:
-            return self._compact_path(path)
+            detail = self._compact_path(path)
+            if payload.get("status"):
+                detail += f" ({payload['status']})"
+            return detail
+        if payload.get("name") or payload.get("id"):
+            return self._clip(str(payload.get("name") or payload.get("id")), 120)
         if isinstance(todos, list):
             return f"{len(todos)} todo item(s)"
         keys = ", ".join(list(payload.keys())[:4])
@@ -177,7 +182,8 @@ class _CliProgressView:
             return None
         tool_name = match.group(1).strip() or "unknown"
         result = self._clip(match.group(2), 140)
-        result_line = stage_line("Tool Result", f"{tool_name} -> {result}", "ok")
+        tone = "fail" if "; error;" in match.group(2) else "ok"
+        result_line = stage_line("Tool Result", f"{tool_name} -> {result}", tone)
         return self._emit_once(result_line)
 
     def _render_tool_batch_event(self, message: str, stage_line: Callable[[str, str, str], str]) -> str | None:
@@ -425,6 +431,25 @@ class _CliProgressView:
                 "test": Fore.GREEN,
             }.get(tone, Fore.WHITE)
             return f"{self._meta_prefix(agent, active_node)}  {color}{stage:<12}{Style.RESET_ALL} {Fore.WHITE}{detail}{Style.RESET_ALL}"
+
+        if message.startswith("usage>"):
+            lines = message.removeprefix("usage>").strip().splitlines()
+            return self._persistent(self._emit_once("\n".join(
+                stage_line("Tokens" if index == 0 else "Total", line)
+                for index, line in enumerate(lines)
+            )))
+        if message.startswith("flow>"):
+            body = message.removeprefix("flow>").strip()
+            first = body.splitlines()[0] if body else ""
+            label = ("Model" if first.startswith("Model") else
+                     "Files" if first.startswith("File batch") else
+                     "Verify" if "build" in first.lower() or "tests" in first.lower() else "Info")
+            tone = "fail" if status == "error" or "FAILED" in first else (
+                "warn" if status == "warning" else "ok" if status == "ok" else "info")
+            return self._persistent(self._emit_once("\n".join(
+                stage_line(label if index == 0 else "", line, tone)
+                for index, line in enumerate(body.splitlines())
+            )))
 
         def header(title: str, detail: str) -> str:
             bar = f"{Fore.BLUE}{'=' * 78}{Style.RESET_ALL}"
@@ -674,9 +699,12 @@ def cli_log(
     message: str,
     status: str | None = None,
     node_id: str | None = None,
+    *,
+    workspace_root: str | None = None,
 ) -> None:
-    append_debug_log(agent_name, message, status=status, node_id=node_id, workspace_root=_cli_workspace_root)
-    if ARC_DEBUG_ENABLED or message.startswith("flow>"):
+    append_debug_log(agent_name, message, status=status, node_id=node_id,
+                     workspace_root=workspace_root or _cli_workspace_root)
+    if ARC_DEBUG_ENABLED:
         _spinner.stop()
         _progress_view.clear_transient_block()
         write_terminal_log(agent_name, message, status=status, node_id=node_id)
