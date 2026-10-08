@@ -161,6 +161,20 @@ class AndroidAppType(AppTypeHandler):
         ]
 
     @classmethod
+    def run_instructions(
+        cls,
+        *,
+        web_port: int | None = None,
+        android_package: str | None = None,
+    ) -> list[str]:
+        del web_port, android_package
+        return [
+            f"Build the debug APK: {_gradlew_cmd()} assembleDebug",
+            f"Install it on a connected device or emulator: {_gradlew_cmd()} installDebug",
+            "The debug APK is written to app/build/outputs/apk/debug/app-debug.apk",
+        ]
+
+    @classmethod
     def test_harness_lines(
         cls,
         *,

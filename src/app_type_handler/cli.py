@@ -99,6 +99,18 @@ class CliAppType(AppTypeHandler):
         ]
 
     @classmethod
+    def run_instructions(
+        cls,
+        *,
+        web_port: int | None = None,
+        android_package: str | None = None,
+    ) -> list[str]:
+        del web_port, android_package
+        return [
+            "Run the CLI from the workspace root: python -m app --help",
+        ]
+
+    @classmethod
     def test_harness_lines(
         cls,
         *,

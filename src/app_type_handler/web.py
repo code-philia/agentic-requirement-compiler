@@ -937,6 +937,21 @@ class WebAppType(AppTypeHandler):
         ]
 
     @classmethod
+    def run_instructions(
+        cls,
+        *,
+        web_port: int | None = None,
+        android_package: str | None = None,
+    ) -> list[str]:
+        del android_package
+        resolved_port = int(web_port or get_web_port())
+        return [
+            "Build the frontend: cd frontend && npm run build",
+            "Start the app: cd backend && npm run start",
+            f"Open http://localhost:{resolved_port} (the backend serves the built frontend).",
+        ]
+
+    @classmethod
     def test_harness_lines(
         cls,
         *,

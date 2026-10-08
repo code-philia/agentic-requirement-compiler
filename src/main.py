@@ -8,7 +8,11 @@ import sys
 import time
 from dataclasses import dataclass
 
-from app_type_handler import list_app_types, normalize_app_type
+from app_type_handler import (
+    get_run_instructions,
+    list_app_types,
+    normalize_app_type,
+)
 from core.cli import (
     cli_log,
     init_debug_logger,
@@ -334,7 +338,15 @@ async def cmd_compile(args: argparse.Namespace) -> int:
         stop_cli_spinner()
     
     elapsed = time.time() - start_time
-    print_compilation_summary(result, config.output_dir, elapsed)
+    print_compilation_summary(
+        result,
+        config.output_dir,
+        elapsed,
+        run_instructions=get_run_instructions(
+            config.app_type,
+            web_port=config.web_port,
+        ),
+    )
     
     # A completed compilation is a successful CLI operation even when one or
     # more requirement nodes/tests remain failed. The detailed result and
